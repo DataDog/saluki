@@ -11,14 +11,12 @@ use regex::Regex;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
-    data_model::event::{
-        trace::{AttributeValue, Span},
-        Event,
-    },
+    data_model::event::trace::{AttributeValue, Span, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
+use tracing::error;
 
 /// The compiled form of one [`ReplaceRule`].
 #[derive(Clone, Debug)]
@@ -49,6 +47,16 @@ pub struct ReplaceRule {
     pub repl: String,
 }
 
+/// Tags that hold stack traces, replaced whole when stack trace removal is enabled.
+const STACK_TRACE_TAGS: [&str; 2] = ["error.stack", "exception.stacktrace"];
+
+/// The span tag holding the env.
+///
+/// Stats and sampling can take their env from this tag, so no rule may rewrite it: rules named `env` are dropped at
+/// build time, and `*` rules skip it. Span-event attributes named `env` aren't the span env, so `*` rules still rewrite
+/// them.
+const ENV_TAG: &str = "env";
+
 /// Trace tag replacer configuration.
 pub struct TraceTagReplacerConfiguration {
     rules: Vec<ReplaceRule>,
@@ -57,9 +65,26 @@ pub struct TraceTagReplacerConfiguration {
 impl TraceTagReplacerConfiguration {
     /// Creates a new `TraceTagReplacerConfiguration` from the given rules.
     ///
-    /// Patterns compile at build time, so an invalid one fails startup naming the rule.
-    pub fn new(rules: Vec<ReplaceRule>) -> Self {
+    /// When `remove_stack_traces` is set, rules replacing the whole value of each stack trace tag with `?` run after
+    /// the given rules. Patterns compile at build time, so an invalid one fails startup naming the rule.
+    pub fn new(mut rules: Vec<ReplaceRule>, remove_stack_traces: bool) -> Self {
+        // TODO: Add a way to specify a direct replace rule, one that overwrites the whole value without a regex. The
+        // value is always discarded, but `Regex::replace_all` still allocates a buffer the size of the stack trace and
+        // scans it, for every blanked tag of every span.
+        if remove_stack_traces {
+            rules.extend(STACK_TRACE_TAGS.iter().map(|tag| ReplaceRule {
+                name: (*tag).to_owned(),
+                // `(?s)` lets `.` match newlines, so the whole multi-line trace is replaced.
+                pattern: "(?s).*".to_owned(),
+                repl: "?".to_owned(),
+            }));
+        }
         Self { rules }
+    }
+
+    /// Returns the rules the replacer runs, in order, including any stack trace rules.
+    pub fn rules(&self) -> &[ReplaceRule] {
+        &self.rules
     }
 }
 
@@ -97,12 +122,14 @@ impl TraceTagReplacer {
     }
 
     fn replace_everywhere(&self, span: &mut Span, re: &Regex, repl: &str) {
-        rewrite_non_hidden(span.attributes.iter_mut(), re, repl);
+        rewrite_attributes(span.attributes.iter_mut(), re, repl, |key| {
+            key != ENV_TAG && !is_hidden(key)
+        });
 
         self.replace_resource(span, re, repl);
 
         for event in span.span_events_mut() {
-            rewrite_non_hidden(event.attributes_mut().iter_mut(), re, repl);
+            rewrite_attributes(event.attributes_mut().iter_mut(), re, repl, |key| !is_hidden(key));
         }
     }
 
@@ -114,16 +141,12 @@ impl TraceTagReplacer {
 
     fn replace_named(&self, span: &mut Span, key: &str, re: &Regex, repl: &str) {
         if let Some(value) = span.attributes.get_mut(key) {
-            if let Some(replaced) = replace_value(value, re, repl) {
-                *value = replaced;
-            }
+            replace_in_place(value, re, repl);
         }
 
         for event in span.span_events_mut() {
             if let Some(value) = event.attributes_mut().get_mut(key) {
-                if let Some(replaced) = replace_value(value, re, repl) {
-                    *value = replaced;
-                }
+                replace_in_place(value, re, repl);
             }
         }
     }
@@ -135,32 +158,45 @@ impl SynchronousTransform for TraceTagReplacer {
             return;
         }
 
-        for event in buffer {
-            if let Event::Trace(ref mut trace) = event {
-                for span in trace.spans_mut() {
-                    self.replace_span(span);
-                }
+        for trace in buffer.events_mut::<Trace>() {
+            for span in trace.spans_mut() {
+                self.replace_span(span);
             }
         }
     }
 }
 
-fn rewrite_non_hidden<'a, I>(entries: I, re: &Regex, repl: &str)
+fn is_hidden(key: &str) -> bool {
+    key.starts_with('_')
+}
+
+/// Rewrites the value of every entry whose key passes `replaceable`.
+fn rewrite_attributes<'a, I, F>(entries: I, re: &Regex, repl: &str, replaceable: F)
 where
     I: Iterator<Item = (&'a MetaString, &'a mut AttributeValue)>,
+    F: Fn(&str) -> bool,
 {
     for (key, value) in entries {
-        if key.as_ref().starts_with('_') {
-            continue;
-        }
-        if let Some(replaced) = replace_value(value, re, repl) {
-            *value = replaced;
+        if replaceable(key.as_ref()) {
+            replace_in_place(value, re, repl);
         }
     }
 }
 
-/// Formats a scalar value for regex matching; string values borrow, and composite values have no
-/// single string form and are skipped.
+/// Rewrites `value` in place. An array is rewritten one element at a time, the way the Agent does, so a rule reaches
+/// every string in it.
+fn replace_in_place(value: &mut AttributeValue, re: &Regex, repl: &str) {
+    if let AttributeValue::Array(elements) = value {
+        for element in elements {
+            replace_in_place(element, re, repl);
+        }
+    } else if let Some(replaced) = replace_value(value, re, repl) {
+        *value = replaced;
+    }
+}
+
+/// Formats a scalar value for regex matching; string values borrow, and values with no single string form, such as
+/// key-value lists, are skipped. Arrays are handled element by element by [`replace_in_place`].
 fn value_as_cow(value: &AttributeValue) -> Option<Cow<'_, str>> {
     match value {
         AttributeValue::String(s) => Some(Cow::Borrowed(s.as_ref())),
@@ -198,6 +234,9 @@ fn replace_str(value: &str, re: &Regex, repl: &str) -> Option<String> {
 
 /// Compiles the raw rules into their working form.
 ///
+/// Rules named `env` are compiled, so an invalid pattern still fails, then dropped with an error log: replacing the span
+/// env would change the env that stats and sampling use.
+///
 /// # Errors
 ///
 /// Returns an error if a rule's `pattern` fails to compile, naming the rule. Startup fails rather
@@ -214,6 +253,16 @@ fn compile_rules(rules: &[ReplaceRule]) -> Result<Vec<CompiledRule>, GenericErro
                 e
             )
         })?;
+        if rule.name == ENV_TAG {
+            error!(
+                config_key = "apm_config.replace_tags",
+                pattern = %rule.pattern,
+                "Ignoring the replace rule for \"env\": replace rules cannot change the env, as it is used for sampling \
+                 and stats. Set the env in the tracer instead, see \
+                 https://docs.datadoghq.com/getting_started/tracing/#environment-name."
+            );
+            continue;
+        }
         let target = match rule.name.as_str() {
             "*" => RuleTarget::All,
             "resource.name" => RuleTarget::Resource,
@@ -246,17 +295,20 @@ mod tests {
         SpanEvent::new(time, name).with_attributes(attrs(pairs))
     }
 
-    fn replacer(rules: &[(&str, &str, &str)]) -> TraceTagReplacer {
-        let raw = rules
+    fn raw_rules(rules: &[(&str, &str, &str)]) -> Vec<ReplaceRule> {
+        rules
             .iter()
             .map(|(name, pattern, repl)| ReplaceRule {
                 name: (*name).to_owned(),
                 pattern: (*pattern).to_owned(),
                 repl: (*repl).to_owned(),
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn replacer(rules: &[(&str, &str, &str)]) -> TraceTagReplacer {
         TraceTagReplacer {
-            rules: compile_rules(&raw).expect("test rules compile"),
+            rules: compile_rules(&raw_rules(rules)).expect("test rules compile"),
         }
     }
 
@@ -414,6 +466,126 @@ mod tests {
         );
     }
 
+    fn string_array(values: &[&str]) -> AttributeValue {
+        AttributeValue::Array(
+            values
+                .iter()
+                .map(|value| AttributeValue::String(MetaString::from(*value)))
+                .collect(),
+        )
+    }
+
+    fn event_with(pairs: Vec<(&str, AttributeValue)>) -> SpanEvent {
+        let attributes = pairs
+            .into_iter()
+            .map(|(key, value)| (MetaString::from(key), value))
+            .collect::<FastHashMap<_, _>>();
+        SpanEvent::new(1, "event").with_attributes(attributes)
+    }
+
+    #[test]
+    fn wildcard_rule_rewrites_every_element_of_array_attributes_but_not_hidden_ones() {
+        let mut tags = FastHashMap::default();
+        tags.insert(MetaString::from("list"), string_array(&["token=zzz", "plain"]));
+        tags.insert(MetaString::from("_hidden"), string_array(&["token=zzz"]));
+        let event = event_with(vec![(
+            "tokens",
+            string_array(&["token=abc123", "plain", "token=def456"]),
+        )]);
+        let mut span = span_with("res", tags, vec![event]);
+
+        replacer(&[("*", "token=[A-Za-z0-9]+", "token=?")]).replace_span(&mut span);
+
+        assert_eq!(attr(&span, "list"), Some(&string_array(&["token=?", "plain"])));
+        assert_eq!(attr(&span, "_hidden"), Some(&string_array(&["token=zzz"])));
+        assert_eq!(
+            span.span_events()[0].attributes().get("tokens"),
+            Some(&string_array(&["token=?", "plain", "token=?"]))
+        );
+    }
+
+    #[test]
+    fn named_rule_rewrites_the_array_of_its_target_key_only() {
+        let event = event_with(vec![
+            ("tokens", string_array(&["token=abc123"])),
+            ("other", string_array(&["token=abc123"])),
+        ]);
+        let mut tags = FastHashMap::default();
+        tags.insert(MetaString::from("tokens"), string_array(&["token=zzz"]));
+        tags.insert(MetaString::from("other"), string_array(&["token=zzz"]));
+        let mut span = span_with("res", tags, vec![event]);
+
+        replacer(&[("tokens", "token=[A-Za-z0-9]+", "token=?")]).replace_span(&mut span);
+
+        assert_eq!(attr(&span, "tokens"), Some(&string_array(&["token=?"])));
+        assert_eq!(attr(&span, "other"), Some(&string_array(&["token=zzz"])));
+        let attributes = span.span_events()[0].attributes();
+        assert_eq!(attributes.get("tokens"), Some(&string_array(&["token=?"])));
+        assert_eq!(attributes.get("other"), Some(&string_array(&["token=abc123"])));
+    }
+
+    #[test]
+    fn array_elements_are_matched_by_their_string_form_and_stored_as_strings() {
+        let numbers = AttributeValue::Array(vec![
+            AttributeValue::Int(12345),
+            AttributeValue::Bool(true),
+            AttributeValue::String(MetaString::from("x")),
+        ]);
+        let mut span = span_with(
+            "res",
+            FastHashMap::default(),
+            vec![event_with(vec![("numbers", numbers)])],
+        );
+
+        replacer(&[("*", r"^\d+$", "N")]).replace_span(&mut span);
+
+        // The matched int becomes the replacement text; elements that don't match keep their type.
+        assert_eq!(
+            span.span_events()[0].attributes().get("numbers"),
+            Some(&AttributeValue::Array(vec![
+                AttributeValue::String(MetaString::from("N")),
+                AttributeValue::Bool(true),
+                AttributeValue::String(MetaString::from("x")),
+            ]))
+        );
+    }
+
+    #[test]
+    fn nested_arrays_are_rewritten_recursively() {
+        let nested = AttributeValue::Array(vec![string_array(&["token=abc123"]), string_array(&["plain"])]);
+        let mut span = span_with(
+            "res",
+            FastHashMap::default(),
+            vec![event_with(vec![("nested", nested)])],
+        );
+
+        replacer(&[("*", "token=[A-Za-z0-9]+", "token=?")]).replace_span(&mut span);
+
+        assert_eq!(
+            span.span_events()[0].attributes().get("nested"),
+            Some(&AttributeValue::Array(vec![
+                string_array(&["token=?"]),
+                string_array(&["plain"])
+            ]))
+        );
+    }
+
+    #[test]
+    fn arrays_with_no_match_are_left_untouched() {
+        let mut span = span_with(
+            "res",
+            FastHashMap::default(),
+            vec![event_with(vec![("plain", string_array(&["a", "b"]))])],
+        );
+
+        replacer(&[("*", "token=[A-Za-z0-9]+", "token=?")]).replace_span(&mut span);
+
+        assert_eq!(
+            span.span_events()[0].attributes().get("plain"),
+            Some(&string_array(&["a", "b"]))
+        );
+    }
+
     #[test]
     fn rules_compose_in_order() {
         let mut span = span_with(
@@ -456,6 +628,87 @@ mod tests {
         assert_eq!(span.resource(), "POST /pay/checkout?token=abc123");
     }
 
+    fn configured_replacer(rules: &[(&str, &str, &str)], remove_stack_traces: bool) -> TraceTagReplacer {
+        let config = TraceTagReplacerConfiguration::new(raw_rules(rules), remove_stack_traces);
+        TraceTagReplacer {
+            rules: compile_rules(&config.rules).expect("configured rules compile"),
+        }
+    }
+
+    const STACK: &str = "Traceback (most recent call last):\n  File \"app.py\", line 7, in pay\nValueError: boom\n";
+
+    fn span_with_stack_traces() -> Span {
+        span_with(
+            "POST /pay/checkout",
+            attrs(&[
+                ("error.stack", STACK),
+                ("exception.stacktrace", STACK),
+                ("error.message", "boom"),
+            ]),
+            vec![event(1, "exception", &[("exception.stacktrace", STACK)])],
+        )
+    }
+
+    fn string_attr<'a>(span: &'a Span, key: &str) -> Option<&'a str> {
+        attr(span, key).and_then(|v| v.as_string()).map(|s| s.as_ref())
+    }
+
+    fn event_string_attr<'a>(span: &'a Span, key: &str) -> Option<&'a str> {
+        span.span_events()[0]
+            .attributes()
+            .get(key)
+            .and_then(|v| v.as_string())
+            .map(|s| s.as_ref())
+    }
+
+    #[test]
+    fn stack_trace_removal_replaces_both_stack_trace_tags() {
+        let mut span = span_with_stack_traces();
+
+        configured_replacer(&[], true).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "error.stack"), Some("?"));
+        assert_eq!(string_attr(&span, "exception.stacktrace"), Some("?"));
+        assert_eq!(event_string_attr(&span, "exception.stacktrace"), Some("?"));
+        assert_eq!(string_attr(&span, "error.message"), Some("boom"));
+    }
+
+    #[test]
+    fn stack_trace_tags_are_untouched_without_stack_trace_removal() {
+        let mut span = span_with_stack_traces();
+
+        configured_replacer(&[], false).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "error.stack"), Some(STACK));
+        assert_eq!(string_attr(&span, "exception.stacktrace"), Some(STACK));
+        assert_eq!(event_string_attr(&span, "exception.stacktrace"), Some(STACK));
+    }
+
+    #[test]
+    fn stack_trace_removal_runs_after_configured_rules() {
+        let rules = [
+            ("error.message", "boom", "failure"),
+            ("error.stack", r"^\?$", "replaced late"),
+        ];
+        let config = TraceTagReplacerConfiguration::new(raw_rules(&rules), true);
+        let names = config.rules.iter().map(|rule| rule.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["error.message", "error.stack", "error.stack", "exception.stacktrace"]
+        );
+
+        let mut span = span_with_stack_traces();
+        configured_replacer(&rules, true).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "error.message"), Some("failure"));
+        assert_eq!(
+            string_attr(&span, "error.stack"),
+            Some("?"),
+            "the configured rule saw the original trace, not the removal's output"
+        );
+        assert_eq!(string_attr(&span, "exception.stacktrace"), Some("?"));
+    }
+
     #[test]
     fn invalid_pattern_fails_compilation_with_actionable_error() {
         let raw = vec![ReplaceRule {
@@ -472,5 +725,84 @@ mod tests {
             message
         );
         assert!(message.contains("http.url"), "error names the rule: {}", message);
+    }
+
+    // Ported from the Go trace agent's `TestCompileReplaceRulesDropsEnv` and `TestReplacerWildcardEnv`
+    // (datadog-agent 927a054f307, https://github.com/DataDog/datadog-agent/pull/59980). Replacing the span env changed
+    // the env used for stats and sampling, so tracers received sample rates for an env they didn't know.
+
+    #[test]
+    fn env_rules_are_dropped_and_other_rules_kept_in_order() {
+        let rules = raw_rules(&[
+            ("http.url", "guid", "[REDACTED]"),
+            ("env", ".*", "myenv"),
+            ("*", "secret", "?"),
+            ("env", "prod", "production"),
+        ]);
+
+        let compiled = compile_rules(&rules).expect("rules compile");
+        let targets = compiled.iter().map(|rule| rule.target.clone()).collect::<Vec<_>>();
+        assert_eq!(targets, [RuleTarget::Tag("http.url".to_owned()), RuleTarget::All]);
+
+        let only_env = compile_rules(&raw_rules(&[("env", ".*", "myenv")])).expect("rules compile");
+        assert!(only_env.is_empty(), "a rule set of only env rules compiles to nothing");
+    }
+
+    #[test]
+    fn env_rule_leaves_span_and_span_event_env_untouched() {
+        let mut span = span_with(
+            "res",
+            attrs(&[("env", "prod")]),
+            vec![event(1, "e", &[("env", "prod")])],
+        );
+
+        replacer(&[("env", "prod", "production")]).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "env"), Some("prod"));
+        assert_eq!(event_string_attr(&span, "env"), Some("prod"));
+    }
+
+    #[test]
+    fn env_rule_with_invalid_pattern_still_fails_compilation() {
+        let err = compile_rules(&raw_rules(&[("env", "(", "myenv")])).expect_err("invalid env pattern must fail");
+        let message = format!("{}", err);
+        assert!(message.contains("'env'"), "error names the rule: {}", message);
+    }
+
+    #[test]
+    fn wildcard_rule_skips_span_env_but_rewrites_other_tags_resource_and_event_env() {
+        let mut span = span_with(
+            "prod-resource",
+            attrs(&[("env", "prod"), ("custom.tag", "prod-value")]),
+            vec![event(1, "e", &[("env", "prod")])],
+        );
+
+        replacer(&[("*", "prod", "stage")]).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "env"), Some("prod"));
+        assert_eq!(string_attr(&span, "custom.tag"), Some("stage-value"));
+        assert_eq!(span.resource(), "stage-resource");
+        assert_eq!(
+            event_string_attr(&span, "env"),
+            Some("stage"),
+            "span event attributes are not the span env"
+        );
+    }
+
+    #[test]
+    fn wildcard_rule_skips_numeric_span_env() {
+        let mut tags = FastHashMap::default();
+        tags.insert(MetaString::from("env"), AttributeValue::Float(1.0));
+        tags.insert(MetaString::from("latency"), AttributeValue::Float(1.0));
+        let mut span = span_with("res", tags, vec![]);
+
+        replacer(&[("*", "1", "prod")]).replace_span(&mut span);
+
+        assert_eq!(attr(&span, "env"), Some(&AttributeValue::Float(1.0)));
+        assert_eq!(
+            string_attr(&span, "latency"),
+            Some("prod"),
+            "other numeric tags are still replaced"
+        );
     }
 }

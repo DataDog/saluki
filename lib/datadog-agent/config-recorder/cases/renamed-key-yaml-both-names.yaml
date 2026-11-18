@@ -1,0 +1,17 @@
+# Sets metric_filterlist and metric_filterlist_match_prefix in datadog.yaml under both their
+# current names and their deprecated names (statsd_metric_blocklist*).
+# Shows that the deprecated name's value replaces the current name's within the file, that only
+# the current names stream, and that the deprecated names read as unknown keys.
+name: renamed-key-yaml-both-names
+group: behavior
+why: [yaml-deprecated-name-replaces-current, deprecated-name-not-streamed]
+yaml: |
+  metric_filterlist: [new.metric]
+  metric_filterlist_match_prefix: false
+  statsd_metric_blocklist: [old.metric]
+  statsd_metric_blocklist_match_prefix: true
+keys:
+  - {key: metric_filterlist, getters: [GetStringSlice, Get]}
+  - {key: metric_filterlist_match_prefix, getters: [GetBool, Get]}
+  - {key: statsd_metric_blocklist, getters: [GetStringSlice, Get]}
+  - {key: statsd_metric_blocklist_match_prefix, getters: [GetBool, Get]}

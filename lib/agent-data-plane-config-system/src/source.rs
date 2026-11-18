@@ -82,9 +82,13 @@ impl SourceTree {
             StreamProvenance::Explicit => Provenance::Explicit,
             StreamProvenance::Default => Provenance::Default,
         };
+        self.insert(&setting.key, setting.value.clone(), provenance);
+    }
 
+    /// Sets the dotted `key` to `value` with `provenance`, replacing whatever this layer held for it.
+    pub(crate) fn insert(&mut self, key: &str, value: Value, provenance: Provenance) {
         let mut node = &mut self.root;
-        let mut segments = setting.key.split('.').peekable();
+        let mut segments = key.split('.').peekable();
         while let Some(segment) = segments.next() {
             // A leaf standing where a section is needed is replaced, so a later, more specific key
             // wins over an earlier, shallower one.
@@ -96,19 +100,47 @@ impl SourceTree {
             };
 
             if segments.peek().is_none() {
-                children.insert(
-                    segment.to_string(),
-                    Node::Leaf {
-                        value: setting.value.clone(),
-                        provenance,
-                    },
-                );
+                children.insert(segment.to_string(), Node::Leaf { value, provenance });
                 return;
             }
 
             node = children
                 .entry(segment.to_string())
                 .or_insert_with(|| Node::Section(BTreeMap::new()));
+        }
+    }
+
+    /// Removes the leaf at the dotted `key`, returning its value and provenance.
+    ///
+    /// Returns `None`, and changes nothing, when `key` is absent or names a section.
+    pub(crate) fn remove(&mut self, key: &str) -> Option<(Value, Provenance)> {
+        let (parents, last) = key
+            .rsplit_once('.')
+            .map_or((None, key), |(parents, last)| (Some(parents), last));
+        let mut node = &mut self.root;
+        for segment in parents.into_iter().flat_map(|parents| parents.split('.')) {
+            node = match node {
+                Node::Section(children) => children.get_mut(segment)?,
+                Node::Leaf { .. } => return None,
+            };
+        }
+        let Node::Section(children) = node else {
+            return None;
+        };
+        match children.remove(last)? {
+            Node::Leaf { value, provenance } => Some((value, provenance)),
+            section => {
+                children.insert(last.to_string(), section);
+                None
+            }
+        }
+    }
+
+    /// Returns the value of the leaf at the dotted `key`, if this layer has one.
+    pub(crate) fn value(&self, key: &str) -> Option<&Value> {
+        match self.root.get(key.split('.')) {
+            Some(Node::Leaf { value, .. }) => Some(value),
+            Some(Node::Section(_)) | None => None,
         }
     }
 
@@ -142,9 +174,11 @@ impl SourceTree {
     /// deserializing a model: they need every key present, including the ones no model describes.
     ///
     /// An object-valued leaf is descended into, so a key nested inside a value the models do not
-    /// describe is still reported under its full path. Every key that comes out of one leaf carries
-    /// that leaf's provenance, because one input supplied the whole value. A leaf holding an array or
-    /// a scalar is reported as it stands.
+    /// describe is still reported under its full path. A leaf that a model does describe, such as the
+    /// map `otlp_config.traces.span_name_remappings`, is also reported under its own key, so it can
+    /// still be looked up as the setting it is. Every key that comes out of one leaf carries that
+    /// leaf's provenance, because one input supplied the whole value. A leaf holding an array or a
+    /// scalar is reported as it stands.
     pub(crate) fn flattened_keys(&self) -> Vec<(String, &Value, Provenance)> {
         let mut keys = Vec::new();
         self.root.flatten(&mut String::new(), &mut keys);
@@ -255,7 +289,12 @@ impl Node {
                     prefix.truncate(prefix_len);
                 }
             }
-            Node::Leaf { value, provenance } => flatten_value(value, *provenance, prefix, keys),
+            Node::Leaf { value, provenance } => {
+                if value.as_object().is_some_and(|entries| !entries.is_empty()) && is_modeled_leaf(prefix) {
+                    keys.push((prefix.clone(), value, *provenance));
+                }
+                flatten_value(value, *provenance, prefix, keys);
+            }
         }
     }
 
@@ -293,6 +332,20 @@ fn flatten_value<'a>(
         flatten_value(entry, provenance, prefix, keys);
         prefix.truncate(prefix_len);
     }
+}
+
+/// Returns whether the dotted `key` is a leaf path of either source model: a setting a model describes,
+/// as opposed to a section or a key no model knows.
+fn is_modeled_leaf(key: &str) -> bool {
+    static LEAVES: OnceLock<HashSet<Vec<String>>> = OnceLock::new();
+    let leaves = LEAVES.get_or_init(|| {
+        let datadog = datadog_agent_config::datadog_leaf_paths()
+            .map(|path| path.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>());
+        let saluki = saluki_env_overlay::leaf_paths().map(|path| path.to_vec());
+        datadog.chain(saluki).collect()
+    });
+    let segments: Vec<String> = key.split('.').map(str::to_string).collect();
+    leaves.contains(&segments)
 }
 
 /// Every proper prefix of a modeled leaf path, across both source models.
@@ -404,6 +457,24 @@ mod tests {
 
         assert_eq!(tree.to_value(), json!({ "dd_url": "https://app.datadoghq.eu" }));
         assert_eq!(tree.provenance("dd_url"), Provenance::Explicit);
+    }
+
+    #[test]
+    fn remove_takes_a_leaf_but_not_a_section() {
+        let mut tree = agent_layer(&[
+            ("otlp_config.traces.enabled", json!(true), StreamProvenance::Explicit),
+            ("site", json!("datadoghq.eu"), StreamProvenance::Default),
+        ]);
+
+        assert_eq!(tree.remove("otlp_config.traces"), None);
+        assert_eq!(tree.value("otlp_config.traces.enabled"), Some(&json!(true)));
+        assert_eq!(
+            tree.remove("otlp_config.traces.enabled"),
+            Some((json!(true), Provenance::Explicit))
+        );
+        assert_eq!(tree.remove("site"), Some((json!("datadoghq.eu"), Provenance::Default)));
+        assert_eq!(tree.remove("site"), None);
+        assert_eq!(tree.value("site"), None);
     }
 
     // This is issue #1965: the Core Agent streams `dd_url` at its schema default even when the
@@ -558,6 +629,32 @@ mod tests {
             vec![
                 ("not_a_datadog_key.a".to_string(), &json!(1), Provenance::Explicit),
                 ("not_a_datadog_key.b.c".to_string(), &json!(2), Provenance::Explicit),
+            ]
+        );
+    }
+
+    #[test]
+    fn flattened_keys_report_a_modeled_map_setting_under_its_own_key() {
+        // A setting a model describes can hold a map. It stays reachable as the setting it is, and its
+        // entries are still reported, so a by-key consumer finds it whichever way it looks.
+        let remappings = json!({ "io.opentelemetry.javaagent.spring.client": "spring.client" });
+        let tree = SourceTree::all_explicit(json!({
+            "otlp_config": { "traces": { "span_name_remappings": remappings } }
+        }));
+
+        assert_eq!(
+            tree.flattened_keys(),
+            vec![
+                (
+                    "otlp_config.traces.span_name_remappings".to_string(),
+                    &remappings,
+                    Provenance::Explicit
+                ),
+                (
+                    "otlp_config.traces.span_name_remappings.io.opentelemetry.javaagent.spring.client".to_string(),
+                    &json!("spring.client"),
+                    Provenance::Explicit
+                ),
             ]
         );
     }

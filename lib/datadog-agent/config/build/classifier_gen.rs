@@ -23,13 +23,11 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         if !p.warn {
             continue;
         }
-        let alias_lit = alias_literal(&p.test_support.additional_yaml_paths);
         let pipeline_affinity = overlay_pipeline_affinity_expr(&p.pipelines);
         let default_expr = schema_default_expr(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
-        writeln!(out, "        aliases: {},", alias_lit).unwrap();
         writeln!(out, "        support_level: SupportLevel::Partial,").unwrap();
         writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
         writeln!(out, "        default: {},", default_expr).unwrap();
@@ -48,7 +46,6 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
-        writeln!(out, "        aliases: &[],").unwrap();
         writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
         writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
         writeln!(out, "        default: {},", default_expr).unwrap();
@@ -67,7 +64,6 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
-        writeln!(out, "        aliases: &[],").unwrap();
         writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
         writeln!(out, "        pipeline_affinity: PipelineAffinity::CrossCutting,").unwrap();
         writeln!(out, "        default: {},", default_expr).unwrap();
@@ -80,15 +76,6 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     if existing != out {
         std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
-    }
-}
-
-fn alias_literal(paths: &[String]) -> String {
-    if paths.is_empty() {
-        "&[]".to_string()
-    } else {
-        let items: Vec<String> = paths.iter().map(|p| format!("\"{}\"", p)).collect();
-        format!("&[{}]", items.join(", "))
     }
 }
 

@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    ``dogstatsd_socket`` now defaults to ``/var/run/datadog/dsd.socket`` on Linux and AIX, matching the
+    Datadog Agent. Previously, Agent Data Plane listened on no DogStatsD Unix domain socket unless one was
+    configured explicitly. Set ``dogstatsd_socket`` to an empty string to disable the listener.

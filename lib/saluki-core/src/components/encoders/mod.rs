@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use saluki_error::GenericError;
+use snafu::Snafu;
 
 use crate::{data_model::event::Event, topology::PayloadsDispatcher};
 
@@ -21,6 +22,37 @@ pub enum ProcessResult {
     ///
     /// The caller should flush the encoder and try again to process the event.
     FlushRequired(Event),
+}
+
+/// An error that interrupted flushing an incremental encoder.
+///
+/// A flush can dispatch several payloads before one of them fails, so the error reports how many events had already
+/// been dispatched, letting the caller account for them even though the flush failed.
+#[derive(Debug, Snafu)]
+#[snafu(display("Failed to flush encoder after dispatching {dispatched_events} events."))]
+pub struct FlushError {
+    dispatched_events: usize,
+    source: GenericError,
+}
+
+impl FlushError {
+    /// Creates a new `FlushError` for an error that occurred after `dispatched_events` events had been dispatched.
+    pub fn new(dispatched_events: usize, source: GenericError) -> Self {
+        Self {
+            dispatched_events,
+            source,
+        }
+    }
+
+    /// Returns the number of events that were dispatched before the error occurred.
+    pub fn dispatched_events(&self) -> usize {
+        self.dispatched_events
+    }
+
+    /// Consumes the error, returning the underlying error.
+    pub fn into_source(self) -> GenericError {
+        self.source
+    }
 }
 
 /// An encoder.
@@ -72,8 +104,13 @@ pub trait IncrementalEncoder {
 
     /// Flush the encoder, finalizing all current payloads and sending them to the dispatcher.
     ///
+    /// Returns the number of events contained in the payloads that were dispatched. An encoder can discard events it
+    /// has accepted but can't send, such as when a payload exceeds its size limit and can't be split, and those aren't
+    /// included in the count.
+    ///
     /// # Errors
     ///
-    /// If the encoder can't flush the payloads, an error is returned.
-    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError>;
+    /// If the encoder can't dispatch a payload, an error is returned. It reports the number of events that were
+    /// dispatched earlier in the same flush, so they can still be accounted for.
+    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, FlushError>;
 }

@@ -14,29 +14,16 @@
 # - none:    ADP does not support this key
 # - unknown: ADP's compatibility with this key has not yet been determined
 #
-# Rust code and Markdown documentation are generated from the contents of this file. Your edits here
-# have consequences downstream as follows (see the generator code to be certain):
+# Code generation includes full and partial keys in the typed configuration model.
+# The runtime classifier includes partial keys with warn: true, all none keys, and unknown keys
+# with severity. Unknown keys with severity affect all pipelines; full and excluded keys have no entry.
 #
-# support: full              -> runtime classifier: Full; docs: "Transparent Settings" table
-#
-# support: partial           -> runtime classifier: Partial; docs: "Behavioral Differences"
-#                               table; multi-line documentation renders as a detail block
-#                               below the table
-#
-# support: none + planned    -> runtime classifier: Incompatible(severity); docs: "Being
-#                               Worked On" table; issue required
-#
-# support: none + !planned   -> runtime classifier: Incompatible(severity); docs: "Not
-#                               Planned" table; single-line documentation fills the "Reason"
-#                               column; multi-line renders as a detail block below the table
-#
-# support: unknown + severity -> runtime classifier: Incompatible(severity, cross_cutting);
-#                                docs: "Compatibility Unknown" table
-#
-# support: unknown (no sev)  -> no classifier entry (docs-only); "Compatibility Unknown"
-#                               table
-#
-# excluded                   -> no classifier entry; no docs table entry
+# Documentation groups keys by support:
+# - full: "Fully Supported Settings"
+# - partial: "Behavioral Differences"
+# - none: "Being Worked On" if planned, otherwise "Not Planned"
+# - unknown: "Compatibility Unknown"
+# Excluded keys have no documentation entry.
 #
 # Validation rules are somewhat complex. For complete rules, see the code in `config-overlay-model`,
 # but here are some of the basics:
@@ -49,21 +36,11 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   agent_ipc.grpc_max_message_size:
     support: full
     pipelines: [cross_cutting]
     description: "Max inbound gRPC message size for IPC client"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "4194304"
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   aggregator_buffer_size:
     support: none
@@ -149,11 +126,6 @@ inventory:
       and the aggregate transform performs its final flush when its input stream ends. Whether open
       aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
     issue: "#1681"
-    test_support:
-      used_by: [get_typed]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   aggregator_use_tags_store:
     support: none
@@ -181,69 +153,75 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Relax backend tag validation via HTTP header"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_ALLOW_ARBITRARY_TAGS]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   api_key:
     support: full
     pipelines: [cross_cutting]
     description: "API key for endpoint auth"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   apm_config.analyzed_rate_by_service:
     support: full
     pipelines: [traces]
     description: "Legacy per-service event extraction rates"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.analyzed_spans:
     support: full
     pipelines: [traces]
     description: "Per service|operation APM event extraction rates"
-    test_support:
-      used_by: [NO_SMOKE]
+
+  apm_config.apm_dd_url:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2419"
+    pipelines: [traces]
+    description: "APM intake URL override"
+    documentation: "ADP sends trace and stats payloads to the endpoints derived from `dd_url` or `site` and ignores this override."
+
+  apm_config.apm_non_local_traffic:
+    support: full
+    pipelines: [traces]
+    description: "Accept non-local traffic on the APM receiver"
 
   apm_config.compute_stats_by_span_kind:
     support: full
     pipelines: [traces]
     description: "Compute APM stats per span kind"
-    test_support:
-      used_by: [NO_SMOKE]
+
+  apm_config.connection_limit:
+    support: partial
+    pipelines: [traces]
+    description: "APM receiver connection limit"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. ADP doesn't limit the relay's own connections: the trace-agent behind the
+      relay applies the limit to the connections it receives from ADP. As in the trace-agent,
+      `/info` reports `0` unless the key is set.
 
   apm_config.enable_rare_sampler:
     support: full
     pipelines: [traces]
     description: "Enable the APM rare-span sampler"
-    test_support:
-      used_by: [NO_SMOKE]
+
+  apm_config.env:
+    support: full
+    pipelines: [traces]
+    description: "Trace environment"
 
   apm_config.error_tracking_standalone.enabled:
     support: full
     pipelines: [traces]
     description: "Enable Error Tracking standalone"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.errors_per_second:
     support: full
     pipelines: [traces]
     description: "APM error-span sampling rate (per sec)"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.extra_sample_rate:
     support: full
     pipelines: [traces]
     description: "Extra sample rate multiplier"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.features:
     support: partial
@@ -252,382 +230,381 @@ inventory:
     documentation: |-
       The core Agent uses `apm_config.features` to toggle beta APM behaviors.
 
-      ADP recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
-      probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
-      128-bit ID, aligning its keep decisions with samplers that decide on 128-bit IDs. Every
-      other value is ignored, without a warning: the flag inventory is not stable across agent
-      versions, so unrecognized entries are inert rather than errors. Operators running multiple
-      probabilistic samplers in one ingestion path should enable the flag consistently on every
-      sampler that supports it.
-    test_support:
-      used_by: [NO_SMOKE]
+      ADP recognizes these values:
+
+      - `probabilistic_sampler_full_trace_id` switches the probabilistic sampler from hashing the
+        low 64 bits of the trace ID to hashing the full 128-bit ID, aligning its keep decisions with
+        samplers that decide on 128-bit IDs. Operators running multiple probabilistic samplers in
+        one ingestion path should enable the flag consistently on every sampler that supports it.
+      - `disable_operation_and_resource_name_logic_v2` derives OTLP operation and resource names
+        with the Agent's V1 logic.
+      - `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
+        does.
+      - `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
+
+      Every other value is ignored, without a warning: the flag inventory is not stable across agent
+      versions, so unrecognized entries are inert rather than errors.
+
+  apm_config.filter_tags.reject:
+    support: partial
+    pipelines: [traces]
+    description: "Tags that drop a trace"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP.
+
+  apm_config.filter_tags.require:
+    support: partial
+    pipelines: [traces]
+    description: "Tags a trace must have to be kept"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP.
+
+  apm_config.filter_tags_regex.reject:
+    support: partial
+    pipelines: [traces]
+    description: "Tag patterns that drop a trace"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
+
+  apm_config.filter_tags_regex.require:
+    support: partial
+    pipelines: [traces]
+    description: "Tag patterns a trace must match to be kept"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
+
+  apm_config.ignore_resources:
+    support: partial
+    pipelines: [traces]
+    description: "Resource patterns whose traces are dropped"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
 
   apm_config.max_catalog_entries:
     support: full
     pipelines: [traces]
     description: "Priority sampler service-signature catalog cap"
-    test_support:
-      used_by: [NO_SMOKE]
+
+  apm_config.max_cpu_percent:
+    support: partial
+    pipelines: [traces]
+    description: "trace-agent CPU target, in percent"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. ADP doesn't rate limit the relay on its own CPU usage. As in the
+      trace-agent, the limit defaults to `0` in a container when the key is unset.
 
   apm_config.max_events_per_second:
     support: full
     pipelines: [traces]
     description: "Upper bound on sampled APM events per second"
-    test_support:
-      used_by: [NO_SMOKE]
+
+  apm_config.max_memory:
+    support: partial
+    pipelines: [traces]
+    description: "trace-agent memory target, in bytes"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. ADP doesn't rate limit the relay on its own memory usage. As in the
+      trace-agent, the limit defaults to `0` in a container when the key is unset.
+
+  apm_config.max_payload_size:
+    support: partial
+    pipelines: [traces]
+    description: "Maximum trace payload size, in bytes"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The trace-agent behind the relay enforces the limit on the requests ADP
+      forwards to it; ADP doesn't enforce it on the requests it handles itself.
 
   apm_config.max_traces_per_second:
     support: full
     pipelines: [traces]
     description: "Deprecated alias for target_traces_per_second"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.obfuscation.credit_cards.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.credit_cards.keep_values:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.keep_values"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.credit_cards.luhn:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.luhn"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.keep_values:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.keep_values"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.obfuscate_sql_values:
     support: full
     pipelines: [traces]
     description: "Obfuscate SQL values in ES queries"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.http.remove_paths_with_digits:
     support: full
     pipelines: [traces]
     description: "Strip numeric segments from HTTP paths"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.http.remove_query_string:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.http.remove_query_string"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.memcached.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.memcached.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.memcached.keep_command:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.memcached.keep_command"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.keep_values:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.keep_values"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.obfuscate_sql_values:
     support: full
     pipelines: [traces]
     description: "Obfuscate SQL values in MongoDB queries"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.keep_values:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.keep_values"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.obfuscate_sql_values:
     support: full
     pipelines: [traces]
     description: "Obfuscate SQL values in OpenSearch queries"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.redis.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.redis.remove_all_args:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.remove_all_args"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.remove_stack_traces:
+    support: full
+    pipelines: [traces]
+    description: "Replace stack trace tags with ?"
+
+  apm_config.obfuscation.sql_exec_plan.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Obfuscate SQL execution plans"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The trace-agent behind the relay applies it to traces received through the
+      relay; ADP doesn't apply it to the traces it receives over OTLP.
+
+  apm_config.obfuscation.sql_exec_plan_normalize.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Normalize SQL execution plans"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The trace-agent behind the relay applies it to traces received through the
+      relay; ADP doesn't apply it to the traces it receives over OTLP.
 
   apm_config.obfuscation.valkey.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.valkey.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.valkey.remove_all_args:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.valkey.remove_all_args"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.peer_tags:
     support: full
     pipelines: [traces]
     description: "Extra peer tags for stats aggregation"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.peer_tags_aggregation:
     support: full
     pipelines: [traces]
     description: "Aggregate APM stats by peer tags"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.probabilistic_sampler.enabled:
     support: full
     pipelines: [traces]
     description: "Enable APM probabilistic sampler"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.probabilistic_sampler.hash_seed:
     support: full
     pipelines: [traces]
     description: "Probabilistic sampler hash seed"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.probabilistic_sampler.sampling_percentage:
     support: full
     pipelines: [traces]
     description: "Probabilistic sampler percentage"
-    test_support:
-      used_by: [NO_SMOKE]
+
+  apm_config.receiver_port:
+    support: full
+    pipelines: [traces]
+    description: "APM receiver TCP port"
+    documentation: |-
+      With `data_plane.experimental.apm.enabled` set, ADP binds the trace receiver's TCP port (and
+      `apm_config.receiver_socket`) in front of the trace-agent, which moves to
+      `data_plane.experimental.apm.proxy_destination`. `0` disables the TCP listener, as it does for
+      the trace-agent.
+
+  apm_config.receiver_socket:
+    support: full
+    pipelines: [traces]
+    description: "APM receiver Unix domain socket path"
+
+  apm_config.receiver_timeout:
+    support: partial
+    pipelines: [traces]
+    description: "APM receiver request timeout, in seconds"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. ADP doesn't apply the timeout to the relay's listeners: the trace-agent
+      behind the relay applies it to the requests ADP forwards to it.
 
   apm_config.replace_tags:
     support: full
     pipelines: [traces]
     description: "Regex-based trace tag replacement rules"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '[{"name": "*", "pattern": "token=[A-Za-z0-9]+", "repl": "token=?"}]'
-      additional_attributes:
-        config_registry_filename: trace_tag_replacer.rs
+
+  apm_config.sql_obfuscation_mode:
+    support: partial
+    pipelines: [traces]
+    description: "SQL obfuscator mode"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The trace-agent behind the relay applies it to traces received through the
+      relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
+      invalid value logs a warning and falls back to the default obfuscator.
 
   apm_config.target_traces_per_second:
     support: full
     pipelines: [traces]
     description: "Target sampled traces per second"
-    test_support:
-      used_by: [NO_SMOKE]
+
+  apm_config.telemetry.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Enable the tracer telemetry proxy"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The relay forwards `/telemetry/proxy/` to the trace-agent behind it, which
+      proxies tracer telemetry when this key is enabled.
+
+  apm_config.traces_send_to_main_endpoint:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2419"
+    pipelines: [traces]
+    description: "Send traces and stats to the main endpoint"
+    documentation: |-
+      When `false`, the trace-agent sends traces and APM stats only to `apm_config.additional_endpoints`. ADP
+      sends the trace and stats payloads from its OTLP traces pipeline to the endpoints derived from `dd_url`
+      or `site` and `additional_endpoints`, whatever this key's value. Traces that ADP relays to the
+      trace-agent follow this key.
 
   auth_token_file_path:
     support: full
     pipelines: [cross_cutting]
     description: "Agent authentication token file path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   autoscaling.failover.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Enable autoscaling failover metric routing"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   autoscaling.failover.metrics:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Metric names forwarded to DCA for failover"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '["container.memory.usage"]'
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   basic_telemetry_add_container_tags:
     support: full
     pipelines: [cross_cutting]
     description: "Add container tags to basic telemetry signals"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   bind_host:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [dogstatsd, traces]
     description: "Global listen host fallback"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   cluster_agent.auth_token:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Bearer token for Cluster Agent requests"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"cluster-agent-token"'
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_agent.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Enable Cluster Agent communication"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_agent.kubernetes_service_name:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Cluster Agent Kubernetes service name"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"datadog-cluster-agent"'
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_agent.url:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Cluster Agent HTTPS endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"https://cluster-agent.example.com"'
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_name:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "EKS Fargate cluster name static tag"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
+
+  cmd_host:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Core Agent CMD API host for ADP gRPC IPC"
 
   cmd_port:
     support: full
     pipelines: [cross_cutting]
     description: "Core Agent CMD API port for ADP gRPC IPC"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "5101"
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   config_id:
     support: none
@@ -650,10 +627,6 @@ inventory:
       independent of the procfs mount. The core Agent reports its own detected root as a default
       value, which ADP can't tell apart from a schema default, so ADP repeats the detection instead
       of consuming it.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   container_proc_root:
     support: full
@@ -663,28 +636,16 @@ inventory:
       ADP inspects container processes under this root. When the key is not set explicitly, ADP
       selects the root from detected features: the host-mapped `/host/proc` when a host-mapped
       procfs is detected, and `/proc` otherwise.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   cri_connection_timeout:
     support: full
     pipelines: [cross_cutting]
     description: "CRI container runtime connection timeout (s)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   cri_query_timeout:
     support: full
     pipelines: [cross_cutting]
     description: "CRI container runtime query timeout (s)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   cri_socket_path:
     support: partial
@@ -704,10 +665,6 @@ inventory:
       undetected.
 
       Container ID resolution through cgroups is independent of this key and is unaffected.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   data_plane.api_listen_address:
     support: full
@@ -717,34 +674,75 @@ inventory:
       This is the unprivileged (internal) API endpoint. Addresses must include a URL scheme
       (for example, `tcp://`). See `data_plane.secure_api_listen_address` for the privileged
       endpoint.
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.dogstatsd.aggregator_tag_filter_cache_capacity:
     support: full
     pipelines: [dogstatsd]
     description: "Tag-filter deduplication cache size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: tag_filterlist.rs
 
   data_plane.dogstatsd.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Enable the DogStatsD pipeline"
-    test_support:
-      used_by: [NO_SMOKE]
 
   data_plane.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Enable the data plane"
-    test_support:
-      used_by: [NO_SMOKE]
+
+  data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint:
+    support: full
+    pipelines: [otlp]
+    description: "Agent OTLP/gRPC listener that ADP proxies to"
+
+  data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Relocated Agent OTLP/HTTP listener"
+    documentation: |-
+      ADP proxies every signal to the Agent over gRPC, at
+      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, including signals it receives
+      over HTTP. It never sends to this endpoint. The Agent relocates only the receiver protocols
+      configured under `otlp_config.receiver.protocols`, so without a gRPC receiver, proxied signals
+      have no destination.
+
+  data_plane.experimental.otlp.proxy.logs:
+    support: partial
+    pipelines: [otlp]
+    description: "Proxy OTLP logs to the Agent"
+    documentation: |-
+      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+      exactly.
+
+  data_plane.experimental.otlp.proxy.metrics:
+    support: partial
+    pipelines: [otlp]
+    description: "Proxy OTLP metrics to the Agent"
+    documentation: |-
+      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+      exactly.
+
+  data_plane.experimental.otlp.proxy.traces:
+    support: partial
+    pipelines: [otlp]
+    description: "Proxy OTLP traces to the Agent"
+    documentation: |-
+      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+      exactly.
 
   data_plane.log_file:
     support: full
@@ -754,58 +752,11 @@ inventory:
       ADP writes to its own log file, separate from the Core Agent. The Core Agent's `log_file`
       key is deliberately not consulted. Set `disable_file_logging: true` to disable file logging
       entirely, which causes this key to have no effect.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.otlp.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Enable the OTLP pipeline"
-    test_support:
-      used_by: [NO_SMOKE]
-
-  data_plane.otlp.proxy.enabled:
-    support: full
-    pipelines: [otlp]
-    description: "Enable OTLP proxy to Core Agent"
-    test_support:
-      used_by: [NO_SMOKE]
-
-  data_plane.otlp.proxy.logs.enabled:
-    support: full
-    pipelines: [otlp]
-    description: "Proxy OTLP logs to Core Agent"
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
-
-  data_plane.otlp.proxy.metrics.enabled:
-    support: full
-    pipelines: [otlp]
-    description: "Proxy OTLP metrics to Core Agent"
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
-
-  data_plane.otlp.proxy.receiver.protocols.grpc.endpoint:
-    support: full
-    pipelines: [otlp]
-    description: "OTLP proxy gRPC receiver endpoint"
-    test_support:
-      used_by: [NO_SMOKE]
-
-  data_plane.otlp.proxy.traces.enabled:
-    support: full
-    pipelines: [otlp]
-    description: "Proxy OTLP traces to Core Agent"
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.remote_agent_enabled:
     support: full
@@ -817,10 +768,6 @@ inventory:
       These two keys are transitional flags being phased out. Both will be implied by
       `data_plane.standalone_mode=false` in a future release. Do not rely on them for
       new deployments.
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.secure_api_listen_address:
     support: full
@@ -849,10 +796,6 @@ inventory:
       provide an overlap window for old and new certificates. Coordinate replacement of
       `ipc_cert.pem` with restarts so ADP and every client use the same certificate throughout a
       rotation.
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.serializer_zstd_compressor_level:
     support: full
@@ -865,10 +808,6 @@ inventory:
       smaller payloads (65.3 MB versus 69.3 MB) without a net CPU increase, since ADP is more
       efficient than the Agent and can afford higher compression. Configure it under `data_plane`
       or with `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL`.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.stop_timeout:
     support: full
@@ -877,10 +816,6 @@ inventory:
     documentation: |-
       ADP uses an explicitly configured value as its topology-wide graceful shutdown timeout. When
       unset, it derives the timeout from `aggregator_stop_timeout + forwarder_stop_timeout`.
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.telemetry_enabled:
     support: none
@@ -907,97 +842,95 @@ inventory:
     pipelines: [cross_cutting]
     description: "Use new config stream endpoint"
     documentation: "See `data_plane.remote_agent_enabled` above."
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   dd_url:
     support: full
     pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   disable_file_logging:
     support: full
     pipelines: [cross_cutting]
     description: "Disable writing logs to a file"
-    test_support:
-      used_by: [NO_SMOKE]
 
   dogstatsd_buffer_size:
     support: full
     pipelines: [dogstatsd]
     description: "Receive buffer size (bytes)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_capture_depth:
     support: full
     pipelines: [dogstatsd]
     description: "Traffic capture channel depth"
     issue: "#1381"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_capture_path:
     support: full
     pipelines: [dogstatsd]
     description: "Traffic capture file location"
     issue: "#1381"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_client_drop_detection.dropped_ratio_threshold:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3088"
+    pipelines: [dogstatsd]
+    description: "Client drop ratio that marks a client unhealthy"
+    documentation: "ADP does not support DogStatsD client drop detection. See `dogstatsd_client_drop_detection.enabled`."
+
+  dogstatsd_client_drop_detection.enabled:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3088"
+    pipelines: [dogstatsd]
+    description: "DogStatsD client drop detection"
+    documentation: |-
+      The core Agent's aggregator reads the DogStatsD client telemetry series it flushes and raises an Agent
+      Health issue when a client's dropped ratio stays above
+      `dogstatsd_client_drop_detection.dropped_ratio_threshold`. When ADP handles DogStatsD, those series
+      never reach the core Agent's aggregator, and ADP has no Health Platform, so no drop-detection issue is
+      raised. ADP still forwards the client telemetry metrics.
+
+  dogstatsd_client_drop_detection.recovery_confirmation_window:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3088"
+    pipelines: [dogstatsd]
+    description: "Time below threshold before a client recovers"
+    documentation: "ADP does not support DogStatsD client drop detection. See `dogstatsd_client_drop_detection.enabled`."
+
+  dogstatsd_client_drop_detection.unhealthy_confirmation_window:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3088"
+    pipelines: [dogstatsd]
+    description: "Time above threshold before a client is unhealthy"
+    documentation: "ADP does not support DogStatsD client drop detection. See `dogstatsd_client_drop_detection.enabled`."
 
   dogstatsd_context_expiry_seconds:
     support: full
     pipelines: [dogstatsd]
     description: "Context cache TTL (seconds)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_disable_verbose_logs:
     support: full
     pipelines: [dogstatsd]
     description: "Suppress noisy parse error logs"
     issue: "#1350"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_entity_id_precedence:
     support: full
     pipelines: [dogstatsd]
     description: "Entity ID over auto-detection"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_ENTITY_ID_PRECEDENCE]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_eol_required:
     support: full
     pipelines: [dogstatsd]
     description: "Require newline-terminated messages"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '["udp"]'
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_experimental_http.max_concurrent_requests:
     support: none
@@ -1030,19 +963,11 @@ inventory:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Counter value expiry (seconds)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   dogstatsd_flush_incomplete_buckets:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Flush open buckets on shutdown"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   dogstatsd_host_socket_path:
     support: none
@@ -1056,30 +981,16 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "DSD dedicated log file path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_log_file_max_rolls:
     support: full
     pipelines: [dogstatsd]
     description: "DSD log file max roll count"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_log_file_max_size:
     support: full
     pipelines: [dogstatsd]
     description: "DSD log file max size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"42MB"'
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_logging_enabled:
     support: full
@@ -1118,10 +1029,6 @@ inventory:
       This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded
       metric summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic
       for packet-level investigation, and they remain tracked separately under [#1381].
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_mapper_cache_size:
     support: partial
@@ -1142,21 +1049,11 @@ inventory:
       If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the
       mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
     issue: "#1687"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd_mapper.rs
 
   dogstatsd_mapper_profiles:
     support: full
     pipelines: [dogstatsd]
     description: "Metric mapping profile definitions"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
-      additional_attributes:
-        config_registry_filename: dogstatsd_mapper.rs
 
   dogstatsd_mem_based_rate_limiter.enabled:
     support: none
@@ -1262,19 +1159,11 @@ inventory:
     description: "Enable per-metric debug stats"
     documentation: "See `dogstatsd_stats_enable`"
     issue: "#1352"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_no_aggregation_pipeline:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Enable no-agg timestamped path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   dogstatsd_no_aggregation_pipeline_batch_size:
     support: none
@@ -1301,10 +1190,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Accept non-localhost UDP/TCP"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_origin_detection:
     support: full
@@ -1327,31 +1212,16 @@ inventory:
       metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which
       covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
       cannot obtain that PID from the socket.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_origin_detection_client:
     support: full
     pipelines: [dogstatsd]
     description: "Honor client origin proto fields"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_origin_optout_enabled:
     support: full
     pipelines: [dogstatsd]
     description: "Allow clients to opt out origin"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_packet_buffer_flush_timeout:
     support: none
@@ -1373,10 +1243,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Windows named pipe path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_pipeline_autoadjust:
     support: none
@@ -1398,47 +1264,35 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "UDP listen port"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_queue_size:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [dogstatsd]
     description: "Packet channel buffer size"
-    documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
+    documentation: |
+      ADP sizes the queue of packets waiting to be forwarded to `statsd_forward_host` from this setting: the queue
+      holds a quarter of `dogstatsd_queue_size` packets, and at least 64. ADP bounds its queues of received datagrams
+      with `dogstatsd_buffer_count_max` instead.
 
   dogstatsd_require_listener:
-    support: none
-    severity: medium
-    planned: true
-    issue: "#2556"
+    support: full
     pipelines: [dogstatsd]
     description: "Require an active DogStatsD listener"
-    documentation: "ADP does not honor this setting. DogStatsD startup fails if no listeners are configured or a configured listener cannot be created."
+
+  dogstatsd_set_timing_unit:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Attach the millisecond unit to timing metrics"
 
   dogstatsd_so_rcvbuf:
     support: full
     pipelines: [dogstatsd]
     description: "Socket receive buffer size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_socket:
     support: full
     pipelines: [dogstatsd]
     description: "UDS datagram socket path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_stats_buffer:
     support: none
@@ -1468,7 +1322,7 @@ inventory:
 
       ADP does not mirror the packet-level statistics config path. Instead, ADP provides an on-demand
       metric-level view through a DogStatsD statistics destination that is always wired into the
-      topology, but only collects data during a time-bounded request. To collect statistics, run
+      topology, but only receives metrics during a time-bounded request. To collect statistics, run
       `agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
       `/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
       window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
@@ -1498,49 +1352,26 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Log oversized UDS stream frames"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_stream_socket:
     support: full
     pipelines: [dogstatsd]
     description: "UDS stream socket path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_string_interner_size:
     support: full
     pipelines: [dogstatsd]
     description: "String interner capacity"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_tag_cardinality:
     support: full
     pipelines: [dogstatsd]
     description: "Default tag cardinality level"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_TAG_CARDINALITY]
-      test_json: '"high"'
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_tags:
     support: full
     pipelines: [dogstatsd]
     description: "Extra tags added to all DSD data"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_telemetry_enabled_listener_id:
     support: none
@@ -1554,10 +1385,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Windows named pipe ACL descriptor"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_workers_count:
     support: partial
@@ -1573,19 +1400,11 @@ inventory:
       pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
       workers. Connection-oriented listeners continue to use one decoder per connection.
     issue: "#2079"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   eks_fargate:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "Enable EKS Fargate static tags"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   enable_json_stream_shared_compressor_buffers:
     support: none
@@ -1600,37 +1419,21 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Allow sending event payloads"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   enable_payloads.series:
     support: full
     pipelines: [dogstatsd]
     description: "Allow sending series payloads"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   enable_payloads.service_checks:
     support: full
     pipelines: [dogstatsd]
     description: "Allow sending service check payloads"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   enable_payloads.sketches:
     support: full
     pipelines: [dogstatsd]
     description: "Allow sending sketch payloads"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   entity_id:
     support: none
@@ -1648,31 +1451,223 @@ inventory:
       The core Agent defaults `env` to an empty string and attaches the configured environment to
       every metric, event, log, trace, and service check it emits.
 
-      ADP uses `env` for traces and APM stats only, and substitutes `none` when the setting is empty.
-      It does not apply this setting directly to the DogStatsD metrics path.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
+      ADP uses `env` for traces and APM stats only. When `apm_config.env` is not set, a configured
+      `env` sets the trace environment. An empty `env` in the configuration file still takes
+      precedence over the `env:` global tags, and the trace environment becomes `none`. An empty
+      `DD_ENV` counts as unset. ADP does not apply this setting directly to the DogStatsD metrics
+      path.
 
   expected_tags_duration:
     support: full
     pipelines: [cross_cutting]
     description: "How long startup host tags are attached"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
+
+  experimental.metrics_endpoint_routing.metric_allowlist:
+    support: partial
+    issue: "#3092"
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Per-endpoint metric allow lists"
+    documentation: |-
+      ### `experimental.metrics_endpoint_routing.metric_allowlist`
+
+      ADP can route a selected subset of metrics to the primary intake or to specific additional endpoints.
+      This experimental routing is independent of Multi-Region Failover.
+
+      > [!WARNING]
+      > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on
+      > backward compatibility.
+
+      Key `experimental.metrics_endpoint_routing.metric_allowlist` by the exact configured endpoint string.
+      For the primary, use the effective endpoint configured through `dd_url` or derived from `site`.
+      Configure additional destinations and their API keys through `additional_endpoints`, and use those exact
+      map keys. The allowlist filters both series and sketches by metric name. A metric is forwarded if its
+      name matches this exact list or the endpoint's `metric_prefix_allowlist`. If both lists are empty, no
+      metrics are sent to that endpoint. Endpoints absent from both policy maps retain their ordinary
+      behavior.
+
+      ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in
+      `additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies
+      are read when the topology is built, so changing the map requires an ADP restart. An absent or empty
+      pair of policy maps leaves ordinary endpoint routing unchanged.
+
+      To filter the primary while leaving an additional endpoint on its ordinary full stream:
+
+      ```yaml
+      api_key: <primary-api-key>
+      dd_url: https://app.us5.datadoghq.com
+      additional_endpoints:
+        https://app.datadoghq.com:
+          - <secondary-api-key>
+      # Experimental keys may change, move, or be removed without backward compatibility.
+      experimental:
+        metrics_endpoint_routing:
+          metric_allowlist:
+            https://app.us5.datadoghq.com:
+              - allowed.metric
+      ```
+
+      To leave the primary on its ordinary full stream while filtering only additional endpoints, omit the
+      primary URL from the policy map:
+
+      ```yaml
+      api_key: <primary-api-key>
+      dd_url: https://app.us5.datadoghq.com
+      additional_endpoints:
+        https://app.datadoghq.com:
+          - <us1-api-key>
+        https://app.datadoghq.eu:
+          - <eu1-api-key>
+      experimental:
+        metrics_endpoint_routing:
+          metric_allowlist:
+            https://app.datadoghq.com:
+              - critical.slo
+            https://app.datadoghq.eu:
+              - billing.latency
+      ```
+
+      #### Differences from the core Agent
+
+      The core Agent also implements these settings, and fails to start when a policy names an unknown
+      endpoint. ADP differs in these cases:
+
+      - When the primary endpoint is derived from `site`, the core Agent keys it with a trailing dot, such as
+        `https://app.datadoghq.com.`, while `convert_dd_site_fqdn.enabled` is `true`, its default. ADP keys it
+        without the dot. Only one spelling passes each process's check, so set `dd_url` explicitly when a
+        policy filters the primary endpoint.
+      - The core Agent rejects a policy while `use_v2_api.series` is `false`. ADP accepts it and also filters
+        V1 series.
+      - The core Agent rejects a policy value that isn't a list of strings. ADP reads a scalar as a
+        one-element list and accepts a map written as a JSON string.
+
+  experimental.metrics_endpoint_routing.metric_prefix_allowlist:
+    support: partial
+    issue: "#3092"
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Per-endpoint metric-prefix allow lists"
+    documentation: |-
+      ### `experimental.metrics_endpoint_routing.metric_prefix_allowlist`
+
+      Allows metric-name families at selected primary or additional endpoints. Defaults to `{}`. Endpoint keys
+      follow the same rules as `metric_allowlist`; an unknown endpoint is rejected. These experimental
+      settings may change, move, or be removed without backward compatibility.
+
+      Prefixes are case-sensitive literal strings, using the same starts-with semantics as the DogStatsD
+      filterlist's prefix mode. There are no wildcards or regular expressions: `billing.` matches
+      `billing.latency` but not `billing_other`. A prefix without the dot, `billing`, matches both. An empty
+      string prefix matches every metric name; an empty list allows no names.
+
+      A metric matching either an exact name in `metric_allowlist` or a prefix in this map is forwarded. This
+      applies to both series and sketches. Endpoints present in either map are filtered; endpoints absent from
+      both keep ordinary delivery. If both lists for a selected endpoint are empty, all its metrics are
+      dropped. Prefixes also allow future names in the family, so choose them carefully to avoid forwarding
+      more traffic than intended.
+
+      To combine exact names and prefixes for one endpoint:
+
+      ```yaml
+      experimental:
+        metrics_endpoint_routing:
+          metric_allowlist:
+            https://primary.example.com:
+              - critical.slo
+          metric_prefix_allowlist:
+            https://primary.example.com:
+              - billing.
+      ```
+
+      The example endpoint must also be configured as the primary or an additional endpoint.
+
+      See `experimental.metrics_endpoint_routing.metric_allowlist` for the differences from the core Agent.
 
   extra_tags:
     support: full
-    pipelines: [otlp]
+    pipelines: [otlp, traces]
     description: "Additional EKS Fargate OTLP metric tags"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_EXTRA_TAGS]
-      additional_attributes:
-        config_registry_filename: otlp.rs
+    documentation: |-
+      When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+      `extra_tags`, supplies the trace environment.
+
+  forwarder.dynamic_concurrency.decrease_threshold:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency decrease threshold"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.eval_interval:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency evaluation interval"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.increase_cooldown:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency increase cooldown"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.increase_step:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency increase step"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.increase_threshold:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency increase threshold"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.initial_limit:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency initial limit"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.max_concurrent_requests:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency request ceiling"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.min_decrease_interval:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency minimum decrease interval"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.num_workers:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency worker count"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
 
   forwarder_apikey_validation_interval:
     support: partial
@@ -1691,57 +1686,44 @@ inventory:
       Runtime updates can rotate keys for those domains, but brand-new domains are not added or validated until
       restart.
     issue: "#1357"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_backoff_base:
     support: full
     pipelines: [cross_cutting]
     description: "Retry backoff base (secs)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_backoff_factor:
     support: full
     pipelines: [cross_cutting]
     description: "Retry backoff jitter factor"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_backoff_max:
     support: full
     pipelines: [cross_cutting]
     description: "Retry backoff ceiling (secs)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
+
+  forwarder_concurrency_policy:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Forwarder concurrency policy"
+    documentation: |-
+      ADP always uses static forwarder concurrency: each endpoint sends at most
+      `forwarder_max_concurrent_requests` requests per worker. This matches the Agent's default `static`
+      policy. ADP does not support the experimental `dynamic` policy or its `forwarder.dynamic_concurrency.*`
+      settings.
 
   forwarder_connection_reset_interval:
     support: full
     pipelines: [cross_cutting]
     description: "HTTP conn reset interval (secs)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_flush_to_disk_mem_ratio:
     support: full
     pipelines: [cross_cutting]
     description: "Mem-to-disk flush ratio"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_high_prio_buffer_size:
     support: partial
@@ -1751,34 +1733,18 @@ inventory:
       ADP implements `forwarder_high_prio_buffer_size` and matches the core agent's default of `100`. The
       value sizes ADP's per-endpoint high-priority pending queue.
     issue: "#1362"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_http_protocol:
     support: full
     pipelines: [cross_cutting]
     description: "HTTP version selection (auto/http1/http2)"
     issue: "#1361"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"http1"'
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
+  # ADP uses a byte-bounded retry queue for low-priority transactions, not a separate count-bounded channel.
+  # This key does not size that queue; use `forwarder_retry_queue_payloads_max_size` and disk persistence settings.
   forwarder_low_prio_buffer_size:
     support: unknown
-    pipelines: [cross_cutting]
     description: "Low-priority request queue size"
-    documentation: |
-      ADP does not implement `forwarder_low_prio_buffer_size`. The core agent uses it to size a separate count-bounded
-      low-priority worker channel; ADP routes low-priority pending transactions through the forwarder's retry queue
-      instead, which is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk
-      persistence settings rather than by a transaction count. ADP still preserves the same broad priority behavior: new
-      transactions are processed through the high-priority queue first, retries use the low-priority retry queue, and
-      high-priority overflow is moved to the low-priority retry queue.
     severity: medium
     issue: "#1362"
 
@@ -1787,11 +1753,6 @@ inventory:
     pipelines: [cross_cutting]
     description: "Max concurrent HTTP requests"
     issue: "#1363"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_num_workers:
     support: partial
@@ -1803,41 +1764,22 @@ inventory:
       longer controls the maximum number of concurrent requests per endpoint.
     warn: true
     issue: "#1363"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_outdated_file_in_days:
     support: full
     pipelines: [cross_cutting]
     description: "Days before retry files are deleted"
     issue: "#1360"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_recovery_interval:
     support: full
     pipelines: [cross_cutting]
     description: "Backoff recovery decrease factor"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_recovery_reset:
     support: full
     pipelines: [cross_cutting]
     description: "Reset errors on success"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_requeue_buffer_size:
     support: none
@@ -1859,31 +1801,16 @@ inventory:
     pipelines: [cross_cutting]
     description: "Retry queue time-based capacity"
     issue: "#1365"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_retry_queue_max_size:
     support: full
     pipelines: [cross_cutting]
     description: "Retry queue max size (deprecated)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_retry_queue_payloads_max_size:
     support: full
     pipelines: [cross_cutting]
     description: "Retry queue max size (bytes)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_stop_timeout:
     support: partial
@@ -1899,61 +1826,31 @@ inventory:
       Support is partial because ADP does not apply this timeout only to a forwarder component. It
       bounds graceful shutdown for the full Saluki topology.
     issue: "#1754"
-    test_support:
-      used_by: [get_typed]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   forwarder_stop_wait_for_inflight:
-    support: none
-    severity: low
-    planned: true
+    support: full
     pipelines: [cross_cutting]
     description: "Wait for in-flight forwarder requests"
-    documentation: |-
-      The core Agent cancels in-flight HTTP requests during shutdown when this setting is false and
-      waits for them when it is true. ADP always allows already-started requests to finish, bounded
-      by its topology-wide shutdown timeout. This setting has no effect in ADP.
-    issue: "#2560"
 
   forwarder_storage_max_disk_ratio:
     support: full
     pipelines: [cross_cutting]
     description: "Max disk usage ratio for retry"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_storage_max_size_in_bytes:
     support: full
     pipelines: [cross_cutting]
     description: "Max on-disk retry storage size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_storage_path:
     support: full
     pipelines: [cross_cutting]
     description: "On-disk retry storage directory"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_timeout:
     support: full
     pipelines: [cross_cutting]
     description: "Forwarder HTTP request timeout"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   heroku_dyno:
     support: none
@@ -1979,39 +1876,21 @@ inventory:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Histogram aggregate statistics"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '["count"]'
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   histogram_copy_to_distribution:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Copy histograms to distributions"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   histogram_copy_to_distribution_prefix:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Prefix for hist-to-dist copies"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   histogram_percentiles:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Histogram percentile aggregates"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '["0.95"]'
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   hostname:
     support: full
@@ -2020,58 +1899,85 @@ inventory:
     documentation: |-
       ADP uses this only in standalone mode, where the fixed host provider requires a configured
       hostname. In connected mode the hostname comes from the Datadog Agent.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
+
+  intake_routing.enabled:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3090"
+    pipelines: [otlp]
+    description: "Pre-intake endpoint routing"
+    documentation: |-
+      The Agent can ask the Datadog platform whether to send data to a different variant of an endpoint. Only
+      the core logs agent uses it. ADP does not query intake routing: its OTLP logs, and all its other
+      payloads, use the configured endpoints.
+
+  intake_routing.refresh_interval:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3090"
+    pipelines: [otlp]
+    description: "Intake routing refresh interval"
+    documentation: "ADP does not query intake routing. See `intake_routing.enabled`."
+
+  intake_routing.startup_grace_period:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3090"
+    pipelines: [otlp]
+    description: "Intake routing startup grace period"
+    documentation: "ADP does not query intake routing. See `intake_routing.enabled`."
+
+  ipc_address:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Deprecated `cmd_host`; takes precedence when set"
 
   ipc_cert_file_path:
     support: full
     pipelines: [cross_cutting]
     description: "Agent IPC certificate file path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   kubernetes_kubelet_nodename:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "Kubernetes node name for EKS Fargate static tags"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
+
+  log_enabled:
+    support: partial
+    pipelines: [otlp]
+    description: "Deprecated name for `logs_enabled`"
+    documentation: |-
+      The core Agent treats `log_enabled` as a deprecated spelling of `logs_enabled`: the logs agent
+      runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
+      `true`. ADP reads it the same way, but doesn't log the warning.
+
+      ADP doesn't yet act on the result. The core Agent refuses to start its OTLP receiver when
+      `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled. ADP doesn't apply this
+      check, and accepts OTLP logs whatever `logs_enabled` and `log_enabled` say.
+    issue: "#2969"
 
   log_file_max_rolls:
     support: full
     pipelines: [cross_cutting]
     description: "Max rolled log files to retain"
-    test_support:
-      used_by: [NO_SMOKE]
 
   log_file_max_size:
     support: full
     pipelines: [cross_cutting]
     description: "Max log file size before rolling"
-    test_support:
-      used_by: [NO_SMOKE]
 
   log_format_json:
     support: full
     pipelines: [cross_cutting]
     description: "Emit logs as JSON"
-    test_support:
-      used_by: [NO_SMOKE]
 
   log_format_rfc3339:
     support: full
     pipelines: [cross_cutting]
     description: "Use RFC 3339 timestamps in log output"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   log_level:
     support: partial
@@ -2098,10 +2004,6 @@ inventory:
       log_level: warn,agent_data_plane=debug,hyper=warn
       ```
 
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   log_payloads:
     support: full
@@ -2121,17 +2023,11 @@ inventory:
 
       ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log
       compressed wire payload bytes.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   log_to_console:
     support: full
     pipelines: [cross_cutting]
     description: "Write logs to the console"
-    test_support:
-      used_by: [NO_SMOKE]
 
   log_to_syslog:
     support: full
@@ -2145,8 +2041,6 @@ inventory:
       empty while syslog logging is enabled, ADP uses the platform default local syslog socket:
       `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set
       `syslog_rfc: true` when the receiving syslog daemon expects the Agent's RFC-style header.
-    test_support:
-      used_by: [NO_SMOKE]
 
   logging_frequency:
     support: none
@@ -2156,6 +2050,20 @@ inventory:
     description: "Transaction success log interval"
     documentation: "The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused."
 
+  logs_enabled:
+    support: partial
+    pipelines: [otlp]
+    description: "Enable the logs agent"
+    documentation: |-
+      The core Agent runs its logs agent when `logs_enabled` (or its deprecated spelling
+      `log_enabled`) is `true`. Its OTLP receiver needs the logs agent for OTLP logs: when
+      `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
+      and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
+
+      ADP reads `logs_enabled`, but doesn't yet apply this check, and accepts OTLP logs whatever
+      `logs_enabled` says.
+    issue: "#2969"
+
   metric_filterlist:
     support: full
     pipelines: [dogstatsd]
@@ -2163,13 +2071,9 @@ inventory:
     documentation: |-
       ### DogStatsD metric blocklists
 
-      A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`:
-      ADP uses `metric_filterlist_match_prefix` as the active match mode. Clearing
-      `metric_filterlist` restores `statsd_metric_blocklist` and
-      `statsd_metric_blocklist_match_prefix`.
-
-      Both lists default to empty, and both match-prefix settings default to `false`. Accepted
-      runtime changes to any of these settings update filtering.
+      The list defaults to empty, and the match-prefix setting defaults to `false`. Accepted runtime
+      changes to either setting update filtering. An entry ending in `*` is matched literally; use
+      `metric_filterlist_prefix` for per-entry prefixes.
 
       Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
       metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
@@ -2177,19 +2081,43 @@ inventory:
       matched as written, so an entry that is not itself a normalized name matches nothing. Metric
       names the intake rejects outright, meaning empty names, names longer than 350 bytes, and names
       containing no ASCII letter, never match.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
+
+      `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix` are deprecated names of
+      `metric_filterlist` and `metric_filterlist_match_prefix`, and ADP still reads them. Within one
+      file, a deprecated name wins over the current name, even when its list is empty. In the
+      environment, `DD_STATSD_METRIC_BLOCKLIST` and `DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX` win over
+      the current variables, but an empty variable counts as unset. Across the file and the
+      environment, the usual precedence applies, whichever name each one uses.
 
   metric_filterlist_match_prefix:
     support: full
     pipelines: [dogstatsd]
     description: "Blocklist uses prefix matching"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
+
+  metric_filterlist_prefix:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Per-entry metric prefix blocklist rules"
+    documentation: |-
+      ### DogStatsD metric prefix blocklist rules
+
+      `metric_filterlist_prefix` adds per-entry prefixes to the blocklist. Each entry has a
+      `prefix` and optional `except_exact` and `except_prefix` lists. Prefixes and prefix
+      exceptions are normalized as prefixes, preserving trailing boundaries such as `service_` so
+      they do not widen to `service`.
+
+      Each entry is an object, decoded as the Agent decodes it: a missing `prefix` is the empty
+      prefix, and unknown fields are ignored. When a field holds a value that cannot be converted,
+      such as a list where a string is expected, ADP logs a warning and applies no prefix rules.
+      ADP rejects a value that is not a list of objects; a null entry is an empty entry and matches
+      every metric, as in the Agent.
+
+      Exceptions apply across this whole key: a metric excepted by one rule is kept even when it
+      matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the
+      metric.
+
+      The empty `prefix` matches every stored metric name. The empty `except_prefix` keeps every
+      stored metric name, making the rule a no-op.
 
   metric_lookback.capacity:
     support: none
@@ -2294,10 +2222,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Per-metric tag allow/deny filter list"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: tag_filterlist.rs
 
   min_tls_version:
     support: partial
@@ -2315,33 +2239,16 @@ inventory:
 
       This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
       OTLP proxying to the core agent, or unrelated HTTP clients.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MIN_TLS_VERSION]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   multi_region_failover.api_key:
     support: full
     pipelines: [cross_cutting]
     description: "API key for the failover-region endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_API_KEY]
-      value_type_override: string
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.dd_url:
     support: full
     pipelines: [cross_cutting]
     description: "Failover intake URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_DD_URL]
-      value_type_override: string
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.enabled:
     support: partial
@@ -2352,10 +2259,12 @@ inventory:
       `multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the
       primary Datadog endpoint and to a second MRF endpoint.
 
-      To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key`
-      and one of `multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF
-      endpoint configuration is incomplete, ADP skips the MRF branch and continues forwarding
-      to the primary endpoint.
+      To enable the MRF metrics branch at startup, set `multi_region_failover.enabled` to `true`, and
+      configure `multi_region_failover.api_key` and one of `multi_region_failover.site` or
+      `multi_region_failover.dd_url`. If MRF is disabled or the MRF endpoint configuration is
+      incomplete, ADP skips the MRF branch and continues forwarding to the primary endpoint. While
+      the MRF branch is enabled, ADP only sends metrics to it while
+      `multi_region_failover.failover_metrics` is `true`.
 
       ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
       `multi_region_failover.enabled` and endpoint selection are resolved at startup.
@@ -2371,103 +2280,51 @@ inventory:
       | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
       | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
       | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_ENABLED]
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.failover_metrics:
     support: full
     pipelines: [cross_cutting]
     description: "Enable metrics forwarding to failover region"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_FAILOVER_METRICS]
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.metric_allowlist:
     support: full
     pipelines: [cross_cutting]
     description: "Metric name allowlist for MRF forwarding"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_METRIC_ALLOWLIST]
-      value_type_override: string_list
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.site:
     support: full
     pipelines: [cross_cutting]
     description: "Datadog site for the failover region"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_SITE]
-      value_type_override: string
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   no_proxy_nonexact_match:
     support: full
     pipelines: [cross_cutting]
     description: "Domain/CIDR `no_proxy` matching"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_NO_PROXY_NONEXACT_MATCH]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   observability_pipelines_worker.metrics.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Route metrics to OPW instance"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   observability_pipelines_worker.metrics.url:
     support: full
     pipelines: [cross_cutting]
     description: "OPW metrics intake URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   observability_pipelines_worker.metrics.use_v3_api.series:
     support: full
     pipelines: [dogstatsd]
     description: "Use V3 series for OPW"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   origin_detection_unified:
     support: full
     pipelines: [dogstatsd]
     description: "Unified origin detection mode"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_ORIGIN_DETECTION_UNIFIED]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   otlp_config.logs.enabled:
     support: full
     pipelines: [otlp]
     description: "otlp_config.logs.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "false"
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.batch.flush_timeout:
     support: none
@@ -2510,39 +2367,21 @@ inventory:
       Raise this for high-cardinality or low-frequency series that report infrequently enough to
       trip spurious "initial value" resets; lower it to bound memory use when many short-lived
       series are seen.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
     description: "otlp_config.metrics.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.histograms.mode:
     support: full
     pipelines: [otlp]
     description: "OTLP histogram bucket reporting mode"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"counters"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.histograms.send_aggregation_metrics:
     support: full
     pipelines: [otlp]
     description: "Emit OTLP histogram aggregation metrics."
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.infra_attributes.as_tags:
     support: none
@@ -2559,19 +2398,11 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "Add instrumentation scope metadata as metric tags."
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.resource_attributes_as_tags:
     support: full
     pipelines: [otlp]
     description: "Add scalar resource attributes as raw tags."
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.summaries.mode:
     support: full
@@ -2580,11 +2411,6 @@ inventory:
     documentation: |-
       Controls how summary quantiles are reported. The default `gauges` emits one gauge metric per quantile. Set this
       to `noquantiles` to omit quantile metrics.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"noquantiles"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.sums.cumulative_monotonic_mode:
     support: full
@@ -2593,11 +2419,6 @@ inventory:
     documentation: |-
       Controls how cumulative monotonic sums are reported. The default `to_delta` converts cumulative values to
       deltas and reports them as counts. Set this to `raw_value` to report cumulative values as gauges.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"raw_value"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.sums.initial_cumulative_monotonic_value:
     support: full
@@ -2607,11 +2428,6 @@ inventory:
       Controls how the first cumulative monotonic sum value is reported. The default `auto` reports the value only
       when the series started after the Agent Data Plane process. Set this to `drop` to always discard the first value
       or `keep` to always report it.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"drop"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.tag_cardinality:
     support: full
@@ -2621,20 +2437,11 @@ inventory:
       Controls the cardinality of entity and global tags added to OTLP metrics. The default `low` adds
       low-cardinality workload tags. Set this to `orchestrator` or `high` only when the resulting additional metric
       series are acceptable. Set it to `none` to disable entity and global tag enrichment.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"high"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.tags:
     support: full
     pipelines: [otlp]
     description: "Comma-separated tags for all OTLP metrics."
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.dialer.timeout:
     support: unknown
@@ -2644,10 +2451,6 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.include_metadata:
     support: none
@@ -2718,19 +2521,11 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "gRPC keepalive: max connection age"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace:
     support: full
     pipelines: [otlp]
     description: "gRPC keepalive: max conn age grace"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle:
     support: none
@@ -2769,39 +2564,21 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "gRPC keepalive: ping time"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout:
     support: full
     pipelines: [otlp]
     description: "gRPC keepalive: ping timeout"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_concurrent_streams:
     support: full
     pipelines: [otlp]
     description: "HTTP/2 max concurrent streams (0 = unlimited)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib:
     support: full
     pipelines: [otlp]
     description: "Max OTLP inbound gRPC message size (MiB)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.read_buffer_size:
     support: none
@@ -2828,10 +2605,6 @@ inventory:
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
       When set, the server requests client certificates and verifies them if presented, but does not require them.
       Defaults to empty (no client certificate verification).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
     support: none
@@ -2849,10 +2622,6 @@ inventory:
     documentation: |-
       Path to the PEM-encoded certificate chain file for the OTLP gRPC receiver. When set together with
       `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
     support: none
@@ -2905,10 +2674,6 @@ inventory:
     documentation: |-
       Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
       certificate in `cert_file`. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
     support: none
@@ -2972,10 +2737,6 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.transport"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.write_buffer_size:
     support: none
@@ -3003,46 +2764,26 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "HTTP CORS allowed headers"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.allowed_origins:
     support: full
     pipelines: [otlp]
     description: "HTTP CORS allowed origins"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.exposed_headers:
     support: full
     pipelines: [otlp]
     description: "HTTP CORS exposed headers"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.max_age:
     support: full
     pipelines: [otlp]
     description: "HTTP CORS max age"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.endpoint:
     support: full
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.http.endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.idle_timeout:
     support: unknown
@@ -3075,11 +2816,6 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "HTTP max request body size in bytes (0 = 20 MiB)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.metrics_url_path:
     support: unknown
@@ -3105,10 +2841,6 @@ inventory:
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
       When set, the server requests client certificates and verifies them if presented, but does not require them.
       Defaults to empty (no client certificate verification).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
     support: none
@@ -3126,10 +2858,6 @@ inventory:
     documentation: |-
       Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When set together with
       `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
     support: none
@@ -3182,10 +2910,6 @@ inventory:
     documentation: |-
       Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
       certificate in `cert_file`. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.key_pem:
     support: none
@@ -3257,117 +2981,107 @@ inventory:
     support: full
     pipelines: [traces]
     description: "otlp_config.traces.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.traces.infra_attributes.container_tag_promotion:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2338"
+    support: full
     pipelines: [traces]
     description: "OTLP trace container-tag promotion"
     documentation: |-
-      ADP does not currently honor this setting. Native trace processing does not enrich resources with
-      tagger-derived attributes, while proxy mode forwards traces directly to the Trace Agent without the core Agent's
-      infrastructure-attributes processor.
+      Controls how custom infrastructure tags are promoted into container tags on OTLP traces. The default
+      `off` writes tags as-is, so only convention keys reach container tags. Set this to `duplicate` to also
+      carry custom tags into container tags under a `datadog.container.tag.` prefixed copy, or `rename` to
+      carry only the prefixed copy. Convention keys and already-prefixed keys are exempt in every mode.
+
+  otlp_config.traces.infra_attributes.enabled:
+    support: full
+    pipelines: [traces]
+    description: "OTLP trace infrastructure-attribute enrichment"
+    documentation: |-
+      Controls whether entity and global tags from the workload metadata store are enriched onto OTLP traces.
+      The default `true` attaches the tags the local metadata store holds for the resource's container. When
+      `false`, traces carry only the resource attributes the sender provided.
 
   otlp_config.traces.internal_port:
     support: full
     pipelines: [traces]
     description: "otlp_config.traces.internal_port"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.traces.probabilistic_sampler.sampling_percentage:
     support: full
     pipelines: [traces]
     description: "OTLP trace sampling percentage"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
+
+  otlp_config.traces.span_name_as_resource_name:
+    support: full
+    pipelines: [traces]
+    description: "Use the OTLP span name as the operation name"
+    documentation: |-
+      Setting `otlp_config.traces.span_name_as_resource_name` selects the Agent's V1 operation and
+      resource naming for OTLP spans. Despite its name, the key changes the operation name: a span
+      without an `operation.name` attribute takes its OTLP span name as the operation name, instead of
+      the instrumentation library name and span kind.
+
+  otlp_config.traces.span_name_remappings:
+    support: full
+    pipelines: [traces]
+    description: "Remap OTLP span names to preferred names"
+    documentation: |-
+      A non-empty `otlp_config.traces.span_name_remappings` selects the Agent's V1 operation and
+      resource naming for OTLP spans, and renames each operation name it lists.
 
   provider_kind:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "Provider kind static tag"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_PROVIDER_KIND]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   proxy.http:
     support: full
     pipelines: [cross_cutting]
     description: "HTTP proxy URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_PROXY_HTTP, HTTP_PROXY]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   proxy.https:
     support: full
     pipelines: [cross_cutting]
     description: "HTTPS proxy URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_PROXY_HTTPS, HTTPS_PROXY]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   proxy.no_proxy:
     support: full
     pipelines: [cross_cutting]
     description: "Hosts bypassing proxy"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_PROXY_NO_PROXY]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   remote_configuration.apm_sampling.enabled:
     support: full
     pipelines: [traces]
     description: "Apply APM_SAMPLING remote configurations"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: remote_config.rs
 
   remote_configuration.apm_semantics.enabled:
     support: full
     pipelines: [traces]
     description: "Apply APM_SEMANTIC_CORE_DD remote configurations"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: remote_config.rs
 
   remote_configuration.enabled:
     support: full
     pipelines: [traces]
     description: "Enable Remote Configuration"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: remote_config.rs
 
   run_path:
     support: full
     pipelines: [cross_cutting]
     description: "Runtime state directory"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
+
+  schema.enforce:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [cross_cutting]
+    description: "Revert settings that fail schema validation"
+    documentation: |-
+      With `schema.enforce: true`, the Core Agent reverts a setting from `datadog.yaml` or the
+      environment to its default when its value fails schema validation: a wrong type, or a value
+      outside its `minimum`, `maximum`, `pattern`, or `enum`. ADP doesn't validate settings against
+      the schema. Under the Core Agent's configuration stream, ADP receives the reverted values. In
+      standalone mode, ADP uses the configured value, and fails at startup on a value it can't
+      translate, such as a port above 65535.
 
   secret_backend_command:
     support: partial
@@ -3385,10 +3099,6 @@ inventory:
       ADP never executes the command and never inspects the path, so the settings that govern how the
       Agent runs it (`secret_backend_arguments`, `secret_backend_timeout`, `secret_backend_type`, and the
       rest of the `secret_*` family) have no effect in ADP.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   secret_refresh_on_api_key_failure_interval:
     support: partial
@@ -3407,114 +3117,82 @@ inventory:
       ADP does not observe the interval itself: it does not pace, delay, or count retries by it, and retry
       timing continues to come from the forwarder's own `forwarder_backoff_*` settings. A negative value is
       clamped to `0` with a warning, matching the Agent's own tolerance of the value.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   serializer_compressor_kind:
     support: full
     pipelines: [cross_cutting]
     description: "Payload compression algorithm"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.compression_level:
     support: full
     pipelines: [dogstatsd]
     description: "V3 API zstd compression level"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.sketches.beta_route:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2555"
-    pipelines: [dogstatsd]
+    support: full
+    pipelines: [checks, dogstatsd]
     description: "V3 sketches beta intake route"
-    documentation: "ADP does not implement V3 sketches shadowing."
+    documentation: "Defaults to `/api/intake/metrics/v3beta/sketches`. Overrides the route used for sampled sketch copies; the authoritative V2 route is unchanged."
 
   serializer_experimental_use_v3_api.sketches.endpoints:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [checks, dogstatsd]
     description: "Endpoints enabling v3 sketches API"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
+
+  serializer_experimental_use_v3_api.sketches.max_compressed_payload_size:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max compressed V3 sketch payload size"
+    documentation: "Defaults to `0`. Zero or negative values use `serializer_max_payload_size`."
+
+  serializer_experimental_use_v3_api.sketches.max_points_per_payload:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max data points per V3 sketch payload"
+    documentation: "Defaults to `0`. Zero or negative values disable the sketch point limit."
+
+  serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max uncompressed V3 sketch payload size"
+    documentation: "Defaults to `0`. Zero or negative values use `serializer_max_uncompressed_payload_size`."
 
   serializer_experimental_use_v3_api.sketches.shadow_sample_rate:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2555"
-    pipelines: [dogstatsd]
+    support: full
+    pipelines: [checks, dogstatsd]
     description: "V3 sketches shadow sample rate"
-    documentation: "ADP does not implement V3 sketches shadowing."
+    documentation: "Defaults to `0` (disabled). Samples eligible V2 sketch batches independently per destination. Zero or negative values disable shadowing; values at least `1` sample every batch. Authoritative V3 sketches are not shadowed."
 
   serializer_experimental_use_v3_api.sketches.shadow_sites:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2555"
-    pipelines: [dogstatsd]
+    support: full
+    pipelines: [checks, dogstatsd]
     description: "V3 sketches shadow sites"
-    documentation: "ADP does not implement V3 sketches shadowing."
+    documentation: "Defaults to `[\"datadoghq.com\"]`. Matches the resolved V2 destination site. An empty list disables sketch shadowing for all sites."
 
   serializer_max_payload_size:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max compressed payload size (generic)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_max_series_payload_size:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max compressed V2 series payload size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_max_series_points_per_payload:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max data points per series payload"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_max_series_uncompressed_payload_size:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed V2 series payload size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_max_uncompressed_payload_size:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed payload size (generic)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_zstd_compressor_level:
     support: partial
@@ -3524,20 +3202,11 @@ inventory:
       The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`;
       when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own
       default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   site:
     support: full
     pipelines: [cross_cutting]
     description: "Datadog site domain"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   skip_ssl_validation:
     support: partial
@@ -3551,11 +3220,6 @@ inventory:
 
       This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
       OTLP proxying to the core agent, or unrelated HTTP clients.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_SKIP_SSL_VALIDATION]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   sslkeylogfile:
     support: full
@@ -3566,12 +3230,6 @@ inventory:
       set `DD_SSLKEYLOGFILE`. The file is opened once per path with owner read/write permissions
       on Unix. If the file cannot be opened, ADP logs a single warning and continues without TLS
       key logging. Protect the generated file as sensitive data.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_SSLKEYLOGFILE]
-      test_json: '"/tmp/saluki-sslkeylogfile"'
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   statsd_forward_host:
     support: partial
@@ -3584,86 +3242,39 @@ inventory:
       does not preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may
       be split differently while carrying the same DogStatsD messages. ADP logs setup failures
       and tracks send failures through telemetry.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"127.0.0.1"'
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   statsd_forward_port:
     support: full
     pipelines: [dogstatsd]
     description: "UDP packet forwarding destination port"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      test_json: "9125"
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
-
-  statsd_metric_blocklist:
-    support: full
-    pipelines: [dogstatsd]
-    description: "List of metric names to block/drop"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
-
-  statsd_metric_blocklist_match_prefix:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Treat blocklist entries as prefixes"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   statsd_metric_namespace:
     support: full
     pipelines: [dogstatsd]
     description: "Prefix prepended to all metric names"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   statsd_metric_namespace_blacklist:
     support: full
     pipelines: [dogstatsd]
     description: "Prefixes exempt from namespace"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [statsd_metric_namespace_blocklist]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   syslog_rfc:
     support: full
     pipelines: [cross_cutting]
     description: "Use RFC-style syslog header"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   syslog_uri:
     support: full
     pipelines: [cross_cutting]
     description: "Syslog destination URI"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   tags:
     support: full
-    pipelines: [otlp]
+    pipelines: [otlp, traces]
     description: "Global tags for EKS Fargate OTLP metrics"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
+    documentation: |-
+      When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+      `extra_tags`, supplies the trace environment.
 
   telemetry.dogstatsd.aggregator_channel_latency_buckets:
     support: none
@@ -3693,13 +3304,26 @@ inventory:
     issue: "#1679"
 
   telemetry.dogstatsd_origin:
-    support: full
+    support: partial
     pipelines: [dogstatsd]
-    description: "Per-origin processed-metrics telemetry"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
+    description: "Per-origin processed metrics and context counts"
+    documentation: |-
+      The core Agent uses `telemetry.dogstatsd_origin`, together with `telemetry.enabled`, to break down its
+      DogStatsD telemetry by origin. This includes the `datadog.agent.aggregator.dogstatsd_contexts_by_origin`
+      series it sends to Datadog, which also counts contexts without an origin.
+
+      ADP breaks down its processed-metric telemetry and active aggregation contexts by origin whenever
+      `telemetry.dogstatsd_origin` is enabled, regardless of `telemetry.enabled`. The context counts appear as
+      `aggregator.dogstatsd_contexts_by_origin` only in the Agent's telemetry endpoint and flares, and aren't sent
+      to Datadog. Contexts without resolved origin tags aren't counted, so the breakdown is empty unless
+      `dogstatsd_origin_detection` is also enabled.
+
+      The context breakdown has at most 199 origin groups and one `origin_overflow:true` series. Groups exceeding
+      32 tags or 4096 bytes of encoded labels, and new groups when all slots are occupied, are counted in
+      overflow. Each context keeps its original assignment until expiry, so an origin's own series is too low
+      while any of its contexts are counted in overflow; the total across all series is exact. An emptied group
+      reports 0 briefly before its series is removed. This limit is separate from the DogStatsD source's
+      per-origin processed-counter limit.
 
   tls_handshake_timeout:
     support: full
@@ -3710,10 +3334,6 @@ inventory:
       independent of `forwarder_timeout`, which bounds the full request. ADP owns the TLS layer directly rather than
       delegating the handshake to an opaque connect-and-handshake future, so it can time out the handshake without
       also aborting an in-progress TCP connect.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
     issue: "#178"
 
   use_dogstatsd:
@@ -3728,81 +3348,64 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Proxy cloud metadata endpoints"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_USE_PROXY_FOR_CLOUD_METADATA]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   use_v2_api.series:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Send series via V2 protobuf endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
+
+  use_v3_api.distributions.enabled:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#3091"
+    pipelines: [dogstatsd]
+    description: "Send sketches using the V3 API"
+    documentation: |-
+      The Agent sends sketches to the V3 intake by default when the destination is a Datadog site
+      (`datadog_only`). ADP sends V3 sketches only to endpoints listed in
+      `serializer_experimental_use_v3_api.sketches.endpoints`, and V2 sketches everywhere else, whatever this
+      key's value.
+
+  use_v3_api.distributions.endpoints:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#3091"
+    pipelines: [dogstatsd]
+    description: "Per-endpoint V3 sketches mode"
+    documentation: |-
+      ADP ignores the per-endpoint V3 sketches modes. See `use_v3_api.distributions.enabled`.
 
   use_v3_api.series.enabled:
     support: full
     pipelines: [dogstatsd]
     description: "Global V3 series mode"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_USE_V3_API_SERIES_ENABLED]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   use_v3_api.series.endpoints:
     support: full
     pipelines: [dogstatsd]
     description: "Per-endpoint V3 series modes"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_USE_V3_API_SERIES_ENDPOINTS]
-      test_json: '"{\"http://datadog.example.com\":\"false\"}"'
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   vector.metrics.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Route metrics to OPW (legacy alias)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_VECTOR_METRICS_ENABLED]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   vector.metrics.url:
     support: full
     pipelines: [cross_cutting]
     description: "OPW metrics intake URL (legacy alias)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_VECTOR_METRICS_URL]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   vector.metrics.use_v3_api.series:
     support: full
     pipelines: [dogstatsd]
     description: "Use V3 series for Vector"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_VECTOR_METRICS_USE_V3_API_SERIES]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   vsock_addr:
     support: full
     pipelines: [cross_cutting]
     description: "vsock address for Agent IPC endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"host"'
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
 excluded:
   GUI_host: "ignored in initial audit 2026-04-23"
@@ -3912,6 +3515,7 @@ excluded:
   admission_controller.timeout_seconds: "ignored in initial audit 2026-04-23"
   admission_controller.validation.enabled: "ignored in initial audit 2026-04-23"
   admission_controller.webhook_name: "ignored in initial audit 2026-04-23"
+  agent_checks_metadata_message_truncation_enabled: "2026-11-05: ADP does not currently send inventory metadata payloads."
   agent_ipc.config_refresh_interval: "ignored in initial audit 2026-04-23"
   agent_ipc.grpc_warning_message_size: "2026-06-10 Server-side gRPC interceptor only; ADP is a gRPC client, not a server."
   agent_ipc.host: "ignored in initial audit 2026-04-23"
@@ -3979,7 +3583,7 @@ excluded:
   anomaly_detection.detectors.holt_residual.warmup_points: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.detectors.log_metrics_extractor.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.detectors.log_pattern_extractor.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
-  anomaly_detection.detectors.rrcf.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.log_pattern_extractor.max_patterns: "2026-11-05: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.detectors.scanmw.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.detectors.scanmw.max_points: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.detectors.scanmw.min_points: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
@@ -4012,10 +3616,14 @@ excluded:
   anomaly_detection.logs.time_buckets.enabled: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.logs.time_buckets.idle_ttl: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.logs.time_buckets.retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
+  anomaly_detection.metric_pipeline.anomaly_cutoff: "2026-11-13: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
+  anomaly_detection.metric_pipeline.enabled: "2026-11-13: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
+  anomaly_detection.metrics.allowed_types: "2026-11-05: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.metrics.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.metrics.processing_rules: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.recording.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.recording.flush_interval: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.recording.only: "2026-11-05: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.recording.output_dir: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.recording.retention: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.reporting.events.enabled: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
@@ -4028,11 +3636,8 @@ excluded:
   anomaly_detection.storage.point_retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
-  apm_config.apm_dd_url: "ignored in initial audit 2026-04-23"
-  apm_config.apm_non_local_traffic: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
-  apm_config.connection_limit: "ignored in initial audit 2026-04-23"
   apm_config.connection_reset_interval: "ignored in initial audit 2026-04-23"
   apm_config.dd_agent_bin: "ignored in initial audit 2026-04-23"
   apm_config.debug.port: "ignored in initial audit 2026-04-23"
@@ -4049,16 +3654,11 @@ excluded:
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
-  apm_config.env: "ignored in initial audit 2026-04-23"
-  apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
-  apm_config.filter_tags.require: "ignored in initial audit 2026-04-23"
-  apm_config.filter_tags_regex.reject: "ignored in initial audit 2026-04-23"
-  apm_config.filter_tags_regex.require: "ignored in initial audit 2026-04-23"
-  apm_config.ignore_resources: "ignored in initial audit 2026-04-23"
   apm_config.install_id: "ignored in initial audit 2026-04-23"
   apm_config.install_time: "ignored in initial audit 2026-04-23"
   apm_config.install_type: "ignored in initial audit 2026-04-23"
-  apm_config.instrumentation.csi_driver_detection_enabled: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
+  apm_config.instrumentation.apm_basic.enabled: "2026-11-05: ADP is not currently responsible for running the Kubernetes admission controller."
+  apm_config.instrumentation.apm_basic.tracer_versions: "2026-11-05: ADP is not currently responsible for running the Kubernetes admission controller."
   apm_config.instrumentation.disabled_namespaces: "ignored in initial audit 2026-04-23"
   apm_config.instrumentation.enabled: "ignored in initial audit 2026-04-23"
   apm_config.instrumentation.enabled_namespaces: "ignored in initial audit 2026-04-23"
@@ -4069,21 +3669,16 @@ excluded:
   apm_config.instrumentation.targets: "ignored in initial audit 2026-04-23"
   apm_config.internal_profiling.enabled: "ignored in initial audit 2026-04-23"
   apm_config.log_file: "ignored in initial audit 2026-04-23"
+  apm_config.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
   apm_config.max_connections: "ignored in initial audit 2026-04-23"
-  apm_config.max_cpu_percent: "ignored in initial audit 2026-04-23"
-  apm_config.max_memory: "ignored in initial audit 2026-04-23"
-  apm_config.max_payload_size: "ignored in initial audit 2026-04-23"
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
   apm_config.max_sender_retries: "ignored in initial audit 2026-04-23"
   apm_config.mode: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.remove_stack_traces: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.sql_exec_plan.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.sql_exec_plan_normalize.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan_normalize.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan_normalize.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
   apm_config.peer_service_aggregation: "ignored in initial audit 2026-04-23"
@@ -4093,14 +3688,10 @@ excluded:
   apm_config.profiling_receiver_timeout: "ignored in initial audit 2026-04-23"
   apm_config.profiling_send_to_main_endpoint: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
   apm_config.receiver_enabled: "ignored in initial audit 2026-04-23"
-  apm_config.receiver_port: "ignored in initial audit 2026-04-23"
-  apm_config.receiver_socket: "ignored in initial audit 2026-04-23"
-  apm_config.receiver_timeout: "ignored in initial audit 2026-04-23"
   apm_config.send_all_internal_stats: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.enabled: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.handle_tcp_probe: "ignored in initial audit 2026-04-23"
   apm_config.span_derived_primary_tags: "ignored in initial audit 2026-04-23"
-  apm_config.sql_obfuscation_mode: "ignored in initial audit 2026-04-23"
   apm_config.stats_writer.connection_limit: "ignored in initial audit 2026-04-23"
   apm_config.stats_writer.queue_size: "ignored in initial audit 2026-04-23"
   apm_config.symdb_additional_endpoints: "ignored in initial audit 2026-04-23"
@@ -4109,7 +3700,6 @@ excluded:
   apm_config.sync_flushing: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.dd_url: "ignored in initial audit 2026-04-23"
-  apm_config.telemetry.enabled: "ignored in initial audit 2026-04-23"
   apm_config.trace_buffer: "ignored in initial audit 2026-04-23"
   apm_config.trace_writer.connection_limit: "ignored in initial audit 2026-04-23"
   apm_config.trace_writer.queue_size: "ignored in initial audit 2026-04-23"
@@ -4130,6 +3720,7 @@ excluded:
   auto_exit.noprocess.excluded_processes: "ignored in initial audit 2026-04-23"
   auto_exit.validation_period: "ignored in initial audit 2026-04-23"
   auto_team_tag_collection: "ignored in initial audit 2026-04-23"
+  autoconf_config_files_num_workers: "2026-11-05: ADP does not currently support checks."
   autoconf_config_files_poll: "ignored in initial audit 2026-04-23"
   autoconf_config_files_poll_interval: "ignored in initial audit 2026-04-23"
   autoconf_template_dir: "ignored in initial audit 2026-04-23"
@@ -4143,6 +3734,12 @@ excluded:
   autoscaling.cluster.spot.fallback_duration: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
   autoscaling.cluster.spot.rebalance_stabilization_period: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
   autoscaling.cluster.spot.schedule_timeout: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
+  autoscaling.endpoint.api_key: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.config_root: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.director_root: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.key: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.site: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.url: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
   autoscaling.workload.enabled: "ignored in initial audit 2026-04-23"
   autoscaling.workload.external_recommender.enabled: "2026-09-08 ADP is not currently responsible for Kubernetes workload autoscaling."
   autoscaling.workload.external_recommender.tls.ca_file: "ignored in initial audit 2026-04-23"
@@ -4155,6 +3752,7 @@ excluded:
   azure_hostname_style: "ignored in initial audit 2026-04-23"
   azure_metadata_api_version: "ignored in initial audit 2026-04-23"
   azure_metadata_timeout: "ignored in initial audit 2026-04-23"
+  azure_use_dmi: "2026-11-05: ADP does not currently detect the hostname itself."
   bosh_id: "ignored in initial audit 2026-04-23"
   c_core_dump: "ignored in initial audit 2026-04-23"
   c_stacktrace_collection: "ignored in initial audit 2026-04-23"
@@ -4169,12 +3767,15 @@ excluded:
   check_sampler_bucket_commits_count_expiry: "ignored in initial audit 2026-04-23"
   check_sampler_context_metrics: "ignored in initial audit 2026-04-23"
   check_sampler_expire_metrics: "ignored in initial audit 2026-04-23"
+  check_sampler_periodic_flush_checks: "2026-11-13: ADP does not currently support the check sampler; the Core Agent aggregates check metrics before sending them to ADP."
+  check_sampler_sketches_at_commit: "2026-11-13: ADP does not currently support the check sampler; the Core Agent aggregates check metrics before sending them to ADP."
   check_sampler_stateful_metric_expiration_time: "ignored in initial audit 2026-04-23"
   check_system_probe_startup_time: "ignored in initial audit 2026-04-23"
   check_system_probe_timeout: "ignored in initial audit 2026-04-23"
   check_watchdog_warning_timeout: "ignored in initial audit 2026-04-23"
   checks_tag_cardinality: "ignored in initial audit 2026-04-23"
   clc_runner_enabled: "ignored in initial audit 2026-04-23"
+  clc_runner_group: "2026-11-05: ADP does not currently support checks."
   clc_runner_host: "ignored in initial audit 2026-04-23"
   clc_runner_id: "ignored in initial audit 2026-04-23"
   clc_runner_port: "ignored in initial audit 2026-04-23"
@@ -4214,17 +3815,20 @@ excluded:
   cluster_agent.appsec.injector.mode: "ignored in initial audit 2026-04-23"
   cluster_agent.appsec.injector.processor.service.name: "ignored in initial audit 2026-04-23"
   cluster_agent.appsec.injector.processor.service.namespace: "ignored in initial audit 2026-04-23"
+  cluster_agent.autoscaler_tags.enabled: "2026-11-05: ADP is not currently responsible for collecting Kubernetes autoscaler metadata."
   cluster_agent.client_reconnect_period_seconds: "ignored in initial audit 2026-04-23"
   cluster_agent.cluster_tagger.grpc_max_message_size: "ignored in initial audit 2026-04-23"
   cluster_agent.cmd_port: "ignored in initial audit 2026-04-23"
   cluster_agent.collect_kubernetes_tags: "ignored in initial audit 2026-04-23"
   cluster_agent.isolation_segments_tags: "ignored in initial audit 2026-04-23"
+  cluster_agent.kai_scheduler.enabled: "2026-11-05: ADP is not currently responsible for collecting KAI Scheduler metadata."
   cluster_agent.kube_metadata_collection.enabled: "ignored in initial audit 2026-04-23"
   cluster_agent.kube_metadata_collection.resource_annotations_exclude: "ignored in initial audit 2026-04-23"
   cluster_agent.kube_metadata_collection.resources: "ignored in initial audit 2026-04-23"
   cluster_agent.kubernetes_resources_collection.deployment_annotations_exclude: "ignored in initial audit 2026-04-23"
   cluster_agent.kubernetes_resources_collection.pod_annotations_exclude: "ignored in initial audit 2026-04-23"
   cluster_agent.kueue.enabled: "2026-09-08 ADP is not currently responsible for collecting Kubernetes Kueue metadata."
+  cluster_agent.kueue.pod_template_tags: "2026-11-05: ADP is not currently responsible for collecting Kubernetes Kueue metadata."
   cluster_agent.language_detection.cleanup.language_ttl: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.cleanup.period: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.patcher.base_backoff: "ignored in initial audit 2026-04-23"
@@ -4251,11 +3855,13 @@ excluded:
   cluster_checks.exclude_checks: "ignored in initial audit 2026-04-23"
   cluster_checks.exclude_checks_from_dispatching: "ignored in initial audit 2026-04-23"
   cluster_checks.extra_tags: "ignored in initial audit 2026-04-23"
+  cluster_checks.instance_sharding_enabled: "2026-11-05: ADP is not currently responsible for scheduling cluster checks."
+  cluster_checks.instance_sharding_exclude_checks: "2026-11-05: ADP is not currently responsible for scheduling cluster checks."
   cluster_checks.ksm_sharding_enabled: "ignored in initial audit 2026-04-23"
   cluster_checks.node_expiration_timeout: "ignored in initial audit 2026-04-23"
   cluster_checks.rebalance_min_percentage_improvement: "ignored in initial audit 2026-04-23"
   cluster_checks.rebalance_period: "ignored in initial audit 2026-04-23"
-  cluster_checks.rebalance_with_utilization: "ignored in initial audit 2026-04-23"
+  cluster_checks.runner_groups: "2026-11-05: ADP is not currently responsible for scheduling cluster checks."
   cluster_checks.stickiness_enabled: "2026-09-08 ADP is not currently responsible for scheduling cluster checks."
   cluster_checks.stickiness_factor: "2026-09-08 ADP is not currently responsible for scheduling cluster checks."
   cluster_checks.stickiness_lower_limit: "2026-09-08 ADP is not currently responsible for scheduling cluster checks."
@@ -4267,7 +3873,6 @@ excluded:
   cluster_trust_chain.ca_key_file_path: "ignored in initial audit 2026-04-23"
   cluster_trust_chain.enable_tls_verification: "ignored in initial audit 2026-04-23"
   cmd.check.fullsketches: "ignored in initial audit 2026-04-23"
-  cmd_host: "ignored in initial audit 2026-04-23"
   collect_ccrid: "ignored in initial audit 2026-04-23"
   collect_ec2_instance_info: "ignored in initial audit 2026-04-23"
   collect_ec2_tags: "ignored in initial audit 2026-04-23"
@@ -4365,6 +3970,7 @@ excluded:
   container_image.use_compression: "ignored in initial audit 2026-04-23"
   container_image.use_v2_api: "ignored in initial audit 2026-04-23"
   container_image.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  container_image_annotations_as_tags: "2026-11-05: ADP does not currently extract tags from container metadata."
   container_include: "ignored in initial audit 2026-04-23"
   container_include_logs: "ignored in initial audit 2026-04-23"
   container_include_metrics: "ignored in initial audit 2026-04-23"
@@ -4424,6 +4030,7 @@ excluded:
   data_plane.preflight_mode: "2026-09-08 The Core Agent controls whether it launches an isolated ADP preflight process."
   data_plane.preflight_mode_duration: "2026-09-08 The Core Agent controls how long the isolated ADP preflight process runs."
   data_security.enabled: "2026-09-08 ADP does not currently run Data Security scans or forward Sensitive Data Scanner results."
+  data_security.enforce_ssl: "2026-11-05: ADP does not currently run Data Security scans or forward Sensitive Data Scanner results."
   data_streams.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -4527,6 +4134,7 @@ excluded:
   delegated_auth.org_uuid: "ignored in initial audit 2026-04-23"
   delegated_auth.provider: "ignored in initial audit 2026-04-23"
   delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
+  delegated_auth.startup_timeout_secs: "2026-11-05: ADP does not currently support delegated authentication."
   disable_cluster_name_tag_key: "ignored in initial audit 2026-04-23"
   disable_py3_validation: "ignored in initial audit 2026-04-23"
   disable_unsafe_yaml: "ignored in initial audit 2026-04-23"
@@ -4644,6 +4252,7 @@ excluded:
   fleet_policies_dir: "ignored in initial audit 2026-04-23"
   gce_metadata_timeout: "ignored in initial audit 2026-04-23"
   gce_send_project_id_tag: "ignored in initial audit 2026-04-23"
+  gce_use_dmi: "2026-11-05: ADP does not currently detect the hostname itself."
   genresources.additional_endpoints: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   genresources.batch_max_concurrent_send: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   genresources.batch_max_content_size: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
@@ -4666,11 +4275,17 @@ excluded:
   genresources.use_v2_api: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   genresources.zstd_compression_level: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   go_core_dump: "ignored in initial audit 2026-04-23"
+  gpu.amd.enabled: "2026-11-05: ADP does not currently collect GPU telemetry."
   gpu.collection_interval_override: "2026-09-08 ADP does not currently collect GPU telemetry."
   gpu.disabled_collectors: "ignored in initial audit 2026-04-23"
   gpu.enabled: "ignored in initial audit 2026-04-23"
   gpu.excluded_devices: "2026-09-08 ADP does not currently collect GPU telemetry."
   gpu.integrate_with_workloadmeta_processes: "ignored in initial audit 2026-04-23"
+  gpu.jobs.group.key: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.jobs.group.type: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.jobs.run.key: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.jobs.run.type: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.kai_scheduler.enabled: "2026-11-05: ADP does not currently collect GPU telemetry."
   gpu.legacy_sm_active: "2026-09-08 ADP does not currently collect GPU telemetry."
   gpu.nccl.enabled: "2026-06-10 NCCL GPU core check; runs in Go Agent collector, ADP has no core checks."
   gpu.nccl.host_socket_path: "2026-06-10 NCCL GPU core check; runs in Go Agent collector, ADP has no core checks."
@@ -4678,16 +4293,27 @@ excluded:
   gpu.nvlink.fec_light_error_threshold: "2026-09-08 ADP does not currently collect GPU telemetry."
   gpu.nvml_lib_path: "ignored in initial audit 2026-04-23"
   gpu.parallel_collectors: "2026-09-08 ADP does not currently collect GPU telemetry."
+  gpu.prefer_gr_engine_sm_active: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.readiness_timeout: "2026-11-05: ADP does not currently collect GPU telemetry."
   gpu.sp_process_metrics_request_timeout: "ignored in initial audit 2026-04-23"
+  gpu.static_metrics_reporting_interval: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.tracing.enabled: "2026-11-05: ADP is not currently responsible for running the Kubernetes admission controller."
+  gpu.tracing.tracer_versions: "2026-11-05: ADP is not currently responsible for running the Kubernetes admission controller."
+  gpu.unschedulable_nodes.conditions: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.unschedulable_nodes.enabled: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.unschedulable_nodes.labels: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.unschedulable_nodes.refresh_interval: "2026-11-05: ADP does not currently collect GPU telemetry."
   gpu.use_sp_process_metrics: "ignored in initial audit 2026-04-23"
   gpu.workload_tag_cache_size: "ignored in initial audit 2026-04-23"
   ha_agent.enabled: "ignored in initial audit 2026-04-23"
   ha_agent.group: "ignored in initial audit 2026-04-23"
   health_platform.enabled: "ignored in initial audit 2026-04-23"
+  health_platform.forwarder.dd_url: "2026-11-13: ADP does not currently support the Health Platform."
   health_platform.forwarder.interval: "ignored in initial audit 2026-04-23"
   health_platform.invalidconfig_check.enabled: "2026-06-10 Health platform subsystem; sibling keys excluded in Apr 2026 audit."
   health_platform.invalidsysprobeconfig_check.enabled: "2026-09-08 ADP does not currently run the Health Platform invalid system-probe configuration check."
   health_platform.persist_on_kubernetes: "ignored in initial audit 2026-04-23"
+  health_platform.persist_remotely_on_kubernetes: "2026-11-05: ADP does not currently support the Health Platform."
   health_port: "ignored in initial audit 2026-04-23"
   host_aliases: "ignored in initial audit 2026-04-23"
   hostname_drift_initial_delay: "ignored in initial audit 2026-04-23"
@@ -4696,15 +4322,25 @@ excluded:
   hostname_force_config_as_canonical: "ignored in initial audit 2026-04-23"
   hostname_fqdn: "ignored in initial audit 2026-04-23"
   hostname_trust_uts_namespace: "ignored in initial audit 2026-04-23"
+  hostname_use_serial: "2026-11-05: ADP does not currently detect the hostname itself."
   hostprofiler.additional_http_headers: "ignored in initial audit 2026-04-23"
   hostprofiler.ddprofiling.enabled: "ignored in initial audit 2026-04-23"
   hostprofiler.ddprofiling.period: "ignored in initial audit 2026-04-23"
   hostprofiler.ddprofiling.port: "2026-09-08 ADP does not currently run or configure the Host Profiler."
-  hostprofiler.debug.verbosity: "ignored in initial audit 2026-04-23"
+  hostprofiler.debug.ebpf_logs: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.debug.exporter.verbosity: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.filter_min_process_age: "2026-11-05: ADP does not currently run or configure the Host Profiler."
   hostprofiler.health_metrics.enabled: "2026-06-10 Host profiler subsystem; sibling keys excluded in Apr 2026 audit."
   hostprofiler.health_metrics.target: "2026-06-10 Host profiler health metrics scrape target; same excluded subsystem."
   hostprofiler.hpflare.port: "2026-06-10 Host profiler hpflare listener port; same excluded subsystem."
+  hostprofiler.include_env_vars: "2026-11-05: ADP does not currently run or configure the Host Profiler."
   hostprofiler.log_file: "2026-09-08 ADP does not currently run or configure the Host Profiler."
+  hostprofiler.reporter_interval: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.send_error_frames: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.symbol_uploader.enabled: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.symbol_uploader.options: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.symbol_uploader.report.interval: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.symbol_uploader.report.max_paths_per_report: "2026-11-05: ADP does not currently run or configure the Host Profiler."
   hpa_configmap_name: "ignored in initial audit 2026-04-23"
   hpa_watcher_gc_period: "ignored in initial audit 2026-04-23"
   hpa_watcher_polling_freq: "ignored in initial audit 2026-04-23"
@@ -4724,7 +4360,6 @@ excluded:
   instrumentation_crd_controller.enabled: "2026-06-10 K8s CRD controller for APM auto-instrumentation; Cluster Agent concern."
   integration.additional: "ignored in initial audit 2026-04-23"
   integration.basic.allowed: "ignored in initial audit 2026-04-23"
-  integration.cloud_cost_only.tagged: "2026-09-08 ADP does not currently load Agent integrations or apply cloud-cost-only check filtering."
   integration.enabled: "ignored in initial audit 2026-04-23"
   integration.end_user_device.allowed: "ignored in initial audit 2026-04-23"
   integration.excluded: "ignored in initial audit 2026-04-23"
@@ -4760,7 +4395,6 @@ excluded:
   inventories_max_interval: "ignored in initial audit 2026-04-23"
   inventories_min_interval: "ignored in initial audit 2026-04-23"
   iot_host: "ignored in initial audit 2026-04-23"
-  ipc_address: "ignored in initial audit 2026-04-23"
   jmx_check_period: "ignored in initial audit 2026-04-23"
   jmx_collection_timeout: "ignored in initial audit 2026-04-23"
   jmx_custom_jars: "ignored in initial audit 2026-04-23"
@@ -4804,6 +4438,8 @@ excluded:
   kubeactions.forwarder.use_compression: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
   kubeactions.forwarder.use_v2_api: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
   kubeactions.forwarder.zstd_compression_level: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.private_action_runner.enabled: "2026-11-05: ADP does not currently run Kubernetes Actions."
+  kubeactions.remote_config.enabled: "2026-11-05: ADP does not currently run Kubernetes Actions."
   kubelet_auth_token_path: "ignored in initial audit 2026-04-23"
   kubelet_cache_pods_duration: "ignored in initial audit 2026-04-23"
   kubelet_client_ca: "ignored in initial audit 2026-04-23"
@@ -4860,7 +4496,6 @@ excluded:
   leader_lease_name: "ignored in initial audit 2026-04-23"
   listeners: "ignored in initial audit 2026-04-23"
   log_all_goroutines_when_unhealthy: "ignored in initial audit 2026-04-23"
-  log_enabled: "ignored in initial audit 2026-04-23"
   log_file: "ignored in second bulk edit 2026-05-06"
   logon_duration.enabled: "ignored in initial audit 2026-04-23"
   logs_config.add_logsource_tag: "ignored in initial audit 2026-04-23"
@@ -4883,7 +4518,6 @@ excluded:
   logs_config.auto_multi_line_default_sample_size: "ignored in initial audit 2026-04-23"
   logs_config.auto_multi_line_detection: "ignored in initial audit 2026-04-23"
   logs_config.auto_multi_line_detection_custom_samples: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line_detection_tagging: "ignored in initial audit 2026-04-23"
   logs_config.auto_multi_line_extra_patterns: "ignored in initial audit 2026-04-23"
   logs_config.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   logs_config.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -4972,9 +4606,12 @@ excluded:
   logs_config.socks5_proxy_address: "ignored in initial audit 2026-04-23"
   logs_config.stop_grace_period: "ignored in initial audit 2026-04-23"
   logs_config.streaming.streamlogs_log_file: "ignored in initial audit 2026-04-23"
+  logs_config.tag_filters: "2026-11-05: ADP does not currently support logs processing."
   logs_config.tag_multi_line_logs: "ignored in initial audit 2026-04-23"
   logs_config.tag_truncated_logs: "ignored in initial audit 2026-04-23"
   logs_config.tagger_warmup_duration: "ignored in initial audit 2026-04-23"
+  logs_config.unreliable_mount.enabled: "2026-11-05: ADP does not currently support logs processing."
+  logs_config.unreliable_mount.rotation_drain_timeout: "2026-11-05: ADP does not currently support logs processing."
   logs_config.use_compression: "ignored in initial audit 2026-04-23"
   logs_config.use_container_timestamp: "2026-06-10 Container file log timestamp mode; ADP has no container log file source."
   logs_config.use_http: "ignored in initial audit 2026-04-23"
@@ -4986,15 +4623,15 @@ excluded:
   logs_config.validate_pod_container_id: "ignored in initial audit 2026-04-23"
   logs_config.windows_open_file_timeout: "ignored in initial audit 2026-04-23"
   logs_config.zstd_compression_level: "ignored in initial audit 2026-04-23"
-  logs_enabled: "ignored in initial audit 2026-04-23"
   memtrack_enabled: "ignored in initial audit 2026-04-23"
   metadata_endpoints_max_hostname_size: "ignored in initial audit 2026-04-23"
   metadata_ip_resolution_from_hostname: "ignored in initial audit 2026-04-23"
   metadata_provider_stop_timeout: "ignored in initial audit 2026-04-23"
   metadata_providers: "ignored in initial audit 2026-04-23"
+  metadata_skip_secrets: "2026-11-05: ADP does not currently send inventory metadata payloads."
   metric_lookback.collection_interval: "2026-09-08 ADP does not currently support checks."
   metric_lookback.enabled_checks: "2026-09-08 ADP does not currently support checks."
-  metric_tag_filterlist_adp_only: "2026-06-10 Gate controlling whether tag filtering applies only when ADP is enabled; full-agent-only key, ADP always applies filtering unconditionally."
+  metric_tag_filterlist_adp_only: "2026-11-05: Gate controlling whether the core Agent applies `metric_tag_filterlist` only when ADP is enabled; ADP always applies the filter."
   metrics_port: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_apm: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_logs: "ignored in initial audit 2026-04-23"
@@ -5063,6 +4700,11 @@ excluded:
   network_devices.default_scan.excluded_ips: "ignored in initial audit 2026-04-23"
   network_devices.default_scan.flush_every_n_oids: "2026-09-08 ADP does not currently scan SNMP devices."
   network_devices.default_scan.flush_interval: "2026-09-08 ADP does not currently scan SNMP devices."
+  network_devices.discovery.default_interval_sec: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
+  network_devices.discovery.default_namespace: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
+  network_devices.discovery.enabled: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
+  network_devices.discovery.max_range_addresses: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
+  network_devices.discovery.workers: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
   network_devices.metadata.additional_endpoints: "ignored in initial audit 2026-04-23"
   network_devices.metadata.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   network_devices.metadata.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -5115,6 +4757,8 @@ excluded:
   network_devices.netflow.listeners: "ignored in initial audit 2026-04-23"
   network_devices.netflow.reverse_dns_enrichment_enabled: "ignored in initial audit 2026-04-23"
   network_devices.netflow.stop_timeout: "ignored in initial audit 2026-04-23"
+  network_devices.remote_config.dev_config_file: "2026-11-13: ADP does not currently support Network Device Monitoring Remote Configuration."
+  network_devices.remote_config.enabled: "2026-11-05: ADP does not currently scan SNMP devices."
   network_devices.snmp_traps.bind_host: "ignored in initial audit 2026-04-23"
   network_devices.snmp_traps.community_strings: "ignored in initial audit 2026-04-23"
   network_devices.snmp_traps.enabled: "ignored in initial audit 2026-04-23"
@@ -5170,6 +4814,8 @@ excluded:
   network_path.collector.workers: "ignored in initial audit 2026-04-23"
   network_path.connections_monitoring.basic_tests_enabled: "2026-09-08 ADP does not currently run the Network Path collector."
   network_path.connections_monitoring.enabled: "ignored in initial audit 2026-04-23"
+  network_path.connections_monitoring.eudm_basic_candidate_limit: "2026-11-05: ADP does not currently run the Network Path collector."
+  network_path.connections_monitoring.eudm_basic_tests_enabled: "2026-11-05: ADP does not currently run the Network Path collector."
   network_path.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
   network_path.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   network_path.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -5193,6 +4839,27 @@ excluded:
   network_path.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
   network_path.netflow_monitoring.enabled: "2026-09-08 ADP does not currently run the Network Path collector."
   network_path.remote_config.enabled: "2026-09-08 ADP does not currently run the Network Path collector."
+  network_pcap.forwarder.additional_endpoints: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.batch_max_concurrent_send: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.batch_max_content_size: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.batch_max_size: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.batch_wait: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.compression_kind: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.compression_level: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.connection_reset_interval: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.dd_url: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.dev_mode_no_ssl: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.input_chan_size: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.logs_dd_url: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.logs_no_ssl: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_backoff_base: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_backoff_factor: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_backoff_max: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_recovery_interval: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_recovery_reset: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.use_compression: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.use_v2_api: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.zstd_compression_level: "2026-11-05: ADP does not currently support remote packet capture."
   notable_events.enabled: "ignored in initial audit 2026-04-23"
   observability_pipelines_worker.logs.dual_ship: "2026-06-10 Logs-only OPW dual-ship; RefImpl comment confirms no metrics equivalent."
   observability_pipelines_worker.logs.dual_ship_reliable: "2026-06-10 Logs-only OPW dual-ship backpressure; same exclusion rationale."
@@ -5220,6 +4887,7 @@ excluded:
   orchestrator_explorer.custom_sensitive_words: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.enabled: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.extra_tags: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.helm_releases.configmaps.enabled: "2026-11-05: ADP does not currently run the Orchestrator Explorer collectors."
   orchestrator_explorer.kubelet_config_check.enabled: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.manifest_collection.buffer_flush_interval: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.manifest_collection.buffer_manifest: "ignored in initial audit 2026-04-23"
@@ -5229,7 +4897,6 @@ excluded:
   orchestrator_explorer.orchestrator_additional_endpoints: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.orchestrator_dd_url: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.terminated_pods.enabled: "ignored in initial audit 2026-04-23"
-  orchestrator_explorer.terminated_pods_improved.enabled: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.terminated_resources.enabled: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.use_legacy_endpoint: "ignored in initial audit 2026-04-23"
   otel_standalone: "ignored in initial audit 2026-04-23"
@@ -5239,8 +4906,14 @@ excluded:
   otelcollector.extension_timeout: "ignored in initial audit 2026-04-23"
   otelcollector.extension_url: "ignored in initial audit 2026-04-23"
   otelcollector.flare.timeout: "ignored in initial audit 2026-04-23"
+  otelcollector.gateway.daemonset: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
   otelcollector.gateway.mode: "ignored in initial audit 2026-04-23"
   otelcollector.installation_method: "ignored in initial audit 2026-04-23"
+  otelcollector.opamp.endpoint: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
+  otelcollector.opamp.reports_raw_config: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
+  otelcollector.standalone.node_from_env_var: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
+  otelcollector.standalone.telemetry_resource_cluster_name: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
+  otelcollector.standalone.use_kubelet_collector: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
   otelcollector.submit_dummy_metadata: "ignored in initial audit 2026-04-23"
   otlp_config.debug.verbosity: "ignored in initial audit 2026-04-23"
   otlp_config.grpc_port: "ignored in initial audit 2026-04-23"
@@ -5250,15 +4923,12 @@ excluded:
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.infra_attributes.tags_as_ddtags: "2026-09-08 ADP does not currently support OTLP logs."
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
-  otlp_config.traces.infra_attributes.enabled: "ignored in initial audit 2026-04-23"
-  otlp_config.traces.span_name_as_resource_name: "ignored in initial audit 2026-04-23"
-  otlp_config.traces.span_name_remappings: "ignored in initial audit 2026-04-23"
   patch_prometheus_client: "2026-09-08 ADP does not currently load Agent integrations or patch their Prometheus clients."
   podman_db_path: "ignored in initial audit 2026-04-23"
   prioritize_go_check_loader: "ignored in initial audit 2026-04-23"
   private_action_runner.actions_allowlist: "ignored in initial audit 2026-04-23"
-  private_action_runner.agent_secret_management_enabled: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
   private_action_runner.api_key_only_enrollment: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
+  private_action_runner.credentials.values: "2026-11-05: ADP does not currently run or configure the Private Action Runner."
   private_action_runner.default_actions_enabled: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.enabled: "ignored in initial audit 2026-04-23"
   private_action_runner.executor.socket_path: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
@@ -5269,13 +4939,16 @@ excluded:
   private_action_runner.identity_secret_name: "ignored in second bulk edit 2026-05-06"
   private_action_runner.identity_use_k8s_secret: "ignored in second bulk edit 2026-05-06"
   private_action_runner.idle_timeout_seconds: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
+  private_action_runner.kubernetes_allowed_custom_resources: "2026-11-05: ADP does not currently run or configure the Private Action Runner."
   private_action_runner.log_file: "ignored in second bulk edit 2026-05-06"
   private_action_runner.opms_extra_headers: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
+  private_action_runner.par_dd_url: "2026-11-05: ADP does not currently run or configure the Private Action Runner."
   private_action_runner.private_key: "ignored in second bulk edit 2026-05-06"
   private_action_runner.restricted_shell.allowed_commands: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.restricted_shell.allowed_paths: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.restricted_shell.allowed_system_services: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
   private_action_runner.restricted_shell.disable_detailed_telemetry: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
+  private_action_runner.restricted_shell.privileged.elevatable_commands: "2026-11-05: ADP does not currently run or configure the Private Action Runner."
   private_action_runner.restricted_shell.privileged.enabled: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
   private_action_runner.restricted_shell.privileged.socket: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
   private_action_runner.self_enroll: "ignored in initial audit 2026-04-23"
@@ -5307,6 +4980,7 @@ excluded:
   process_config.intervals.process_realtime: "ignored in initial audit 2026-04-23"
   process_config.language_detection.grpc_port: "ignored in initial audit 2026-04-23"
   process_config.log_file: "ignored in initial audit 2026-04-23"
+  process_config.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   process_config.max_message_bytes: "ignored in initial audit 2026-04-23"
   process_config.max_per_message: "ignored in initial audit 2026-04-23"
   process_config.orchestrator_additional_endpoints: "ignored in initial audit 2026-04-23"
@@ -5340,10 +5014,6 @@ excluded:
   remote_agent.registry.query_timeout: "ignored in initial audit 2026-04-23"
   remote_agent.registry.recommended_refresh_interval: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_config.enabled: "2026-06-10 Trace-agent AGENT_CONFIG RC subscription; APM/trace concern outside ADP scope."
-  remote_configuration.agent_integrations.allow_list: "ignored in initial audit 2026-04-23"
-  remote_configuration.agent_integrations.allow_log_config_scheduling: "ignored in initial audit 2026-04-23"
-  remote_configuration.agent_integrations.block_list: "ignored in initial audit 2026-04-23"
-  remote_configuration.agent_integrations.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.api_key: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
@@ -5463,6 +5133,7 @@ excluded:
   sbom.host.additional_directories: "ignored in initial audit 2026-04-23"
   sbom.host.analyzers: "ignored in initial audit 2026-04-23"
   sbom.host.enabled: "ignored in initial audit 2026-04-23"
+  sbom.host.scan_timeout: "2026-11-05: ADP does not currently generate SBOMs."
   sbom.input_chan_size: "ignored in initial audit 2026-04-23"
   sbom.logs_dd_url: "ignored in initial audit 2026-04-23"
   sbom.logs_no_ssl: "ignored in initial audit 2026-04-23"
@@ -5532,9 +5203,14 @@ excluded:
   security_agent.internal_profiling.site: "ignored in initial audit 2026-04-23"
   security_agent.internal_profiling.unix_socket: "ignored in initial audit 2026-04-23"
   security_agent.log_file: "ignored in initial audit 2026-04-23"
+  security_agent.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   server_timeout: "ignored in initial audit 2026-04-23"
+  serverless.aas_extension_metadata_enabled: "2026-11-13: ADP does not currently support serverless environments."
   serverless.enabled: "ignored in initial audit 2026-04-23"
   serverless.logs_enabled: "ignored in initial audit 2026-04-23"
+  serverless.metadata_enabled: "2026-11-05: ADP does not currently support serverless environments."
+  serverless.metadata_runtime: "2026-11-05: ADP does not currently support serverless environments."
+  serverless.metadata_wrapped_command_enabled: "2026-11-05: ADP does not currently support serverless environments."
   serverless.service_mapping: "ignored in initial audit 2026-04-23"
   serverless.trace_enabled: "ignored in initial audit 2026-04-23"
   serverless.trace_managed_services: "ignored in initial audit 2026-04-23"
@@ -5629,6 +5305,7 @@ excluded:
   synthetics.forwarder.use_compression: "ignored in initial audit 2026-04-23"
   synthetics.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
   synthetics.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  system_probe.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   system_tray.log_file: "ignored in initial audit 2026-04-23"
   tag_value_split_separator: "ignored in initial audit 2026-04-23"
   telemetry.checks: "ignored in initial audit 2026-04-23"

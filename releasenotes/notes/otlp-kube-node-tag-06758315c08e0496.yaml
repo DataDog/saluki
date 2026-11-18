@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    OTLP metrics, logs, and traces now get a ``kube_node`` tag from the ``k8s.node.name`` resource attribute, matching
+    the Datadog Agent.

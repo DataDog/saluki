@@ -4,8 +4,9 @@ use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
 use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_core::data_model::{
-    event::Event,
+    event::log::Log,
     origin::OriginTagsResolver,
     tags::{Tag, TagSet},
 };
@@ -15,12 +16,45 @@ use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::util::{get_string_attribute, resource_to_source, SourceKind};
+use crate::common::otlp::Metrics;
+use crate::sources::otlp::logs::render::OtlpLogsRenderer;
 use crate::sources::otlp::logs::transform::transform_log_record;
 
 static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 
 /// A translator for converting OTLP logs into DD native logs.
+///
+/// Translation ends with rendering each log into its content, so the logs it produces are ready for the envelope. The
+/// translator keeps its render buffers between logs.
 pub struct OtlpLogsTranslator {
+    origin_tag_resolver: OtlpOriginTagResolver,
+    renderer: OtlpLogsRenderer,
+}
+
+impl OtlpLogsTranslator {
+    /// Creates a new `OtlpLogsTranslator`.
+    pub fn new(origin_tag_resolver: OtlpOriginTagResolver) -> Self {
+        Self {
+            origin_tag_resolver,
+            renderer: OtlpLogsRenderer::default(),
+        }
+    }
+
+    /// Translates the logs of an OTLP resource into rendered DD native logs.
+    ///
+    /// Every log is counted as received, including the logs that are dropped because they can't be rendered.
+    pub fn translate_logs<'a>(
+        &'a mut self, resource_logs: OtlpResourceLogs, metrics: &'a Metrics,
+    ) -> impl Iterator<Item = Log> + 'a {
+        ResourceLogsIter::new(resource_logs, &self.origin_tag_resolver).filter_map(|log| {
+            metrics.logs_received().increment(1);
+            self.renderer.render(log, metrics)
+        })
+    }
+}
+
+/// An iterator over the logs of an OTLP resource, translated but not yet rendered.
+pub(super) struct ResourceLogsIter {
     resource: Resource,
     host: Option<MetaString>,
     service: Option<MetaString>,
@@ -29,14 +63,12 @@ pub struct OtlpLogsTranslator {
     current_scope_logs: Option<(Option<InstrumentationScope>, IntoIter<LogRecord>)>,
 }
 
-impl OtlpLogsTranslator {
-    pub fn from_resource_logs(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
+impl ResourceLogsIter {
+    pub(super) fn new(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
         let host = match &source {
-            Some(src) if matches!(src.kind, SourceKind::HostnameKind) => {
-                Some(MetaString::from(src.identifier.as_str()))
-            }
+            Some(src) if matches!(src.kind, SourceKind::Hostname) => Some(MetaString::from(src.identifier.as_str())),
             _ => None,
         };
 
@@ -57,7 +89,7 @@ impl OtlpLogsTranslator {
         }
     }
 
-    fn next_log(&mut self) -> Option<Event> {
+    fn next_log(&mut self) -> Option<Log> {
         loop {
             let (current_scope, current_log_records) = match self.current_scope_logs.as_mut() {
                 Some(current) => current,
@@ -88,9 +120,10 @@ impl OtlpLogsTranslator {
                         record_host,
                         record_service,
                         self.attribute_tags.clone(),
-                    );
+                    )
+                    .with_ingestion_timestamp(get_unix_timestamp_nanos());
 
-                    return Some(Event::Log(log));
+                    return Some(log);
                 }
                 None => {
                     self.current_scope_logs = None;
@@ -100,8 +133,8 @@ impl OtlpLogsTranslator {
     }
 }
 
-impl Iterator for OtlpLogsTranslator {
-    type Item = Event;
+impl Iterator for ResourceLogsIter {
+    type Item = Log;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_log()
@@ -114,12 +147,14 @@ mod tests {
     use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
     use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
     use otlp_protos::opentelemetry::proto::resource::v1 as otlp_resource_v1;
-    use saluki_core::data_model::event::log::{Log, LogStatus};
-    use saluki_core::data_model::event::Event;
+    use saluki_core::components::ComponentContext;
+    use saluki_core::data_model::event::log::Log;
+    use saluki_metrics::test::TestRecorder;
     use serde_json::Value as JsonValue;
 
-    use super::OtlpLogsTranslator;
     use super::SERVICE_NAME;
+    use super::{OtlpLogsTranslator, ResourceLogsIter};
+    use crate::common::otlp::build_metrics;
     use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::sources::otlp::logs::transform::DDTAGS_ATTR;
 
@@ -180,20 +215,16 @@ mod tests {
             schema_url: String::new(),
         };
 
-        let translator = OtlpLogsTranslator::from_resource_logs(
+        let translator = ResourceLogsIter::new(
             resource_logs,
             &OtlpOriginTagResolver::new(std::sync::Arc::new(
                 saluki_env::workload::providers::NoopWorkloadProvider,
             )),
         );
 
-        let mut events = translator.collect::<Vec<_>>();
-        assert_eq!(events.len(), 1);
-
-        match events.remove(0) {
-            Event::Log(log) => log,
-            other => panic!("expected log event, got {:?}", other),
-        }
+        let mut logs = translator.collect::<Vec<_>>();
+        assert_eq!(logs.len(), 1);
+        logs.remove(0)
     }
 
     #[test]
@@ -216,7 +247,7 @@ mod tests {
         let log = translate_log(lr.clone(), empty_resource(), None);
 
         assert_eq!(log.message(), "test message");
-        assert_eq!(log.status(), Some(LogStatus::Debug));
+        assert_eq!(log.status(), "debug");
         let props = log.additional_properties();
         assert_eq!(props.get("app"), Some(&JsonValue::String("test".to_string())));
         assert_eq!(
@@ -308,6 +339,18 @@ mod tests {
                 && tags.has_tag("otel_source:datadog_agent")
         );
         assert_eq!(log.service(), "test_service_name");
+    }
+
+    #[test]
+    fn k8s_node_name_maps_to_kube_node_tag() {
+        let lr = otlp_logs_v1::LogRecord::default();
+        let resource = otlp_resource_v1::Resource {
+            attributes: vec![key_value_string_to_otlp_common_key_value("k8s.node.name", "node-1")],
+            dropped_attributes_count: 0,
+            entity_refs: vec![],
+        };
+        let log = translate_log(lr, resource, None);
+        assert!(log.tags().has_tag("kube_node:node-1"));
     }
 
     #[test]
@@ -447,7 +490,7 @@ mod tests {
             event_name: String::new(),
         };
         let log = translate_log(lr, empty_resource(), None);
-        assert_eq!(log.status(), Some(LogStatus::Alert));
+        assert_eq!(log.status(), "alert");
         let props = log.additional_properties();
         assert_eq!(
             props.get("otel.severity_text"),
@@ -457,6 +500,24 @@ mod tests {
             props.get("otel.severity_number"),
             Some(&JsonValue::String("5".to_string()))
         );
+    }
+
+    #[test]
+    fn test_translated_logs_get_an_ingestion_timestamp() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let log = translate_log(otlp_logs_v1::LogRecord::default(), empty_resource(), None);
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let ingestion_timestamp = log
+            .ingestion_timestamp()
+            .expect("translated logs should have an ingestion time");
+        assert!((before..=after).contains(&ingestion_timestamp));
     }
 
     #[test]
@@ -477,7 +538,7 @@ mod tests {
         };
         let log = translate_log(lr, empty_resource(), None);
         assert_eq!(log.message(), "This is log");
-        assert_eq!(log.status(), Some(LogStatus::Warning));
+        assert_eq!(log.status(), "warn");
         let props = log.additional_properties();
         assert_eq!(
             props.get("otel.severity_number"),
@@ -506,7 +567,7 @@ mod tests {
         };
         let log = translate_log(lr, empty_resource(), None);
         assert_eq!(log.message(), "This is log");
-        assert_eq!(log.status(), Some(LogStatus::Error));
+        assert_eq!(log.status(), "error");
     }
 
     #[test]
@@ -621,7 +682,8 @@ mod tests {
             Some(&JsonValue::String("val2".to_string()))
         );
         assert_eq!(props.get("root.nest6"), Some(&JsonValue::String("val3".to_string())));
-        assert_eq!(log.status(), Some(LogStatus::Trace));
+        // Severity number 0 has no name, so a log with no other status has none.
+        assert_eq!(log.status(), "");
     }
 
     #[test]
@@ -754,5 +816,54 @@ mod tests {
             props.get("otelcol.component.kind"),
             Some(&JsonValue::String("Receiver".to_string()))
         );
+    }
+
+    #[test]
+    fn translate_logs_renders_and_counts_each_log() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let resource_logs = otlp_logs_v1::ResourceLogs {
+            scope_logs: vec![otlp_logs_v1::ScopeLogs {
+                log_records: vec![
+                    otlp_logs_v1::LogRecord {
+                        body: Some(string_to_any_value("first")),
+                        ..Default::default()
+                    },
+                    otlp_logs_v1::LogRecord {
+                        body: Some(string_to_any_value("second")),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut translator = OtlpLogsTranslator::new(OtlpOriginTagResolver::new(std::sync::Arc::new(
+            saluki_env::workload::providers::NoopWorkloadProvider,
+        )));
+
+        let contents = translator
+            .translate_logs(resource_logs, &metrics)
+            .map(|log| {
+                assert!(log.additional_properties().is_empty());
+                log.message().to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            contents,
+            [
+                r#"{"message":"first","status":""}"#,
+                r#"{"message":"second","status":""}"#
+            ]
+        );
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("message_type", "otlp_logs"),
+        ];
+        assert_eq!(recorder.counter(("component_events_received_total", tags)), Some(2));
     }
 }

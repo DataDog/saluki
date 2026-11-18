@@ -84,6 +84,7 @@ pub struct DogStatsDCodecConfiguration {
     timestamps: bool,
     minimum_sample_rate: f64,
     client_origin_detection: bool,
+    timing_unit: bool,
 }
 
 impl DogStatsDCodecConfiguration {
@@ -92,11 +93,22 @@ impl DogStatsDCodecConfiguration {
     /// In permissive mode, the codec will attempt to parse as much of the input as possible, relying solely on
     /// structural markers (specific delimiting characters) to determine the boundaries of different parts of the
     /// payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
-    /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
+    /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further. This aims to
+    /// match the leniency of the reference DogStatsD server:
     ///
-    /// Permissive mode doesn't allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
-    /// that can't be safely handled internally (for example, invalid UTF-8 characters in a metric name). Invalid UTF-8 tag
-    /// bytes are normalized to U+FFFD before further processing.
+    /// - metric names, service check names, and event/service check string fields (hostname, aggregation key, source
+    ///   type) accept any UTF-8
+    /// - events only require a title, and may have empty text
+    /// - an invalid, unknown, or malformed optional field on an event or service check (for example, a stray `T`), or a
+    ///   malformed Local Data or External Data field on a metric, is ignored rather than rejecting the whole payload
+    ///
+    /// Permissive mode also tolerates some structural defects that the reference DogStatsD server tolerates: empty
+    /// fields (for example, `metric:1|c||#tags`) and empty values in a multi-value payload (for example,
+    /// `metric:1::2|d`) are skipped. In strict mode, all of these cause the payload to be rejected.
+    ///
+    /// Permissive mode doesn't allow for decoding payloads with other structural errors (for example, missing
+    /// delimiters, etc) or that can't be safely handled internally (for example, invalid UTF-8 characters in a metric
+    /// name). Invalid UTF-8 tag bytes are normalized to U+FFFD before further processing.
     ///
     /// Defaults to `false`.
     pub fn with_permissive_mode(mut self, permissive: bool) -> Self {
@@ -158,6 +170,16 @@ impl DogStatsDCodecConfiguration {
         self.client_origin_detection = enabled;
         self
     }
+
+    /// Sets whether timing (`ms`) metrics carry the `millisecond` unit.
+    ///
+    /// No other metric type carries a unit.
+    ///
+    /// Defaults to `false`.
+    pub fn with_timing_unit(mut self, enabled: bool) -> Self {
+        self.timing_unit = enabled;
+        self
+    }
 }
 
 impl Default for DogStatsDCodecConfiguration {
@@ -169,6 +191,7 @@ impl Default for DogStatsDCodecConfiguration {
             permissive: false,
             minimum_sample_rate: MINIMUM_SAFE_DEFAULT_SAMPLE_RATE,
             client_origin_detection: false,
+            timing_unit: false,
         }
     }
 }

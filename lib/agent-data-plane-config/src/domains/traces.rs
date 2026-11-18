@@ -1,12 +1,14 @@
 //! Traces domain: APM trace processing, including environment, sampling, and obfuscation.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::defaults::{
     DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_RARE_SAMPLER_CARDINALITY,
-    DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
+    DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS,
 };
 
 /// A beta APM feature flag.
@@ -20,6 +22,15 @@ pub enum ApmFeature {
     /// the full 128-bit ID.
     ProbabilisticSamplerFullTraceId,
 
+    /// Derives OTLP operation and resource names with V1 naming instead of V2.
+    DisableOperationAndResourceNameLogicV2,
+
+    /// Converts OTLP spans on the V1 receive path instead of V2.
+    DisableReceiveResourceSpansV2,
+
+    /// Stops emitting the `otel.scope.*` tags on OTLP spans. The deprecated `otel.library.*` tags remain.
+    DisableOtelScopeConvention,
+
     /// An unrecognized feature ID, carried verbatim.
     Other(String),
 }
@@ -29,6 +40,9 @@ impl ApmFeature {
     pub fn as_str(&self) -> &str {
         match self {
             ApmFeature::ProbabilisticSamplerFullTraceId => "probabilistic_sampler_full_trace_id",
+            ApmFeature::DisableOperationAndResourceNameLogicV2 => "disable_operation_and_resource_name_logic_v2",
+            ApmFeature::DisableReceiveResourceSpansV2 => "disable_receive_resource_spans_v2",
+            ApmFeature::DisableOtelScopeConvention => "disable_otel_scope_convention",
             ApmFeature::Other(feature) => feature,
         }
     }
@@ -38,6 +52,9 @@ impl From<&str> for ApmFeature {
     fn from(feature: &str) -> Self {
         match feature {
             "probabilistic_sampler_full_trace_id" => ApmFeature::ProbabilisticSamplerFullTraceId,
+            "disable_operation_and_resource_name_logic_v2" => ApmFeature::DisableOperationAndResourceNameLogicV2,
+            "disable_receive_resource_spans_v2" => ApmFeature::DisableReceiveResourceSpansV2,
+            "disable_otel_scope_convention" => ApmFeature::DisableOtelScopeConvention,
             other => ApmFeature::Other(other.to_owned()),
         }
     }
@@ -55,12 +72,23 @@ impl Serialize for ApmFeature {
 /// Resolved traces configuration.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
-    /// Environment tag applied to traces.
-    pub env: String,
+    /// Trace environment configured by `apm_config.env` (`DD_APM_ENV`).
+    ///
+    /// `None` when no input set the key. An explicit empty value is kept as `Some("")`, which is
+    /// distinct from `None`: it still takes precedence over `env` and the `env:` global tags.
+    ///
+    /// Defaults to `None`. The value is not normalized; the trace pipeline resolves its environment
+    /// from this, `env`, and the global tags.
+    pub apm_env: Option<String>,
 
-    /// Environment used for traces that carry no explicit environment. (not in Datadog Agent config
-    /// schema)
-    pub default_env: String,
+    /// Agent environment configured by the top-level `env` key (`DD_ENV`).
+    ///
+    /// `None` when no input set the key. An explicit empty value is kept as `Some("")`, which still
+    /// takes precedence over the `env:` global tags.
+    ///
+    /// Defaults to `None`. The value is not normalized; the trace pipeline uses it when `apm_env` is
+    /// `None`.
+    pub env: Option<String>,
 
     /// Whether trace stats are computed separately per span kind.
     pub compute_stats_by_span_kind: bool,
@@ -137,7 +165,8 @@ pub struct Domain {
     /// Empty by default. Unrecognized values are carried as `ApmFeature::Other` and ignored
     /// without a warning: the flag inventory is not stable across versions. Enable
     /// `ApmFeature::ProbabilisticSamplerFullTraceId` on every probabilistic sampler in the
-    /// ingestion path so they keep the same traces.
+    /// ingestion path so they keep the same traces. The `Disable*` variants select the
+    /// older OTLP trace translation.
     pub features: Vec<ApmFeature>,
 
     /// Whether the rare-span sampler is enabled.
@@ -172,13 +201,52 @@ pub struct Domain {
     /// resource; any other name only that tag. Matched values are stored as strings, and a
     /// pattern that fails to compile prevents startup.
     pub replace_tags: Vec<ReplaceRule>,
+
+    /// Tag rules a trace is kept or dropped by (`apm_config.filter_tags`).
+    ///
+    /// Defaults to no rules. Each `key` or `key:value` rule is split at its first `:` and trimmed, and an empty value
+    /// matches the key alone, as the trace-agent reads them.
+    pub filter_tags: TagFilters,
+
+    /// Tag rules whose values are regular expressions (`apm_config.filter_tags_regex`).
+    ///
+    /// Defaults to no rules. Rules are split like [`filter_tags`](Self::filter_tags), but an empty value is kept as
+    /// an empty pattern. As in the trace-agent, a rule is dropped when [`filter_tags`](Self::filter_tags) has a rule
+    /// for the same key in the same list. The patterns are not validated.
+    pub filter_tags_regex: TagFilters,
+
+    /// Regular expressions for the resources whose traces are dropped (`apm_config.ignore_resources`).
+    ///
+    /// Defaults to no patterns. The patterns are not validated.
+    pub ignore_resources: Vec<String>,
+}
+
+/// Tag rules that keep or drop a trace.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct TagFilters {
+    /// Rules a trace must match to be kept.
+    pub require: Vec<TagFilter>,
+
+    /// Rules that drop a trace that matches them.
+    pub reject: Vec<TagFilter>,
+}
+
+/// A tag rule: a tag key, and optionally the value it must have.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TagFilter {
+    /// Tag key the rule matches.
+    pub key: String,
+
+    /// Value, or value pattern, the tag must have. `None` matches the key with any value.
+    pub value: Option<String>,
 }
 
 impl Default for Domain {
     fn default() -> Self {
         Self {
             // Witnessed fields start as placeholders and are overwritten by Datadog `drive`.
-            env: String::new(),
+            apm_env: None,
+            env: None,
             compute_stats_by_span_kind: false,
             peer_tags: Vec::new(),
             peer_tags_aggregation: false,
@@ -195,9 +263,11 @@ impl Default for Domain {
             probabilistic_sampler: ProbabilisticSampler::default(),
             obfuscation: Obfuscation::default(),
             // Saluki-only fields own their absent-key behavior here.
-            default_env: DEFAULT_TRACE_ENV.to_owned(),
             max_resource_len: DEFAULT_MAX_RESOURCE_LEN,
             replace_tags: Vec::new(),
+            filter_tags: TagFilters::default(),
+            filter_tags_regex: TagFilters::default(),
+            ignore_resources: Vec::new(),
             error_sampling_enabled: DEFAULT_ERROR_SAMPLING_ENABLED,
             rare_sampler: RareSampler::default(),
             ottl_filter: OttlFilter::default(),
@@ -284,11 +354,88 @@ pub struct Obfuscation {
     /// Redis command obfuscation.
     pub redis: CacheObfuscation,
 
+    /// Whether the `error.stack` and `exception.stacktrace` tags are replaced with `?`.
+    pub remove_stack_traces: bool,
+
     /// Valkey command obfuscation.
     pub valkey: CacheObfuscation,
 
     /// SQL query obfuscation. (not in Datadog Agent config schema)
     pub sql: SqlObfuscation,
+
+    /// SQL obfuscator mode (`apm_config.sql_obfuscation_mode`).
+    pub sql_obfuscation_mode: SqlObfuscationMode,
+
+    /// Whether SQL execution plans are obfuscated (`apm_config.obfuscation.sql_exec_plan.enabled`).
+    pub sql_exec_plan_enabled: bool,
+
+    /// Whether SQL execution plans are normalized (`apm_config.obfuscation.sql_exec_plan_normalize.enabled`).
+    pub sql_exec_plan_normalize_enabled: bool,
+}
+
+/// SQL obfuscator mode.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SqlObfuscationMode {
+    /// The default obfuscator, configured with an empty value.
+    #[default]
+    Default,
+
+    /// Obfuscate the query with the `sqllexer` obfuscator (`obfuscate_only`).
+    ObfuscateOnly,
+
+    /// Normalize the query with the `sqllexer` obfuscator (`normalize_only`).
+    NormalizeOnly,
+
+    /// Obfuscate and normalize the query with the `sqllexer` obfuscator (`obfuscate_and_normalize`), for better
+    /// APM and DBM correlation.
+    ObfuscateAndNormalize,
+}
+
+impl SqlObfuscationMode {
+    /// Returns the mode's configuration value: empty for the default obfuscator.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SqlObfuscationMode::Default => "",
+            SqlObfuscationMode::ObfuscateOnly => "obfuscate_only",
+            SqlObfuscationMode::NormalizeOnly => "normalize_only",
+            SqlObfuscationMode::ObfuscateAndNormalize => "obfuscate_and_normalize",
+        }
+    }
+}
+
+/// Error returned when parsing an unknown SQL obfuscator mode.
+#[derive(Debug)]
+pub struct UnknownSqlObfuscationMode(String);
+
+impl fmt::Display for UnknownSqlObfuscationMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown SQL obfuscator mode `{}`", self.0)
+    }
+}
+
+impl std::error::Error for UnknownSqlObfuscationMode {}
+
+impl FromStr for SqlObfuscationMode {
+    type Err = UnknownSqlObfuscationMode;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "" => Ok(SqlObfuscationMode::Default),
+            "obfuscate_only" => Ok(SqlObfuscationMode::ObfuscateOnly),
+            "normalize_only" => Ok(SqlObfuscationMode::NormalizeOnly),
+            "obfuscate_and_normalize" => Ok(SqlObfuscationMode::ObfuscateAndNormalize),
+            other => Err(UnknownSqlObfuscationMode(other.to_owned())),
+        }
+    }
+}
+
+impl Serialize for SqlObfuscationMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 /// Credit-card obfuscation.
@@ -408,10 +555,23 @@ mod tests {
 
     #[test]
     fn known_feature_ids_map_to_their_variants() {
-        assert_eq!(
-            ApmFeature::from("probabilistic_sampler_full_trace_id"),
-            ApmFeature::ProbabilisticSamplerFullTraceId
-        );
+        for (id, feature) in [
+            (
+                "probabilistic_sampler_full_trace_id",
+                ApmFeature::ProbabilisticSamplerFullTraceId,
+            ),
+            (
+                "disable_operation_and_resource_name_logic_v2",
+                ApmFeature::DisableOperationAndResourceNameLogicV2,
+            ),
+            (
+                "disable_receive_resource_spans_v2",
+                ApmFeature::DisableReceiveResourceSpansV2,
+            ),
+            ("disable_otel_scope_convention", ApmFeature::DisableOtelScopeConvention),
+        ] {
+            assert_eq!(ApmFeature::from(id), feature, "{id}");
+        }
         assert_eq!(
             ApmFeature::from("error_rare_sample_tracer_drop"),
             ApmFeature::Other("error_rare_sample_tracer_drop".to_owned())
@@ -419,9 +579,25 @@ mod tests {
     }
 
     #[test]
+    fn sql_obfuscation_modes_round_trip_through_as_str() {
+        for mode in [
+            SqlObfuscationMode::Default,
+            SqlObfuscationMode::ObfuscateOnly,
+            SqlObfuscationMode::NormalizeOnly,
+            SqlObfuscationMode::ObfuscateAndNormalize,
+        ] {
+            assert_eq!(mode.as_str().parse::<SqlObfuscationMode>().unwrap(), mode);
+        }
+        assert!("obfuscate".parse::<SqlObfuscationMode>().is_err());
+    }
+
+    #[test]
     fn feature_ids_round_trip_through_as_str() {
         for feature in [
             ApmFeature::ProbabilisticSamplerFullTraceId,
+            ApmFeature::DisableOperationAndResourceNameLogicV2,
+            ApmFeature::DisableReceiveResourceSpansV2,
+            ApmFeature::DisableOtelScopeConvention,
             ApmFeature::Other("table_names".to_owned()),
         ] {
             assert_eq!(ApmFeature::from(feature.as_str()), feature);

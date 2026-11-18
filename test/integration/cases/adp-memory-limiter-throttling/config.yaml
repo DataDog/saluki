@@ -1,0 +1,28 @@
+type: integration
+name: "adp-memory-limiter-throttling"
+description: "Verifies that the global memory limiter logs a warning when it starts throttling ingestion, and that ADP keeps running while throttled"
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_MEMORY_MODE: "permissive"
+  # Small enough that ADP's idle RSS is already above the 85% throttling threshold, so the limiter starts throttling
+  # as soon as it takes its first sample.
+  DD_MEMORY_LIMIT: "16mb"
+
+
+procedure:
+  - assertion: log_contains
+    pattern: "Throttling ingestion until it falls to 75%."
+    timeout: 60s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

@@ -1,0 +1,56 @@
+# Issue #3068: invalid histogram settings must not stop DogStatsD
+#
+# Like the Core Agent, ADP skips an unknown `histogram_aggregates` entry and an invalid or out-of-range
+# `histogram_percentiles` entry, logs each one, and keeps serving DogStatsD with the remaining entries. Without the
+# fix, topology construction fails and DogStatsD never starts.
+
+type: integration
+name: "dogstatsd-invalid-histogram-settings"
+description: "Verifies invalid histogram_aggregates and histogram_percentiles entries are skipped instead of stopping DogStatsD"
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dsd-invalid-histogram"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  # `p99` isn't a supported aggregate; `abc` isn't a number, and `1.5` is out of range.
+  DD_HISTOGRAM_AGGREGATES: "max p99 count"
+  DD_HISTOGRAM_PERCENTILES: "0.95 abc 1.5"
+
+container:
+  exposed_ports:
+    - "48125/udp"
+
+procedure:
+  # ADP should log each invalid entry it skips.
+  - assertion: log_contains
+    pattern: "DATAPLANE.*Configured aggregate 'p99' in 'histogram_aggregates' is not implemented, skipping"
+    regex: true
+    timeout: 60s
+  - assertion: log_contains
+    pattern: "DATAPLANE.*Could not parse 'abc' from 'histogram_percentiles' \\(skipping\\)"
+    regex: true
+    timeout: 60s
+  - assertion: log_contains
+    pattern: "DATAPLANE.*'histogram_percentiles' must be between 0 and 1: skipping '1.5'"
+    regex: true
+    timeout: 60s
+  # DogStatsD should still start and stay up.
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: port_listening
+        port: 48125
+        protocol: udp
+        timeout: 60s
+      - assertion: log_contains
+        pattern: "Topology healthy"
+        timeout: 60s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

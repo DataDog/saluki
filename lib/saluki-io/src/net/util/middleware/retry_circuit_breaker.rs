@@ -8,6 +8,7 @@ use std::{
 
 use futures::FutureExt as _;
 use pin_project_lite::pin_project;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tower::{retry::Policy, Layer, Service};
 use tracing::debug;
 
@@ -22,6 +23,10 @@ pub enum Error<E, R> {
 
     /// The circuit breaker was already in backoff at call time, so the inner service was not called.
     Open(R),
+
+    /// The cancellation token was cancelled while the inner service was handling the request, so the request was
+    /// abandoned before it completed.
+    Cancelled(R),
 }
 
 impl<E, R> std::error::Error for Error<E, R>
@@ -32,7 +37,7 @@ where
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Service(e) => Some(e),
-            Self::Retry(_) | Self::Open(_) => None,
+            Self::Retry(_) | Self::Open(_) | Self::Cancelled(_) => None,
         }
     }
 }
@@ -46,6 +51,7 @@ where
             Self::Service(e) => write!(f, "service error: {}", e),
             Self::Retry(_) => write!(f, "request should be retried"),
             Self::Open(_) => write!(f, "circuit breaker open"),
+            Self::Cancelled(_) => write!(f, "request cancelled"),
         }
     }
 }
@@ -60,6 +66,7 @@ where
             (Self::Service(a), Self::Service(b)) => a == b,
             (Self::Retry(a), Self::Retry(b)) => a == b,
             (Self::Open(a), Self::Open(b)) => a == b,
+            (Self::Cancelled(a), Self::Cancelled(b)) => a == b,
             _ => false,
         }
     }
@@ -72,6 +79,8 @@ pin_project! {
         #[pin]
         inner: Option<F>,
         req: Option<Request>,
+        #[pin]
+        cancelled: Option<WaitForCancellationFutureOwned>,
     }
 }
 
@@ -96,10 +105,27 @@ where
         // don't have an original request here, we just return the inner service's response as-is. When we _do_ have the
         // original request, we utilize the retry policy to determine if it can be retried, and if so, potentially
         // update our circuit breaker state based on what the retry policy tells us.
+        //
+        // When a cancellation token is configured and we have the original request, we also stop waiting for the
+        // inner response once the token is cancelled, and pass the original request back instead. The response is
+        // polled first, so a response that is already available wins over a cancellation.
 
         let this = self.project();
         if let Some(inner) = this.inner.as_pin_mut() {
-            let mut result = ready!(inner.poll(cx));
+            let mut result = match inner.poll(cx) {
+                Poll::Ready(result) => result,
+                Poll::Pending => {
+                    if let Some(cancelled) = this.cancelled.as_pin_mut() {
+                        ready!(cancelled.poll(cx));
+
+                        debug!("request cancelled while in flight, returning error");
+                        return Poll::Ready(Err(Error::Cancelled(
+                            this.req.take().expect("response future polled after completion"),
+                        )));
+                    }
+                    return Poll::Pending;
+                }
+            };
 
             let mut state = this.state.lock().unwrap();
             match this.req.take() {
@@ -157,12 +183,24 @@ where
 /// [circuit_breaker]: https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern
 pub struct RetryCircuitBreakerLayer<P> {
     policy: P,
+    cancellation: Option<CancellationToken>,
 }
 
 impl<P> RetryCircuitBreakerLayer<P> {
     /// Creates a new [`RetryCircuitBreakerLayer`] with the given policy.
     pub const fn new(policy: P) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            cancellation: None,
+        }
+    }
+
+    /// Sets the cancellation token for in-flight requests.
+    ///
+    /// See [`RetryCircuitBreaker::with_cancellation`] for details.
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = Some(token);
+        self
     }
 }
 
@@ -173,7 +211,11 @@ where
     type Service = RetryCircuitBreaker<S, P>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        RetryCircuitBreaker::new(inner, self.policy.clone())
+        let service = RetryCircuitBreaker::new(inner, self.policy.clone());
+        match &self.cancellation {
+            Some(token) => service.with_cancellation(token.clone()),
+            None => service,
+        }
     }
 }
 
@@ -198,6 +240,7 @@ where
 pub struct RetryCircuitBreaker<S, P> {
     inner: S,
     state: Arc<Mutex<State<P>>>,
+    cancellation: Option<CancellationToken>,
 }
 
 impl<S, P> RetryCircuitBreaker<S, P> {
@@ -206,7 +249,19 @@ impl<S, P> RetryCircuitBreaker<S, P> {
         Self {
             inner,
             state: Arc::new(Mutex::new(State { policy, backoff: None })),
+            cancellation: None,
         }
+    }
+
+    /// Sets the cancellation token for in-flight requests.
+    ///
+    /// When `token` is cancelled, every request still waiting on the inner service is abandoned, and its response
+    /// future resolves to [`Error::Cancelled`] with the copy of the request made by the retry policy. The circuit
+    /// breaker state is not affected. A request that the retry policy could not clone has no copy to hand back, so it
+    /// is not abandoned and runs to completion.
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = Some(token);
+        self
     }
 }
 
@@ -247,16 +302,22 @@ where
                 state: response_state,
                 inner: None,
                 req: Some(req),
+                cancelled: None,
             }
         } else {
             // The circuit breaker is closed, so we can proceed with the request.
             let cloned_req = state.policy.clone_request(&req);
             let inner = self.inner.call(req);
+            let cancelled = match (&self.cancellation, &cloned_req) {
+                (Some(token), Some(_)) => Some(token.clone().cancelled_owned()),
+                _ => None,
+            };
 
             ResponseFuture {
                 state: response_state,
                 inner: Some(inner),
                 req: cloned_req,
+                cancelled,
             }
         }
     }
@@ -306,6 +367,10 @@ mod tests {
         fn as_open_response(&self) -> Result<String, Error<String, Self>> {
             Err(Error::Open(self.clone()))
         }
+
+        fn as_cancelled_response(&self) -> Result<String, Error<String, Self>> {
+            Err(Error::Cancelled(self.clone()))
+        }
     }
 
     impl PartialEq<Result<String, String>> for BasicRequest {
@@ -338,7 +403,31 @@ mod tests {
         }
     }
 
+    /// Like [`LoopbackService`], but each response takes [`RESPONSE_DELAY`] to arrive.
     #[derive(Debug)]
+    struct DelayedLoopbackService;
+
+    const RESPONSE_DELAY: Duration = Duration::from_secs(5);
+
+    impl Service<BasicRequest> for DelayedLoopbackService {
+        type Response = String;
+        type Error = String;
+        type Future = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, req: BasicRequest) -> Self::Future {
+            let response = LoopbackService.call(req);
+            Box::pin(async move {
+                tokio::time::sleep(RESPONSE_DELAY).await;
+                response.await
+            })
+        }
+    }
+
+    #[derive(Clone, Debug)]
     struct CloneableTestRetryPolicy;
 
     impl<Req, T, E> Policy<Req, T, E> for CloneableTestRetryPolicy
@@ -505,5 +594,73 @@ mod tests {
         let good_fut = svc.call(good_req.clone());
         let good_result = good_fut.await;
         assert_eq!(good_result, good_req.as_open_response());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_hands_back_in_flight_request() {
+        let req = BasicRequest::success("in-flight");
+        let token = CancellationToken::new();
+
+        let mut circuit_breaker =
+            RetryCircuitBreaker::new(DelayedLoopbackService, CloneableTestRetryPolicy).with_cancellation(token.clone());
+        let svc = circuit_breaker.ready().await.expect("should never fail to be ready");
+        let mut fut = tokio_test::task::spawn(svc.call(req.clone()));
+        assert_pending!(fut.poll());
+
+        token.cancel();
+        assert!(fut.is_woken());
+        assert_eq!(fut.await, req.as_cancelled_response());
+
+        // A cancelled request doesn't open the breaker.
+        let mut svc_fut = tokio_test::task::spawn(circuit_breaker.ready());
+        assert_ready_ok!(svc_fut.poll());
+    }
+
+    #[tokio::test]
+    async fn response_wins_over_cancellation() {
+        let req = BasicRequest::success("good");
+        let token = CancellationToken::new();
+        token.cancel();
+
+        // The response is available on the first poll, as is the cancellation. The response must win, so that a
+        // request the remote end has answered isn't handed back to be sent again.
+        let mut circuit_breaker =
+            RetryCircuitBreaker::new(LoopbackService, CloneableTestRetryPolicy).with_cancellation(token);
+        let svc = circuit_breaker.ready().await.expect("should never fail to be ready");
+        assert_eq!(svc.call(req.clone()).await, req.as_service_response());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_does_not_abandon_uncloned_request() {
+        let req = BasicRequest::success("uncloned");
+        let token = CancellationToken::new();
+
+        let mut circuit_breaker = RetryCircuitBreaker::new(DelayedLoopbackService, NonCloneableTestRetryPolicy)
+            .with_cancellation(token.clone());
+        let svc = circuit_breaker.ready().await.expect("should never fail to be ready");
+        let mut fut = tokio_test::task::spawn(svc.call(req.clone()));
+        assert_pending!(fut.poll());
+
+        // Without a copy of the request, there is nothing to hand back, so the request runs to completion.
+        token.cancel();
+        assert_pending!(fut.poll());
+
+        tokio::time::advance(RESPONSE_DELAY).await;
+        assert_eq!(fut.await, req.as_service_response());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn layer_applies_cancellation() {
+        let req = BasicRequest::success("in-flight");
+        let token = CancellationToken::new();
+
+        let mut svc = RetryCircuitBreakerLayer::new(CloneableTestRetryPolicy)
+            .with_cancellation(token.clone())
+            .layer(DelayedLoopbackService);
+        let svc = svc.ready().await.expect("should never fail to be ready");
+        let fut = svc.call(req.clone());
+
+        token.cancel();
+        assert_eq!(fut.await, req.as_cancelled_response());
     }
 }

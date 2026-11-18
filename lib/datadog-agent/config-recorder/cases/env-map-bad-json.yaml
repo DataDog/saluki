@@ -1,0 +1,9 @@
+# Sets additional_endpoints to malformed JSON in the environment and reads it as maps.
+# Shows that map getters warn and return an empty map for invalid JSON strings.
+name: env-map-bad-json
+group: behavior
+why: [getter-map-from-bad-json-empty]
+env:
+  DD_ADDITIONAL_ENDPOINTS: "{bad"
+keys:
+  - {key: additional_endpoints, getters: [GetStringMap, GetStringMapString, GetStringMapStringSlice]}

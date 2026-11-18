@@ -7,14 +7,13 @@
 //!
 //! [OpenTelemetry Transform processor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor
 
-use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlTransform as TypedOttlTransform};
 use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser};
 use saluki_common::collections::FastHashMap;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
-    data_model::event::trace::{AttributeValue, Span},
+    data_model::event::trace::{AttributeValue, Span, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, GenericError};
@@ -23,17 +22,24 @@ use tracing::{debug, error};
 
 mod span_context;
 use self::span_context::{SpanTransformContext, SpanTransformFamily};
+use crate::components::ottl::ErrorMode;
 
 /// Configuration for the OTTL Transform processor.
 #[derive(Clone, Debug)]
 pub struct OttlTransformConfiguration {
-    config: TypedOttlTransform,
+    error_mode: ErrorMode,
+    trace_statements: Vec<String>,
 }
 
 impl OttlTransformConfiguration {
-    /// Creates an `OttlTransformConfiguration` from the resolved typed traces configuration.
-    pub fn from_configuration(config: &TypedOttlTransform) -> Self {
-        Self { config: config.clone() }
+    /// Creates a processor that applies `trace_statements` to each span, in order.
+    ///
+    /// `error_mode` decides whether later statements still run after one fails.
+    pub fn new(error_mode: ErrorMode, trace_statements: Vec<String>) -> Self {
+        Self {
+            error_mode,
+            trace_statements,
+        }
     }
 }
 
@@ -55,7 +61,7 @@ impl SynchronousTransformBuilder for OttlTransformConfiguration {
         let enums = EnumMap::new();
 
         let mut span_parsers = Vec::new();
-        for statement in &self.config.trace_statements {
+        for statement in &self.trace_statements {
             let statement = statement.trim();
             if statement.is_empty() {
                 continue;
@@ -71,7 +77,7 @@ impl SynchronousTransformBuilder for OttlTransformConfiguration {
         }
 
         Ok(Box::new(OttlTransform {
-            error_mode: self.config.error_mode,
+            error_mode: self.error_mode,
             span_parsers,
         }))
     }
@@ -85,7 +91,7 @@ impl MemoryBounds for OttlTransformConfiguration {
 
 /// Synchronous transform that applies OTTL statements to each span in a trace.
 pub struct OttlTransform {
-    error_mode: OttlErrorMode,
+    error_mode: ErrorMode,
     span_parsers: Vec<ottl::Parser<SpanTransformFamily>>,
 }
 
@@ -102,11 +108,11 @@ impl OttlTransform {
             match parser.execute(&mut ctx) {
                 Ok(_) => {}
                 Err(e) => match self.error_mode {
-                    OttlErrorMode::Ignore => {
+                    ErrorMode::Ignore => {
                         error!(error = %e, "OTTL transform statement error; ignoring");
                     }
-                    OttlErrorMode::Silent => {}
-                    OttlErrorMode::Propagate => {
+                    ErrorMode::Silent => {}
+                    ErrorMode::Propagate => {
                         // The OTel spec drops the entire payload on propagate errors,
                         // but the SynchronousTransform API does not support error propagation.
                         // We log and stop processing further statements for this span.
@@ -125,12 +131,10 @@ impl SynchronousTransform for OttlTransform {
             return;
         }
 
-        for event in event_buffer {
-            if let Some(trace) = event.try_as_trace_mut() {
-                let resource_attrs = std::sync::Arc::clone(&trace.attributes);
-                for span in trace.spans_mut() {
-                    self.transform_span(span, &resource_attrs);
-                }
+        for trace in event_buffer.events_mut::<Trace>() {
+            let resource_attrs = std::sync::Arc::clone(&trace.attributes);
+            for span in trace.spans_mut() {
+                self.transform_span(span, &resource_attrs);
             }
         }
     }
@@ -158,12 +162,8 @@ mod tests {
 
     fn get_span_attr(buffer: &EventsBuffer, span_index: usize, key: &str) -> Option<String> {
         buffer
-            .into_iter()
-            .filter_map(|e| match e {
-                Event::Trace(t) => Some(t.spans()),
-                _ => None,
-            })
-            .flat_map(|spans| spans.iter())
+            .events::<Trace>()
+            .flat_map(|trace| trace.spans())
             .nth(span_index)
             .and_then(|span| {
                 let k = MetaString::from(key);
@@ -178,14 +178,14 @@ mod tests {
         BuildContext::test_transform("ottl_transform")
     }
 
-    fn test_config(value: Option<serde_json::Value>) -> TypedOttlTransform {
+    fn test_config(value: Option<serde_json::Value>) -> OttlTransformConfiguration {
         let root = value
             .and_then(|value| value.get("ottl_transform_config").cloned())
             .unwrap_or_default();
         let error_mode = match root.get("error_mode").and_then(serde_json::Value::as_str) {
-            Some("ignore") => OttlErrorMode::Ignore,
-            Some("silent") => OttlErrorMode::Silent,
-            _ => OttlErrorMode::Propagate,
+            Some("ignore") => ErrorMode::Ignore,
+            Some("silent") => ErrorMode::Silent,
+            _ => ErrorMode::Propagate,
         };
         let trace_statements = root
             .get("trace_statements")
@@ -195,15 +195,11 @@ mod tests {
             .filter_map(serde_json::Value::as_str)
             .map(str::to_owned)
             .collect();
-        TypedOttlTransform {
-            error_mode,
-            trace_statements,
-        }
+        OttlTransformConfiguration::new(error_mode, trace_statements)
     }
 
     async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {
-        let typed = test_config(cfg_json);
-        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         ottl_config.build(ctx).await.expect("build should succeed")
     }
@@ -211,7 +207,7 @@ mod tests {
     // ---- Group 1: Configuration and build ----
 
     #[tokio::test]
-    async fn from_configuration_absent_key_returns_default() {
+    async fn absent_configuration_leaves_spans_unchanged() {
         let mut transform = build_transform(None).await;
         let span = make_span(1, 1, HashMap::from([("a".into(), "b".into())]));
         let trace = make_trace(vec![span], None);
@@ -232,8 +228,7 @@ mod tests {
                 "trace_statements": ["syntax error !!"]
             }
         });
-        let typed = test_config(Some(cfg_json));
-        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
+        let ottl_config = test_config(Some(cfg_json));
         let ctx = test_component_context();
         let result = ottl_config.build(ctx).await;
         assert!(result.is_err(), "invalid OTTL syntax must make build fail");
@@ -496,7 +491,7 @@ mod tests {
     #[tokio::test]
     async fn error_mode_controls_processing_after_a_statement_error() {
         // After a statement errors, `error_mode` decides whether later statements still run: ignore/silent
-        // continue, propagate stops processing the span. One case per `OttlErrorMode` arm. The first statement
+        // continue, propagate stops processing the span. One case per `ErrorMode` arm. The first statement
         // (setting a read-only resource attribute) always errors.
         struct Case {
             error_mode: &'static str,
@@ -551,43 +546,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[tokio::test]
-    async fn omitted_error_mode_defaults_to_propagate() {
-        // Per the transform processor spec, an omitted `error_mode` defaults to `Propagate`. Behaviorally,
-        // that means a statement error stops the rest of the span's statements (unlike ignore/silent, which
-        // continue). The config key is omitted here to exercise that default path.
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": [
-                    "set(resource.attributes[\"x\"], \"fail\")",
-                    "set(attributes[\"after\"], \"yes\")"
-                ]
-            }
-        });
-        let typed = test_config(Some(cfg_json));
-        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
-        assert_eq!(
-            ottl_config.config.error_mode,
-            OttlErrorMode::Propagate,
-            "omitted error_mode must default to Propagate"
-        );
-
-        let mut transform = ottl_config
-            .build(test_component_context())
-            .await
-            .expect("build should succeed");
-        let span = make_span(1, 1, HashMap::new());
-        let trace = make_trace(vec![span], None);
-        let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::Trace(trace)).is_none());
-        transform.transform_buffer(&mut buffer);
-        assert_eq!(
-            get_span_attr(&buffer, 0, "after"),
-            None,
-            "default (propagate) must stop processing after the first statement error"
-        );
     }
 
     // ---- Group 6: Multi-span and multi-trace (integration) ----
@@ -812,23 +770,18 @@ mod tests {
         assert!(buffer.try_push(Event::Trace(trace)).is_none());
         transform.transform_buffer(&mut buffer);
 
-        let mut saw_service_check = false;
-        let mut trace_span_x = None;
-        for event in &buffer {
-            match event {
-                Event::ServiceCheck(_) => saw_service_check = true,
-                Event::Trace(t) => {
-                    trace_span_x = t.spans().first().and_then(|s| {
-                        let k = MetaString::from("x");
-                        s.attributes.get(&k).and_then(|v| match v {
-                            AttributeValue::String(sv) => Some(sv.as_ref().to_string()),
-                            _ => None,
-                        })
-                    });
-                }
-                _ => {}
-            }
-        }
+        let saw_service_check = buffer.events::<ServiceCheck>().next().is_some();
+        let trace_span_x = buffer
+            .events::<Trace>()
+            .next()
+            .and_then(|t| t.spans().first())
+            .and_then(|s| {
+                let k = MetaString::from("x");
+                s.attributes.get(&k).and_then(|v| match v {
+                    AttributeValue::String(sv) => Some(sv.as_ref().to_string()),
+                    _ => None,
+                })
+            });
         assert!(saw_service_check, "non-trace events should pass through untouched");
         assert_eq!(
             trace_span_x.as_deref(),

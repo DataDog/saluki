@@ -1,0 +1,14 @@
+# Sets metric_filterlist to a list and its deprecated name statsd_metric_blocklist to null in
+# the same datadog.yaml.
+# Shows that the null deprecated value replaces the current name's list at the file source, unlike
+# a null current name, which is ignored: metric_filterlist reads nil, is not configured, and is
+# left out of the stream snapshot.
+name: renamed-key-yaml-old-name-null
+group: behavior
+why: [yaml-deprecated-name-null-masks-current, stream-snapshot-skips-nil]
+yaml: |
+  metric_filterlist: [new.metric]
+  statsd_metric_blocklist:
+keys:
+  - {key: metric_filterlist, getters: [GetStringSlice, Get, IsConfigured]}
+  - {key: statsd_metric_blocklist, getters: [GetStringSlice, Get]}

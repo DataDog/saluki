@@ -31,7 +31,7 @@ use tokio::{
 use tracing::{debug, error, info, trace, warn};
 
 mod telemetry;
-use self::telemetry::{FlushCounts, Telemetry};
+use self::telemetry::{origin_telemetry_bytes, FlushCounts, OriginContextId, Telemetry};
 
 mod config;
 pub use self::config::HistogramConfiguration;
@@ -81,7 +81,6 @@ impl From<&MetricValues> for AggregateMetricType {
 pub struct AggregateContextSnapshotEntry {
     context: Context,
     metric_type: AggregateMetricType,
-    unit: MetaString,
 }
 
 impl AggregateContextSnapshotEntry {
@@ -95,23 +94,10 @@ impl AggregateContextSnapshotEntry {
         self.metric_type
     }
 
-    /// Returns the unit attached to the retained metric values, if one is set.
-    pub fn unit(&self) -> Option<&str> {
-        if self.unit.is_empty() {
-            None
-        } else {
-            Some(&self.unit)
-        }
-    }
-
     /// Creates a snapshot entry for downstream test and benchmark fixtures.
     #[cfg(any(test, feature = "test-util"))]
-    pub fn for_test(context: Context, metric_type: AggregateMetricType, unit: MetaString) -> Self {
-        Self {
-            context,
-            metric_type,
-            unit,
-        }
+    pub fn for_test(context: Context, metric_type: AggregateMetricType) -> Self {
+        Self { context, metric_type }
     }
 }
 
@@ -345,6 +331,16 @@ pub struct AggregateConfiguration {
     /// Statistics to calculate over histograms, and how to copy them to distributions.
     pub hist_config: HistogramConfiguration,
 
+    /// Whether to emit active context counts grouped by resolved origin tags.
+    ///
+    /// Defaults to `false` in runtime configuration. Enable this to diagnose origin-specific context usage.
+    /// Contexts without origin tags are skipped. At most 199 origin groups and one `origin_overflow:true`
+    /// series are registered. Groups exceeding 32 tags or 4096 bytes of encoded labels also contribute to overflow.
+    /// A context stays in its original group until expiry; vacant origin slots can admit new contexts. The total
+    /// across all series is exact, but an origin's own series is too low while any of its contexts are counted in
+    /// overflow. An emptied group reports 0 until idle eviction removes its series.
+    pub origin_telemetry_enabled: bool,
+
     /// Owner side of the channel used to serve retained-context snapshot requests.
     ///
     /// This is runtime wiring rather than configuration: it carries no settings, and is created by the caller with
@@ -368,6 +364,7 @@ impl AggregateConfiguration {
             flush_open_windows: false,
             counter_expiry_seconds: Some(300),
             hist_config: HistogramConfiguration::default(),
+            origin_telemetry_enabled: false,
             context_snapshot_receiver,
         }
     }
@@ -378,7 +375,7 @@ impl TransformBuilder for AggregateConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_snapshot_requests = self.context_snapshot_receiver.take_receiver()?;
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        let telemetry = Telemetry::new(&metrics_builder);
+        let telemetry = Telemetry::new(&metrics_builder, self.origin_telemetry_enabled);
 
         let state = AggregationState::new(
             self.window_duration_seconds,
@@ -439,6 +436,15 @@ impl MemoryBounds for AggregateConfiguration {
                 UsageExpr::struct_size::<AggregateContextSnapshotEntry>("snapshot entry"),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
             ));
+
+        if self.origin_telemetry_enabled {
+            // Origin telemetry has independent series and byte limits, including owned label storage and
+            // registry/resolver copies rather than assuming strings share the metric context's allocation.
+            builder.firm().with_fixed_amount(
+                "bounded origin context telemetry",
+                origin_telemetry_bytes(self.primary_flush_interval),
+            );
+        }
     }
 }
 
@@ -535,18 +541,16 @@ impl Transform for Aggregate {
 
                         let current_time = get_unix_timestamp();
 
-                        for event in events {
-                            if let Some(metric) = event.try_into_metric() {
-                                let was_breached = self.state.context_limit_breached();
-                                if !self.state.insert(current_time, metric) {
-                                    trace!("Dropping metric due to context limit.");
-                                    if !was_breached {
-                                        // First drop since the last recovery — emit a single warning.
-                                        warn!(context_limit = self.state.context_limit, "Context limit reached, \
-                                        dropping metrics. Consider increasing `aggregate_context_limit`.");
-                                    }
-                                    self.telemetry.increment_events_dropped();
+                        for metric in events.into_events::<Metric>() {
+                            let was_breached = self.state.context_limit_breached();
+                            if !self.state.insert(current_time, metric) {
+                                trace!("Dropping metric due to context limit.");
+                                if !was_breached {
+                                    // First drop since the last recovery — emit a single warning.
+                                    warn!(context_limit = self.state.context_limit, "Context limit reached, \
+                                    dropping metrics. Consider increasing `aggregate_context_limit`.");
                                 }
+                                self.telemetry.increment_events_dropped();
                             }
                         }
                     },
@@ -582,6 +586,21 @@ struct AggregatedMetric {
     values: MetricValues,
     metadata: MetricMetadata,
     last_seen: u64,
+    origin_id: OriginContextId,
+}
+
+impl AggregatedMetric {
+    fn merge(&mut self, timestamp: u64, values: MetricValues, metadata: MetricMetadata) {
+        // Other metadata changes within a flush interval are ignored to keep things simple.
+        self.last_seen = timestamp;
+        self.values.merge(values);
+
+        // The first non-empty unit wins and persists until the entry is removed; non-counters are removed once all
+        // values are flushed, so a stale unit outlives its samples by at most one flush.
+        if self.metadata.unit.is_empty() {
+            self.metadata.unit = metadata.unit;
+        }
+    }
 }
 
 struct AggregationState {
@@ -628,7 +647,6 @@ impl AggregationState {
             snapshot.push(AggregateContextSnapshotEntry {
                 context: context.clone(),
                 metric_type: AggregateMetricType::from(&aggregated.values),
-                unit: aggregated.metadata.unit.clone(),
             });
         }
         snapshot
@@ -666,20 +684,15 @@ impl AggregationState {
         // If we're already tracking this context, update the last seen time and merge the new values into the existing
         // values. Otherwise, create a new entry.
         match self.contexts.entry(context) {
-            Entry::Occupied(mut entry) => {
-                let aggregated = entry.get_mut();
-
-                // We ignore metadata changes within a flush interval to keep things simple.
-                aggregated.last_seen = timestamp;
-                aggregated.values.merge(values);
-            }
+            Entry::Occupied(mut entry) => entry.get_mut().merge(timestamp, values, metadata),
             Entry::Vacant(entry) => {
-                self.telemetry.increment_contexts(entry.key(), &values);
+                let origin_id = self.telemetry.increment_contexts(entry.key(), &values);
 
                 entry.insert(AggregatedMetric {
                     values,
                     metadata,
                     last_seen: timestamp,
+                    origin_id,
                 });
 
                 saluki_antithesis::always_le!(
@@ -697,6 +710,9 @@ impl AggregationState {
     async fn flush(
         &mut self, current_time: u64, flush_open_buckets: bool, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
     ) -> Result<(), GenericError> {
+        // A previous flush may have failed after marking some contexts for removal. Re-evaluate them:
+        // ingestion may have added values since then, and their telemetry admission is still live.
+        self.contexts_remove_buf.clear();
         let bucket_width_secs = self.bucket_width_secs;
         let counter_expire_secs = self.counter_expire_secs.map(|d| d.get()).unwrap_or(0);
 
@@ -823,7 +839,6 @@ impl AggregationState {
             }
 
             if am.values.is_empty() && should_expire_if_empty {
-                self.telemetry.decrement_contexts(context, &am.values);
                 self.contexts_remove_buf.push(context.clone());
             }
         }
@@ -831,7 +846,9 @@ impl AggregationState {
         // Remove any contexts that were marked as needing to be removed.
         let contexts_len_before = self.contexts.len();
         for context in self.contexts_remove_buf.drain(..) {
-            self.contexts.remove(&context);
+            if let Some(am) = self.contexts.remove(&context) {
+                self.telemetry.decrement_contexts(&context, &am.values, am.origin_id);
+            }
         }
         let contexts_len_after = self.contexts.len();
 
@@ -980,17 +997,11 @@ mod tests {
 
     use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
-        accounting::{ComponentRegistry, MemoryLimiter},
-        components::{
-            destinations::{Destination, DestinationBuilder, DestinationContext},
-            sources::{Source, SourceBuilder, SourceContext},
-            ComponentContext,
-        },
+        accounting::ComponentRegistry,
+        components::{test_util::TestComponentDriver, ComponentContext},
         data_model::tags::{Tag, TagSet},
-        health::HealthRegistry,
-        runtime::{state::ResourceRegistry, Supervisor},
         support::SubsystemIdentifier,
-        topology::{interconnect::Dispatcher, EventsDispatcher, OutputDefinition, OutputName, TopologyBlueprint},
+        topology::{interconnect::Dispatcher, EventsDispatcher, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -1017,83 +1028,6 @@ mod tests {
     /// Gets the flush timestamp for the given step.
     const fn flush_ts(step: u64) -> u64 {
         BUCKET_WIDTH_SECS.get() * (step + 1)
-    }
-
-    struct ControlledMetricSource {
-        events: mpsc::Receiver<Event>,
-    }
-
-    #[async_trait]
-    impl Source for ControlledMetricSource {
-        async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-            let shutdown = context.take_shutdown_handle();
-            tokio::pin!(shutdown);
-            let mut events_open = true;
-
-            loop {
-                select! {
-                    _ = &mut shutdown => break,
-                    maybe_event = self.events.recv(), if events_open => match maybe_event {
-                        Some(event) => context.dispatcher().dispatch_one(event).await?,
-                        None => events_open = false,
-                    }
-                }
-            }
-            Ok(())
-        }
-    }
-
-    struct ControlledMetricSourceBuilder {
-        events: Mutex<Option<mpsc::Receiver<Event>>>,
-        outputs: Vec<OutputDefinition<EventType>>,
-    }
-
-    #[async_trait]
-    impl SourceBuilder for ControlledMetricSourceBuilder {
-        fn outputs(&self) -> &[OutputDefinition<EventType>] {
-            &self.outputs
-        }
-
-        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
-            let events = self
-                .events
-                .lock()
-                .map_err(|_| generic_error!("controlled metric source receiver lock is poisoned"))?
-                .take()
-                .ok_or_else(|| generic_error!("controlled metric source receiver has already been taken"))?;
-            Ok(Box::new(ControlledMetricSource { events }))
-        }
-    }
-
-    impl MemoryBounds for ControlledMetricSourceBuilder {
-        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
-    }
-
-    struct DrainingMetricDestination;
-
-    #[async_trait]
-    impl Destination for DrainingMetricDestination {
-        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-            while context.events().next().await.is_some() {}
-            Ok(())
-        }
-    }
-
-    struct DrainingMetricDestinationBuilder;
-
-    #[async_trait]
-    impl DestinationBuilder for DrainingMetricDestinationBuilder {
-        fn input_event_type(&self) -> EventType {
-            EventType::Metric
-        }
-
-        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-            Ok(Box::new(DrainingMetricDestination))
-        }
-    }
-
-    impl MemoryBounds for DrainingMetricDestinationBuilder {
-        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
     struct DispatcherReceiver {
@@ -1271,7 +1205,7 @@ mod tests {
             10,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
-            Telemetry::new(&builder),
+            Telemetry::new(&builder, false),
         );
 
         assert!(state.insert(insert_ts(1), Metric::counter("metric1", 1.0)));
@@ -1303,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_contexts_preserves_full_context_shape_and_unit() {
+    fn snapshot_contexts_preserves_full_context_shape() {
         let mut state = AggregationState::new(
             BUCKET_WIDTH_SECS,
             10,
@@ -1337,11 +1271,9 @@ mod tests {
         assert_eq!(snapshot[0].context().tags().len(), 1);
         assert_eq!(snapshot[0].context().origin_tags().len(), 1);
         assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Histogram);
-        assert_eq!(snapshot[0].unit(), Some("millisecond"));
 
         assert_eq!(snapshot[1].context(), &gauge_context);
         assert_eq!(snapshot[1].metric_type(), AggregateMetricType::Gauge);
-        assert_eq!(snapshot[1].unit(), None);
     }
 
     #[tokio::test]
@@ -1432,7 +1364,6 @@ mod tests {
         let expected = vec![AggregateContextSnapshotEntry {
             context,
             metric_type: AggregateMetricType::Gauge,
-            unit: MetaString::empty(),
         }];
         let (response, mut receiver) = oneshot::channel();
         let snapshot_calls = Cell::new(0);
@@ -1469,6 +1400,22 @@ mod tests {
             bounds.total_firm_limit_bytes(),
             expected_minimum + aggregation_state_bytes + context_snapshot_bytes
         );
+
+        let origin_config = AggregateConfiguration {
+            context_limit,
+            origin_telemetry_enabled: true,
+            ..AggregateConfiguration::for_test()
+        };
+        let origin_registry = ComponentRegistry::default();
+        origin_config.specify_bounds(&mut origin_registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let origin_bounds = origin_registry.as_bounds();
+        let origin_tracking_bytes = origin_telemetry_bytes(origin_config.primary_flush_interval);
+        assert_eq!(
+            origin_bounds.total_firm_limit_bytes(),
+            expected_minimum + aggregation_state_bytes + context_snapshot_bytes + origin_tracking_bytes
+        );
+        // Faster flushes reuse slots more often while retired series wait for idle eviction.
+        assert!(origin_telemetry_bytes(Duration::from_secs(1)) > origin_telemetry_bytes(Duration::from_secs(15)));
     }
 
     #[tokio::test]
@@ -1495,41 +1442,16 @@ mod tests {
                 .expect_err("snapshot requester should be canceled")
                 .is_cancelled());
 
-            let (events_tx, events_rx) = mpsc::channel(1);
-            let source = ControlledMetricSourceBuilder {
-                events: Mutex::new(Some(events_rx)),
-                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
-            };
-            let component_registry = ComponentRegistry::default();
-            let mut blueprint = TopologyBlueprint::new("aggregate_snapshot_owner", &component_registry);
-            blueprint
-                .add_source("source", source)
-                .expect("controlled source should be accepted")
-                .add_transform("aggregate", config)
-                .expect("aggregate transform should be accepted")
-                .add_destination("destination", DrainingMetricDestinationBuilder)
-                .expect("draining destination should be accepted");
-            blueprint
-                .connect_components_in_order(["source", "aggregate", "destination"])
-                .expect("test topology should connect");
-            blueprint
-                .with_health_registry(HealthRegistry::new())
-                .with_memory_limiter(MemoryLimiter::noop())
-                .with_resource_registry(ResourceRegistry::new())
-                .with_ambient_worker_pool();
-
-            let mut supervisor =
-                Supervisor::new("aggregate-snapshot-owner").expect("test supervisor should be created");
-            supervisor.add_worker(blueprint);
-            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+            // The default output has to stay open, since the aggregate dispatches what it doesn't retain.
+            let (control, _outputs) = TestComponentDriver::transform(config)
+                .await
+                .expect("aggregate transform should build");
 
             let retained_context = Context::from_static_name("owner.loop.mixed.counter");
             let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(insert_ts(1)), 3.0)]);
-            events_tx
-                .send(Event::Metric(Metric::counter(retained_context.clone(), mixed_values)))
-                .await
-                .expect("controlled source should accept a mixed event");
+            control
+                .send_event(Event::Metric(Metric::counter(retained_context.clone(), mixed_values)))
+                .await;
 
             let snapshot = loop {
                 let snapshot = snapshot_handle
@@ -1549,16 +1471,9 @@ mod tests {
             let entry = &snapshot[0];
             assert_eq!(entry.context(), &retained_context);
             assert_eq!(entry.metric_type(), AggregateMetricType::Counter);
-            assert_eq!(entry.unit(), None);
 
-            drop(events_tx);
             drop(snapshot_handle);
-            shutdown_tx.send(()).expect("test topology should still be running");
-            let topology_result = topology_task.await.expect("topology task should not panic");
-            assert!(
-                topology_result.is_ok(),
-                "topology should stop cleanly: {topology_result:?}"
-            );
+            control.shutdown().await.expect("aggregate should stop cleanly");
         })
         .await
         .expect("production aggregate owner loop should complete without spinning or hanging");
@@ -1570,7 +1485,6 @@ mod tests {
         let expected = vec![AggregateContextSnapshotEntry::for_test(
             Context::from_static_name("round.trip"),
             AggregateMetricType::Gauge,
-            MetaString::from_static("widget"),
         )];
         let snapshot_task = tokio::spawn(async move { handle.snapshot().await });
 
@@ -2049,6 +1963,85 @@ mod tests {
         }
     }
 
+    fn histogram_with_unit(context: &Context, value: f64, unit: &'static str) -> Metric {
+        Metric::from_parts(
+            context.clone(),
+            MetricValues::histogram([value]),
+            MetricMetadata::default().with_unit(MetaString::from_static(unit)),
+        )
+    }
+
+    fn max_only_histogram_config() -> HistogramConfiguration {
+        HistogramConfiguration::from_statistics(&[HistogramStatistic::Maximum], false, "".into())
+    }
+
+    #[tokio::test]
+    async fn histogram_unit_first_non_empty_wins() {
+        // DogStatsD `h` and `ms` samples for one context land in one histogram, which carries a unit if any sample did.
+        for units in [["", "millisecond"], ["millisecond", ""]] {
+            let mut state = AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                10,
+                COUNTER_EXPIRE,
+                max_only_histogram_config(),
+                Telemetry::noop(),
+            );
+            let context = Context::from_static_name("mixed.timer");
+            for (value, unit) in units.into_iter().enumerate() {
+                assert!(state.insert(insert_ts(1), histogram_with_unit(&context, value as f64, unit)));
+            }
+
+            let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+            assert_eq!(flushed_metrics.len(), 1);
+            assert_eq!(
+                flushed_metrics[0].metadata().unit(),
+                Some("millisecond"),
+                "units {units:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_unit_lasts_until_the_context_is_removed() {
+        // The unit isn't tracked per bucket: every unflushed value of the context shares it until the context is removed.
+        for (units, expected) in [
+            (["millisecond", "millisecond"], ["millisecond", "millisecond"]),
+            (["millisecond", ""], ["millisecond", "millisecond"]),
+            (["", "millisecond"], ["millisecond", "millisecond"]),
+            (["", ""], ["", ""]),
+        ] {
+            let mut state = AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                10,
+                COUNTER_EXPIRE,
+                max_only_histogram_config(),
+                Telemetry::noop(),
+            );
+            let context = Context::from_static_name("timer");
+            assert!(state.insert(insert_ts(1), histogram_with_unit(&context, 1.0, units[0])));
+            assert!(state.insert(insert_ts(2), histogram_with_unit(&context, 2.0, units[1])));
+
+            for (step, unit) in [1, 2].into_iter().zip(expected) {
+                let flushed_metrics = get_flushed_metrics_with_open_windows(flush_ts(step), false, &mut state).await;
+                assert_eq!(flushed_metrics.len(), 1, "units {units:?}, step {step}");
+                let max_metric = Metric::gauge(Context::from_static_name("timer.max"), 0.0);
+                assert_flushed_scalar_metric!(max_metric, &flushed_metrics[0], [bucket_ts(step) => step as f64]);
+                assert_eq!(
+                    flushed_metrics[0].metadata().unit(),
+                    (!unit.is_empty()).then_some(unit),
+                    "units {units:?}, step {step}"
+                );
+            }
+            assert!(state.is_empty());
+
+            // A context recreated after removal doesn't inherit the old unit.
+            assert!(state.insert(insert_ts(3), histogram_with_unit(&context, 3.0, "")));
+            let flushed_metrics = get_flushed_metrics_with_open_windows(flush_ts(3), false, &mut state).await;
+            assert_eq!(flushed_metrics.len(), 1, "units {units:?}, step 3");
+            assert_eq!(flushed_metrics[0].metadata().unit(), None, "units {units:?}, step 3");
+        }
+    }
+
     #[tokio::test]
     async fn distributions() {
         // We're testing that we pass through distributions untouched.
@@ -2141,11 +2134,137 @@ mod tests {
         assert_eq!(flushed_metric.values().as_str(), "rate");
     }
 
+    #[test]
+    fn origin_context_telemetry_groups_tag_order_and_skips_unresolved_origins() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = Telemetry::new(&MetricsBuilder::default(), true);
+        let values = MetricValues::counter((insert_ts(1), 1.0));
+
+        let mut first_origin = TagSet::default();
+        first_origin.insert_tag("container:one");
+        first_origin.insert_tag("namespace:default");
+        let first_context = Context::from_static_parts("metric.one", &[]).with_origin_tags(first_origin);
+        let mut same_origin_different_order = TagSet::default();
+        same_origin_different_order.insert_tag("namespace:default");
+        same_origin_different_order.insert_tag("container:one");
+        let second_context =
+            Context::from_static_parts("metric.two", &[]).with_origin_tags(same_origin_different_order);
+
+        let first_id = telemetry.increment_contexts(&first_context, &values);
+        let second_id = telemetry.increment_contexts(&second_context, &values);
+        assert_eq!(
+            recorder.gauge((
+                "aggregate_active_contexts_by_origin",
+                &[("container", "one"), ("namespace", "default")]
+            )),
+            Some(2.0)
+        );
+
+        telemetry.decrement_contexts(&first_context, &values, first_id);
+        assert_eq!(
+            recorder.gauge((
+                "aggregate_active_contexts_by_origin",
+                &[("container", "one"), ("namespace", "default")]
+            )),
+            Some(1.0)
+        );
+        telemetry.decrement_contexts(&second_context, &values, second_id);
+        assert_eq!(
+            recorder.gauge((
+                "aggregate_active_contexts_by_origin",
+                &[("container", "one"), ("namespace", "default")]
+            )),
+            Some(0.0)
+        );
+
+        let unresolved_context = Context::from_static_parts("metric.unresolved", &[]);
+        telemetry.increment_contexts(&unresolved_context, &values);
+        assert_eq!(recorder.gauge("aggregate_active_contexts_by_origin"), None);
+    }
+
+    #[tokio::test]
+    async fn origin_admission_survives_failed_flush_and_new_values_before_retry() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = Telemetry::new(&MetricsBuilder::default(), true);
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            2048,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            telemetry,
+        );
+        let mut origin = TagSet::default();
+        origin.insert_tag("container:one");
+        let count = 1026;
+        for i in 0..count {
+            let context =
+                Context::from_parts(format!("metric.{i}"), TagSet::default()).with_origin_tags(origin.clone());
+            assert!(state.insert(insert_ts(1), Metric::gauge(context, (insert_ts(1), 1.0))));
+        }
+        let (dispatcher, receiver) = build_basic_dispatcher();
+        drop(receiver);
+        let mut buffered = dispatcher.buffered().unwrap();
+        assert!(state.flush(flush_ts(1), false, &mut buffered).await.is_err());
+        assert!(
+            !state.contexts_remove_buf.is_empty(),
+            "failure must follow a pending expiry"
+        );
+        assert_eq!(state.contexts.len(), count);
+        let metric = ("aggregate_active_contexts_by_origin", &[("container", "one")]);
+        assert_eq!(recorder.gauge(metric), Some(count as f64));
+
+        // A context marked for removal before the failure can receive new, still-open values.
+        let revived = state.contexts_remove_buf[0].clone();
+        let future_ts = flush_ts(1) + 100;
+        assert!(state.insert(future_ts, Metric::gauge(revived.clone(), (future_ts, 1.0))));
+        let _ = get_flushed_metrics_with_open_windows(flush_ts(1), false, &mut state).await;
+        assert_eq!(state.contexts.len(), 1);
+        assert!(state.contexts.contains_key(&revived));
+        assert_eq!(recorder.gauge(metric), Some(1.0));
+        let _ = get_flushed_metrics_with_open_windows(future_ts + 100, false, &mut state).await;
+        assert!(state.contexts.is_empty());
+        assert_eq!(recorder.gauge(metric), Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn origin_context_telemetry_tracks_aggregation_insertions_and_expirations() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = Telemetry::new(&MetricsBuilder::default(), true);
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            telemetry,
+        );
+
+        let mut origin_tags = TagSet::default();
+        origin_tags.insert_tag("container_id:container-1");
+        origin_tags.insert_tag("kube_namespace:default");
+        let first_context = Context::from_static_parts("metric.one", &[]).with_origin_tags(origin_tags.clone());
+        let second_context = Context::from_static_parts("metric.two", &[]).with_origin_tags(origin_tags);
+
+        assert!(state.insert(insert_ts(1), Metric::gauge(first_context, (insert_ts(1), 1.0))));
+        assert!(state.insert(insert_ts(1), Metric::gauge(second_context, (insert_ts(1), 1.0))));
+        let origin_metric = (
+            "aggregate_active_contexts_by_origin",
+            &[("container_id", "container-1"), ("kube_namespace", "default")],
+        );
+        assert_eq!(recorder.gauge(origin_metric), Some(2.0));
+
+        let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert!(state.is_empty());
+        assert_eq!(recorder.gauge(origin_metric), Some(0.0));
+    }
+
     #[tokio::test]
     async fn telemetry() {
-        // TODO: We don't check `component_events_dropped_total` here as it's set directly in the aggregate
-        // component future rather than `AggregationState`, which is harder to drive overall and would have
-        // required even more boilerplate.
+        // TODO: We don't check that `component_events_dropped_total` increments when a context limit is hit,
+        // since that increment happens in the aggregate component future rather than `AggregationState`,
+        // which is harder to drive overall and would have required even more boilerplate.
         //
         // Leaving that as a future improvement.
 
@@ -2153,7 +2272,7 @@ mod tests {
         let _local = metrics::set_default_local_recorder(&recorder);
 
         let builder = MetricsBuilder::default();
-        let telemetry = Telemetry::new(&builder);
+        let telemetry = Telemetry::new(&builder, false);
 
         let mut state = AggregationState::new(
             BUCKET_WIDTH_SECS,

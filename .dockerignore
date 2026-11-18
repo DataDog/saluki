@@ -9,6 +9,7 @@ target/
 **/fuzz/target
 test/
 !test/antithesis/
+!test/architecture/
 .gitignore
 .gitlab-ci.yml
 CONTRIBUTING.md

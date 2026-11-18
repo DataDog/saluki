@@ -1,0 +1,10 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  app:
+    subject: true
+    image: alpine:3.20
+    processes:
+      - {name: main, exit: container, output: container}
+      - {name: helper, exit: {record: helper}, output: container}
+procedure: []

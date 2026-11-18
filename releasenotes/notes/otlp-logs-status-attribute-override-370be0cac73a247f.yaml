@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    OTLP logs handled natively now get the status derived from the log record, as in the Datadog Agent, when a resource
+    or scope attribute is named ``status``. Previously the attribute's value replaced the status.

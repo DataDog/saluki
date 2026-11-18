@@ -6,13 +6,15 @@ name: "Semantic PR Title Check"
 on:
   pull_request_target:
     types: [opened, edited, synchronize, labeled, unlabeled]
+    branches-ignore:
+      - "**/graphite-base/**"
 
 jobs:
   main:
     permissions:
       id-token: write
     name: Check For Semantic PR Title
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Get access token from dd-octo-sts
         uses: DataDog/dd-octo-sts-action@c85802a58e202b7e764b5441e4378c76043c8108 # v1.0.5
@@ -21,7 +23,7 @@ jobs:
           scope: DataDog/saluki
           policy: self.check-pr-title
 
-      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+      - uses: amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6 # v6.1.2
         env:
           GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         with:

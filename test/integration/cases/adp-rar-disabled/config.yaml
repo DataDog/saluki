@@ -22,7 +22,7 @@ env:
 
 container:
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
 
 procedure:
   # ADP should report registration failure (Core Agent returns error when RAR disabled). Allow 15s

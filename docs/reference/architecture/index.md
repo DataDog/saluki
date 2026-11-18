@@ -65,10 +65,14 @@ Slightly complex:
 
 ### Components
 
-Components are the discrete chunks of functionality that make up a topology, and are grouped into
-three categories: **sources**, **transforms**, and **destinations**. All components interact with
-each other over channels, which are the primary mechanism for sending data from one component to
-another.
+Components are the discrete chunks of functionality that make up a topology. The seven component
+types are: **sources**, **relays**, **decoders**, **transforms**, **encoders**, **forwarders**, and
+**destinations**. All components interact with each other over channels, which are the primary
+mechanism for sending data from one component to another.
+
+Sources, transforms, and destinations deal exclusively with the `Event` data model. Relays and
+forwarders deal with encoded payloads. Decoders convert payloads into events, and encoders convert
+events into payloads.
 
 Components implement specific traits (an `interface` in Go) in order to indicate what type of
 component they're, and these traits also requiring describing the input and/or output data types
@@ -122,8 +126,7 @@ Examples of destinations (some of which don't currently exist):
 
 In order to facilitate communication between components in a generic way, Saluki uses a unified data
 model based on a single enum type, `Event`. Events represent all possible data types that Saluki is
-able to handle, such as metrics (currently supported), logs and traces (not yet supported), and so
-on.
+able to handle, such as metrics, logs, traces, DogStatsD events, service checks, and trace statistics.
 
 Naturally, not every component will emit all event types, and not every component will be able to
 handle all event types. This is dealt with by the logic mentioned prior, where connected components
@@ -136,15 +139,15 @@ unwrap `Event`s and access the true event, such as the actual `Metric` container
 
 ### Outputs
 
-Source and transform components can emit their data in one of two ways: using a default output, or a
+Sources, transforms, and relays can emit their data in one of two ways: using a default output, or a
 **named** output.
 
 Default outputs are exactly what they sound like, and are used as the primary output of a component.
-This is the pattern used when a component only emits a single event type, and has no specialization
+This is the pattern used when a component only emits a single data type, and has no specialization
 otherwise.
 
-For some components, however, they may emit multiple event types, or they may dynamically emit
-certain events/event types based on their configuration. In order to support this, Saluki has a
+For some components, however, they may emit multiple types, or they may dynamically emit
+certain data based on their configuration. In order to support this, Saluki has a
 concept of "named" outputs, where a component can have a dynamic number of outputs, each with a
 qualified name.
 
@@ -193,26 +196,78 @@ only a default output, and the other has multiple named outputs:
                                     └──────────────────────────────────────────────────▶
 ```
 
+### Conditional connections
+
+Some components are only useful some of the time. A debugging destination might only care about events while a
+diagnostic is running, and a whole branch of the topology might only matter when a feature is enabled. Sending events
+to these components while they ignore them still costs CPU and memory, since events are cloned for every downstream
+connection.
+
+To avoid that cost, you can make a connection conditional with `TopologyBlueprint::connect_components_when`, which takes
+an `EdgeCondition` in addition to the two component identifiers. Any connection can be conditional, including
+connections that carry payloads. Conditions come in two kinds, which are resolved at different times:
+
+- **Fixed conditions** are resolved when the topology is built. A connection whose condition is `false` is removed
+  entirely. If that leaves the downstream component without any inbound connections, the component is removed as well,
+  along with any components only reachable through it. Removed components are never built or spawned, and they don't
+  count toward the memory bounds of the topology. A fixed condition of `true` is the same as a regular connection.
+- **Dynamic conditions** are resolved at runtime, and can be created from a stream of values or from a watch channel.
+  The connection always exists, but events are only sent over it while its condition is `true`. While the condition is
+  `false`, the upstream component skips that connection entirely: it neither clones nor sends events to it, and counts
+  the skipped events in the `component_events_elided_total` metric.
+
+Dynamic conditions only control whether events are sent to the downstream component. The downstream component keeps
+running, and simply receives nothing while its input is inactive. When a condition changes to `true`, events dispatched
+from that point on are sent to the downstream component: events dispatched while the condition was `false` are never
+replayed. Conditions are also updated independently of the components themselves, so a component that watches the same
+setting might see a change slightly before or after its connection does. Only use conditional connections where
+dropping events on an inactive connection is the intended behavior.
+
 ### Shutdown
 
-Topologies provide ordered shutdown through two mechanisms: the used of a shutdown coordinator, and
-the implicit behavior of the channels used to connect components together.
+A topology stops in dependency order. Two things set that order: the channels that connect the
+components, and the ownership of the tasks that each component starts. No component has to know the
+order.
 
-Shutdown starts at the top level, controlled by the topology itself. A signal is sent to all sources
-indicating that shutdown should proceed. Sources will then begin to shutdown, stopping new
-data/connections/etc from coming in, as well as waiting for existing work to complete. Once a source
-shuts down, it signals back to the topology that it's done. Once all sources have signaled that
-they have shut down, the topology waits for all remaining components to complete as well.
+Each component runs as a worker of the topology supervisor. The tasks that a component spawns are its
+children, and they belong to the _scope_ of the component. A component does not finish until all of
+its children finish.
 
-However, transforms and destinations aren't signaled directly to shutdown. Instead, they depend on
-the implicit behavior of the channels that are used for receiving events. Once these channels have
-been drained of any remaining events, and all of the senders have shutdown, the channel will be
-marked as closed. This lets transforms and destination focus on simply receiving from the channel
-until it's closed, at which point they will naturally complete and shutdown.
+When shutdown starts, the topology supervisor sends the shutdown signal to all components at the same
+time. The components then stop as follows:
 
-By triggering shutdown at the source level, and then having each subsequent component process any
-remaining events, we ensure that all remaining events are processed before the topology is
-completely shutdown.
+- **Sources and relays** use the shutdown signal. A source stops accepting new data and new
+  connections, and completes the work that it already accepted. When the source returns, its scope
+  tells its children to stop. For example, a listener stops accepting connections, and then each
+  connection handler completes its current work. The source finishes when all of its children finish.
+  Some sources and relays consume the requests of their own servers, such as the OTLP servers. Those
+  servers are told to stop together with the component instead. The component drains what the servers
+  accepted until they exit, and then returns.
+- **All other components** do not use the shutdown signal. For example, a transform or a destination
+  reads from its input channel until the channel closes. A channel closes when all the components that send to it
+  have stopped and the channel is empty. The component then processes its last events and stops.
+
+Thus, shutdown moves through the topology in the same direction as the events. Each component
+processes its remaining events before it stops, so the topology processes all the events that it
+accepted before it stops.
+
+A task that has no end of its own, such as a periodic background loop, uses the _brutal_ shutdown
+strategy. The runtime halts it immediately when its owner stops, and does not count this halt.
+
+#### Shutdown timeout
+
+Each component has a shutdown timeout, which is the shutdown timeout of the topology. The timeout
+applies to the component and to all of its children. If the timeout expires before the component
+finishes, the topology supervisor halts the component. A halt stops the work of the component
+immediately, and also halts each child that still runs, at any depth in the scope.
+
+Each child also keeps its own shutdown strategy. For a task built from a closure, that strategy is a
+timeout of five seconds. If a child doesn't stop within its own timeout, its owner halts it, even if
+the timeout of the component hasn't expired.
+
+The runtime logs each process that it halts and counts it, and the topology reports an unclean
+shutdown. The runtime never tells a component how much time it has. A component only receives the
+shutdown signal.
 
 ### Runtime
 

@@ -50,6 +50,9 @@ pub struct SharedConfiguration {
 
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
+    ///
+    /// ADP raises a level less verbose than `info`, such as `warn`, to `info`, since its status page
+    /// relies on metrics at that level.
     pub metrics_level: String,
 
     /// Base directory for runtime-state files.
@@ -58,6 +61,19 @@ pub struct SharedConfiguration {
     /// DogStatsD context dumps. Defaults to unset when configuration does not provide a concrete
     /// `run_path`.
     pub run_path: Option<PathBuf>,
+
+    /// Host that network listeners bind to (`bind_host`).
+    ///
+    /// An unset value leaves each listener at its own default host (`127.0.0.1`), and a blank value is normalized to
+    /// unset. Read by the DogStatsD UDP and TCP listeners, and by the APM relay's TCP listener; Unix socket and named
+    /// pipe listeners ignore it. `dogstatsd_non_local_traffic` and `apm_config.apm_non_local_traffic` take precedence
+    /// for their own listeners and bind to `0.0.0.0` regardless of this value.
+    ///
+    /// The provenance matters to the APM relay: like the trace-agent, it binds every interface in a container only
+    /// when neither this nor `apm_config.apm_non_local_traffic` was set explicitly. The Agent's schema defaults this
+    /// to `localhost`, so the value alone can't tell. The value stays an `Option` because a blank value is unset
+    /// whether or not it was set explicitly.
+    pub bind_host: ConfigValue<Option<String>>,
 }
 
 /// Host identity and container runtime discovery inputs.
@@ -379,6 +395,14 @@ pub struct Forwarder {
     /// Grace period the forwarder is given to drain before shutdown.
     pub stop_timeout: Duration,
 
+    /// Whether the forwarder waits for in-flight requests to finish when it shuts down.
+    ///
+    /// When `false`, in-flight requests are aborted as soon as shutdown begins and their transactions are requeued
+    /// with the other pending transactions, which are then persisted to disk if disk storage is enabled. When `true`,
+    /// in-flight requests are allowed to finish first, bounded by the topology-wide shutdown timeout; if that timeout
+    /// elapses first, nothing pending is persisted. The Datadog schema supplies `false` when nothing sets this key.
+    pub stop_wait_for_inflight: bool,
+
     /// Fraction of available disk the on-disk retry store may use.
     pub storage_max_disk_ratio: f64,
 
@@ -523,8 +547,38 @@ pub struct V3ApiEncoding {
 /// V3 sketches intake settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiSettings {
+    /// Route for sampled V3 sketch copies, used for intake validation.
+    ///
+    /// Defaults to `/api/intake/metrics/v3beta/sketches`. This does not change the authoritative route.
+    pub beta_route: String,
+
+    /// Probability of shadowing each eligible V2 sketch batch, independently for each destination.
+    ///
+    /// Defaults to `0` (disabled). Zero or negative values disable sampling; values at least `1` sample every batch.
+    pub shadow_sample_rate: f64,
+
+    /// Sites eligible for sketch shadow sampling, matched against the resolved V2 destination.
+    ///
+    /// Defaults to `["datadoghq.com"]`. An empty list disables shadowing for every site.
+    pub shadow_sites: Vec<String>,
+
     /// Endpoints enabled for the V3 intake.
     pub endpoints: Vec<String>,
+
+    /// Maximum compressed V3 sketch payload size, in bytes.
+    ///
+    /// Defaults to `serializer_max_payload_size` (2,621,440 bytes).
+    pub max_compressed_payload_size: usize,
+
+    /// Maximum uncompressed V3 sketch payload size, in bytes.
+    ///
+    /// Defaults to `serializer_max_uncompressed_payload_size` (4,194,304 bytes).
+    pub max_uncompressed_payload_size: usize,
+
+    /// Maximum number of sketch points per V3 payload.
+    ///
+    /// Defaults to unlimited (`usize::MAX`).
+    pub max_points_per_payload: usize,
 }
 
 /// Whether series are routed to the V3 metrics intake (`use_v3_api.series.*`).
@@ -668,9 +722,28 @@ pub struct AutoscalingFailover {
 
 #[cfg(test)]
 mod tests {
-    use super::{Compression, Endpoints, Forwarder, V3SeriesMode};
+    use super::{Compression, Endpoints, Forwarder, Secrets, V3SeriesMode};
     use crate::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use crate::ConfigValue;
+
+    #[test]
+    fn secrets_are_in_use_with_a_backend_command_or_a_refresh_interval() {
+        let cases = [
+            ("neither", None, 0, false),
+            ("backend command", Some("/bin/true"), 0, true),
+            ("refresh interval", None, 5, true),
+            ("both", Some("/bin/true"), 5, true),
+        ];
+
+        for (name, backend_command, refresh_on_api_key_failure_interval, expected) in cases {
+            let secrets = Secrets {
+                backend_command: backend_command.map(str::to_string),
+                refresh_on_api_key_failure_interval,
+            };
+
+            assert_eq!(expected, secrets.in_use(), "{name}");
+        }
+    }
 
     #[test]
     fn v3_series_mode_parses_every_form_the_agent_interprets() {

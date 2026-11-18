@@ -1,17 +1,16 @@
 use std::{collections::HashMap, sync::Arc};
 
-use agent_data_plane_config::shared::{Secrets, SharedConfiguration};
-use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, BuildContext},
     data_model::payload::{PayloadMetadata, PayloadType},
     observability::ComponentMetricsExt as _,
 };
-use saluki_error::GenericError;
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::select;
@@ -20,15 +19,16 @@ use tracing::debug;
 use crate::common::datadog::{
     api_key::{ApiKeyView, LiveApiKeys},
     config::ForwarderConfiguration,
-    endpoints::SingleDestination,
-    io::{LiveForwarderConfiguration, TransactionForwarder},
+    endpoints::{EndpointRoute, SingleDestination},
+    io::{LiveForwarderConfiguration, TransactionForwarder, ENDPOINT_CHANNEL_CAPACITY},
     protocol::MetricsPayloadInfo,
     routing::{MetricsRoutingTargets, RoutingTargetCatalog},
+    sketch_shadow::SketchShadowMetadata,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
     validation::ValidationReadiness,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
-    METRICS_SKETCHES_V3_PATH,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH,
+    METRICS_SERIES_V3_PATH, METRICS_SKETCHES_V3_PATH,
 };
 
 /// Datadog forwarder.
@@ -45,39 +45,39 @@ pub struct DatadogForwarderConfiguration {
     /// Live views the endpoints take their API keys from.
     api_keys: LiveApiKeys,
 
-    /// Live view of the secrets settings the retry policy's gate reads.
-    secrets: Live<Secrets>,
+    /// Whether secret resolution might replace a rejected API key, which the retry policy's gate reads.
+    secrets_in_use: Live<bool>,
 }
 
 impl DatadogForwarderConfiguration {
-    /// Creates a new `DatadogForwarderConfiguration` from the resolved shared configuration.
+    /// Creates a new `DatadogForwarderConfiguration` that forwards to the endpoints of `forwarder`.
     ///
     /// `api_key` and `additional_endpoints` are the live views the endpoints take their API keys from, so that a key an
-    /// operator rotates while the process runs reaches the next request. `secrets` is the live view the retry policy's
-    /// gate reads to decide whether a rejected key is worth retrying.
-    pub fn from_configuration(
-        shared: &SharedConfiguration, api_key: Live<String>, additional_endpoints: Live<HashMap<String, Vec<String>>>,
-        secrets: Live<Secrets>,
+    /// operator rotates while the process runs reaches the next request. `secrets_in_use` is the live view the retry
+    /// policy's gate reads to decide whether a rejected key is worth retrying.
+    pub fn new(
+        forwarder: ForwarderConfiguration, api_key: Live<String>,
+        additional_endpoints: Live<HashMap<String, Vec<String>>>, secrets_in_use: Live<bool>,
     ) -> Self {
         Self {
-            forwarder_config: ForwarderConfiguration::from_configuration(shared),
+            forwarder_config: forwarder,
             api_keys: LiveApiKeys {
                 primary: Some(ApiKeyView::Required(api_key)),
                 additional: Some(additional_endpoints),
             },
-            secrets,
+            secrets_in_use,
         }
     }
 
     /// Creates a new `DatadogForwarderConfiguration` that forwards to a single endpoint override.
     ///
-    /// The override replaces the configured endpoints entirely, and `api_key_view` is the live view its key comes from.
-    /// Multi-Region Failover needs this: it has its own key, not the primary one, and configuration can leave that key
-    /// unset. `secrets` serves the same purpose as in [`from_configuration`](Self::from_configuration): it decides
-    /// whether the override's rejected key is worth retrying.
+    /// The override replaces the endpoints of `forwarder` entirely, and `api_key_view` is the live view its key comes
+    /// from. Multi-Region Failover needs this: it has its own key, not the primary one, and configuration can leave
+    /// that key unset. `secrets_in_use` serves the same purpose as in [`new`](Self::new): it decides whether the
+    /// override's rejected key is worth retrying.
     pub fn for_endpoint_override(
-        shared: &SharedConfiguration, dd_url: String, api_key: String, api_key_view: Live<Option<String>>,
-        secrets: Live<Secrets>,
+        forwarder: ForwarderConfiguration, dd_url: String, api_key: String, api_key_view: Live<Option<String>>,
+        secrets_in_use: Live<bool>,
     ) -> Self {
         let destination = SingleDestination {
             url: dd_url,
@@ -86,12 +86,12 @@ impl DatadogForwarderConfiguration {
         };
 
         Self {
-            forwarder_config: ForwarderConfiguration::for_single_destination(shared, &destination),
+            forwarder_config: forwarder.for_single_destination(&destination),
             api_keys: LiveApiKeys {
                 primary: Some(ApiKeyView::Optional(api_key_view)),
                 additional: None,
             },
-            secrets,
+            secrets_in_use,
         }
     }
 
@@ -101,7 +101,7 @@ impl DatadogForwarderConfiguration {
     /// must be built from the same endpoint configuration as this forwarder. Without a catalog, a payload addressed to
     /// specific targets reaches no endpoint.
     pub fn with_routing_targets(mut self, routing_targets: Arc<RoutingTargetCatalog>) -> Self {
-        self.forwarder_config = self.forwarder_config.with_routing_targets(routing_targets);
+        self.forwarder_config.routing_targets = Some(routing_targets);
         self
     }
 }
@@ -120,7 +120,7 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
             self.forwarder_config.clone(),
             LiveForwarderConfiguration {
                 api_keys: self.api_keys.clone(),
-                secrets: self.secrets.clone(),
+                secrets_in_use: self.secrets_in_use.clone(),
             },
             get_dd_endpoint_name,
             telemetry.clone(),
@@ -150,19 +150,47 @@ impl MemoryBounds for DatadogForwarderConfiguration {
                 "in-flight requests",
                 UsageExpr::config(
                     "forwarder_retry_queue_payloads_max_size",
-                    self.forwarder_config.retry().queue_max_size_bytes() as usize,
+                    self.forwarder_config.retry.queue_max_size_bytes as usize,
                 ),
                 UsageExpr::product(
                     "high priority queue",
                     UsageExpr::config(
                         "forwarder_high_prio_buffer_size",
-                        self.forwarder_config.endpoint_buffer_size(),
+                        self.forwarder_config.endpoint_buffer_size,
                     ),
                     // TODO: The default compressed size limit just so happens to be the biggest one we currently default with on our side,
                     // but it's not clear that this will always be the case.
                     UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
                 ),
             ));
+
+        // Count the same eligible workers used for dispatch, including separate additional API keys.
+        let Ok(endpoints) = self.forwarder_config.build_routable_endpoints() else {
+            return;
+        };
+        let has_metrics_primary = endpoints
+            .iter()
+            .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
+        let shadow_endpoint_count = endpoints
+            .iter()
+            .filter(|endpoint| {
+                self.forwarder_config
+                    .endpoint_supports_sketch_shadow(endpoint, has_metrics_primary)
+            })
+            .count();
+        if shadow_endpoint_count != 0 {
+            let request_slots = self
+                .forwarder_config
+                .endpoint_buffer_size
+                .saturating_add(ENDPOINT_CHANNEL_CAPACITY)
+                .saturating_add(self.forwarder_config.effective_endpoint_concurrency());
+            let per_endpoint_bytes = (self.forwarder_config.retry.queue_max_size_bytes as usize)
+                .saturating_add(request_slots.saturating_mul(DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT));
+            builder.firm().with_fixed_amount(
+                "sketch shadow queues and in-flight payloads",
+                shadow_endpoint_count.saturating_mul(per_endpoint_bytes),
+            );
+        }
     }
 }
 
@@ -179,7 +207,10 @@ impl Forwarder for Datadog {
 
         // Both of these calls spawn supervised children of this component. When this run-future returns, the children
         // stop, and their drain has a time limit.
-        let mut validation = forwarder.api_key_validator().spawn();
+        let mut validation = forwarder
+            .api_key_validator()
+            .error_context("Failed to create API key validation client.")?
+            .spawn();
         let forwarder = forwarder.spawn();
 
         debug!("Datadog forwarder started.");
@@ -205,8 +236,8 @@ impl Forwarder for Datadog {
         }
 
         // Start the forwarder's drain. Dropping `validation` stops API key validation the same way. This component does
-        // not wait for either of them here. But this component does not finish until its children finish. The deadline
-        // of the component bounds this wait.
+        // not wait for either of them here. But this component does not finish until its children finish. The shutdown
+        // timeout of the component bounds this wait.
         forwarder.shutdown();
         drop(validation);
 
@@ -219,6 +250,16 @@ impl Forwarder for Datadog {
 fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) -> Metadata {
     let mut transaction_meta =
         Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
+    transaction_meta.sketch_shadow = payload_meta.get::<SketchShadowMetadata>().cloned();
+    if transaction_meta
+        .sketch_shadow
+        .as_ref()
+        .is_some_and(|shadow| shadow.is_shadow)
+    {
+        // Validation copies must not count as delivered or dropped metric data.
+        transaction_meta.event_count = 0;
+        transaction_meta.data_point_count = 0;
+    }
     transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
     transaction_meta.metrics_routing_targets = payload_meta.get::<Arc<MetricsRoutingTargets>>().cloned();
     transaction_meta
@@ -233,29 +274,31 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         METRICS_SERIES_V3_BETA_PATH => Some(MetaString::from_static("series_v3beta")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
         METRICS_SKETCHES_V3_PATH => Some(MetaString::from_static("sketches_v3")),
+        "/api/intake/metrics/v3beta/sketches" => Some(MetaString::from_static("sketches_v3beta")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
+        "/api/v0.2/stats" => Some(MetaString::from_static("stats_v0.2")),
         _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::SalukiConfiguration;
-    use saluki_core::components::test_util::TestComponentSupervisor;
+    use saluki_core::runtime::test_util::TestSupervisor;
 
     use super::*;
     use crate::common::datadog::{
         api_key::ApiKeyRefresher,
-        test_util::{shared_configuration, LiveConfiguration},
+        sketch_shadow::SketchShadowDestination,
+        test_util::{forwarder_configuration, LiveConfiguration, LiveRoot},
     };
 
     #[test]
     fn dd_endpoint_names_map_from_request_path() {
         // Each intake path maps to the telemetry endpoint name the forwarder tags transactions with; the query and
         // authority are ignored (only the path matters), and unknown paths map to `None`.
-        let cases: [(Uri, Option<&str>); 12] = [
+        let cases: [(Uri, Option<&str>); 13] = [
             (Uri::from_static("/api/v2/logs"), Some("logs_v2")),
             (Uri::from_static("/api/v1/series"), Some("series_v1")),
             (Uri::from_static("/api/v2/series"), Some("series_v2")),
@@ -266,6 +309,7 @@ mod tests {
             (Uri::from_static("/api/v1/check_run"), Some("check_run_v1")),
             (Uri::from_static("/api/v1/events_batch"), Some("events_batch_v1")),
             (Uri::from_static("/api/v0.2/traces"), Some("traces_v0.2")),
+            (Uri::from_static("/api/v0.2/stats"), Some("stats_v0.2")),
             (
                 Uri::from_static("https://app.datadoghq.com/api/v2/series"),
                 Some("series_v2"),
@@ -312,21 +356,140 @@ mod tests {
             cloned_meta.metrics_routing_targets.as_ref().unwrap(),
             &routing_targets
         ));
+
+        for is_shadow in [false, true] {
+            let payload_meta = PayloadMetadata::from_event_and_data_point_count(2, 7).with(SketchShadowMetadata {
+                sampled_destinations: vec![SketchShadowDestination {
+                    configured_endpoint: Arc::from("https://primary.example.com"),
+                    batch_id: "batch-id".parse().unwrap(),
+                }]
+                .into(),
+                request_index: 1,
+                request_count: 3,
+                is_shadow,
+            });
+            let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
+            assert_eq!(
+                (transaction_meta.event_count, transaction_meta.data_point_count),
+                if is_shadow { (0, 0) } else { (2, 7) },
+            );
+            assert_eq!((payload_meta.event_count(), payload_meta.data_point_count()), (2, 7));
+            let shadow = transaction_meta.sketch_shadow.unwrap();
+            assert_eq!(
+                (shadow.is_shadow, shadow.request_index, shadow.request_count),
+                (is_shadow, 1, 3)
+            );
+            assert_eq!(shadow.batch_id("https://primary.example.com").unwrap(), "batch-id");
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_v3_sketches_and_additional_shadow_pairs_reach_only_their_destinations() {
+        use axum::{
+            body::Bytes,
+            http::{HeaderMap, StatusCode},
+            routing::post,
+            Router,
+        };
+        use saluki_core::{
+            components::test_util::TestComponentDriver,
+            data_model::event::{metric::Metric, Event},
+        };
+        use tokio::{net::TcpListener, sync::mpsc};
+
+        use crate::common::datadog::{
+            endpoints::EndpointConfiguration, test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH,
+        };
+
+        const PRIMARY: &str = "http://app.datadoghq.com";
+        const ADDITIONAL: &str = "http://app.datadoghq.eu";
+        const BETA: &str = "/api/intake/metrics/v3beta/sketches";
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+        let app = Router::new().fallback(post(move |uri: Uri, headers: HeaderMap, _: Bytes| {
+            requests_tx.send((uri, headers)).unwrap();
+            async { StatusCode::OK }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        let live = LiveConfiguration::new(LiveRoot {
+            api_key: "0".repeat(32), // Synthetic key skips API-key validation.
+            additional_endpoints: HashMap::from([(ADDITIONAL.into(), vec!["0".repeat(32)])]),
+            ..Default::default()
+        });
+        let mut metrics = datadog_metrics_configuration();
+        metrics.primary_endpoint = PRIMARY.into();
+        metrics.additional_endpoints = live.source.load().additional_endpoints.clone();
+        let sketches = &mut metrics.v3_api.sketches;
+        sketches.endpoints = vec![PRIMARY.into()];
+        sketches.shadow_sites = vec!["datadoghq.com".into(), "datadoghq.eu".into()];
+        sketches.shadow_sample_rate = 1.0;
+        sketches.beta_route = BETA.into();
+        let mut forwarder = forwarder_configuration();
+        forwarder.endpoint =
+            EndpointConfiguration::new("0".repeat(32), PRIMARY.into(), metrics.additional_endpoints.clone());
+        forwarder.proxy.http = proxy;
+        forwarder.skip_ssl_validation = true;
+        forwarder.v3_api = metrics.v3_api.clone();
+        let forwarder_config = DatadogForwarderConfiguration::new(
+            forwarder,
+            live.source.live(|root| &root.api_key),
+            live.source.live(|root| &root.additional_endpoints),
+            live.source.live(|root| &root.secrets_in_use),
+        );
+        let (encoder, mut output) = TestComponentDriver::encoder(metrics).await.unwrap();
+        encoder
+            .send_events([Event::Metric(Metric::distribution("mixed.sketch", [(123, 4.0)]))])
+            .await;
+        let (result, payloads) = tokio::join!(encoder.shutdown(), output.collect());
+        result.unwrap();
+        let forwarder = TestComponentDriver::forwarder(forwarder_config).await.unwrap();
+        for payload in payloads {
+            forwarder.send(payload).await;
+        }
+        forwarder
+            .wait_until(|| requests_rx.len() >= 3, || "three sketch requests".into())
+            .await;
+        forwarder.shutdown().await.unwrap();
+        server.abort();
+        let mut received: Vec<_> = std::iter::from_fn(|| requests_rx.try_recv().ok()).collect();
+        assert_eq!(received.len(), 3, "no extra requests");
+        received.sort_by(|a, b| a.0.path().cmp(b.0.path()));
+
+        let correlation = |headers: &HeaderMap| {
+            ["X-Metrics-Request-ID", "X-Metrics-Request-Seq", "X-Metrics-Request-Len"]
+                .map(|key| headers.get(key).cloned())
+        };
+        let baseline = correlation(&received[0].1);
+        assert!(baseline.iter().all(Option::is_some));
+        // Primary gets only authoritative V3; the additional endpoint gets the correlated V2/V3beta pair.
+        for ((uri, headers), (path, site, expected)) in received.iter().zip([
+            (METRICS_SKETCHES_PATH, ".datadoghq.eu", baseline.clone()),
+            (METRICS_SKETCHES_V3_PATH, ".datadoghq.com", [None, None, None]),
+            (BETA, ".datadoghq.eu", baseline),
+        ]) {
+            assert_eq!(uri.path(), path);
+            assert!(uri.host().unwrap().ends_with(site));
+            assert_eq!(correlation(headers), expected);
+        }
     }
 
     #[tokio::test]
     async fn an_endpoint_override_follows_the_failover_key_and_not_the_primary_one() {
-        let mut live_config = SalukiConfiguration::default();
-        live_config.shared.endpoints.api_key = "primary-api-key".to_string();
-        live_config.domains.multi_region_failover.api_key = Some("mrf-api-key".to_string());
-        let live = LiveConfiguration::new(live_config.clone());
+        let mut live_config = LiveRoot {
+            api_key: "primary-api-key".to_string(),
+            override_api_key: Some("mrf-api-key".to_string()),
+            ..LiveRoot::default()
+        };
+        let mut live = LiveConfiguration::new(live_config.clone());
 
         let config = DatadogForwarderConfiguration::for_endpoint_override(
-            &shared_configuration(),
+            forwarder_configuration(),
             "http://mrf.example.test".to_string(),
             "mrf-api-key".to_string(),
-            live.live(|config| &config.domains.multi_region_failover.api_key),
-            live.live(|config| &config.shared.secrets),
+            live.source.live(|root| &root.override_api_key),
+            live.source.live(|root| &root.secrets_in_use),
         );
 
         let endpoints = config
@@ -341,15 +504,15 @@ mod tests {
 
         // The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
         // the test.
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         supervisor.scope(async move { refresher.spawn() }).await;
 
         // Rotate the primary key first: the override does not follow it.
-        live_config.shared.endpoints.api_key = "rotated-primary-api-key".to_string();
-        live.store(live_config.clone());
+        live_config.api_key = "rotated-primary-api-key".to_string();
+        live.publisher.publish(live_config.clone());
 
-        live_config.domains.multi_region_failover.api_key = Some("rotated-mrf-api-key".to_string());
-        live.store(live_config);
+        live_config.override_api_key = Some("rotated-mrf-api-key".to_string());
+        live.publisher.publish(live_config);
 
         let endpoint = endpoints[0].endpoint();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {

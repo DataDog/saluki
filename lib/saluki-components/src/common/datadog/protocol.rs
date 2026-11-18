@@ -2,10 +2,6 @@
 
 use std::collections::HashMap;
 
-use agent_data_plane_config::shared::{
-    MetricsEncoding as TypedMetricsEncoding, V3ApiEncoding as TypedV3ApiEncoding, V3ApiSettings as TypedV3ApiSettings,
-    V3SeriesMode,
-};
 use serde::{Deserialize, Serialize};
 
 /// The type of metrics payload.
@@ -81,13 +77,31 @@ impl MetricsPayloadInfo {
 }
 
 /// V3 API settings for a specific metric type (series or sketches).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct V3ApiSettings {
     /// Endpoints that should receive V3 payloads for this metric type.
     ///
     /// Each entry should be a configured endpoint name, such as `https://app.datadoghq.com`.
     /// If empty, no V3 payloads are generated for this metric type.
     pub endpoints: Vec<String>,
+
+    /// Maximum compressed V3 sketch payload size in bytes, capped at 2.5 MiB.
+    pub max_compressed_payload_size: usize,
+
+    /// Maximum uncompressed V3 sketch payload size in bytes, capped at 4 MiB.
+    pub max_uncompressed_payload_size: usize,
+
+    /// Resolved maximum sketch points per payload; `usize::MAX` disables the cap.
+    pub max_points_per_payload: usize,
+
+    /// Route for sampled V3 sketch copies
+    pub beta_route: String,
+
+    /// Per-batch sampling probability
+    pub shadow_sample_rate: f64,
+
+    /// Resolved destination sites eligible for sampling
+    pub shadow_sites: Vec<String>,
 }
 
 impl V3ApiSettings {
@@ -98,7 +112,7 @@ impl V3ApiSettings {
 }
 
 /// V3 API configuration for per-endpoint V3 support.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct V3ApiConfig {
     /// V3 settings for sketch metrics (histograms, distributions).
     pub sketches: V3ApiSettings,
@@ -116,32 +130,15 @@ impl V3ApiConfig {
     }
 }
 
-impl From<&TypedV3ApiSettings> for V3ApiSettings {
-    fn from(settings: &TypedV3ApiSettings) -> Self {
-        Self {
-            endpoints: settings.endpoints.clone(),
-        }
-    }
-}
-
-impl From<&TypedV3ApiEncoding> for V3ApiConfig {
-    fn from(config: &TypedV3ApiEncoding) -> Self {
-        Self {
-            sketches: (&config.sketches).into(),
-            compression_level: config.compression_level,
-        }
-    }
-}
-
 /// The Datadog Agent's `use_v3_api` configuration section.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UseV3ApiConfig {
     /// Agent-compatible V3 API configuration for series metrics.
     pub series: UseV3ApiSeriesConfig,
 }
 
 /// Agent-compatible `use_v3_api.series` configuration.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UseV3ApiSeriesConfig {
     /// Global V3 series mode.
     pub enabled: V3SeriesMode,
@@ -150,11 +147,15 @@ pub struct UseV3ApiSeriesConfig {
     pub endpoints: HashMap<String, V3SeriesMode>,
 }
 
-impl From<&TypedMetricsEncoding> for UseV3ApiSeriesConfig {
-    fn from(config: &TypedMetricsEncoding) -> Self {
-        Self {
-            enabled: config.v3_series_mode,
-            endpoints: config.v3_series_endpoint_modes.clone(),
-        }
-    }
+/// Whether series are routed to the V3 metrics intake.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum V3SeriesMode {
+    /// Route series to the V3 intake.
+    Enabled,
+
+    /// Route series to the older intake.
+    Disabled,
+
+    /// Route series to the V3 intake only for endpoints that are Datadog intake URLs.
+    DatadogOnly,
 }

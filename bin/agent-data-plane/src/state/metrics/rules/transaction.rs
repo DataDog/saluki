@@ -1,7 +1,7 @@
-use super::RemapperRule;
+use super::{RemapperRule, API_KEY_VALIDATION_TAG};
 
 pub fn get_transaction_remappings() -> Vec<RemapperRule> {
-    vec![
+    let rules = vec![
         // Transaction metrics.
         RemapperRule::by_name(
             "adp.network_http_requests_input_bytes_total",
@@ -21,6 +21,12 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
         RemapperRule::by_name("adp.network_http_requests_requeued_total", "transactions.requeued")
             .with_original_tags(["domain", "endpoint"])
             .with_help_text("Transaction requeue count"),
+        // Only match per-domain gauges: the untagged aggregate is emitted once per forwarder, and those would
+        // collide once remapped.
+        RemapperRule::by_name("adp.network_http_retry_queue_size", "transactions.retry_queue_size")
+            .with_required_tag_keys(["domain"])
+            .with_original_tags(["domain"])
+            .with_help_text("Current transaction retry queue size"),
         RemapperRule::by_name("adp.network_http_requests_success_total", "transactions.success")
             .with_original_tags(["domain", "endpoint", "proto_version"])
             .with_help_text("Successful transaction count"),
@@ -30,12 +36,6 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
         )
         .with_original_tags(["domain", "endpoint"])
         .with_help_text("Successful transaction sizes in bytes"),
-        // Only match the per-domain gauges: the untagged aggregate is emitted once per forwarder, and those would
-        // collide once remapped.
-        RemapperRule::by_name("adp.network_http_retry_queue_size", "transactions.retry_queue_size")
-            .with_required_tag_keys(["domain"])
-            .with_original_tags(["domain"])
-            .with_help_text("Retry queue size"),
         RemapperRule::by_name("adp.component_data_points_sent_total", "points.sent").with_original_tags(["domain"]),
         RemapperRule::by_name("adp.component_data_points_dropped_total", "points.dropped")
             .with_original_tags(["domain"]),
@@ -49,5 +49,13 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
         RemapperRule::by_name("adp.network_http_requests_errors_total", "transactions.errors")
             .with_original_tags(["domain", "endpoint", "error_type"])
             .with_help_text("Count of transactions errored grouped by type of error"),
-    ]
+    ];
+
+    // Exclude validation traffic on every rule, not only the ones that read HTTP client metrics: a series that one rule
+    // rejects is offered to the next rule that matches its name, which for `network_http_requests_errors_total` would
+    // otherwise count a validation `client_error` series under `transactions.errors`.
+    rules
+        .into_iter()
+        .map(|rule| rule.rejecting_tags([API_KEY_VALIDATION_TAG]))
+        .collect()
 }

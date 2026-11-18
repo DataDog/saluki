@@ -16,6 +16,9 @@ export PATH="/root/.cargo/bin:${PATH}"
 # image's crosstool-NG toolchain at link/compile time, not from a separate Rust target.
 rustup toolchain install --profile minimal --component clippy,rustfmt ${RUST_VERSION}
 
+# Panoramic's courier is built as a static musl binary (`make build-courier`).
+rustup target add --toolchain ${RUST_VERSION} "$(uname -m)-unknown-linux-musl"
+
 # Install `rustfmt` via the nightly toolchain.
 #
 # We do manual cleanup afterwards to remove most of the actual toolchain bits, since all we care about

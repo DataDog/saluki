@@ -1,6 +1,7 @@
 //! Logs.
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
@@ -12,8 +13,12 @@ use crate::data_model::tags::TagSet;
 pub struct Log {
     /// Log message body.
     message: MetaString,
-    /// Log status/severity (for example, `"info"`, `"warn"`, `"error"`).
-    status: Option<LogStatus>,
+    /// When the log entered the pipeline, in nanoseconds since the Unix epoch, if its source recorded it.
+    ingestion_timestamp: Option<NonZeroU64>,
+    /// Log status, as the producer of the log gives it (for example, `"info"`, `"warn"`, or `"Fatal"`).
+    ///
+    /// It isn't normalized, and is empty when the producer gave no status.
+    status: MetaString,
     /// Log source
     source: Option<MetaString>,
     /// Hostname associated with the log.
@@ -26,52 +31,13 @@ pub struct Log {
     additional_properties: HashMap<MetaString, JsonValue>,
 }
 
-/// Log status.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LogStatus {
-    /// Trace status.
-    Trace,
-    /// Emergency status.
-    Emergency,
-    /// Alert status.
-    Alert,
-    /// Fatal status.
-    Fatal,
-    /// Error status.
-    Error,
-    /// Warning status.
-    Warning,
-    /// Notice status.
-    Notice,
-    /// Info status.
-    Info,
-    /// Debug status.
-    Debug,
-}
-
-impl LogStatus {
-    /// Returns the log status in string format
-    pub fn as_str(&self) -> &str {
-        match self {
-            LogStatus::Trace => "Trace",
-            LogStatus::Emergency => "Emergency",
-            LogStatus::Alert => "Alert",
-            LogStatus::Fatal => "Fatal",
-            LogStatus::Error => "Error",
-            LogStatus::Warning => "Warning",
-            LogStatus::Notice => "Notice",
-            LogStatus::Info => "Info",
-            LogStatus::Debug => "Debug",
-        }
-    }
-}
-
 impl Log {
     /// Creates a new `Log` with the given message.
     pub fn new(message: impl Into<MetaString>) -> Self {
         Self {
             message: message.into(),
-            status: None,
+            ingestion_timestamp: None,
+            status: MetaString::empty(),
             source: None,
             hostname: MetaString::empty(),
             service: MetaString::empty(),
@@ -80,8 +46,25 @@ impl Log {
         }
     }
 
+    /// Sets the log message.
+    pub fn with_message(mut self, message: impl Into<MetaString>) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    /// Sets when the log entered the pipeline, in nanoseconds since the Unix epoch.
+    ///
+    /// Sources set this when they create a log. It isn't the time of the log itself, which belongs to its properties,
+    /// but the time it was received, for measuring how long logs take to be sent. A timestamp of 0 means unknown.
+    pub fn with_ingestion_timestamp(mut self, timestamp_ns: u64) -> Self {
+        self.ingestion_timestamp = NonZeroU64::new(timestamp_ns);
+        self
+    }
+
     /// Sets the log status.
-    pub fn with_status(mut self, status: impl Into<Option<LogStatus>>) -> Self {
+    ///
+    /// The status is kept as it is given, without normalization. An empty status means the log has none.
+    pub fn with_status(mut self, status: impl Into<MetaString>) -> Self {
         self.status = status.into();
         self
     }
@@ -123,9 +106,14 @@ impl Log {
         &self.message
     }
 
-    /// Returns the log status, if set.
-    pub fn status(&self) -> Option<LogStatus> {
-        self.status
+    /// Returns when the log entered the pipeline, in nanoseconds since the Unix epoch, if its source recorded it.
+    pub fn ingestion_timestamp(&self) -> Option<u64> {
+        self.ingestion_timestamp.map(NonZeroU64::get)
+    }
+
+    /// Returns the log status, or an empty string if the log has none.
+    pub fn status(&self) -> &str {
+        &self.status
     }
 
     /// Returns the log source, if set.

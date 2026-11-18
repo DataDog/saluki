@@ -225,29 +225,8 @@ impl fmt::Display for ComponentContext {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use saluki_common::sync::shutdown::ShutdownHandle;
-    use tokio::runtime::Handle;
-    use tokio::sync::mpsc;
-
-    use super::decoders::DecoderContext;
-    use super::destinations::DestinationContext;
-    use super::encoders::EncoderContext;
-    use super::forwarders::ForwarderContext;
-    use super::relays::RelayContext;
-    use super::sources::SourceContext;
-    use super::transforms::TransformContext;
+    use super::test_util::TestComponentDriver;
     use super::ComponentContext;
-    use crate::accounting::{ComponentRegistry, MemoryLimiter};
-    use crate::health::{Health, HealthRegistry};
-    use crate::runtime::state::DataspaceRegistry;
-    use crate::support::SubsystemIdentifier;
-    use crate::topology::interconnect::{Consumer, Dispatcher};
-    use crate::topology::{
-        EventsBuffer, EventsConsumer, EventsDispatcher, PayloadsBuffer, PayloadsConsumer, PayloadsDispatcher,
-        TopologyContext,
-    };
 
     #[test]
     fn identity_dotted_form() {
@@ -264,202 +243,83 @@ mod tests {
     // Double-take handle tests.
     //
     // Every `*Context` documents that `take_health_handle` (and, for sources/relays, `take_shutdown_handle`) panics
-    // if the handle has already been taken. Each test below builds a real context, takes the handle once (which must
-    // succeed), then takes it a second time and asserts the documented panic fires with its documented message.
-    //
-    // The shared builders below collapse the otherwise-identical dependency construction across the seven context
-    // types; each context's `new` only differs in which dispatcher/consumer it accepts.
-
-    fn topology_context() -> TopologyContext {
-        TopologyContext::new(
-            Arc::from("test"),
-            MemoryLimiter::noop(),
-            HealthRegistry::new(),
-            Handle::current(),
-            DataspaceRegistry::new(),
-        )
-    }
-
-    fn health_handle() -> Health {
-        HealthRegistry::new()
-            .register_component(&SubsystemIdentifier::from_dotted("test"))
-            .expect("component was not previously registered")
-    }
-
-    fn events_dispatcher(component_context: &ComponentContext) -> EventsDispatcher {
-        Dispatcher::new(component_context.clone())
-    }
-
-    fn payloads_dispatcher(component_context: &ComponentContext) -> PayloadsDispatcher {
-        Dispatcher::new(component_context.clone())
-    }
-
-    fn events_consumer(component_context: &ComponentContext) -> EventsConsumer {
-        let (_tx, rx) = mpsc::channel::<EventsBuffer>(1);
-        Consumer::new(component_context.clone(), rx)
-    }
-
-    fn payloads_consumer(component_context: &ComponentContext) -> PayloadsConsumer {
-        let (_tx, rx) = mpsc::channel::<PayloadsBuffer>(1);
-        Consumer::new(component_context.clone(), rx)
-    }
-
-    fn source_context() -> SourceContext {
-        let cc = ComponentContext::test_source("test");
-        SourceContext::new(
-            &topology_context(),
-            &cc,
-            ComponentRegistry::default(),
-            health_handle(),
-            events_dispatcher(&cc),
-        )
-    }
-
-    fn relay_context() -> RelayContext {
-        let cc = ComponentContext::test_relay("test");
-        RelayContext::new(
-            &topology_context(),
-            &cc,
-            ComponentRegistry::default(),
-            health_handle(),
-            payloads_dispatcher(&cc),
-        )
-    }
-
-    fn decoder_context() -> DecoderContext {
-        let cc = ComponentContext::test_decoder("test");
-        DecoderContext::new(
-            &topology_context(),
-            &cc,
-            ComponentRegistry::default(),
-            health_handle(),
-            events_dispatcher(&cc),
-            payloads_consumer(&cc),
-        )
-    }
-
-    fn transform_context() -> TransformContext {
-        let cc = ComponentContext::test_transform("test");
-        TransformContext::new(
-            &topology_context(),
-            &cc,
-            ComponentRegistry::default(),
-            health_handle(),
-            events_dispatcher(&cc),
-            events_consumer(&cc),
-        )
-    }
-
-    fn destination_context() -> DestinationContext {
-        let cc = ComponentContext::test_destination("test");
-        DestinationContext::new(
-            &topology_context(),
-            &cc,
-            ComponentRegistry::default(),
-            health_handle(),
-            events_consumer(&cc),
-        )
-    }
-
-    fn encoder_context() -> EncoderContext {
-        let cc = ComponentContext::test_encoder("test");
-        EncoderContext::new(
-            &topology_context(),
-            &cc,
-            ComponentRegistry::default(),
-            health_handle(),
-            payloads_dispatcher(&cc),
-            events_consumer(&cc),
-        )
-    }
-
-    fn forwarder_context() -> ForwarderContext {
-        let cc = ComponentContext::test_forwarder("test");
-        ForwarderContext::new(
-            &topology_context(),
-            &cc,
-            ComponentRegistry::default(),
-            health_handle(),
-            payloads_consumer(&cc),
-        )
-    }
+    // if the handle has already been taken. Each test below builds the context that the component test driver passes
+    // to `run`, takes the handle once (which must succeed), then takes it a second time and asserts the documented
+    // panic fires with its documented message.
 
     // Health-handle double-take: applies to all seven context types.
 
     #[tokio::test]
     #[should_panic(expected = "health handle already taken")]
     async fn source_context_panics_on_double_take_of_health_handle() {
-        let mut ctx = source_context();
-        let _first = ctx.take_health_handle();
-        let _second = ctx.take_health_handle();
+        let mut parts = TestComponentDriver::options().source_context(&[]).unwrap();
+        let _first = parts.context.take_health_handle();
+        let _second = parts.context.take_health_handle();
     }
 
     #[tokio::test]
     #[should_panic(expected = "health handle already taken")]
     async fn relay_context_panics_on_double_take_of_health_handle() {
-        let mut ctx = relay_context();
-        let _first = ctx.take_health_handle();
-        let _second = ctx.take_health_handle();
+        let mut parts = TestComponentDriver::options().relay_context(&[]).unwrap();
+        let _first = parts.context.take_health_handle();
+        let _second = parts.context.take_health_handle();
     }
 
     #[tokio::test]
     #[should_panic(expected = "health handle already taken")]
     async fn decoder_context_panics_on_double_take_of_health_handle() {
-        let mut ctx = decoder_context();
-        let _first = ctx.take_health_handle();
-        let _second = ctx.take_health_handle();
+        let mut parts = TestComponentDriver::options().decoder_context();
+        let _first = parts.context.take_health_handle();
+        let _second = parts.context.take_health_handle();
     }
 
     #[tokio::test]
     #[should_panic(expected = "health handle already taken")]
     async fn transform_context_panics_on_double_take_of_health_handle() {
-        let mut ctx = transform_context();
-        let _first = ctx.take_health_handle();
-        let _second = ctx.take_health_handle();
+        let mut parts = TestComponentDriver::options().transform_context(&[]).unwrap();
+        let _first = parts.context.take_health_handle();
+        let _second = parts.context.take_health_handle();
     }
 
     #[tokio::test]
     #[should_panic(expected = "health handle already taken")]
     async fn destination_context_panics_on_double_take_of_health_handle() {
-        let mut ctx = destination_context();
-        let _first = ctx.take_health_handle();
-        let _second = ctx.take_health_handle();
+        let mut parts = TestComponentDriver::options().destination_context();
+        let _first = parts.context.take_health_handle();
+        let _second = parts.context.take_health_handle();
     }
 
     #[tokio::test]
     #[should_panic(expected = "health handle already taken")]
     async fn encoder_context_panics_on_double_take_of_health_handle() {
-        let mut ctx = encoder_context();
-        let _first = ctx.take_health_handle();
-        let _second = ctx.take_health_handle();
+        let mut parts = TestComponentDriver::options().encoder_context();
+        let _first = parts.context.take_health_handle();
+        let _second = parts.context.take_health_handle();
     }
 
     #[tokio::test]
     #[should_panic(expected = "health handle already taken")]
     async fn forwarder_context_panics_on_double_take_of_health_handle() {
-        let mut ctx = forwarder_context();
-        let _first = ctx.take_health_handle();
-        let _second = ctx.take_health_handle();
+        let mut parts = TestComponentDriver::options().forwarder_context();
+        let _first = parts.context.take_health_handle();
+        let _second = parts.context.take_health_handle();
     }
 
-    // Shutdown-handle double-take: only sources and relays expose a shutdown handle. The runtime installs it via the
-    // crate-private `set_shutdown_handle` before the component runs, so we do the same here before taking it twice.
+    // Shutdown-handle double-take: only sources and relays expose a shutdown handle, which the context comes with.
 
     #[tokio::test]
     #[should_panic(expected = "shutdown handle already taken")]
     async fn source_context_panics_on_double_take_of_shutdown_handle() {
-        let mut ctx = source_context();
-        ctx.set_shutdown_handle(ShutdownHandle::noop());
-        let _first = ctx.take_shutdown_handle();
-        let _second = ctx.take_shutdown_handle();
+        let mut parts = TestComponentDriver::options().source_context(&[]).unwrap();
+        let _first = parts.context.take_shutdown_handle();
+        let _second = parts.context.take_shutdown_handle();
     }
 
     #[tokio::test]
     #[should_panic(expected = "shutdown handle already taken")]
     async fn relay_context_panics_on_double_take_of_shutdown_handle() {
-        let mut ctx = relay_context();
-        ctx.set_shutdown_handle(ShutdownHandle::noop());
-        let _first = ctx.take_shutdown_handle();
-        let _second = ctx.take_shutdown_handle();
+        let mut parts = TestComponentDriver::options().relay_context(&[]).unwrap();
+        let _first = parts.context.take_shutdown_handle();
+        let _second = parts.context.take_shutdown_handle();
     }
 }

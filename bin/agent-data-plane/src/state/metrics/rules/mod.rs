@@ -1,10 +1,16 @@
 use saluki_core::observability::metrics::RemapperRule;
 
 mod aggregation;
-mod compat;
 mod dogstatsd;
 mod serializer;
 mod transaction;
+
+/// The tag the API key validation HTTP client puts on all of its telemetry.
+///
+/// Validation requests aren't forwarder transactions, and the Core Agent doesn't count them as such. The client emits
+/// the same HTTP metrics as the forwarder's client, distinguished only by this tag, so everything that reads those
+/// metrics must reject it. The value is owned by `saluki-components`, which applies it.
+pub(crate) const API_KEY_VALIDATION_TAG: &str = saluki_components::forwarders::API_KEY_VALIDATION_PURPOSE_TAG;
 
 /// Returns the list of remapper rules relevant to metrics we send to the Datadog Agent via Remote Agent Registry (RAR).
 ///
@@ -17,9 +23,4 @@ pub fn get_datadog_agent_remappings() -> Vec<RemapperRule> {
     rules.extend(self::transaction::get_transaction_remappings());
     rules.extend(self::serializer::get_serializer_remappings());
     rules
-}
-
-/// Returns remapper rules that expose ADP telemetry under Core Agent `go_expvar`-compatible names.
-pub fn get_compat_remappings() -> Vec<RemapperRule> {
-    self::compat::get_compat_remappings()
 }

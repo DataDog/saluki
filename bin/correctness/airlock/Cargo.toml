@@ -8,11 +8,16 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 bollard = { workspace = true, features = ["http", "pipe"] }
+bytes = { workspace = true }
 futures = { workspace = true }
 home = { workspace = true }
 saluki-error = { workspace = true }
+tar = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",
   "io-util",
@@ -20,12 +25,15 @@ tokio = { workspace = true, features = [
   "process",
   "rt",
   "rt-multi-thread",
+  "sync",
+  "time",
 ] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
-# Unix process driver uses libc's killpg/SIGTERM/SIGKILL inside #[cfg(unix)] blocks. The wider
-# correctness/integration test suite is only operated on Linux/Docker today, so this gate exists
-# more as a forward-looking marker than as something a Windows build actually depends on.
+# Unix process-group signaling via killpg.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net"] }

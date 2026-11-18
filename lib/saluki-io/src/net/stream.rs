@@ -19,9 +19,11 @@ use tokio::{
     net::{TcpStream, UdpSocket},
 };
 
-use super::addr::{ConnectionAddress, ProcessIdentity};
+use super::addr::ConnectionAddress;
+#[cfg(windows)]
+use super::addr::ProcessIdentity;
 #[cfg(unix)]
-use super::unix::{unix_recvmsg, unixgram_recvmsg};
+use super::unix::{unix_peer_identity, unix_recvmsg, unixgram_recvmsg};
 
 /// A connection-oriented socket.
 ///
@@ -55,11 +57,15 @@ impl Connection {
         }
     }
 
+    /// Returns the address of the remote peer.
+    ///
+    /// For a Unix domain socket, this is the identity of the process that connected, as captured by the kernel at
+    /// connect time.
     pub(super) fn remote_addr(&self) -> ConnectionAddress {
         match self {
             Self::Tcp(_, addr) => ConnectionAddress::SocketLike(*addr),
             #[cfg(unix)]
-            Self::Unix(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
+            Self::Unix(inner) => ConnectionAddress::ProcessLike(unix_peer_identity(inner)),
             #[cfg(windows)]
             Self::NamedPipe(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
         }

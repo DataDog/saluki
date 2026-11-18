@@ -3,8 +3,10 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+use std::env::{self, VarError};
+
 use saluki_common::logging::filter_from_env;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use socket2::SockRef;
 use tokio::{
     net::{TcpListener, UdpSocket},
@@ -20,8 +22,13 @@ use tracing_subscriber::{
 mod app;
 use crate::app::{initialize_app_router, DogStatsDForwardingState};
 
+/// The address of the HTTP intake, and the variable that overrides it.
 const HTTP_LISTEN_ADDR: &str = "0.0.0.0:2049";
+const HTTP_LISTEN_ADDR_VAR: &str = "INTAKE_HTTP_LISTEN_ADDR";
+
+/// The address of the DogStatsD forwarding capture socket, and the variable that overrides it.
 const DOGSTATSD_FORWARDING_LISTEN_ADDR: &str = "0.0.0.0:9125";
+const DOGSTATSD_FORWARDING_LISTEN_ADDR_VAR: &str = "INTAKE_DOGSTATSD_LISTEN_ADDR";
 const MAX_UDP_PACKET_SIZE: usize = 65535;
 
 #[tokio::main]
@@ -46,13 +53,22 @@ async fn main() {
 async fn run() -> Result<(), GenericError> {
     info!("datadog-intake starting...");
 
+    let http_listen_addr = listen_addr(HTTP_LISTEN_ADDR_VAR, HTTP_LISTEN_ADDR)?;
+    let dogstatsd_forwarding_listen_addr =
+        listen_addr(DOGSTATSD_FORWARDING_LISTEN_ADDR_VAR, DOGSTATSD_FORWARDING_LISTEN_ADDR)?;
+
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
     spawn_signal_handlers(shutdown_tx).error_context("Failed to configure signal handlers.")?;
 
     let dogstatsd_forwarding_state = DogStatsDForwardingState::new();
-    let dogstatsd_forwarding_socket = UdpSocket::bind(DOGSTATSD_FORWARDING_LISTEN_ADDR)
+    let dogstatsd_forwarding_socket = UdpSocket::bind(&dogstatsd_forwarding_listen_addr)
         .await
-        .error_context("Failed to bind DogStatsD forwarding capture socket.")?;
+        .with_error_context(|| {
+            format!(
+                "Failed to bind DogStatsD forwarding capture socket on {dogstatsd_forwarding_listen_addr} \
+                 ({DOGSTATSD_FORWARDING_LISTEN_ADDR_VAR})."
+            )
+        })?;
 
     if let Err(e) = SockRef::from(&dogstatsd_forwarding_socket).set_recv_buffer_size(1_677_720) {
         warn!(error = %e, "Failed to set UDP receive buffer size for forwarding capture socket.");
@@ -62,17 +78,26 @@ async fn run() -> Result<(), GenericError> {
         dogstatsd_forwarding_state.clone(),
     ));
 
-    info!("DogStatsD forwarding capture started: listening on {DOGSTATSD_FORWARDING_LISTEN_ADDR}.");
+    info!("DogStatsD forwarding capture started: listening on {dogstatsd_forwarding_listen_addr}.");
 
-    let listener = TcpListener::bind(HTTP_LISTEN_ADDR)
-        .await
-        .error_context("Failed to bind HTTP intake listener.")?;
-    info!("datadog-intake started: listening on {HTTP_LISTEN_ADDR}.");
+    let listener = TcpListener::bind(&http_listen_addr).await.with_error_context(|| {
+        format!("Failed to bind HTTP intake listener on {http_listen_addr} ({HTTP_LISTEN_ADDR_VAR}).")
+    })?;
+    info!("datadog-intake started: listening on {http_listen_addr}.");
 
     axum::serve(listener, initialize_app_router(dogstatsd_forwarding_state))
         .with_graceful_shutdown(async move { shutdown_rx.recv().await.unwrap_or(()) })
         .await
         .map_err(Into::into)
+}
+
+/// Reads a listen address from the environment variable `var`, or returns `default` when it is unset.
+fn listen_addr(var: &str, default: &str) -> Result<String, GenericError> {
+    match env::var(var) {
+        Ok(addr) => Ok(addr),
+        Err(VarError::NotPresent) => Ok(default.to_string()),
+        Err(e) => Err(generic_error!("Failed to read {var}: {e}")),
+    }
 }
 
 #[cfg(unix)]

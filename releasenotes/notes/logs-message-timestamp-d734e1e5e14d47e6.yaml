@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Logs requests now carry the ``dd-message-timestamp`` header, the time the last log of the request was received
+    in milliseconds, as the Datadog Agent sends it.

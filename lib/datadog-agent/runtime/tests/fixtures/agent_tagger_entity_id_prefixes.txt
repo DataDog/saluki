@@ -15,6 +15,7 @@ gpu
 host
 internal
 kubelet
+kubernetes_autoscaled_workload
 kubernetes_capabilities
 kubernetes_kueue_queue
 kubernetes_metadata

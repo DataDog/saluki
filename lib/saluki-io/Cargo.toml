@@ -67,6 +67,7 @@ tokio = { workspace = true, features = [
   "time",
 ] }
 tokio-rustls = { workspace = true }
+tokio-util = { workspace = true }
 tonic = { workspace = true, features = ["server"] }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
@@ -92,6 +93,7 @@ http-body-util = { workspace = true }
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 rand_distr = { workspace = true }
+saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

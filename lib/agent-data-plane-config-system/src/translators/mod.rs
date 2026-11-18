@@ -6,4 +6,6 @@
 
 mod datadog_translator;
 
+#[cfg(test)]
+pub(crate) use datadog_translator::metric_prefix_rules;
 pub(crate) use datadog_translator::DatadogTranslator;

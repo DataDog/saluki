@@ -1,6 +1,7 @@
 //! OTLP domain: the OTLP receiver (gRPC/HTTP transports, logs/metrics activation), the OTLP proxy
 //! gating, and OTLP context sizing. OTLP trace handling lives in the `traces` domain.
 
+use std::collections::HashMap;
 use std::time::Duration;
 use std::{num::NonZeroUsize, str::FromStr};
 
@@ -426,6 +427,39 @@ pub struct Cors {
     pub max_age: u64,
 }
 
+/// How custom infrastructure tags are promoted into container tags on OTLP traces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerTagPromotion {
+    /// Writes tags as-is. Only convention keys reach container tags; custom keys remain plain resource
+    /// attributes.
+    #[default]
+    Off,
+
+    /// Writes both the original key and a `datadog.container.tag.` prefixed copy, so custom keys reach
+    /// container tags while the unprefixed form survives for consumers that read it.
+    Duplicate,
+
+    /// Writes only the `datadog.container.tag.` form. Smaller payloads, but consumers reading the
+    /// unprefixed form lose access to the tag.
+    Rename,
+}
+
+impl FromStr for ContainerTagPromotion {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "off" => Ok(Self::Off),
+            "duplicate" => Ok(Self::Duplicate),
+            "rename" => Ok(Self::Rename),
+            other => Err(Error::new_without_source(format!(
+                "unknown container tag promotion mode `{other}`; expected `off`, `duplicate`, or `rename`"
+            ))),
+        }
+    }
+}
+
 /// OTLP trace ingestion settings.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Traces {
@@ -435,7 +469,13 @@ pub struct Traces {
     /// Internal port the OTLP trace receiver forwards to.
     pub internal_port: u16,
 
-    /// Percentage of OTLP traces the probabilistic sampler keeps.
+    /// Percentage of OTLP traces the OTLP receiver keeps when the APM probabilistic sampler is disabled.
+    ///
+    /// The receiver turns this into a sampling rate and reports that rate on every OTLP trace as `_dd.otlp_sr`, even
+    /// when the APM probabilistic sampler makes the sampling decision. Values outside `(0, 100)`, and NaN, normalize to a
+    /// receiver rate of `1.0`. Explicit sampling priorities and other samplers still apply.
+    ///
+    /// Defaults to `100`. Lower it to reduce OTLP trace volume when the APM probabilistic sampler is disabled.
     pub probabilistic_sampler_sampling_percentage: f64,
 
     /// Non-zero byte budget for the OTLP trace context interner. (not in Datadog Agent config schema)
@@ -450,6 +490,27 @@ pub struct Traces {
     /// Whether spans missing intake-required fields are ingested rather than rejected. (not in
     /// Datadog Agent config schema)
     pub ignore_missing_datadog_fields: bool,
+
+    /// Whether entity and global tags from the workload metadata store are enriched onto OTLP traces.
+    ///
+    /// Defaults to `true`. When `false`, traces carry only the resource attributes the sender provided.
+    pub infra_attributes_enabled: bool,
+
+    /// How custom infrastructure tags are promoted into container tags on OTLP traces.
+    ///
+    /// Defaults to `off`, which leaves custom tags as plain resource attributes. Convention keys and
+    /// already-prefixed keys are exempt in every mode.
+    pub container_tag_promotion: ContainerTagPromotion,
+
+    /// Whether the OTLP span name becomes the operation name of OTLP spans that have no `operation.name`.
+    ///
+    /// `true` selects V1 operation and resource naming. Defaults to `false`.
+    pub span_name_as_resource_name: bool,
+
+    /// Preferred operation names, keyed by the operation name V1 naming derives.
+    ///
+    /// A non-empty map selects V1 operation and resource naming. Defaults to empty.
+    pub span_name_remappings: HashMap<String, String>,
 }
 
 impl Default for Traces {
@@ -457,20 +518,23 @@ impl Default for Traces {
         Self {
             enabled: false,
             internal_port: 0,
+            // Witnessed; overwritten during drive.
             probabilistic_sampler_sampling_percentage: 0.0,
             string_interner_size: DEFAULT_STRING_INTERNER_SIZE_BYTES,
             enable_compute_top_level_by_span_kind: true,
             ignore_missing_datadog_fields: false,
+            infra_attributes_enabled: true,
+            container_tag_promotion: ContainerTagPromotion::default(),
+            // Witnessed; overwritten during drive.
+            span_name_as_resource_name: false,
+            span_name_remappings: HashMap::new(),
         }
     }
 }
 
-/// OTLP proxy gating: which signals the proxy forwards, and the proxy receiver endpoint.
+/// OTLP proxy gating: which signals the proxy forwards, and the Agent endpoint it forwards to.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Proxy {
-    /// Whether the OTLP proxy is enabled.
-    pub enabled: bool,
-
     /// Whether the proxy forwards logs.
     pub logs_enabled: bool,
 
@@ -480,8 +544,15 @@ pub struct Proxy {
     /// Whether the proxy forwards traces.
     pub traces_enabled: bool,
 
-    /// Address the proxy's gRPC receiver listens on.
+    /// Address of the Agent's relocated OTLP/gRPC listener, which the proxy forwards to.
     pub grpc_endpoint: String,
+}
+
+impl Proxy {
+    /// Returns `true` if the proxy forwards any signal to the Agent.
+    pub const fn enabled(&self) -> bool {
+        self.logs_enabled || self.metrics_enabled || self.traces_enabled
+    }
 }
 
 /// OTLP context cache sizing.
@@ -514,7 +585,38 @@ impl Default for Contexts {
 
 #[cfg(test)]
 mod tests {
-    use super::{CumulativeMonotonicMode, GrpcReceiver, GrpcTransport, HttpReceiver, InitialCumulativeMonotonicValue};
+    use super::{
+        ContainerTagPromotion, CumulativeMonotonicMode, GrpcReceiver, GrpcTransport, HttpReceiver,
+        InitialCumulativeMonotonicValue,
+    };
+
+    #[test]
+    fn container_tag_promotion_parses_known_values() {
+        for (value, expected) in [
+            ("off", ContainerTagPromotion::Off),
+            ("duplicate", ContainerTagPromotion::Duplicate),
+            ("rename", ContainerTagPromotion::Rename),
+        ] {
+            assert_eq!(
+                value
+                    .parse::<ContainerTagPromotion>()
+                    .expect("known value should parse"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn container_tag_promotion_rejects_unknown_values() {
+        let error = "unsupported"
+            .parse::<ContainerTagPromotion>()
+            .expect_err("unsupported mode should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "unknown container tag promotion mode `unsupported`; expected `off`, `duplicate`, or `rename`"
+        );
+    }
 
     #[test]
     fn grpc_transport_parses_known_values() {

@@ -149,7 +149,7 @@ fn page_size() -> Option<usize> {
 }
 
 fn parse_kb_value_as_bytes(raw_rss_value: &[u8]) -> Option<usize> {
-    // The raw value here will be in the form of `XXXXXX kB`, so we want to find the first whitespace character, and
+    // The raw value here will be in the form of `XXXXXX kB`, so we want to find the first space character, and
     // take everything before that.
     match raw_rss_value.iter().position(|&b| b == b' ') {
         Some(space_idx) => {

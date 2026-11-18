@@ -3,7 +3,6 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
-use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue};
 use ddsketch::DDSketch;
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
 use otlp_protos::opentelemetry::proto::metrics::v1::{
@@ -13,10 +12,7 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
 use saluki_common::collections::FastHashSet;
 use saluki_core::data_model::{
     event::{
-        metric::{
-            context::{ContextResolver, ContextResolverBuilder},
-            Metric, MetricMetadata, MetricValues,
-        },
+        metric::{context::ContextResolver, Metric, MetricMetadata, MetricValues},
         Event,
     },
     tags::{SharedTagSet, TagSet},
@@ -31,7 +27,7 @@ use self::runtime::{
     map_sum_runtime_metric_with_attributes,
 };
 use super::cache::PointsCache;
-use super::config::OtlpMetricsTranslatorConfig;
+use super::config::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue, OtlpMetricsTranslatorConfig};
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
@@ -185,13 +181,11 @@ impl OtlpMetricsTranslator {
 
         let host = match source {
             Some(Source {
-                kind: SourceKind::HostnameKind,
+                kind: SourceKind::Hostname,
                 identifier,
             }) => Some(MetaString::from(identifier)),
-            Some(Source {
-                kind: SourceKind::AwsEcsFargateKind,
-                ..
-            }) => None,
+            // Every other source, such as ECS Fargate, reports no host.
+            Some(_) => None,
             None => Some(self.default_hostname.clone()),
         };
 
@@ -289,11 +283,13 @@ impl OtlpMetricsTranslator {
     }
 
     /// Creates a new `OtlpMetricsTranslator` for tests.
+    #[cfg(test)]
     pub fn for_tests() -> OtlpMetricsTranslator {
         Self::for_tests_with_translator_metrics(OtlpMetricsTranslatorMetrics::for_tests())
     }
 
     /// Creates a new `OtlpMetricsTranslator` for tests with the given translator telemetry.
+    #[cfg(test)]
     pub fn for_tests_with_translator_metrics(
         translator_metrics: OtlpMetricsTranslatorMetrics,
     ) -> OtlpMetricsTranslator {
@@ -303,9 +299,10 @@ impl OtlpMetricsTranslator {
             .as_nanos() as u64;
 
         OtlpMetricsTranslator {
-            config: Default::default(),
+            config: OtlpMetricsTranslatorConfig::for_tests(),
             default_hostname: MetaString::from_static("default-host"),
-            context_resolver: ContextResolverBuilder::for_tests().build(),
+            context_resolver: saluki_core::data_model::event::metric::context::ContextResolverBuilder::for_tests()
+                .build(),
             origin_tag_resolver: OtlpOriginTagResolver::new(std::sync::Arc::new(
                 saluki_env::workload::providers::NoopWorkloadProvider,
             )),
@@ -498,7 +495,6 @@ impl OtlpMetricsTranslator {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::domains::otlp::HistogramMode;
     use otlp_protos::opentelemetry::proto::metrics::v1::{
         number_data_point::Value as OtlpNumberDataPointValue, Gauge, HistogramDataPoint as OtlpHistogramDataPoint,
         NumberDataPoint as OtlpNumberDataPoint, ScopeMetrics, Sum,
@@ -506,6 +502,7 @@ mod tests {
     use saluki_core::data_model::tags::Tag;
 
     use super::*;
+    use crate::sources::otlp::metrics::config::HistogramMode;
 
     // Fixtures shared with the submodules' own test modules.
     pub(super) fn nanos_from_seconds(s: u64) -> u64 {

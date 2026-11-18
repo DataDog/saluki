@@ -1,0 +1,19 @@
+[package]
+name = "datadog-agent-config-corpus"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+publish = false
+
+# Reading saved Agent results needs neither ADP configuration types nor protobuf code.
+[dependencies]
+serde_json = { workspace = true }
+
+# Unit tests compare the recordings with the schema, ADP support inventory, and recorder inputs.
+[dev-dependencies]
+datadog-agent-config-overlay-model = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

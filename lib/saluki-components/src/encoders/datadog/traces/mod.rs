@@ -1,9 +1,9 @@
-use std::{fmt::Write, time::Duration};
+use std::{borrow::Cow, fmt, fmt::Write, sync::Arc, time::Duration};
 
-use agent_data_plane_config::{defaults::DEFAULT_TRACE_ENV, domains, SharedConfiguration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
+use metrics::{Counter, Gauge, Histogram};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
@@ -12,18 +12,19 @@ use saluki_core::{
     components::{encoders::*, BuildContext},
     data_model::{
         event::{
-            trace::{AttributeValue, Trace},
+            trace::{AttributeValue, Trace, TraceIngestInfo},
             EventType,
         },
+        origin::OriginTagCardinality,
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
-        tags::TagSet,
+        tags::{SharedTagSet, TagSet},
     },
     observability::ComponentMetricsExt as _,
     runtime,
     topology::{EventsBuffer, PayloadsBuffer},
 };
 use saluki_env::host::providers::BoxedHostProvider;
-use saluki_env::{EnvironmentProvider, HostProvider};
+use saluki_env::{workload::EntityId, EnvironmentProvider, HostProvider, WorkloadProvider};
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
@@ -38,17 +39,28 @@ use tokio::{
 use tracing::{debug, error};
 
 use crate::common::datadog::{
+    get_tracer_hostname,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, TAG_DECISION_MAKER,
+    version_data::ContainerVersionData,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, KEY_ANALYZED_SPANS,
+    TAG_DECISION_MAKER,
 };
+use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::common::otlp::util::{
     attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
     SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
 };
+use crate::config::AgentEnv;
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
+
+/// Cardinality of the container tags looked up to fill in a missing application version.
+///
+/// The version data tags are low cardinality, so a low cardinality lookup finds them.
+const VERSION_DATA_TAG_CARDINALITY: OriginTagCardinality = OriginTagCardinality::Low;
+
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
@@ -107,77 +119,45 @@ impl StringTable {
 /// and enrichment with metadata such as hostname, environment, and container tags.
 pub struct DatadogTraceConfiguration {
     /// Compression algorithm applied to outgoing payloads.
-    compressor_kind: String,
+    pub compressor_kind: String,
 
-    /// Effective zstd compression level, resolved by the configuration layer.
-    zstd_compressor_level: i32,
+    /// zstd compression level, used when the compression algorithm is zstd.
+    pub zstd_compressor_level: i32,
 
     /// How long the encoder waits before flushing a partially filled payload.
     ///
     /// A zero duration is treated as "flush almost immediately" during `build`.
-    flush_timeout: Duration,
+    pub flush_timeout: Duration,
 
-    /// Global environment tag applied to emitted payloads.
-    env: String,
+    /// Agent environment of emitted payloads.
+    pub agent_env: AgentEnv,
 
     /// Target sampled traces per second, forwarded to the intake as `target_tps`.
-    target_traces_per_second: f64,
+    pub target_traces_per_second: f64,
 
     /// Target sampled error traces per second, forwarded to the intake as `error_tps`.
-    errors_per_second: f64,
+    pub errors_per_second: f64,
 
     /// Whether Error Tracking standalone mode is enabled.
-    error_tracking_standalone: bool,
+    pub error_tracking_standalone: bool,
 
     /// Whether spans missing intake-required fields are ingested rather than rejected.
-    ignore_missing_datadog_fields: bool,
+    pub ignore_missing_datadog_fields: bool,
 
-    /// Percentage of OTLP traces the probabilistic sampler keeps.
-    sampling_percentage: f64,
+    /// Default hostname of emitted payloads.
+    ///
+    /// If unset, payloads carry an empty hostname. See
+    /// [`with_environment_provider`](Self::with_environment_provider).
+    pub default_hostname: Option<String>,
 
-    /// Default hostname, resolved from the environment provider.
-    default_hostname: Option<String>,
-
-    /// ADP version string embedded in emitted payloads.
-    version: String,
+    /// Workload provider used to look up container tags, if any.
+    ///
+    /// When a trace carries no application version, the `version` tag of its container fills it in. The lookup never
+    /// waits: if the container's tags aren't known yet, the version stays empty.
+    pub workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl DatadogTraceConfiguration {
-    /// Creates a new `DatadogTraceConfiguration` from the resolved traces and shared configuration.
-    ///
-    /// The OTLP trace settings live in their own domain, so they arrive as a separate slice rather
-    /// than through the traces domain.
-    pub fn from_configuration(
-        traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces, shared: &SharedConfiguration,
-    ) -> Self {
-        let app_details = saluki_metadata::get_app_details();
-        let version = format!("agent-data-plane/{}", app_details.version().raw());
-
-        let compression = &shared.endpoints.compression;
-
-        // ADP defaults the global environment tag to `none` rather than the Core Agent's empty
-        // string, so normalize an empty resolved value back to `none`.
-        let env = if traces.env.is_empty() {
-            DEFAULT_TRACE_ENV.to_owned()
-        } else {
-            traces.env.clone()
-        };
-
-        Self {
-            compressor_kind: compression.compressor_kind.clone(),
-            zstd_compressor_level: compression.effective_zstd_level(),
-            flush_timeout: shared.metrics_encoding.flush_timeout,
-            env,
-            target_traces_per_second: traces.target_traces_per_second,
-            errors_per_second: traces.errors_per_second,
-            error_tracking_standalone: traces.error_tracking_standalone_enabled,
-            ignore_missing_datadog_fields: otlp_traces.ignore_missing_datadog_fields,
-            sampling_percentage: otlp_traces.probabilistic_sampler_sampling_percentage,
-            default_hostname: None,
-            version,
-        }
-    }
-
     /// Sets the `default_hostname` using the environment provider
     pub async fn with_environment_provider<E>(mut self, environment_provider: E) -> Result<Self, GenericError>
     where
@@ -187,6 +167,20 @@ impl DatadogTraceConfiguration {
         let hostname = host_provider.get_hostname().await?;
         self.default_hostname = Some(hostname);
         Ok(self)
+    }
+
+    fn endpoint_encoder(&self) -> TraceEndpointEncoder {
+        let app_details = saluki_metadata::get_app_details();
+        TraceEndpointEncoder::new(
+            MetaString::from(self.default_hostname.clone().unwrap_or_default()),
+            format!("agent-data-plane/{}", app_details.version().raw()),
+            self.agent_env.as_str().to_owned(),
+            self.target_traces_per_second,
+            self.errors_per_second,
+            self.error_tracking_standalone,
+            self.ignore_missing_datadog_fields,
+        )
+        .with_container_tag_lookup(ContainerTagLookup(self.workload_provider.clone()))
     }
 }
 
@@ -203,28 +197,12 @@ impl EncoderBuilder for DatadogTraceConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let payload_telemetry = TracePayloadTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
-        let default_hostname = self.default_hostname.clone().unwrap_or_default();
-        let default_hostname = MetaString::from(default_hostname);
-
         // Create request builder for traces which is used to generate HTTP requests.
-
-        let mut trace_rb = RequestBuilder::new(
-            TraceEndpointEncoder::new(
-                default_hostname,
-                self.version.clone(),
-                self.env.clone(),
-                self.target_traces_per_second,
-                self.errors_per_second,
-                self.error_tracking_standalone,
-                self.ignore_missing_datadog_fields,
-                self.sampling_percentage,
-            ),
-            compression_scheme,
-            RB_BUFFER_CHUNK_SIZE,
-        )
-        .await?;
+        let mut trace_rb =
+            RequestBuilder::new(self.endpoint_encoder(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         trace_rb.with_max_inputs_per_payload(MAX_TRACES_PER_PAYLOAD);
 
         let flush_timeout = if self.flush_timeout.is_zero() {
@@ -238,6 +216,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         Ok(Box::new(DatadogTrace {
             trace_rb,
             telemetry,
+            payload_telemetry,
             flush_timeout,
         }))
     }
@@ -261,7 +240,87 @@ impl MemoryBounds for DatadogTraceConfiguration {
 pub struct DatadogTrace {
     trace_rb: RequestBuilder<TraceEndpointEncoder>,
     telemetry: ComponentTelemetry,
+    payload_telemetry: TracePayloadTelemetry,
     flush_timeout: Duration,
+}
+
+/// Telemetry for what the traces encoder writes into payloads.
+struct TracePayloadTelemetry {
+    traces: Counter,
+    spans: Counter,
+    events: Counter,
+    bytes_uncompressed: Counter,
+    payload_size: Histogram,
+    largest_payload_size: Gauge,
+    largest_payload_size_seen: usize,
+}
+
+impl TracePayloadTelemetry {
+    fn from_builder(builder: &MetricsBuilder) -> Self {
+        Self {
+            traces: builder.register_counter("component_traces_encoded_total"),
+            spans: builder.register_counter("component_spans_encoded_total"),
+            events: builder.register_counter("component_trace_events_encoded_total"),
+            bytes_uncompressed: builder.register_counter("component_bytes_uncompressed_total"),
+            payload_size: builder.register_histogram("component_payload_size_bytes"),
+            largest_payload_size: builder.register_gauge("component_payload_size_max_bytes"),
+            largest_payload_size_seen: 0,
+        }
+    }
+
+    /// Tracks a trace written into a payload.
+    fn track_trace(&self, counts: TraceCounts) {
+        self.traces.increment(1);
+        self.spans.increment(counts.spans);
+        self.events.increment(counts.events);
+    }
+
+    /// Tracks a flushed payload, given its size before compression and the size of the request body.
+    ///
+    /// The body size goes into a distribution, and the largest body seen so far goes into a gauge: exported
+    /// distributions keep their buckets, sum and count, but not the exact maximum.
+    fn track_payload(&mut self, uncompressed_len: usize, body_len: usize) {
+        self.bytes_uncompressed.increment(uncompressed_len as u64);
+        self.payload_size.record(body_len as f64);
+
+        if body_len > self.largest_payload_size_seen {
+            self.largest_payload_size_seen = body_len;
+            self.largest_payload_size.set(body_len as f64);
+        }
+    }
+}
+
+/// Spans and events that a trace adds to a payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TraceCounts {
+    spans: u64,
+    events: u64,
+}
+
+impl TraceCounts {
+    /// Counts the spans and events of a trace.
+    ///
+    /// A trace that sampling dropped is still sent when it carries spans kept as standalone events. Only those
+    /// analyzed spans count, as events, and none of its spans count as spans. A kept trace counts all of its spans as
+    /// spans and no events, even when some of its spans are analyzed: those are not sent as standalone events.
+    fn from_trace(trace: &Trace) -> Self {
+        if trace.dropped_trace {
+            let events = trace
+                .spans()
+                .iter()
+                .filter(|span| span.attributes.contains_key(KEY_ANALYZED_SPANS))
+                .count();
+            Self {
+                spans: 0,
+                events: events as u64,
+            }
+        } else {
+            Self {
+                spans: trace.spans().len() as u64,
+                events: 0,
+            }
+        }
+    }
 }
 
 // Encodes Trace events to TracerPayloads.
@@ -271,6 +330,7 @@ impl Encoder for DatadogTrace {
         let Self {
             trace_rb,
             telemetry,
+            payload_telemetry,
             flush_timeout,
         } = *self;
 
@@ -283,7 +343,14 @@ impl Encoder for DatadogTrace {
         //
         // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
         // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
-        let request_builder_fut = run_request_builder(trace_rb, telemetry, events_rx, payloads_tx, flush_timeout);
+        let request_builder_fut = run_request_builder(
+            trace_rb,
+            telemetry,
+            payload_telemetry,
+            events_rx,
+            payloads_tx,
+            flush_timeout,
+        );
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
             .needed()
@@ -334,7 +401,8 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: Receiver<EventsBuffer>, payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
+    mut payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
+    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -343,15 +411,15 @@ async fn run_request_builder(
     loop {
         select! {
             Some(event_buffer) = events_rx.recv() => {
-                for event in event_buffer {
-                    let trace = match event.try_into_trace() {
-                        Some(trace) => trace,
-                        None => continue,
-                    };
+                for trace in event_buffer.into_events::<Trace>() {
                     // Encode the trace. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the trace again.
+                    let trace_counts = TraceCounts::from_trace(&trace);
                     let trace_to_retry = match trace_request_builder.encode(trace).await {
-                        Ok(None) => continue,
+                        Ok(None) => {
+                            payload_telemetry.track_trace(trace_counts);
+                            continue;
+                        }
                         Ok(Some(trace)) => trace,
                         Err(e) => {
                             error!(error = %e, "Failed to encode trace.");
@@ -367,7 +435,8 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, _data_points, request)) => {
+                            Ok((events, _data_points, uncompressed_len, request)) => {
+                                payload_telemetry.track_payload(uncompressed_len, request.body().len());
                                 let payload_meta = PayloadMetadata::from_event_count(events);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
@@ -385,9 +454,16 @@ async fn run_request_builder(
                     }
 
                     // Now try to encode the trace again.
-                    if let Err(e) = trace_request_builder.encode(trace_to_retry).await {
-                        error!(error = %e, "Failed to encode trace.");
-                        telemetry.events_dropped_encoder().increment(1);
+                    match trace_request_builder.encode(trace_to_retry).await {
+                        Ok(None) => payload_telemetry.track_trace(trace_counts),
+                        Ok(Some(_)) => {
+                            error!("Trace did not fit in a request after flushing; dropping it.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to encode trace.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
                     }
                 }
 
@@ -409,7 +485,8 @@ async fn run_request_builder(
                 let maybe_trace_requests = trace_request_builder.flush().await;
                 for maybe_request in maybe_trace_requests {
                     match maybe_request {
-                        Ok((events, _data_points, request)) => {
+                        Ok((events, _data_points, uncompressed_len, request)) => {
+                            payload_telemetry.track_payload(uncompressed_len, request.body().len());
                             let payload_meta = PayloadMetadata::from_event_count(events);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
@@ -436,6 +513,31 @@ async fn run_request_builder(
     Ok(())
 }
 
+/// One-shot lookup of a container's tags.
+///
+/// The lookup doesn't wait for the container to become known, and doesn't retry.
+#[derive(Clone, Default)]
+struct ContainerTagLookup(Option<Arc<dyn WorkloadProvider + Send + Sync>>);
+
+impl ContainerTagLookup {
+    /// Returns the tags of the container with the given ID, if the container is known.
+    fn get(&self, container_id: &MetaString) -> Option<SharedTagSet> {
+        if container_id.is_empty() {
+            return None;
+        }
+        let provider = self.0.as_ref()?;
+        provider.get_tags_for_entity(&EntityId::Container(container_id.clone()), VERSION_DATA_TAG_CARDINALITY)
+    }
+}
+
+impl fmt::Debug for ContainerTagLookup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContainerTagLookup")
+            .field("enabled", &self.0.is_some())
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 struct TraceEndpointEncoder {
     scratch: ScratchWriter<Vec<u8>>,
@@ -446,18 +548,18 @@ struct TraceEndpointEncoder {
     target_traces_per_second: f64,
     errors_per_second: f64,
     ignore_missing_datadog_fields: bool,
-    sampling_percentage: f64,
     string_builder: StringBuilder,
+    env_builder: StringBuilder,
     string_table: StringTable,
     error_tracking_standalone: bool,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
+    container_tags: ContainerTagLookup,
 }
 
 impl TraceEndpointEncoder {
     fn new(
         default_hostname: MetaString, version: String, env: String, target_traces_per_second: f64,
         errors_per_second: f64, error_tracking_standalone: bool, ignore_missing_datadog_fields: bool,
-        sampling_percentage: f64,
     ) -> Self {
         let extra_headers = if error_tracking_standalone {
             vec![(
@@ -476,41 +578,85 @@ impl TraceEndpointEncoder {
             target_traces_per_second,
             errors_per_second,
             ignore_missing_datadog_fields,
-            sampling_percentage,
             string_builder: StringBuilder::new(),
+            env_builder: StringBuilder::new(),
             string_table: StringTable::new(),
             error_tracking_standalone,
             extra_headers,
+            container_tags: ContainerTagLookup::default(),
         }
     }
 
+    /// Sets the lookup used to fill in a missing application version from container tags.
+    fn with_container_tag_lookup(mut self, container_tags: ContainerTagLookup) -> Self {
+        self.container_tags = container_tags;
+        self
+    }
+
     fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> std::io::Result<()> {
-        let sampling_rate = self.sampling_rate();
         let source = attributes_to_source(&trace.attributes);
 
+        // OTLP traces report the receiver sampling rate and mark the tracer version as OTLP. Native traces keep
+        // their tracer version as sent.
+        let (tracer_version, otlp_sampling_rate) = match trace.ingest_info() {
+            TraceIngestInfo::Datadog => (Cow::Borrowed(trace.payload.tracer_version.as_ref()), None),
+            TraceIngestInfo::Otlp { receiver_sampling_rate } => {
+                self.string_builder.clear();
+                write!(&mut self.string_builder, "{:.2}", receiver_sampling_rate)
+                    .expect("should never fail to format sampling rate");
+                (
+                    Cow::Owned(format!("otlp-{}", trace.payload.tracer_version)),
+                    Some(self.string_builder.as_str()),
+                )
+            }
+        };
+
         // Resolve computed metadata strings (may produce strings not directly present on trace fields).
-        let tracer_version = format!("otlp-{}", &trace.payload.tracer_version);
-        let container_tags =
-            resolve_container_tags_from_attrs(&trace.attributes, source.as_ref(), self.ignore_missing_datadog_fields);
-        let env_str: Option<&str> = if !trace.payload.env.is_empty() {
-            Some(&trace.payload.env)
+        let container_tags = resolve_container_tags_from_attrs(&trace.attributes, source.as_ref());
+        // The payload environment is normalized like any other tag value before it's interned.
+        let payload_env: &str = if is_normalized_tag_value(&trace.payload.env) {
+            &trace.payload.env
+        } else {
+            normalize_tag_value_into_unchecked(&trace.payload.env, &mut self.env_builder);
+            self.env_builder.as_str()
+        };
+        let env_str: Option<&str> = if !payload_env.is_empty() {
+            Some(payload_env)
         } else if self.ignore_missing_datadog_fields {
             Some("")
         } else {
             None
         };
-        let hostname_str: Option<&str> = resolve_hostname_from_payload(
-            &trace.payload.hostname,
-            source.as_ref(),
+        let hostname_str: Option<&str> = resolve_hostname(
+            get_tracer_hostname(trace).map(|hostname| hostname.as_ref()),
+            matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. }),
             Some(self.default_hostname.as_ref()),
             self.ignore_missing_datadog_fields,
         );
+        // The container's `version` tag fills in an application version that the payload leaves empty. The tags come
+        // from the trace's own container-tag attributes and from the container's known tags, as they do for stats. They
+        // are gathered only when the version is missing.
+        let version_tags = if trace.payload.app_version.is_empty() && !trace.payload.container_id.is_empty() {
+            let mut tags = TagSet::default();
+            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            if let Some(provider_tags) = self.container_tags.get(&trace.payload.container_id) {
+                tags.merge_shared(&provider_tags);
+            }
+            Some(tags)
+        } else {
+            None
+        };
+        let app_version: &str = if !trace.payload.app_version.is_empty() {
+            &trace.payload.app_version
+        } else {
+            version_tags
+                .as_ref()
+                .map(|tags| ContainerVersionData::from_tags(tags).app_version)
+                .unwrap_or_default()
+        };
         let decision_maker = trace.decision_maker.as_deref();
         let priority = trace.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY);
         let dropped_trace = trace.dropped_trace;
-        let otlp_sr = trace.otlp_sampling_rate.unwrap_or(sampling_rate);
-        self.string_builder.clear();
-        write!(&mut self.string_builder, "{:.2}", otlp_sr).expect("should never fail to format sampling rate");
 
         // Build 128-bit big-endian trace ID bytes for the chunk.
         let mut trace_id_bytes = [0u8; 16];
@@ -542,7 +688,9 @@ impl TraceEndpointEncoder {
             if !trace.payload.language_version.is_empty() {
                 tp.language_version_ref(self.string_table.intern(&trace.payload.language_version))?;
             }
-            tp.tracer_version_ref(self.string_table.intern(tracer_version.as_str()))?;
+            if !tracer_version.is_empty() {
+                tp.tracer_version_ref(self.string_table.intern(&tracer_version))?;
+            }
             if !trace.payload.runtime_id.is_empty() {
                 tp.runtime_id_ref(self.string_table.intern(&trace.payload.runtime_id))?;
             }
@@ -552,8 +700,8 @@ impl TraceEndpointEncoder {
             if let Some(h) = hostname_str {
                 tp.hostname_ref(self.string_table.intern(h))?;
             }
-            if !trace.payload.app_version.is_empty() {
-                tp.app_version_ref(self.string_table.intern(&trace.payload.app_version))?;
+            if !app_version.is_empty() {
+                tp.app_version_ref(self.string_table.intern(app_version))?;
             }
 
             // Container tags go in the payload-level attributes map.
@@ -699,9 +847,9 @@ impl TraceEndpointEncoder {
                             })?;
                         }
                     }
-                    {
+                    if let Some(rate) = otlp_sampling_rate {
                         let k_ref = self.string_table.intern(TAG_OTLP_SAMPLING_RATE);
-                        let v_ref = self.string_table.intern(self.string_builder.as_str());
+                        let v_ref = self.string_table.intern(rate);
                         cattrs.write_entry(k_ref, |av: &mut _| {
                             av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
                         })?;
@@ -726,14 +874,6 @@ impl TraceEndpointEncoder {
         ap_builder.finish(output_buffer)?;
 
         Ok(())
-    }
-
-    fn sampling_rate(&self) -> f64 {
-        let rate = self.sampling_percentage / 100.0;
-        if rate <= 0.0 || rate >= 1.0 {
-            return 1.0;
-        }
-        rate
     }
 }
 
@@ -806,67 +946,49 @@ fn encode_etp_attribute_value<S: ScratchBuffer>(
         .map(|_| ())
 }
 
-fn resolve_hostname_from_payload<'a>(
-    payload_hostname: &'a str, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
-    ignore_missing_fields: bool,
+/// Resolves the hostname to report for a trace.
+///
+/// `tracer_hostname` is the hostname the trace carries. Without one, OTLP traces report none: the translator already
+/// applied its source cascade, so an empty hostname means a serverless resource. Other traces fall back to
+/// `default_hostname`.
+fn resolve_hostname<'a>(
+    tracer_hostname: Option<&'a str>, is_otlp: bool, default_hostname: Option<&'a str>, ignore_missing_fields: bool,
 ) -> Option<&'a str> {
-    if !payload_hostname.is_empty() {
-        return Some(payload_hostname);
+    if let Some(hostname) = tracer_hostname {
+        return Some(hostname);
     }
-    if ignore_missing_fields {
+    if ignore_missing_fields || is_otlp {
         return Some("");
     }
-    match source {
-        Some(src) => match src.kind {
-            OtlpSourceKind::HostnameKind => Some(src.identifier.as_str()),
-            _ => Some(""),
-        },
-        None => default_hostname,
-    }
+    default_hostname
 }
 
 fn resolve_container_tags_from_attrs(
-    attributes: &FastHashMap<MetaString, AttributeValue>, source: Option<&OtlpSource>, ignore_missing_fields: bool,
+    attributes: &FastHashMap<MetaString, AttributeValue>, source: Option<&OtlpSource>,
 ) -> Option<MetaString> {
+    // An explicit, non-empty `datadog.container_tags` attribute is always emitted, with the tags extracted from the
+    // resource's container keys appended. Both sources reach the payload regardless of how missing Datadog fields
+    // are treated, matching the trace agent's receiver, which extracts container tags unconditionally.
+    let mut flattened = String::new();
     if let Some(AttributeValue::String(tags)) = attributes.get(KEY_DATADOG_CONTAINER_TAGS) {
         if !tags.is_empty() {
-            return Some(tags.clone());
+            flattened.push_str(tags.as_ref());
         }
     }
 
-    if ignore_missing_fields {
-        return None;
-    }
     let mut container_tags = TagSet::default();
     extract_container_tags_from_attributes_map(attributes, &mut container_tags);
-    let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargateKind);
-    if container_tags.is_empty() && !is_fargate_source {
-        return None;
+    let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargate);
+    for tag in container_tags {
+        append_tags(&mut flattened, tag.as_str());
     }
-
-    let mut flattened = flatten_container_tag(container_tags);
     if is_fargate_source {
         if let Some(src) = source {
             append_tags(&mut flattened, &src.tag());
         }
     }
 
-    if flattened.is_empty() {
-        None
-    } else {
-        Some(MetaString::from(flattened))
-    }
-}
-
-fn flatten_container_tag(tags: TagSet) -> String {
-    let mut flattened = String::new();
-    for tag in tags {
-        if !flattened.is_empty() {
-            flattened.push(',');
-        }
-        flattened.push_str(tag.as_str());
-    }
-    flattened
+    (!flattened.is_empty()).then(|| MetaString::from(flattened))
 }
 
 fn append_tags(target: &mut String, tags: &str) {
@@ -880,15 +1002,37 @@ fn append_tags(target: &mut String, tags: &str) {
 }
 
 #[cfg(test)]
+mod sampling_round_trip;
+
+/// Returns trace encoder settings carrying the configuration defaults.
+#[cfg(test)]
+fn trace_configuration(agent_env: AgentEnv) -> DatadogTraceConfiguration {
+    DatadogTraceConfiguration {
+        compressor_kind: "zstd".to_string(),
+        zstd_compressor_level: 3,
+        flush_timeout: Duration::from_secs(2),
+        agent_env,
+        target_traces_per_second: 10.0,
+        errors_per_second: 10.0,
+        error_tracking_standalone: false,
+        ignore_missing_datadog_fields: false,
+        default_hostname: None,
+        workload_provider: None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashMap};
+    use std::collections::HashMap;
 
     use datadog_protos::traces::{idx, AgentPayload};
     use protobuf::Message as _;
-    use saluki_core::data_model::{
-        event::trace::{Span as DdSpan, Trace},
-        tags::Tag,
+    use saluki_core::data_model::event::{
+        trace::{Span as DdSpan, Trace, TraceIngestInfo},
+        Event,
     };
+    use saluki_env::workload::providers::TestWorkloadProvider;
+    use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
 
     use super::*;
@@ -943,6 +1087,23 @@ mod tests {
             .collect()
     }
 
+    /// Collects the resolved string-valued attributes of every span across all ETP tracer payloads in an encoded
+    /// `AgentPayload`, one map per span.
+    fn decode_etp_span_attributes(buf: &[u8]) -> Vec<HashMap<String, String>> {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
+            .iter()
+            .flat_map(|tp| {
+                let strings = tp.strings();
+                tp.chunks()
+                    .iter()
+                    .flat_map(|chunk| chunk.spans())
+                    .map(move |span| string_attrs(span.attributes(), strings))
+            })
+            .collect()
+    }
+
     /// Resolves the `tracerVersionRef` of every ETP tracer payload in an encoded `AgentPayload`.
     fn decode_etp_tracer_versions(buf: &[u8]) -> Vec<String> {
         let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
@@ -953,11 +1114,26 @@ mod tests {
             .collect()
     }
 
+    /// Resolves the `hostnameRef` of every ETP tracer payload in an encoded `AgentPayload`.
+    fn decode_etp_hostnames(buf: &[u8]) -> Vec<String> {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
+            .iter()
+            .map(|tp| resolve_ref(tp.strings(), tp.hostnameRef()).to_string())
+            .collect()
+    }
+
+    fn encoded_hostname(trace: &Trace) -> String {
+        let mut encoder = make_encoder(false);
+        let mut buf = Vec::new();
+        encoder.encode(trace, &mut buf).expect("encode should succeed");
+        decode_etp_hostnames(&buf).remove(0)
+    }
+
     // The APM sampler defaults: 10 target and error traces per second.
     const DEFAULT_TARGET_TPS: f64 = 10.0;
     const DEFAULT_ERRORS_PER_SECOND: f64 = 10.0;
-    // Keep-everything sampling percentage (the OTLP probabilistic sampler default).
-    const DEFAULT_SAMPLING_PERCENTAGE: f64 = 100.0;
 
     fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
         TraceEndpointEncoder::new(
@@ -968,11 +1144,10 @@ mod tests {
             DEFAULT_ERRORS_PER_SECOND,
             ets_enabled,
             false,
-            DEFAULT_SAMPLING_PERCENTAGE,
         )
     }
 
-    fn make_trace() -> Trace {
+    fn make_trace(ingest_info: TraceIngestInfo) -> Trace {
         let span = DdSpan::new(
             MetaString::from("svc"),
             MetaString::from("op"),
@@ -984,7 +1159,7 @@ mod tests {
             1000, // duration
             0,    // error
         );
-        let mut trace = Trace::new(vec![span]);
+        let mut trace = Trace::new(vec![span], ingest_info);
         trace.priority = Some(1);
         trace
     }
@@ -1001,9 +1176,163 @@ mod tests {
             1000, // duration
             1,    // error
         );
-        let mut trace = Trace::new(vec![span]);
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
         trace.priority = Some(1);
         trace
+    }
+
+    /// Reads the spans of the first tracer payload and chunk of an encoded `AgentPayload`, with its string table.
+    fn decode_etp_first_span(buf: &[u8]) -> (idx::Span, Vec<String>) {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+        let span = tracer_payload.chunks()[0].spans()[0].clone();
+        (span, tracer_payload.strings().to_vec())
+    }
+
+    #[test]
+    fn otlp_links_and_events_are_encoded_as_span_links_and_span_events() {
+        use std::num::NonZeroUsize;
+
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::trace::v1::span::{Event, Link};
+        use stringtheory::interning::GenericMapInterner;
+
+        use crate::common::otlp::traces::transform::{otlp_events_to_span_events, otlp_links_to_span_links};
+
+        let kv = |key: &str, value: Value| KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: Some(value) }),
+        };
+        let link = Link {
+            trace_id: (1..=16).collect(),
+            span_id: vec![0, 0, 0, 0, 0, 0, 0, 9],
+            trace_state: "vendor=value".to_string(),
+            // The low 8 bits are the W3C trace flags; bit 8 is OTLP's `is_remote`, which Datadog doesn't carry.
+            flags: 0x101,
+            attributes: vec![
+                kv("k", Value::StringValue("v".to_string())),
+                kv("n", Value::IntValue(42)),
+                kv(
+                    "list",
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![AnyValue {
+                            value: Some(Value::BoolValue(true)),
+                        }],
+                    }),
+                ),
+            ],
+            ..Default::default()
+        };
+        let event = Event {
+            time_unix_nano: 1_700_000_000_123,
+            name: "exception".to_string(),
+            attributes: vec![
+                kv("message", Value::StringValue("boom".to_string())),
+                kv("count", Value::IntValue(3)),
+                kv("ratio", Value::DoubleValue(0.5)),
+                kv("fatal", Value::BoolValue(false)),
+                kv(
+                    "codes",
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(Value::IntValue(1)),
+                            },
+                            AnyValue {
+                                value: Some(Value::IntValue(2)),
+                            },
+                        ],
+                    }),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let interner = GenericMapInterner::new(NonZeroUsize::new(64 * 1024).unwrap());
+        let span = make_trace(TraceIngestInfo::Datadog).spans()[0]
+            .clone()
+            .with_span_links(otlp_links_to_span_links(&[link], &interner))
+            .with_span_events(otlp_events_to_span_events(&[event], &interner));
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.priority = Some(1);
+
+        let mut buf = Vec::new();
+        make_encoder(false)
+            .encode(&trace, &mut buf)
+            .expect("encode should succeed");
+        let (span, strings) = decode_etp_first_span(&buf);
+
+        // Resolves a string-table ref, or a string-valued attribute value.
+        let text = |string_ref: u32| resolve_ref(&strings, string_ref).to_string();
+        let attribute = |attributes: &HashMap<u32, idx::AnyValue>, key: &str| {
+            attributes
+                .iter()
+                .find(|(k_ref, _)| resolve_ref(&strings, **k_ref) == key)
+                .map(|(_, value)| value.value.clone().expect("attribute has a value"))
+        };
+
+        assert_eq!(span.links().len(), 1);
+        let link = &span.links()[0];
+        let trace_id: Vec<u8> = (1..=16).collect();
+        assert_eq!(
+            link.traceID(),
+            trace_id.as_slice(),
+            "128-bit trace ID, high bytes first"
+        );
+        assert_eq!(link.spanID(), 9);
+        assert_eq!(text(link.tracestateRef()), "vendor=value");
+        assert_eq!(
+            link.flags(),
+            0x8000_0001,
+            "trace flags kept, is_remote dropped, bit 31 marks them present"
+        );
+        assert!(matches!(
+            attribute(link.attributes(), "k"),
+            Some(idx::any_value::Value::StringValueRef(v_ref)) if text(v_ref) == "v"
+        ));
+        // Link attributes are strings in the Datadog model, so the int is stringified and the array is flattened.
+        assert!(matches!(
+            attribute(link.attributes(), "n"),
+            Some(idx::any_value::Value::StringValueRef(v_ref)) if text(v_ref) == "42"
+        ));
+        assert!(matches!(
+            attribute(link.attributes(), "list.0"),
+            Some(idx::any_value::Value::StringValueRef(v_ref)) if text(v_ref) == "true"
+        ));
+
+        assert_eq!(span.events().len(), 1);
+        let event = &span.events()[0];
+        assert_eq!(event.time(), 1_700_000_000_123);
+        assert_eq!(text(event.nameRef()), "exception");
+        assert!(matches!(
+            attribute(event.attributes(), "message"),
+            Some(idx::any_value::Value::StringValueRef(v_ref)) if text(v_ref) == "boom"
+        ));
+        assert!(matches!(
+            attribute(event.attributes(), "count"),
+            Some(idx::any_value::Value::IntValue(3))
+        ));
+        assert!(
+            matches!(attribute(event.attributes(), "ratio"), Some(idx::any_value::Value::DoubleValue(r)) if r == 0.5)
+        );
+        assert!(matches!(
+            attribute(event.attributes(), "fatal"),
+            Some(idx::any_value::Value::BoolValue(false))
+        ));
+        match attribute(event.attributes(), "codes") {
+            Some(idx::any_value::Value::ArrayValue(array)) => {
+                let ints: Vec<_> = array
+                    .values()
+                    .iter()
+                    .map(|v| match v.value {
+                        Some(idx::any_value::Value::IntValue(i)) => i,
+                        ref other => panic!("array values keep their type, got {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(ints, [1, 2]);
+            }
+            other => panic!("typed arrays stay arrays on the wire, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1041,7 +1370,7 @@ mod tests {
     #[test]
     fn ets_chunk_tag_absent_for_non_error_trace() {
         let mut encoder = make_encoder(true);
-        let trace = make_trace(); // no error
+        let trace = make_trace(TraceIngestInfo::Datadog); // no error
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
         let chunk_attrs = decode_etp_chunk_attributes(&buf);
@@ -1054,7 +1383,7 @@ mod tests {
     #[test]
     fn ets_chunk_tag_absent_when_disabled() {
         let mut encoder = make_encoder(false);
-        let trace = make_trace();
+        let trace = make_trace(TraceIngestInfo::Datadog);
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
         let chunk_attrs = decode_etp_chunk_attributes(&buf);
@@ -1065,69 +1394,55 @@ mod tests {
     }
 
     #[test]
-    fn sampling_rate_clamps_percentage_to_unit_interval() {
-        // `sampling_percentage` is a 0..100 percentage; only strictly in-range values map to a fractional rate, and
-        // anything <= 0 or >= 100 collapses to 1.0 (sample everything).
-        let cases = [
-            (25.0, 0.25),
-            (50.0, 0.5),
-            (0.0, 1.0),
-            (-10.0, 1.0),
-            (100.0, 1.0),
-            (150.0, 1.0),
-        ];
-        for (percentage, expected) in cases {
-            let encoder = TraceEndpointEncoder::new(
-                MetaString::from("test-host"),
-                "0.0.0".to_string(),
-                "none".to_string(),
-                DEFAULT_TARGET_TPS,
-                DEFAULT_ERRORS_PER_SECOND,
-                false,
-                false,
-                percentage,
-            );
-            assert_eq!(expected, encoder.sampling_rate(), "sampling_rate for {percentage}%");
-        }
+    fn resolve_hostname_prefers_the_trace_hostname_then_the_ingest_default() {
+        // A hostname carried by the trace always wins.
+        assert_eq!(
+            Some("tracer-host"),
+            resolve_hostname(Some("tracer-host"), true, Some("default"), true)
+        );
+        // Without one, OTLP traces and ignored missing fields report an empty hostname.
+        assert_eq!(Some(""), resolve_hostname(None, true, Some("default"), false));
+        assert_eq!(Some(""), resolve_hostname(None, false, Some("default"), true));
+        // Other traces fall back to the default hostname, which may itself be absent.
+        assert_eq!(Some("default"), resolve_hostname(None, false, Some("default"), false));
+        assert_eq!(None, resolve_hostname(None, false, None, false));
     }
 
     #[test]
-    fn resolve_hostname_from_payload_prefers_payload_then_source_then_default() {
-        let host_source = OtlpSource {
-            kind: OtlpSourceKind::HostnameKind,
-            identifier: "resolved-host".to_string(),
-        };
-        let fargate_source = OtlpSource {
-            kind: OtlpSourceKind::AwsEcsFargateKind,
-            identifier: "task-arn".to_string(),
+    fn encoded_hostname_comes_from_the_payload_then_the_root_span_then_the_ingest_default() {
+        let with_root_hostname = |payload_hostname: &str| {
+            let mut attributes = FastHashMap::default();
+            attributes.insert(
+                MetaString::from("_dd.hostname"),
+                AttributeValue::String(MetaString::from("root-host")),
+            );
+            let span = DdSpan::new("svc", "op", "res", "web", 1, 0, 0, 1000, 0).with_attributes(attributes);
+            let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+            trace.priority = Some(1);
+            trace.payload.hostname = MetaString::from(payload_hostname);
+            trace
         };
 
-        // A non-empty payload hostname always wins.
-        assert_eq!(
-            Some("payload-host"),
-            resolve_hostname_from_payload("payload-host", Some(&host_source), Some("default"), false)
-        );
-        // An empty payload plus `ignore_missing_fields` short-circuits to an empty hostname.
-        assert_eq!(
-            Some(""),
-            resolve_hostname_from_payload("", Some(&host_source), Some("default"), true)
-        );
-        // Honoring fields, a hostname-kind source supplies its identifier.
-        assert_eq!(
-            Some("resolved-host"),
-            resolve_hostname_from_payload("", Some(&host_source), Some("default"), false)
-        );
-        // A non-hostname (Fargate) source resolves to an empty hostname.
-        assert_eq!(
-            Some(""),
-            resolve_hostname_from_payload("", Some(&fargate_source), Some("default"), false)
-        );
-        // With no source, it falls back to the default hostname (which may itself be absent).
-        assert_eq!(
-            Some("default"),
-            resolve_hostname_from_payload("", None, Some("default"), false)
-        );
-        assert_eq!(None, resolve_hostname_from_payload("", None, None, false));
+        // The payload hostname beats the root span.
+        let trace = with_root_hostname("payload-host");
+        assert_eq!(encoded_hostname(&trace), "payload-host");
+
+        // The root span applies only when the payload hostname is empty.
+        let trace = with_root_hostname("");
+        assert_eq!(encoded_hostname(&trace), "root-host");
+    }
+
+    #[test]
+    fn encoded_hostname_is_empty_for_otlp_traces_without_one() {
+        // The translator leaves the hostname empty for serverless resources.
+        let trace = make_trace(TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        });
+        assert_eq!(encoded_hostname(&trace), "");
+
+        // Other traces fall back to the encoder's default hostname.
+        let trace = make_trace(TraceIngestInfo::Datadog);
+        assert_eq!(encoded_hostname(&trace), "test-host");
     }
 
     #[test]
@@ -1152,68 +1467,472 @@ mod tests {
     }
 
     #[test]
-    fn flatten_container_tag_comma_joins_the_tag_set() {
-        assert_eq!("", flatten_container_tag(TagSet::default()));
-
-        let single: TagSet = std::iter::once(Tag::from_static("image_name:web")).collect();
-        assert_eq!("image_name:web", flatten_container_tag(single));
-
-        let multiple: TagSet = ["image_name:web", "runtime:docker"]
-            .into_iter()
-            .map(Tag::from_static)
-            .collect();
-        let flattened = flatten_container_tag(multiple);
-        assert_eq!(
-            BTreeSet::from(["image_name:web", "runtime:docker"]),
-            flattened.split(',').collect::<BTreeSet<_>>()
-        );
-    }
-
-    #[test]
-    fn resolve_container_tags_prefers_explicit_container_tags_attribute() {
-        // An explicit, non-empty `datadog.container_tags` attribute is used verbatim.
+    fn resolve_container_tags_merges_explicit_and_extracted_tags() {
         let mut attributes = FastHashMap::default();
         attributes.insert(
             MetaString::from(KEY_DATADOG_CONTAINER_TAGS),
-            AttributeValue::String(MetaString::from("region:us,team:core")),
+            AttributeValue::String(MetaString::from("team:core")),
         );
+        attributes.insert(
+            MetaString::from("kube_namespace"),
+            AttributeValue::String(MetaString::from("payments")),
+        );
+
+        // An explicit, non-empty `datadog.container_tags` attribute is emitted, and the container keys extracted from
+        // the resource are appended rather than replacing it.
+        let merged = resolve_container_tags_from_attrs(&attributes, None).expect("container tags should resolve");
+        assert_eq!(merged.as_ref(), "team:core,kube_namespace:payments");
+
+        // The explicit attribute alone still resolves.
+        attributes.remove(&MetaString::from("kube_namespace"));
         assert_eq!(
-            Some(MetaString::from("region:us,team:core")),
-            resolve_container_tags_from_attrs(&attributes, None, false)
+            resolve_container_tags_from_attrs(&attributes, None).map(|tags| tags.to_string()),
+            Some("team:core".to_string())
         );
     }
 
     #[test]
     fn resolve_container_tags_returns_none_without_container_attributes() {
+        // With no container attributes and no Fargate source there is nothing to emit.
         let attributes = FastHashMap::default();
-        // `ignore_missing_fields` skips the extraction path entirely.
-        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, true));
-        // Honoring fields but with no container attributes and no Fargate source still yields nothing.
-        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, false));
+        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None));
+    }
+
+    /// Translates a single-span `ResourceSpans` with the given resource attributes, encodes the trace, and returns
+    /// the decoded string-valued tracer payload attributes and span attributes.
+    fn encode_translated_trace(
+        ignore_missing_fields: bool, encoder: TraceEndpointEncoder, resource_attrs: &[(&str, &str)],
+    ) -> (HashMap<String, String>, Vec<HashMap<String, String>>) {
+        use datadog_agent_apm::semantics::SemanticRegistryProvider;
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+
+        use crate::common::otlp::origin::OtlpOriginTagResolver;
+        use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesSettings, OtlpTracesTranslator};
+        use crate::common::otlp::Metrics;
+
+        let kv = |(key, value): (&str, &str)| KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+        };
+        let resource_spans = ResourceSpans {
+            resource: Some(Resource {
+                attributes: resource_attrs.iter().map(|pair| kv(*pair)).collect(),
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans: vec![OtlpSpan {
+                    trace_id: vec![1; 16],
+                    span_id: vec![1; 8],
+                    name: "span".to_owned(),
+                    end_time_unix_nano: 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let settings = OtlpTracesSettings {
+            ignore_missing_datadog_fields: ignore_missing_fields,
+            ..traces_settings()
+        };
+        let mut translator = OtlpTracesTranslator::new(
+            settings,
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let traces: Vec<Trace> = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .filter_map(Event::try_into_trace)
+            .collect();
+        assert_eq!(traces.len(), 1);
+
+        let mut buf = Vec::new();
+        let mut encoder = encoder;
+        encoder.encode(&traces[0], &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+
+        let payload_attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
+        let span_attrs = tracer_payload
+            .chunks()
+            .iter()
+            .flat_map(|chunk| chunk.spans().iter())
+            .map(|span| string_attrs(span.attributes(), tracer_payload.strings()))
+            .collect();
+        (payload_attrs, span_attrs)
     }
 
     #[test]
-    fn encode_prefixes_tracer_version_and_writes_otlp_sampling_rate() {
+    fn consumed_resource_keys_reach_the_payload_container_tags_with_explicit_tags() {
+        // An explicit `datadog.container_tags` on the resource emits that string, and the consumed container keys
+        // are appended instead of replacing it. Neither reaches span meta.
+        let (payload_attrs, span_attrs) = encode_translated_trace(
+            false,
+            make_encoder(false),
+            &[("datadog.container_tags", "team:core"), ("kube_namespace", "payments")],
+        );
+
+        let container_tags = &payload_attrs[CONTAINER_TAGS_META_KEY];
+        assert_eq!(container_tags, "team:core,kube_namespace:payments");
+        assert!(span_attrs
+            .iter()
+            .all(|attrs| !attrs.contains_key("kube_namespace") && !attrs.contains_key("datadog.container_tags")));
+    }
+
+    #[test]
+    fn consumed_resource_keys_reach_the_payload_container_tags_when_ignoring_missing_fields() {
+        // Container tags are extracted even when missing Datadog fields are ignored, as the trace agent's receiver
+        // does: the setting does not gate extraction there.
+        let encoder = TraceEndpointEncoder::new(
+            MetaString::from("test-host"),
+            "0.0.0".to_string(),
+            "none".to_string(),
+            DEFAULT_TARGET_TPS,
+            DEFAULT_ERRORS_PER_SECOND,
+            false,
+            true,
+        );
+        let (payload_attrs, span_attrs) = encode_translated_trace(true, encoder, &[("kube_namespace", "payments")]);
+
+        assert_eq!(payload_attrs[CONTAINER_TAGS_META_KEY], "kube_namespace:payments");
+        assert!(span_attrs.iter().all(|attrs| !attrs.contains_key("kube_namespace")));
+    }
+
+    #[test]
+    fn agent_payload_env_is_the_agent_env() {
+        // The encoder sends the resolved agent environment unchanged: one that normalizes to empty does not become
+        // `none`.
+        let cases = [
+            (AgentEnv::resolve(None, Some("Prod"), &[], &[]), "prod"),
+            (AgentEnv::resolve(Some("!!!"), None, &[], &[]), ""),
+        ];
+        for (agent_env, expected) in cases {
+            let config = trace_configuration(agent_env);
+            let mut buf = Vec::new();
+            config
+                .endpoint_encoder()
+                .encode(&make_trace(TraceIngestInfo::Datadog), &mut buf)
+                .expect("encode should succeed");
+
+            let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+            assert_eq!(payload.env, expected);
+        }
+    }
+
+    /// Only OTLP traces get the `otlp-` tracer version prefix and `_dd.otlp_sr`, as in the Go trace agent's OTLP
+    /// receiver; native tracer versions pass through unchanged. The rate is formatted like Go's
+    /// `strconv.FormatFloat(rate, 'f', 2, 64)`, which rounds exact ties to even:
+    /// https://github.com/DataDog/datadog-agent/blob/c6f7e0bc2d5744601a10f231751948ac7a4ee781/pkg/trace/api/otlp.go#L581-L590
+    #[test]
+    fn encode_marks_only_otlp_traces_with_tracer_version_prefix_and_sampling_rate() {
+        let otlp = |receiver_sampling_rate| TraceIngestInfo::Otlp { receiver_sampling_rate };
+        let cases = [
+            (otlp(0.5), "1.2.3", "otlp-1.2.3", Some("0.50")),
+            (otlp(1.0), "", "otlp-", Some("1.00")),
+            (otlp(0.125), "1.2.3", "otlp-1.2.3", Some("0.12")),
+            (otlp(0.375), "1.2.3", "otlp-1.2.3", Some("0.38")),
+            (otlp(1.0 / 3.0), "1.2.3", "otlp-1.2.3", Some("0.33")),
+            (otlp(0.001), "1.2.3", "otlp-1.2.3", Some("0.00")),
+            (TraceIngestInfo::Datadog, "v2.1.0", "v2.1.0", None),
+            (TraceIngestInfo::Datadog, "", "", None),
+        ];
+        for (ingest_info, tracer_version, want_tracer_version, want_rate) in cases {
+            let mut trace = make_trace(ingest_info);
+            trace.payload.tracer_version = MetaString::from(tracer_version);
+
+            let mut buf = Vec::new();
+            make_encoder(false)
+                .encode(&trace, &mut buf)
+                .expect("encode should succeed");
+
+            let ctx = format!("{ingest_info:?}, tracer version {tracer_version:?}");
+            assert_eq!(decode_etp_tracer_versions(&buf), [want_tracer_version], "{ctx}");
+            let chunk_attrs = decode_etp_chunk_attributes(&buf);
+            assert_eq!(chunk_attrs.len(), 1, "{ctx}");
+            assert_eq!(
+                chunk_attrs[0].get(TAG_OTLP_SAMPLING_RATE).map(String::as_str),
+                want_rate,
+                "{ctx}"
+            );
+        }
+    }
+
+    /// The chunk's `_dd.otlp_sr` comes only from the ingest information: a trace attribute of the same name, such as
+    /// an OTLP resource attribute, doesn't replace it. A span attribute of the same name is span data and passes
+    /// through.
+    #[test]
+    fn encode_otlp_sampling_rate_is_independent_of_same_named_attributes() {
+        let conflicting = |ingest_info| {
+            let mut trace = make_trace(ingest_info);
+            trace.attributes = Arc::new(FastHashMap::from_iter([(
+                MetaString::from(TAG_OTLP_SAMPLING_RATE),
+                AttributeValue::String(MetaString::from("0.33")),
+            )]));
+            trace.spans_mut()[0].attributes.insert(
+                MetaString::from(TAG_OTLP_SAMPLING_RATE),
+                AttributeValue::String(MetaString::from("0.77")),
+            );
+            trace
+        };
+        let encode = |trace: &Trace| {
+            let mut buf = Vec::new();
+            make_encoder(false)
+                .encode(trace, &mut buf)
+                .expect("encode should succeed");
+            buf
+        };
+
+        let buf = encode(&conflicting(TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 0.5,
+        }));
+        assert_eq!(decode_etp_chunk_attributes(&buf)[0][TAG_OTLP_SAMPLING_RATE], "0.50");
+        assert_eq!(decode_etp_span_attributes(&buf)[0][TAG_OTLP_SAMPLING_RATE], "0.77");
+
+        // The encoder never synthesizes a native chunk rate. A native trace's own attribute may be dropped or kept.
+        let buf = encode(&conflicting(TraceIngestInfo::Datadog));
+        let native_chunk_rate = decode_etp_chunk_attributes(&buf)[0]
+            .get(TAG_OTLP_SAMPLING_RATE)
+            .cloned();
+        assert!(
+            matches!(native_chunk_rate.as_deref(), None | Some("0.33")),
+            "unexpected native chunk rate {native_chunk_rate:?}"
+        );
+        assert_eq!(decode_etp_span_attributes(&buf)[0][TAG_OTLP_SAMPLING_RATE], "0.77");
+    }
+
+    fn make_span(span_id: u64, analyzed: bool) -> DdSpan {
+        let span = DdSpan::new(
+            MetaString::from("svc"),
+            MetaString::from("op"),
+            MetaString::from("res"),
+            MetaString::from("web"),
+            span_id,
+            0,    // parent_id
+            0,    // start
+            1000, // duration
+            0,    // error
+        );
+        if analyzed {
+            span.with_attributes(FastHashMap::from_iter([(
+                MetaString::from(KEY_ANALYZED_SPANS),
+                AttributeValue::Float(1.0),
+            )]))
+        } else {
+            span
+        }
+    }
+
+    fn make_sampled_trace(spans: Vec<DdSpan>, dropped_trace: bool) -> Trace {
+        let mut trace = Trace::new(spans, TraceIngestInfo::Datadog);
+        trace.priority = Some(1);
+        trace.dropped_trace = dropped_trace;
+        trace
+    }
+
+    #[test]
+    fn largest_payload_gauge_only_moves_up() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let mut telemetry = TracePayloadTelemetry::from_builder(&MetricsBuilder::default());
+
+        for (body_len, expected_largest) in [(100_000, 100_000.0), (3_000_000, 3_000_000.0), (50_000, 3_000_000.0)] {
+            telemetry.track_payload(body_len, body_len);
+            assert_eq!(
+                recorder.gauge("component_payload_size_max_bytes"),
+                Some(expected_largest)
+            );
+        }
+    }
+
+    #[test]
+    fn trace_counts_follow_the_sampling_decision() {
+        // A kept trace counts every span as a span, analyzed or not, and no events.
+        let kept = make_sampled_trace(vec![make_span(1, true), make_span(2, false)], false);
+        assert_eq!(TraceCounts::from_trace(&kept), TraceCounts { spans: 2, events: 0 });
+
+        // A dropped trace counts only its analyzed spans, as events.
+        let dropped = make_sampled_trace(vec![make_span(1, true), make_span(2, true), make_span(3, false)], true);
+        assert_eq!(TraceCounts::from_trace(&dropped), TraceCounts { spans: 0, events: 2 });
+    }
+
+    #[tokio::test]
+    async fn request_builder_tracks_written_traces_and_payload_sizes() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+
+        let traces = vec![
+            make_sampled_trace(vec![make_span(1, false), make_span(2, true)], false),
+            make_sampled_trace(vec![make_span(3, true), make_span(4, false)], true),
+            make_sampled_trace(vec![make_span(5, false)], false),
+        ];
+
+        // Without compression or framing, the payload before compression is every trace encoded back to back.
+        let expected_uncompressed_len = traces
+            .iter()
+            .map(|trace| {
+                let mut buf = Vec::new();
+                make_encoder(false)
+                    .encode(trace, &mut buf)
+                    .expect("encode should succeed");
+                buf.len() as u64
+            })
+            .sum::<u64>();
+
+        let request_builder = RequestBuilder::new(make_encoder(false), CompressionScheme::noop(), RB_BUFFER_CHUNK_SIZE)
+            .await
+            .expect("request builder should be created");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        for trace in traces {
+            assert!(events.try_push(Event::Trace(trace)).is_none());
+        }
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            TracePayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        let mut body_lens = Vec::new();
+        while let Some(payload) = payloads_rx.recv().await {
+            let http_payload = payload.try_into_http_payload().expect("payload should be HTTP");
+            let (_, request) = http_payload.into_parts();
+            body_lens.push(request.body().len() as f64);
+        }
+        assert_eq!(body_lens.len(), 1);
+        assert_eq!(
+            recorder.histogram("component_payload_size_bytes"),
+            Some(body_lens.clone())
+        );
+        assert_eq!(recorder.gauge("component_payload_size_max_bytes"), Some(body_lens[0]));
+
+        assert_eq!(recorder.counter("component_traces_encoded_total"), Some(3));
+        assert_eq!(recorder.counter("component_spans_encoded_total"), Some(3));
+        assert_eq!(recorder.counter("component_trace_events_encoded_total"), Some(1));
+        assert_eq!(
+            recorder.counter("component_bytes_uncompressed_total"),
+            Some(expected_uncompressed_len)
+        );
+    }
+
+    /// Resolves the env and app version of every ETP tracer payload in an encoded `AgentPayload`.
+    fn decode_etp_env_and_app_versions(buf: &[u8]) -> Vec<(String, String)> {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
+            .iter()
+            .map(|tp| {
+                (
+                    resolve_ref(tp.strings(), tp.envRef()).to_string(),
+                    resolve_ref(tp.strings(), tp.appVersionRef()).to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn encoder_with_container(container_id: &str, tags: &[&str]) -> TraceEndpointEncoder {
+        let provider = TestWorkloadProvider::with_entity(EntityId::Container(MetaString::from(container_id)), tags);
+        make_encoder(false).with_container_tag_lookup(ContainerTagLookup(Some(Arc::new(provider))))
+    }
+
+    #[test]
+    fn app_version_falls_back_to_container_version_tag() {
+        let mut encoder = encoder_with_container("cid-1", &["image_tag:1.2.3", "version:container-v"]);
+        let encode = |encoder: &mut TraceEndpointEncoder, trace: &Trace| {
+            let mut buf = Vec::new();
+            encoder.encode(trace, &mut buf).expect("encode should succeed");
+            decode_etp_env_and_app_versions(&buf)[0].1.clone()
+        };
+
+        // A payload with no version takes the container's.
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        assert_eq!(encode(&mut encoder, &trace), "container-v");
+
+        // The payload's own version wins.
+        trace.payload.app_version = MetaString::from("payload-v");
+        assert_eq!(encode(&mut encoder, &trace), "payload-v");
+
+        // A container the provider doesn't know yet supplies nothing.
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-unknown");
+        assert_eq!(encode(&mut encoder, &trace), "");
+
+        // Neither does a payload without a container ID.
+        let trace = make_trace(TraceIngestInfo::Datadog);
+        assert_eq!(encode(&mut encoder, &trace), "");
+    }
+
+    #[test]
+    fn app_version_falls_back_to_the_traces_own_container_tag_attributes() {
+        // An OTLP trace carries its container's tags as attributes, and the tagger may not know the container yet.
         let mut encoder = make_encoder(false);
-        let mut trace = make_trace();
-        trace.payload.tracer_version = MetaString::from("1.2.3");
-        trace.otlp_sampling_rate = Some(0.5);
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        trace.attributes = Arc::new(FastHashMap::from_iter([(
+            MetaString::from("datadog.container.tag.version"),
+            AttributeValue::String(MetaString::from("attribute-v")),
+        )]));
 
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        assert_eq!(decode_etp_env_and_app_versions(&buf)[0].1, "attribute-v");
 
-        // The encoder emits the ETP `idxTracerPayloads` format, so decode through the string table.
-        let tracer_versions = decode_etp_tracer_versions(&buf);
-        let tracer_version = tracer_versions.first().expect("a tracer payload should be encoded");
-        // The tracer version is prefixed with `otlp-` to mark the OTLP ingestion path.
-        assert_eq!("otlp-1.2.3", tracer_version);
+        // Without a container ID, the attributes don't apply.
+        trace.payload.container_id = MetaString::default();
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        assert_eq!(decode_etp_env_and_app_versions(&buf)[0].1, "");
+    }
 
-        // The OTLP sampling rate is written to each chunk formatted to two decimal places.
-        let chunk_attrs = decode_etp_chunk_attributes(&buf);
-        let otlp_sr = chunk_attrs
-            .iter()
-            .find_map(|attrs| attrs.get("_dd.otlp_sr"))
-            .expect("chunk should carry the _dd.otlp_sr tag");
-        assert_eq!("0.50", otlp_sr.as_str());
+    #[test]
+    fn container_version_lookup_leaves_container_tags_untouched() {
+        let mut encoder = encoder_with_container("cid-1", &["version:container-v", "kube_namespace:default"]);
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+        let attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
+        assert!(!attrs.contains_key(CONTAINER_TAGS_META_KEY));
+    }
+
+    #[test]
+    fn payload_env_is_normalized() {
+        let cases = [
+            ("prod", "prod"),
+            ("Prod Env", "prod_env"),
+            ("STAGING", "staging"),
+            ("!!!", ""),
+            ("", ""),
+        ];
+        for (env, expected) in cases {
+            let mut trace = make_trace(TraceIngestInfo::Datadog);
+            trace.payload.env = MetaString::from(env);
+
+            let mut buf = Vec::new();
+            make_encoder(false)
+                .encode(&trace, &mut buf)
+                .expect("encode should succeed");
+            assert_eq!(decode_etp_env_and_app_versions(&buf)[0].0, expected, "env {env:?}");
+        }
     }
 }

@@ -1,0 +1,20 @@
+upgrade:
+  - |
+    For settings that the Datadog Agent also reads, an integer with a leading zero, such as
+    ``DD_DOGSTATSD_BUFFER_SIZE=010`` or ``dogstatsd_buffer_size: "010"``, now reads as octal (8), matching
+    the Datadog Agent. Previously it read as decimal (10). A leading-zero value with an ``8`` or ``9``
+    digit, such as ``08``, is not valid octal. As in the Datadog Agent, it now reads as 0 and logs a
+    warning; previously it read as decimal. Remove the leading zero to keep the decimal value.
+fixes:
+  - |
+    For settings that the Datadog Agent also reads, Agent Data Plane now accepts the same integer spellings
+    as the Datadog Agent in environment variables and in quoted configuration values. Binary (``0b``),
+    octal (``0o``), and hexadecimal (``0x``) prefixes and ``_`` digit separators are accepted, so
+    ``DD_DOGSTATSD_PORT=0x10`` reads as 16.
+    Floating-point settings likewise accept ``_`` digit separators and hexadecimal values such as
+    ``0x1p-2``. Previously these values stopped Agent Data Plane at startup.
+  - |
+    String-list settings such as ``apm_config.obfuscation.elasticsearch.keep_values`` now accept a JSON list,
+    for example ``["cr-a","cr-b"]``, in an environment variable or a quoted configuration value, as the
+    Datadog Agent does. Previously the text was split on whitespace, so the JSON brackets and quotes
+    became part of the values.

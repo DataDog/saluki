@@ -1,0 +1,5 @@
+---
+enhancements:
+  - |
+    Reduce CPU usage and memory allocations when forwarding DogStatsD packets with ``statsd_forward_host``. The
+    queue of packets waiting to be forwarded holds a quarter of ``dogstatsd_queue_size`` packets, and at least 64.

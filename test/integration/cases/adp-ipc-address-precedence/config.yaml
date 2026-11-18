@@ -1,0 +1,45 @@
+# Issue #3066: ipc_address takes precedence over cmd_host
+#
+# `ipc_address` is the deprecated name for `cmd_host`. Like the Core Agent, ADP must use `ipc_address` when it's
+# explicitly set, even if `cmd_host` is also set.
+#
+# Here `cmd_host` is `127.0.0.2` and `ipc_address` is `::1`, so the Core Agent listens on `[::1]` and never binds
+# `127.0.0.2`. ADP must connect to `[::1]` to register.
+
+type: integration
+name: "adp-ipc-address-precedence"
+description: "Verifies ADP prefers an explicitly set ipc_address over cmd_host"
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-ipc-address-precedence"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_CMD_HOST: "127.0.0.2"
+  DD_IPC_ADDRESS: "::1"
+
+procedure:
+  # The Core Agent should start its CMD API server on the `ipc_address` host, not the `cmd_host` one.
+  - assertion: log_contains
+    pattern: "Started HTTP server 'CMD API Server' on \\[::1\\]:\\d+"
+    regex: true
+    timeout: 60s
+  # ADP should successfully register with the Core Agent there.
+  - assertion: log_contains
+    pattern: "Successfully registered with the Datadog Agent."
+    timeout: 60s
+  # ADP should become healthy and stay up.
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_contains
+        pattern: "Topology healthy"
+        timeout: 60s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

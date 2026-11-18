@@ -42,3 +42,8 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+
+[dev-dependencies]
+async-compression = { workspace = true, features = ["tokio"] }
+http-body-util = { workspace = true }
+tower = { workspace = true, features = ["util"] }

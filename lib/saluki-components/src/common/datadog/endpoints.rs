@@ -1,10 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     str::FromStr,
     sync::LazyLock,
 };
 
-use agent_data_plane_config::shared::{self, V3SeriesMode};
 use http::uri::Authority;
 use regex::Regex;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -15,12 +15,25 @@ use tracing::{debug, error};
 use url::Url;
 
 use super::api_key::ApiKeyCell;
-use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
+use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig, V3SeriesMode};
 use super::routing::RoutingTargetId;
 
-static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^app(\.mrf)?\.([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
-});
+/// The official Datadog sites with no subdomain, such as `datadoghq.com`, as a regex alternation.
+const DD_SITE_PATTERN: &str = r"datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com";
+
+/// An optional region prefix, such as `us3.`.
+const DD_REGION_PATTERN: &str = r"(?:[a-z]{2,}\d{1,2}\.)?";
+
+/// An official Datadog application host, such as `app.datadoghq.com` or `app.us5.datadoghq.com`.
+static DD_URL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"^app(\.mrf)?\.{DD_REGION_PATTERN}({DD_SITE_PATTERN})$")).unwrap());
+
+/// An official Datadog site with no subdomain, such as `datadoghq.com`.
+static DD_SITE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("^({DD_SITE_PATTERN})$")).unwrap());
+
+/// The site suffix of a configured or resolved endpoint, including its region.
+static DD_SITE_SUFFIX_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?:^|\.)(?P<site>{DD_REGION_PATTERN}(?:{DD_SITE_PATTERN}))$")).unwrap());
 
 /// Per-endpoint V3 protocol settings.
 ///
@@ -151,17 +164,41 @@ pub(crate) fn series_v3_config_can_enable_v3(series_config: &UseV3ApiSeriesConfi
     }
 }
 
-fn is_datadog_host(host: &str) -> bool {
+/// Returns `true` if `host` is an official Datadog application host, such as `app.datadoghq.com`,
+/// `app.us5.datadoghq.com`, or the Multi-Region Failover host `app.mrf.datadoghq.com`.
+///
+/// The match ignores case and a trailing dot.
+pub(crate) fn is_datadog_host(host: &str) -> bool {
+    host_matches(&DD_URL_REGEX, host)
+}
+
+/// Returns `true` if `host` is an official Datadog site with no subdomain, such as `datadoghq.com` or `ddog-gov.com`.
+///
+/// The match ignores case and a trailing dot.
+pub(crate) fn is_datadog_site(host: &str) -> bool {
+    host_matches(&DD_SITE_REGEX, host)
+}
+
+fn host_matches(regex: &Regex, host: &str) -> bool {
     let host = host.trim_end_matches('.');
     if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
-        DD_URL_REGEX.is_match(&host.to_ascii_lowercase())
+        regex.is_match(&host.to_ascii_lowercase())
     } else {
-        DD_URL_REGEX.is_match(host)
+        regex.is_match(host)
     }
 }
 
 pub(crate) fn is_datadog_url(url: &Url) -> bool {
     url.host_str().is_some_and(is_datadog_host)
+}
+
+/// Extracts the Datadog site from configured or version-prefixed endpoint URLs.
+pub(crate) fn extract_datadog_site(url: &Url) -> Option<String> {
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    DD_SITE_SUFFIX_REGEX
+        .captures(&host)?
+        .name("site")
+        .map(|site| site.as_str().to_owned())
 }
 
 /// Error type for invalid endpoints.
@@ -253,8 +290,9 @@ pub(crate) struct SingleDestination {
 }
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+///
+/// `Debug` includes endpoint URLs but omits API keys.
+#[derive(Clone, PartialEq)]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
@@ -267,12 +305,15 @@ pub struct EndpointConfiguration {
 }
 
 impl EndpointConfiguration {
-    /// Creates a new `EndpointConfiguration` from the resolved endpoint configuration.
-    pub(crate) fn from_configuration(endpoints: &shared::Endpoints) -> Self {
+    /// Creates a new `EndpointConfiguration`.
+    ///
+    /// `primary_endpoint` is the effective endpoint, already chosen by the caller. It is normalized when the endpoint
+    /// is built.
+    pub fn new(api_key: String, primary_endpoint: String, additional_endpoints: HashMap<String, Vec<String>>) -> Self {
         Self {
-            api_key: endpoints.api_key.clone(),
-            primary_endpoint: endpoints.primary_endpoint(),
-            additional_endpoints: endpoints.additional_endpoints.clone(),
+            api_key,
+            primary_endpoint,
+            additional_endpoints,
         }
     }
 
@@ -312,6 +353,15 @@ impl EndpointConfiguration {
     pub(crate) fn build_additional_endpoints(&self) -> Result<Vec<ResolvedEndpoint>, GenericError> {
         resolve_additional_endpoints(&self.additional_endpoints)
             .error_context("Failed parsing/resolving the additional destination endpoints.")
+    }
+}
+
+impl fmt::Debug for EndpointConfiguration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EndpointConfiguration")
+            .field("primary_endpoint", &self.primary_endpoint)
+            .field("additional_endpoints", &self.additional_endpoints.keys())
+            .finish_non_exhaustive()
     }
 }
 
@@ -480,7 +530,8 @@ impl ResolvedEndpoint {
     }
 }
 
-fn endpoint_with_default_scheme(raw_endpoint: &str) -> String {
+/// Returns `raw_endpoint` with the `https` scheme if it has neither `http` nor `https`.
+pub(crate) fn endpoint_with_default_scheme(raw_endpoint: &str) -> String {
     if !raw_endpoint.starts_with("http://") && !raw_endpoint.starts_with("https://") {
         format!("https://{}", raw_endpoint)
     } else {
@@ -521,13 +572,24 @@ fn get_data_plane_version_prefix() -> String {
 
 /// Prefixes the given API endpoint with the version of the data plane process.
 ///
-/// If the given API endpoint doesn't include a scheme, `https` is assumed. As well, if the endpoint doesn't represent
-/// an official Datadog API endpoint, it won't be modified.
+/// If the endpoint doesn't represent an official Datadog API endpoint, it won't be modified.
 ///
 /// # Errors
 ///
-/// If the given API endpoint can't be parsed as a valid URL, an error will be returned.
-fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError> {
+/// If the given API endpoint has no host, an error will be returned.
+fn add_data_plane_version_prefix(endpoint: Url) -> Result<Url, EndpointError> {
+    add_version_prefix(endpoint, &get_data_plane_version_prefix())
+}
+
+/// Replaces the leftmost label of the host of `endpoint` with `prefix`, if it is an official Datadog application host.
+///
+/// This differentiates traffic between versions of the sending application: `app.datadoghq.com` becomes
+/// `{prefix}.datadoghq.com`. Any other endpoint is returned unmodified.
+///
+/// # Errors
+///
+/// If `endpoint` has no host, or the prefixed host is invalid, an error will be returned.
+pub(crate) fn add_version_prefix(mut endpoint: Url, prefix: &str) -> Result<Url, EndpointError> {
     let new_host = match endpoint.host_str() {
         Some(host) => {
             // Do not update non-official Datadog URLs.
@@ -539,8 +601,7 @@ fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError
             // We expect to be getting a domain that has at least one subdomain portion (i.e., `app.datadoghq.com`) if
             // not more. We're aiming to simply replace the leftmost subdomain portion with the version prefix.
             let leftmost_segment = host.split('.').next().unwrap_or("");
-            let versioned_segment = get_data_plane_version_prefix();
-            host.replacen(leftmost_segment, &versioned_segment, 1)
+            host.replacen(leftmost_segment, prefix, 1)
         }
         None => {
             return Err(EndpointError::Parse {
@@ -594,13 +655,14 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::ConfigValue;
-
     use super::*;
 
-    /// Returns the Agent-compatible V3 series settings a default configuration resolves to.
+    /// Returns the V3 series settings the Agent's schema defaults resolve to.
     fn agent_series_config() -> UseV3ApiSeriesConfig {
-        (&shared::MetricsEncoding::default()).into()
+        UseV3ApiSeriesConfig {
+            enabled: V3SeriesMode::DatadogOnly,
+            endpoints: HashMap::new(),
+        }
     }
 
     fn additional_endpoints(endpoints: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
@@ -613,6 +675,46 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn extracts_datadog_sites_from_endpoint_urls() {
+        for (url, expected) in [
+            ("https://app.datadoghq.com", Some("datadoghq.com")),
+            ("https://APP.DATADOGHQ.COM./", Some("datadoghq.com")),
+            ("https://agent.datad0g.com.", Some("datad0g.com")),
+            ("https://1-9-0-adp.agent.us3.datadoghq.com", Some("us3.datadoghq.com")),
+            ("https://app.datadoghq.eu", Some("datadoghq.eu")),
+            ("https://app.ddog-gov.com", Some("ddog-gov.com")),
+            ("https://notdatadoghq.com", None),
+            ("https://app.datadoghq.com.example.org", None),
+        ] {
+            assert_eq!(
+                extract_datadog_site(&Url::parse(url).unwrap()).as_deref(),
+                expected,
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn endpoint_configuration_debug_omits_api_keys() {
+        let config = EndpointConfiguration::new(
+            "primary-secret".to_string(),
+            "https://primary.example.com".to_string(),
+            additional_endpoints(&[(
+                "https://additional.example.com",
+                &["additional-secret", "another-secret"],
+            )]),
+        );
+
+        for debug in [format!("{config:?}"), format!("{config:#?}")] {
+            assert!(debug.contains("https://primary.example.com"), "{debug}");
+            assert!(debug.contains("https://additional.example.com"), "{debug}");
+            for key in ["primary-secret", "additional-secret", "another-secret"] {
+                assert!(!debug.contains(key), "API key exposed in Debug output");
+            }
+        }
     }
 
     #[test]
@@ -691,6 +793,28 @@ mod tests {
     }
 
     #[test]
+    fn datadog_sites_have_no_subdomain() {
+        for site in [
+            "datadoghq.com",
+            "datadoghq.eu",
+            "datad0g.com",
+            "ddog-gov.com",
+            "DATADOGHQ.COM",
+            "datadoghq.com.",
+        ] {
+            assert!(is_datadog_site(site), "{site}");
+        }
+        for host in [
+            "app.datadoghq.com",
+            "us3.datadoghq.com",
+            "datadoghq.internal",
+            "example.com",
+        ] {
+            assert!(!is_datadog_site(host), "{host}");
+        }
+    }
+
+    #[test]
     fn skip_version_prefix() {
         let input_urls = [
             "https://custom.datadoghq.com",       // Custom
@@ -718,33 +842,24 @@ mod tests {
     }
 
     #[test]
-    fn the_primary_endpoint_is_built_from_resolved_configuration() {
-        // Endpoint resolution belongs to the configuration layer; the component version-prefixes the
-        // resolved Datadog endpoint and uses a non-Datadog override verbatim.
+    fn the_primary_endpoint_is_version_prefixed_only_for_datadog_endpoints() {
         let prefix = get_data_plane_version_prefix();
         let cases = [
             (
-                "site-derived endpoint",
-                ConfigValue::explicit("us3.datadoghq.com".to_string()),
-                ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
+                "Datadog endpoint",
+                "https://app.us3.datadoghq.com",
                 format!("https://{prefix}.us3.datadoghq.com/"),
             ),
             (
-                "explicit dd_url used verbatim",
-                ConfigValue::explicit("us3.datadoghq.com".to_string()),
-                ConfigValue::explicit("https://dogpound.io/".to_string()),
+                "non-Datadog endpoint used verbatim",
+                "https://dogpound.io/",
                 "https://dogpound.io/".to_string(),
             ),
         ];
 
-        for (name, site, dd_url, expected_endpoint) in cases {
-            let endpoints = shared::Endpoints {
-                api_key: "fake-api-key".to_string(),
-                site,
-                dd_url,
-                ..Default::default()
-            };
-            let config = EndpointConfiguration::from_configuration(&endpoints);
+        for (name, primary_endpoint, expected_endpoint) in cases {
+            let config =
+                EndpointConfiguration::new("fake-api-key".to_string(), primary_endpoint.to_string(), HashMap::new());
 
             let resolved = config.build_primary_endpoint().expect(name);
             assert_eq!(expected_endpoint, resolved.endpoint().to_string(), "{name}");
@@ -894,7 +1009,7 @@ mod tests {
 
         series_config = UseV3ApiSeriesConfig {
             enabled: V3SeriesMode::Disabled,
-            ..Default::default()
+            endpoints: HashMap::new(),
         };
         series_config
             .endpoints
@@ -985,12 +1100,7 @@ mod tests {
     fn the_configured_endpoint_keeps_the_agent_endpoint_shape() {
         // The configured endpoint is matched against V3 endpoint lists, so it must stay in the shape
         // the Agent uses, before version prefixing.
-        let endpoints = shared::Endpoints {
-            site: ConfigValue::defaulted("datadoghq.com".to_string()),
-            dd_url: ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
-            ..Default::default()
-        };
-        let config = EndpointConfiguration::from_configuration(&endpoints);
+        let config = EndpointConfiguration::new(String::new(), "https://app.datadoghq.com".to_string(), HashMap::new());
 
         assert_eq!(
             "https://app.datadoghq.com",
@@ -999,42 +1109,5 @@ mod tests {
                 .expect("endpoint should resolve")
                 .configured_endpoint()
         );
-    }
-
-    #[test]
-    fn an_explicit_dd_url_overrides_site_even_at_the_schema_default() {
-        // The Agent sends `dd_url` at its schema default even when only `site` is configured, so the
-        // URL alone cannot express an override: an operator who explicitly sets the default URL still
-        // overrides `site`, and a defaulted URL does not.
-        let cases = [
-            (
-                "explicit default URL overrides site",
-                ConfigValue::explicit("https://app.datadoghq.com".to_string()),
-                "https://app.datadoghq.com",
-            ),
-            (
-                "defaulted URL leaves the endpoint to site",
-                ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
-                "https://app.datadoghq.eu",
-            ),
-        ];
-
-        for (name, dd_url, expected) in cases {
-            let endpoints = shared::Endpoints {
-                site: ConfigValue::explicit("datadoghq.eu".to_string()),
-                dd_url,
-                ..Default::default()
-            };
-            let config = EndpointConfiguration::from_configuration(&endpoints);
-
-            assert_eq!(
-                expected,
-                config
-                    .build_primary_endpoint()
-                    .expect("endpoint should resolve")
-                    .configured_endpoint(),
-                "{name}"
-            );
-        }
     }
 }

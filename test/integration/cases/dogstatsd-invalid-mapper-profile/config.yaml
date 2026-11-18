@@ -1,0 +1,46 @@
+# Issue #3068: an invalid mapper profile must not stop DogStatsD
+#
+# Like the Core Agent, an invalid `dogstatsd_mapper_profiles` mapping disables metric mapping entirely and is logged,
+# and DogStatsD keeps running with metrics passing through unmapped. Here, `x.**.y` is rejected because wildcard
+# patterns can't contain consecutive `*`. Without the fix, the mapper fails to build and DogStatsD never starts.
+
+type: integration
+name: "dogstatsd-invalid-mapper-profile"
+description: "Verifies an invalid dogstatsd_mapper_profiles mapping disables mapping instead of stopping DogStatsD"
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dsd-invalid-mapper"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  DD_DOGSTATSD_MAPPER_PROFILES: '[{"name":"test","prefix":"x.","mappings":[{"match":"x.**.y","name":"mapped"}]}]'
+
+container:
+  exposed_ports:
+    - "48125/udp"
+
+procedure:
+  # ADP should log that it couldn't create the mapper.
+  - assertion: log_contains
+    pattern: "DATAPLANE.*Could not create metric mapper:.*should not contain consecutive"
+    regex: true
+    timeout: 60s
+  # DogStatsD should still start and stay up.
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: port_listening
+        port: 48125
+        protocol: udp
+        timeout: 60s
+      - assertion: log_contains
+        pattern: "Topology healthy"
+        timeout: 60s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

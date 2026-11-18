@@ -1,0 +1,8 @@
+---
+enhancements:
+  - |
+    Reduce DogStatsD CPU usage by only sending metrics to the DogStatsD statistics and metric debug log outputs while
+    they're in use: during a ``dogstatsd stats`` collection, or while ``dogstatsd_metrics_stats_enable`` is enabled.
+  - |
+    Skip the multi-region failover metrics pipeline when ``multi_region_failover.enabled`` is false at startup, and only
+    send metrics to it while ``multi_region_failover.failover_metrics`` is true.

@@ -9,9 +9,6 @@ mod duration_de;
 pub mod env_decode;
 mod list_de;
 
-/// A Figment provider that reads the schema's environment variables into their canonical shape.
-pub mod env_provider;
-
 /// Builds the typed configuration base by reading environment variables directly and decoding them
 /// into the nested configuration shape.
 pub mod env_reader;
@@ -19,8 +16,14 @@ pub mod env_reader;
 /// Build-time generated code, produced from `core_schema.yaml` plus `schema_overlay.yaml`.
 mod generated;
 
+/// Runtime selection of a schema `platform_default` value, called by generated default functions.
+mod platform_default;
+
 /// A shared, immutable view of the vendored schema's defaults.
 mod schema_defaults;
+
+/// Parses a byte-size setting the way the Agent's `GetSizeInBytes` does.
+mod size_in_bytes;
 
 /// The translation error type recorded by the translator and surfaced by the witness driver.
 mod translate_error;
@@ -28,9 +31,13 @@ mod translate_error;
 pub use cast_de::cast_to_f64;
 pub use cast_de::cast_to_string;
 pub use env_decode::EnvDecode;
-pub use env_provider::DatadogEnvProvider;
-pub use env_reader::{apply_datadog_env, apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, EnvKey};
-pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration};
+pub use env_reader::{
+    apply_datadog_env, apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, datadog_renamed_keys, EnvKey,
+    RenamedKey,
+};
+pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration, Leaf, LeafValue, LEAVES};
+pub use platform_default::is_containerized;
+pub use size_in_bytes::parse_size_in_bytes;
 pub use translate_error::{TranslateError, TranslateErrors};
 
 #[cfg(test)]
@@ -49,6 +56,18 @@ mod string_list_shape_tests {
             serde_json::from_value(serde_json::json!({ "dogstatsd_tags": "env:prod team:core" }))
                 .expect("space-separated string deserializes into the string-list leaf");
         assert_eq!(config.dogstatsd_tags, vec!["env:prod", "team:core"]);
+    }
+
+    #[test]
+    fn string_list_leaf_accepts_a_json_encoded_list() {
+        let config: DatadogConfiguration = serde_json::from_value(serde_json::json!({
+            "apm_config": { "obfuscation": { "elasticsearch": { "keep_values": r#"["cr-a","cr-b"]"# } } }
+        }))
+        .expect("JSON-encoded list deserializes into the string-list leaf");
+        assert_eq!(
+            config.apm_config.obfuscation.elasticsearch.keep_values,
+            vec!["cr-a", "cr-b"]
+        );
     }
 
     #[test]
@@ -132,6 +151,13 @@ mod scalar_shape_tests {
     }
 
     #[test]
+    fn integer_leaf_reads_a_quoted_zero_padded_number_as_octal() {
+        let config: DatadogConfiguration =
+            serde_json::from_value(json!({ "dogstatsd_buffer_size": "010" })).expect("numeric string deserializes");
+        assert_eq!(config.dogstatsd_buffer_size, 8);
+    }
+
+    #[test]
     fn string_leaf_accepts_a_boolean() {
         // The Agent reads this leaf with `GetString`, so a YAML boolean reaches it as `"true"`.
         let config: DatadogConfiguration =
@@ -160,42 +186,47 @@ mod scalar_shape_tests {
 
             // A boolean, integer, or float leaf must accept its string spelling (how it arrives from an
             // environment variable, and how an operator may write it in YAML); a string leaf must accept
-            // a boolean. Each written value differs from the leaf's default, so a coercion that silently
+            // a boolean. An integer leaf must also accept the base-prefixed spelling the Agent's integer
+            // cast reads. Each written value differs from the leaf's default, so a coercion that silently
             // failed to land cannot be mistaken for one that worked.
-            let (written, expected) = match key.decode {
+            let cases = match key.decode {
                 EnvDecode::Bool => {
                     let flipped = !current.and_then(Value::as_bool).unwrap_or(false);
-                    (json!(flipped.to_string()), json!(flipped))
+                    vec![(json!(flipped.to_string()), json!(flipped))]
                 }
                 EnvDecode::Integer => {
                     let bumped = current.and_then(Value::as_i64).unwrap_or(0) + 1;
-                    (json!(bumped.to_string()), json!(bumped))
+                    let sign = if bumped < 0 { "-" } else { "" };
+                    let hex = format!("{sign}{:#x}", bumped.unsigned_abs());
+                    vec![(json!(bumped.to_string()), json!(bumped)), (json!(hex), json!(bumped))]
                 }
                 EnvDecode::Float => {
                     let bumped = current.and_then(Value::as_f64).unwrap_or(0.0) + 1.5;
-                    (json!(bumped.to_string()), json!(bumped))
+                    vec![(json!(bumped.to_string()), json!(bumped))]
                 }
                 EnvDecode::RawString => {
                     let flag = current.and_then(Value::as_str) != Some("true");
-                    (json!(flag), json!(flag.to_string()))
+                    vec![(json!(flag), json!(flag.to_string()))]
                 }
                 _ => continue,
             };
 
-            let mut tree = written.clone();
-            for segment in key.path.iter().rev() {
-                tree = json!({ *segment: tree });
-            }
+            for (written, expected) in cases {
+                let mut tree = written.clone();
+                for segment in key.path.iter().rev() {
+                    tree = json!({ *segment: tree });
+                }
 
-            let leaf = key.path.join(".");
-            let config: DatadogConfiguration =
-                serde_json::from_value(tree).unwrap_or_else(|e| panic!("leaf `{leaf}` rejected {written}: {e}"));
-            let coerced = serde_json::to_value(config).expect("the configuration serializes");
-            assert_eq!(
-                coerced.pointer(&pointer),
-                Some(&expected),
-                "leaf `{leaf}` did not coerce {written}"
-            );
+                let leaf = key.path.join(".");
+                let config: DatadogConfiguration =
+                    serde_json::from_value(tree).unwrap_or_else(|e| panic!("leaf `{leaf}` rejected {written}: {e}"));
+                let coerced = serde_json::to_value(config).expect("the configuration serializes");
+                assert_eq!(
+                    coerced.pointer(&pointer),
+                    Some(&expected),
+                    "leaf `{leaf}` did not coerce {written}"
+                );
+            }
         }
     }
 
@@ -298,5 +329,88 @@ mod null_collection_tests {
         assert_eq!(config.apm_config.replace_tags.len(), 2);
         assert!(config.apm_config.replace_tags[0].is_empty());
         assert_eq!(config.apm_config.replace_tags[1]["name"], "*");
+    }
+}
+
+#[cfg(test)]
+mod leaves_tests {
+    use serde_json::json;
+
+    use super::generated::env_keys::DATADOG_ENV_KEYS;
+    use super::{DatadogConfiguration, LeafValue, LEAVES};
+
+    // `LEAVES` and `DATADOG_ENV_KEYS` are independently generated (by `witness_gen.rs` and
+    // `env_reader_gen.rs` respectively) from the same overlay key set, so comparing them catches a
+    // divergence between the two generators rather than just a generator agreeing with itself.
+    #[test]
+    fn leaves_has_one_entry_per_supported_key() {
+        assert_eq!(LEAVES.len(), DATADOG_ENV_KEYS.len());
+        for env_key in DATADOG_ENV_KEYS {
+            let dotted = env_key.path.join(".");
+            assert!(
+                LEAVES.iter().any(|leaf| leaf.key == dotted),
+                "no LEAVES entry for supported key `{dotted}`"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_are_sorted_and_unique_by_key() {
+        for pair in LEAVES.windows(2) {
+            assert!(
+                pair[0].key < pair[1].key,
+                "LEAVES is not sorted (or has a duplicate) between `{}` and `{}`",
+                pair[0].key,
+                pair[1].key
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_read_typed_values_of_several_kinds() {
+        let config: DatadogConfiguration = serde_json::from_value(json!({
+            "dogstatsd_non_local_traffic": true,
+            "dogstatsd_port": 9999,
+            "dogstatsd_tags": ["env:prod", "team:core"],
+            "additional_endpoints": { "https://x.": ["k1", "k2"] },
+            "apm_config": { "obfuscation": { "credit_cards": { "enabled": true } } },
+        }))
+        .expect("small configuration deserializes");
+
+        let leaf = |key: &str| {
+            LEAVES
+                .iter()
+                .find(|l| l.key == key)
+                .unwrap_or_else(|| panic!("no leaf `{key}`"))
+        };
+
+        assert!(matches!(
+            (leaf("dogstatsd_non_local_traffic").get)(&config),
+            LeafValue::Bool(true)
+        ));
+        assert!(matches!((leaf("dogstatsd_port").get)(&config), LeafValue::I64(9999)));
+
+        match (leaf("dogstatsd_tags").get)(&config) {
+            LeafValue::StringList(tags) => assert_eq!(tags, ["env:prod", "team:core"]),
+            other => panic!("unexpected leaf value: {other:?}"),
+        }
+
+        match (leaf("additional_endpoints").get)(&config) {
+            LeafValue::StringListMap(map) => {
+                assert_eq!(map["https://x."], vec!["k1".to_string(), "k2".to_string()]);
+            }
+            other => panic!("unexpected leaf value: {other:?}"),
+        }
+
+        assert!(matches!(
+            (leaf("apm_config.obfuscation.credit_cards.enabled").get)(&config),
+            LeafValue::Bool(true)
+        ));
+
+        // A key the JSON above never set reads back as the leaf's serde default.
+        match (leaf("syslog_rfc").get)(&config) {
+            LeafValue::Bool(value) => assert_eq!(value, DatadogConfiguration::default().syslog_rfc),
+            other => panic!("unexpected leaf value: {other:?}"),
+        }
     }
 }

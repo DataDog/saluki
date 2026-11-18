@@ -29,7 +29,7 @@ Each node reports:
 | `started_at`, `uptime_ms` | When the node's most recent process started, and how long it has been running. |
 | `restart_count` | Restarts since the node was created, including those caused by its supervisor restarting. |
 | `resources` | Allocation and CPU accounting, for supervisors and topology components. |
-| `supervision` | Restart strategy, shutdown budget, and runtime placement, for supervisors. |
+| `supervision` | Restart strategy and runtime placement, for supervisors. |
 
 Two details are worth knowing before reading the numbers.
 

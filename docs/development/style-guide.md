@@ -21,7 +21,10 @@ codebase as a whole. This target includes:
 - running `cargo sort` to sort dependencies within the `Cargo.toml` files
 
 These formatters are checked and enforced in CI, so it's best to get in the habit of running `make fmt` locally before
-committing changes.
+committing changes. Rust code wraps at 120 characters.
+
+We customize how `cargo fmt` and `cargo clippy` run, so the `Makefile` is authoritative: use its targets rather than
+invoking the tools directly with default flags.
 
 Additionally, we use `cargo clippy` to catch common mistakes and suboptimal code patterns. Clippy will generally show
 suggestions of more idiomatic or succinct ways to write common code patterns, as well as potentially point out subtle
@@ -78,6 +81,30 @@ fn set_name(&mut self, name: impl Into<String>) {
 Documentation is crucial to Saluki's mission of producing reliable, maintainable software. This section covers
 guidelines for both prose documentation (Markdown) and code documentation (rustdoc).
 
+### Where documentation lives
+
+All documentation lives under `docs/`, and all development guidance lives under `docs/development/`. New pages and
+sections **MUST** go there, whether you're updating an existing page or proposing a new one. Don't add new READMEs or
+other Markdown files next to code. Add every new page to the sidebar in `docs/.vitepress/config.mts`, and preview the
+site locally with `make run-docs`.
+
+The only exceptions are entrypoint files whose location is fixed by tooling, such as `AGENTS.md`,
+`.claude/CLAUDE.md`, skills under `.agents/skills/`, and `codereview_guideline.md` files. Keep these as thin pointers
+into `docs/` wherever the tooling allows. [Agent guide](./agents.md#entrypoints) lists them.
+
+### Audience and scope
+
+The generic Saluki crates (`lib/saluki-*`) are general-purpose infrastructure. Their documentation and code comments
+**SHOULD NOT** reference:
+
+- the Datadog Agent by name: refer to the specific protocol, or use a generic term such as "the server process" or
+  "the remote endpoint"
+- internal Datadog code names or project names: well-known public products, such as AWS Nitro Enclaves, are fine
+- Datadog-specific deployment topologies: use generic terms such as "guest VM" or "host process"
+
+This rule doesn't apply to `bin/agent-data-plane`, `lib/datadog-agent/`, configuration registry annotations, or
+known-configs documentation, all of which are explicitly specific to the Datadog Agent.
+
 ### Voice and tone
 
 Write as a knowledgeable colleague—direct and practical, without being curt or condescending. Documentation should feel
@@ -91,8 +118,8 @@ like guidance from someone who genuinely wants to help you succeed.
 **What to avoid:**
 
 - "Please" in instructions: just tell the reader what to do ("Run `make fmt`" instead of "Please run `make fmt`")
-- Minimizing terms like "simply" or "obviously": if it was so simple or obvious, the user wouldn't be reading the
-  documentation
+- Minimizing words such as "simply," "just," "easy," or "obviously": if it was so simple or obvious, the user wouldn't
+  be reading the documentation
 - Excessive exclamation marks: reserve them for genuinely exciting announcements
 - Jargon and buzzwords without explanation
 - Pop culture references and idioms that may not translate globally
@@ -176,7 +203,7 @@ Module-level documentation uses `//!` comments and appears at the top of the fil
 
 - Begin with a one-sentence purpose statement
 - Add a blank line, then provide detailed explanation if needed
-- Use `#![deny(missing_docs)]` in library crates to enforce documentation coverage
+- All public items **MUST** be documented: use `#![deny(missing_docs)]` in library crates to enforce this
 
 #### Item documentation
 
@@ -236,8 +263,8 @@ Configuration structs require thorough documentation. Each field **MUST** docume
 
 - What the field controls and its impact on behavior
 - The default value (stated explicitly)
-- Edge cases and boundary values
-- Guidance for who should consider changing it
+- Edge cases and boundary values: for example, "If set to `0`, idle counter tracking is disabled"
+- Guidance for who should consider changing it: for example, "High-cardinality workloads may need to increase this"
 
 ```rust
 /// Aggregate transform configuration.

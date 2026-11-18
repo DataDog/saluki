@@ -306,7 +306,7 @@ where
         budget: Some(budget),
         emit_comments: false,
         legacy_octal_numbers: true,
-        reject_non_finite_typeless_float: false,
+        non_finite_float_policy: serde_saphyr::NonFiniteFloatPolicy::AsString,
         with_snippet: false,
     };
     serde_saphyr::from_str_with_options(input, options)

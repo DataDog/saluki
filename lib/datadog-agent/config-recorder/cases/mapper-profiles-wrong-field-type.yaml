@@ -1,0 +1,13 @@
+# Sets a mapper profile with a numeric name and reads its raw configuration value.
+# Probes whether Agent struct decoding treats that field differently; this case cannot
+# record the decoded struct, only the raw value.
+name: mapper-profiles-wrong-field-type
+group: behavior
+why: [unmarshal-key-struct-decode]
+yaml: |
+  dogstatsd_mapper_profiles:
+    - name: 123
+      prefix: "a."
+      mappings:
+        - {match: "a.*", name: b}
+keys: [dogstatsd_mapper_profiles]

@@ -16,6 +16,17 @@ use tokio::{runtime::Handle, select, time::sleep};
 mod api;
 pub use self::api::{MetricsAPIHandler, MetricsOverrideWorker};
 
+/// Returns the configuration name of a metrics level, such as `info`.
+pub(crate) fn level_name(level: Level) -> &'static str {
+    match level {
+        Level::TRACE => "trace",
+        Level::DEBUG => "debug",
+        Level::INFO => "info",
+        Level::WARN => "warn",
+        Level::ERROR => "error",
+    }
+}
+
 /// Initializes the metrics subsystem for `metrics`.
 ///
 /// The given prefix is used to namespace all metrics that are emitted by the application, and is prepended to all
@@ -30,7 +41,7 @@ pub use self::api::{MetricsAPIHandler, MetricsOverrideWorker};
 /// If the metrics subsystem was already initialized, or its supervisor can't be constructed, an error will be
 /// returned.
 pub(crate) async fn initialize_metrics(
-    metrics_prefix: impl Into<String>, default_level: Level,
+    metrics_prefix: impl Into<String>, default_level: Level, minimum_level: Level,
 ) -> Result<Supervisor, GenericError> {
     // We forward to the implementation in `saluki_core` so that we can have this crate be the collection point of all
     // helpers/types that are specific to generic application setup/initialization.
@@ -40,7 +51,7 @@ pub(crate) async fn initialize_metrics(
     let (filter_handle, flusher) =
         saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into(), default_level).await?;
 
-    let override_processor = MetricsOverrideWorker::new(filter_handle);
+    let override_processor = MetricsOverrideWorker::new(filter_handle, minimum_level);
 
     // Subscribe to the registry now rather than when the worker starts, so that flushes landing between here and the
     // supervisor running are still folded into the shared state.

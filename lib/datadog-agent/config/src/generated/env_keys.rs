@@ -2,7 +2,7 @@
 // Regenerate by running `cargo build -p datadog-agent-config`.
 
 use crate::env_decode::EnvDecode;
-use crate::env_reader::EnvKey;
+use crate::env_reader::{EnvKey, RenamedKey};
 
 /// Every modeled Datadog key: its environment variable names (highest priority first),
 /// its nested path, and how to decode the raw value.
@@ -43,14 +43,29 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::TracesSpan,
     },
     EnvKey {
+        env_vars: &["DD_APM_NON_LOCAL_TRAFFIC"],
+        path: &["apm_config", "apm_non_local_traffic"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_APM_COMPUTE_STATS_BY_SPAN_KIND"],
         path: &["apm_config", "compute_stats_by_span_kind"],
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_CONNECTION_LIMIT", "DD_CONNECTION_LIMIT"],
+        path: &["apm_config", "connection_limit"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_ENABLE_RARE_SAMPLER"],
         path: &["apm_config", "enable_rare_sampler"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_ENV"],
+        path: &["apm_config", "env"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_APM_ERROR_TRACKING_STANDALONE_ENABLED"],
@@ -73,14 +88,54 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::CommaThenSpaceSeparated,
     },
     EnvKey {
+        env_vars: &["DD_APM_FILTER_TAGS_REJECT"],
+        path: &["apm_config", "filter_tags", "reject"],
+        decode: EnvDecode::JsonListOrSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_FILTER_TAGS_REQUIRE"],
+        path: &["apm_config", "filter_tags", "require"],
+        decode: EnvDecode::JsonListOrSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_FILTER_TAGS_REGEX_REJECT"],
+        path: &["apm_config", "filter_tags_regex", "reject"],
+        decode: EnvDecode::JsonListOrSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_FILTER_TAGS_REGEX_REQUIRE"],
+        path: &["apm_config", "filter_tags_regex", "require"],
+        decode: EnvDecode::JsonListOrSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_IGNORE_RESOURCES", "DD_IGNORE_RESOURCE"],
+        path: &["apm_config", "ignore_resources"],
+        decode: EnvDecode::CsvCommaSeparated,
+    },
+    EnvKey {
         env_vars: &["DD_APM_CONFIG_MAX_CATALOG_ENTRIES"],
         path: &["apm_config", "max_catalog_entries"],
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_APM_MAX_CPU_PERCENT"],
+        path: &["apm_config", "max_cpu_percent"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
         env_vars: &["DD_APM_MAX_EPS", "DD_MAX_EPS"],
         path: &["apm_config", "max_events_per_second"],
         decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_MAX_MEMORY"],
+        path: &["apm_config", "max_memory"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_MAX_PAYLOAD_SIZE"],
+        path: &["apm_config", "max_payload_size"],
+        decode: EnvDecode::Integer,
     },
     EnvKey {
         env_vars: &["DD_APM_MAX_TPS", "DD_MAX_TPS"],
@@ -178,6 +233,21 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_REMOVE_STACK_TRACES"],
+        path: &["apm_config", "obfuscation", "remove_stack_traces"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_SQL_EXEC_PLAN_ENABLED"],
+        path: &["apm_config", "obfuscation", "sql_exec_plan", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_SQL_EXEC_PLAN_NORMALIZE_ENABLED"],
+        path: &["apm_config", "obfuscation", "sql_exec_plan_normalize", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_VALKEY_ENABLED"],
         path: &["apm_config", "obfuscation", "valkey", "enabled"],
         decode: EnvDecode::Bool,
@@ -213,14 +283,39 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_APM_RECEIVER_PORT", "DD_RECEIVER_PORT"],
+        path: &["apm_config", "receiver_port"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_RECEIVER_SOCKET"],
+        path: &["apm_config", "receiver_socket"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_RECEIVER_TIMEOUT"],
+        path: &["apm_config", "receiver_timeout"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_REPLACE_TAGS"],
         path: &["apm_config", "replace_tags"],
         decode: EnvDecode::Json,
     },
     EnvKey {
+        env_vars: &["DD_APM_SQL_OBFUSCATION_MODE"],
+        path: &["apm_config", "sql_obfuscation_mode"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_APM_TARGET_TPS"],
         path: &["apm_config", "target_traces_per_second"],
         decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_TELEMETRY_ENABLED"],
+        path: &["apm_config", "telemetry", "enabled"],
+        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_AUTH_TOKEN_FILE_PATH"],
@@ -270,6 +365,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_CLUSTER_NAME"],
         path: &["cluster_name"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_CMD_HOST"],
+        path: &["cmd_host"],
         decode: EnvDecode::RawString,
     },
     EnvKey {
@@ -323,6 +423,32 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_AGENT_RECEIVER_GRPC_ENDPOINT"],
+        path: &[
+            "data_plane",
+            "experimental",
+            "otlp",
+            "proxy",
+            "agent_receiver_grpc_endpoint",
+        ],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS"],
+        path: &["data_plane", "experimental", "otlp", "proxy", "logs"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS"],
+        path: &["data_plane", "experimental", "otlp", "proxy", "metrics"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES"],
+        path: &["data_plane", "experimental", "otlp", "proxy", "traces"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_DATA_PLANE_LOG_FILE"],
         path: &["data_plane", "log_file"],
         decode: EnvDecode::RawString,
@@ -330,39 +456,6 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_DATA_PLANE_OTLP_ENABLED"],
         path: &["data_plane", "otlp", "enabled"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_ENABLED"],
-        path: &["data_plane", "otlp", "proxy", "enabled"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_LOGS_ENABLED"],
-        path: &["data_plane", "otlp", "proxy", "logs", "enabled"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_METRICS_ENABLED"],
-        path: &["data_plane", "otlp", "proxy", "metrics", "enabled"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_RECEIVER_PROTOCOLS_GRPC_ENDPOINT"],
-        path: &[
-            "data_plane",
-            "otlp",
-            "proxy",
-            "receiver",
-            "protocols",
-            "grpc",
-            "endpoint",
-        ],
-        decode: EnvDecode::RawString,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED"],
-        path: &["data_plane", "otlp", "proxy", "traces", "enabled"],
         decode: EnvDecode::Bool,
     },
     EnvKey {
@@ -516,6 +609,21 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_DOGSTATSD_QUEUE_SIZE"],
+        path: &["dogstatsd_queue_size"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_DOGSTATSD_REQUIRE_LISTENER"],
+        path: &["dogstatsd_require_listener"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_DOGSTATSD_SET_TIMING_UNIT"],
+        path: &["dogstatsd_set_timing_unit"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_DOGSTATSD_SO_RCVBUF"],
         path: &["dogstatsd_so_rcvbuf"],
         decode: EnvDecode::Integer,
@@ -594,6 +702,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_EXPECTED_TAGS_DURATION"],
         path: &["expected_tags_duration"],
         decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST"],
+        path: &["experimental", "metrics_endpoint_routing", "metric_allowlist"],
+        decode: EnvDecode::Json,
+    },
+    EnvKey {
+        env_vars: &["DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST"],
+        path: &["experimental", "metrics_endpoint_routing", "metric_prefix_allowlist"],
+        decode: EnvDecode::Json,
     },
     EnvKey {
         env_vars: &["DD_EXTRA_TAGS"],
@@ -686,6 +804,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_FORWARDER_STOP_WAIT_FOR_INFLIGHT"],
+        path: &["forwarder_stop_wait_for_inflight"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_FORWARDER_STORAGE_MAX_DISK_RATIO"],
         path: &["forwarder_storage_max_disk_ratio"],
         decode: EnvDecode::Float,
@@ -731,6 +854,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_IPC_ADDRESS"],
+        path: &["ipc_address"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_IPC_CERT_FILE_PATH"],
         path: &["ipc_cert_file_path"],
         decode: EnvDecode::RawString,
@@ -739,6 +867,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_KUBERNETES_KUBELET_NODENAME"],
         path: &["kubernetes_kubelet_nodename"],
         decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_LOG_ENABLED"],
+        path: &["log_enabled"],
+        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_LOG_FILE_MAX_ROLLS"],
@@ -781,14 +914,27 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
-        env_vars: &["DD_METRIC_FILTERLIST"],
+        env_vars: &["DD_LOGS_ENABLED"],
+        path: &["logs_enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_STATSD_METRIC_BLOCKLIST", "DD_METRIC_FILTERLIST"],
         path: &["metric_filterlist"],
         decode: EnvDecode::StringList,
     },
     EnvKey {
-        env_vars: &["DD_METRIC_FILTERLIST_MATCH_PREFIX"],
+        env_vars: &[
+            "DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX",
+            "DD_METRIC_FILTERLIST_MATCH_PREFIX",
+        ],
         path: &["metric_filterlist_match_prefix"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_METRIC_FILTERLIST_PREFIX"],
+        path: &["metric_filterlist_prefix"],
+        decode: EnvDecode::Json,
     },
     EnvKey {
         env_vars: &["DD_METRIC_TAG_FILTERLIST"],
@@ -1074,6 +1220,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_TRACES_INFRA_ATTRIBUTES_CONTAINER_TAG_PROMOTION"],
+        path: &["otlp_config", "traces", "infra_attributes", "container_tag_promotion"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_TRACES_INFRA_ATTRIBUTES_ENABLED"],
+        path: &["otlp_config", "traces", "infra_attributes", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_TRACES_INTERNAL_PORT"],
         path: &["otlp_config", "traces", "internal_port"],
         decode: EnvDecode::Integer,
@@ -1082,6 +1238,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE"],
         path: &["otlp_config", "traces", "probabilistic_sampler", "sampling_percentage"],
         decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_TRACES_SPAN_NAME_AS_RESOURCE_NAME"],
+        path: &["otlp_config", "traces", "span_name_as_resource_name"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_TRACES_SPAN_NAME_REMAPPINGS"],
+        path: &["otlp_config", "traces", "span_name_remappings"],
+        decode: EnvDecode::JsonValue,
     },
     EnvKey {
         env_vars: &["DD_PROVIDER_KIND"],
@@ -1144,8 +1310,50 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_BETA_ROUTE"],
+        path: &["serializer_experimental_use_v3_api", "sketches", "beta_route"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS"],
         path: &["serializer_experimental_use_v3_api", "sketches", "endpoints"],
+        decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_COMPRESSED_PAYLOAD_SIZE"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_compressed_payload_size",
+        ],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_POINTS_PER_PAYLOAD"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_points_per_payload",
+        ],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_UNCOMPRESSED_PAYLOAD_SIZE"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_uncompressed_payload_size",
+        ],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_SHADOW_SAMPLE_RATE"],
+        path: &["serializer_experimental_use_v3_api", "sketches", "shadow_sample_rate"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_SHADOW_SITES"],
+        path: &["serializer_experimental_use_v3_api", "sketches", "shadow_sites"],
         decode: EnvDecode::StringList,
     },
     EnvKey {
@@ -1202,16 +1410,6 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_STATSD_FORWARD_PORT"],
         path: &["statsd_forward_port"],
         decode: EnvDecode::Integer,
-    },
-    EnvKey {
-        env_vars: &["DD_STATSD_METRIC_BLOCKLIST"],
-        path: &["statsd_metric_blocklist"],
-        decode: EnvDecode::StringList,
-    },
-    EnvKey {
-        env_vars: &["DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX"],
-        path: &["statsd_metric_blocklist_match_prefix"],
-        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_STATSD_METRIC_NAMESPACE"],
@@ -1287,5 +1485,19 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_VSOCK_ADDR"],
         path: &["vsock_addr"],
         decode: EnvDecode::RawString,
+    },
+];
+
+/// Every former name of a Datadog schema setting, highest priority first for each setting.
+pub static DATADOG_RENAMED_KEYS: &[RenamedKey] = &[
+    RenamedKey {
+        former: &["statsd_metric_blocklist"],
+        path: &["metric_filterlist"],
+        env_var: Some("DD_STATSD_METRIC_BLOCKLIST"),
+    },
+    RenamedKey {
+        former: &["statsd_metric_blocklist_match_prefix"],
+        path: &["metric_filterlist_match_prefix"],
+        env_var: Some("DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX"),
     },
 ];

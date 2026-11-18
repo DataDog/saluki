@@ -1,0 +1,8 @@
+# Disables use_dogstatsd through a fleet policy and reads the related enabled switch.
+# Probes whether the policy merge itself sends an update; selected adjustments rerun.
+name: fleet-use-dogstatsd-off-suppresses
+group: behavior
+why: [fleet-policy-merge-not-notified]
+fleet_policy: |
+  use_dogstatsd: false
+keys: [use_dogstatsd, data_plane.dogstatsd.enabled]

@@ -1,0 +1,54 @@
+use std::path::{Path, PathBuf};
+
+use datadog_agent_config_overlay_model::{Files, SchemaOverlay};
+
+#[path = "build/doc_gen.rs"]
+mod doc_gen;
+
+fn workspace_dir() -> PathBuf {
+    let output = std::process::Command::new(env!("CARGO"))
+        .arg("locate-project")
+        .arg("--workspace")
+        .arg("--message-format=plain")
+        .output()
+        .unwrap()
+        .stdout;
+    #[allow(clippy::disallowed_methods)] // not production code
+    let cargo_path = Path::new(std::str::from_utf8(&output).unwrap().trim());
+    cargo_path.parent().unwrap().to_path_buf()
+}
+
+fn main() {
+    let doc_dir = workspace_dir()
+        .join("docs")
+        .join("agent-data-plane")
+        .join("configuration");
+    let template_path = doc_dir.join("configuration.md.tmpl");
+    let doc_target = doc_dir.join("configuration.md");
+
+    let files = Files::default();
+
+    let core_schema_dir = files
+        .datadog_schema
+        .parent()
+        .expect("core schema file must have a parent directory");
+    println!("cargo:rerun-if-changed={}", core_schema_dir.display());
+    println!("cargo:rerun-if-changed={}", files.otel_schema_dir.display());
+    println!("cargo:rerun-if-changed={}", files.overlay.display());
+    println!("cargo:rerun-if-changed={}", template_path.display());
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/doc_gen.rs");
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+
+    let overlay = SchemaOverlay::load(files).unwrap_or_else(|e| panic!("{e}"));
+
+    doc_gen::generate(&overlay, &template_path, &out_dir);
+    write_generated_doc(&out_dir, &doc_target);
+}
+
+fn write_generated_doc(out_dir: &Path, dst: &Path) {
+    let src = out_dir.join("docs/configuration.md");
+    let content = std::fs::read(&src).unwrap_or_else(|e| panic!("cannot read {}: {}", src.display(), e));
+    std::fs::write(dst, content).unwrap_or_else(|e| panic!("cannot write {}: {}", dst.display(), e));
+}

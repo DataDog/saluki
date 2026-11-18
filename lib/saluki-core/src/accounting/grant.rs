@@ -83,8 +83,12 @@ impl MemoryGrant {
 
     /// Initial number of bytes granted.
     ///
-    /// This value is purely informational, and shouldn't be used to calculating the memory available for use. For that
-    /// value, see [`effective_limit_bytes`][Self::effective_limit_bytes].
+    /// This shouldn't be used to calculate the memory available for components to use. For that value, see
+    /// [`effective_limit_bytes`][Self::effective_limit_bytes], which holds back the slop factor as headroom.
+    ///
+    /// It is, however, the right value to compare the process's measured memory usage against. Measured usage already
+    /// includes the allocations that the slop factor accounts for, so comparing it against the effective limit would
+    /// count that headroom twice.
     pub fn initial_limit_bytes(&self) -> usize {
         self.initial_limit_bytes
     }

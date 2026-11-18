@@ -24,6 +24,8 @@ on:
     # `opened` catches the initial PR creation.
     # `synchronize` catches subsequent pushes.
     types: [opened, synchronize]
+    branches-ignore:
+      - "**/graphite-base/**"
 
 jobs:
   sync-licenses:
@@ -64,7 +66,7 @@ jobs:
       # Toolchain pinned by rust-toolchain.toml. No cache (only the license tool is compiled).
       # build-warnings cleared to suppress the action's default warnings-as-errors enforcement.
       - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           cache: false
           build-warnings: ""

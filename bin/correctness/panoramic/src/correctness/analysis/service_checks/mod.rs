@@ -4,7 +4,7 @@ use saluki_error::{generic_error, GenericError};
 use stele::ServiceCheck;
 use tracing::{error, info, warn};
 
-use crate::correctness::analysis::collected::CollectedData;
+use crate::intake::CollectedData;
 
 /// Check name prefixes used exclusively by the Core Agent's internal check scheduler.
 ///

@@ -10,13 +10,9 @@
 //! the supervisor-provided shutdown handle is installed into their context; the remaining component kinds stop when
 //! their upstream channels close and ignore it.
 //!
-//! A component carries no shutdown deadline of its own. The topology supervisor holds one budget. That budget applies
-//! to each component and to every task that the component spawned. Thus, a single number bounds the subtree of a
-//! component, instead of a guess for each worker. See
-//! [`Supervisor::with_shutdown_budget`][crate::runtime::Supervisor::with_shutdown_budget].
-//!
-//! The one exception is a child spawned from a hand-written [`Supervisable`][crate::runtime::Supervisable], which
-//! reports its own shutdown strategy; that child is held to whichever of its deadline and the budget elapses first.
+//! Each component gets the shutdown timeout of the topology, which bounds the component and everything it spawned: if
+//! it expires, they are all halted. Children also keep their own shutdown strategies (five seconds for a closure-based
+//! child), so a child is halted at its own timeout or the component's, whichever comes first.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -49,8 +45,10 @@ pub(crate) trait RunnableComponent: Send + 'static {
     ///
     /// True for the kinds that install it into their context (sources and relays), false for the kinds that stop when
     /// their upstream channels close and drop it. Forwarded to
-    /// [`Supervisable::wants_shutdown_signal`][crate::runtime::Supervisable::wants_shutdown_signal] so the supervisor
-    /// can skip creating a coordinator it would never usefully fire -- for the majority of components, as it happens.
+    /// [`Supervisable::wants_shutdown_signal`][crate::runtime::Supervisable::wants_shutdown_signal]. A kind that
+    /// reports `false` gets a no-op handle, though the runtime still keeps a coordinator for it, so that its scope can
+    /// tell requested exits apart. It also decides whether the nested supervisors that the component spawns to
+    /// [stop with it][crate::runtime::NestedSupervisorBuilder::stops_with_owner] do so.
     ///
     /// This has to be a constant rather than a method on the value: the component is consumed by `initialize`, so
     /// there is nothing left to ask by the time the supervisor wants an answer.
@@ -58,9 +56,9 @@ pub(crate) trait RunnableComponent: Send + 'static {
 
     /// Consumes the component and its context, returning the future that runs the component.
     ///
-    /// `process_shutdown` is the shutdown signal of the component's dedicated supervisor. The run-future's
-    /// allocations are attributed to the component's resource group by the process it runs in: the component's
-    /// dedicated supervisor is named for the component, so no additional tracking is needed here.
+    /// `process_shutdown` is the shutdown signal of the component's worker. The run-future's allocations are attributed
+    /// to the component's resource group by the process it runs in: the worker is named for the component, so no
+    /// additional tracking is needed here.
     fn run_with_shutdown(self, process_shutdown: ShutdownHandle) -> SupervisorFuture;
 }
 
@@ -76,6 +74,8 @@ pub(crate) struct ComponentWorker<C> {
     /// health registry.
     name: String,
     component_context: ComponentContext,
+    /// Bounds the shutdown of the component and everything it spawned.
+    shutdown_timeout: Duration,
     inner: Mutex<Option<C>>,
 }
 
@@ -83,13 +83,14 @@ impl<C: RunnableComponent> ComponentWorker<C> {
     /// Creates a new `ComponentWorker` for the given runnable component.
     ///
     /// `component_context` identifies the component (its kind and id).
-    pub(crate) fn new(component_context: ComponentContext, runnable: C) -> Self {
+    pub(crate) fn new(component_context: ComponentContext, runnable: C, shutdown_timeout: Duration) -> Self {
         let name =
             get_component_relative_identifier(component_context.component_type(), component_context.component_id())
                 .to_string();
         Self {
             name,
             component_context,
+            shutdown_timeout,
             inner: Mutex::new(Some(runnable)),
         }
     }
@@ -102,10 +103,7 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // The component has no deadline of its own. The topology supervisor holds a single budget for the component and
-        // everything that it spawned. If the budget expires, the supervisor aborts the component together with all work
-        // that still runs in its scope.
-        ShutdownStrategy::Graceful(Duration::MAX)
+        ShutdownStrategy::Graceful(self.shutdown_timeout)
     }
 
     fn wants_shutdown_signal(&self) -> bool {
@@ -145,8 +143,8 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
 ///
 /// `$inject_shutdown` controls whether the supervisor-provided shutdown handle is installed into the
 /// context (sources and relays) or dropped (the channel-draining kinds), and sets
-/// [`RunnableComponent::WANTS_SHUTDOWN_SIGNAL`] to match so the supervisor doesn't create a coordinator for a handle
-/// that is thrown away.
+/// [`RunnableComponent::WANTS_SHUTDOWN_SIGNAL`] to match, so that the supervisor hands a no-op handle to a kind that
+/// would throw it away.
 macro_rules! runnable_component {
     ($name:ident, $component:path, $context:ty, inject_shutdown) => {
         /// Pairs a built component with its context for supervised execution.

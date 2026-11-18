@@ -17,6 +17,7 @@ use saluki_error::{generic_error, GenericError};
 use tokio::sync::oneshot;
 
 use super::{
+    halt::HaltWatch,
     state::DataspaceRegistry,
     supervisor::{Supervisor, SupervisorError},
 };
@@ -163,7 +164,7 @@ impl Future for DedicatedRuntimeHandle {
 ///
 /// If the OS thread can't be spawned, an error is returned.
 pub(crate) fn spawn_dedicated_runtime(
-    mut supervisor: Supervisor, config: RuntimeConfiguration, process_shutdown: ShutdownHandle,
+    mut supervisor: Supervisor, config: RuntimeConfiguration, process_shutdown: ShutdownHandle, halt: HaltWatch,
     dataspace: DataspaceRegistry,
 ) -> Result<DedicatedRuntimeHandle, GenericError> {
     let (init_tx, init_rx) = oneshot::channel();
@@ -199,7 +200,7 @@ pub(crate) fn spawn_dedicated_runtime(
             // immediately, which aborts its children, and dropping the runtime below cancels whatever is left on it.
             let result = runtime.block_on(async {
                 tokio::select! {
-                    result = supervisor.run_with_shutdown_inner(process_shutdown, Some(dataspace)) => Some(result),
+                    result = supervisor.run_with_shutdown_inner(process_shutdown, halt, Some(dataspace)) => Some(result),
                     _ = teardown_rx => None,
                 }
             });

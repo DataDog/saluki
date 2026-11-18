@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Fix API key validation failures being counted in the forwarder transaction error telemetry that Agent Data Plane
+    reports to the Datadog Agent. A validation request that could not connect, or that received an unexpected error
+    response, was added to ``transactions.errors`` alongside failures to send data. Validation requests are no longer
+    included in the forwarder transaction telemetry.

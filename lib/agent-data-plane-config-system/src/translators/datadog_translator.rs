@@ -23,17 +23,19 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use agent_data_plane_config::domains::dogstatsd::{
-    FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
+    FilterAction, MapperProfile, MetricMapping, MetricPrefixRule, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
-    DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+    ContainerTagPromotion, CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue,
+    SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
-use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule};
+use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule, SqlObfuscationMode, TagFilter};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
-use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
+use datadog_agent_config::{
+    drive, parse_size_in_bytes, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors,
+};
 use tracing::warn;
 
 use crate::source::SourceTree;
@@ -76,7 +78,24 @@ impl<'a> DatadogTranslator<'a> {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
         self.apply_deprecated_max_tps_alias();
+        self.resolve_v3_sketch_payload_limits();
+        self.drop_regex_tag_filters_shadowed_by_exact_ones();
         (self.config, errors)
+    }
+
+    // Resolve after the witness has supplied both generic limits and sketch overrides.
+    fn resolve_v3_sketch_payload_limits(&mut self) {
+        let metrics = &mut self.config.shared.metrics_encoding;
+        let sketches = &mut metrics.v3_api.sketches;
+        if sketches.max_compressed_payload_size == 0 {
+            sketches.max_compressed_payload_size = metrics.max_payload_size;
+        }
+        if sketches.max_uncompressed_payload_size == 0 {
+            sketches.max_uncompressed_payload_size = metrics.max_uncompressed_payload_size;
+        }
+        if sketches.max_points_per_payload == 0 {
+            sketches.max_points_per_payload = usize::MAX;
+        }
     }
 
     /// Applies the deprecated `max_traces_per_second` alias to the target rate.
@@ -89,6 +108,20 @@ impl<'a> DatadogTranslator<'a> {
             return;
         }
         self.config.domains.traces.target_traces_per_second = self.max_traces_per_second;
+    }
+
+    /// Drops each `filter_tags_regex` rule whose key a `filter_tags` rule in the same list already has.
+    ///
+    /// The trace-agent skips those rules when it reads `filter_tags_regex`, so the exact rule wins.
+    fn drop_regex_tag_filters_shadowed_by_exact_ones(&mut self) {
+        let traces = &mut self.config.domains.traces;
+        let (exact, regex) = (&traces.filter_tags, &mut traces.filter_tags_regex);
+        regex
+            .require
+            .retain(|rule| !exact.require.iter().any(|exact| exact.key == rule.key));
+        regex
+            .reject
+            .retain(|rule| !exact.reject.iter().any(|exact| exact.key == rule.key));
     }
 
     /// Records a translation error encountered while consuming.
@@ -122,6 +155,41 @@ impl<'a> DatadogTranslator<'a> {
                 None
             }
         }
+    }
+}
+
+/// Narrows a trace-agent count or duration for which `0` and negative values mean the same thing, such as no limit.
+///
+/// A negative value reads as `0`, with a warning, and a value above `u32::MAX` saturates.
+fn non_positive_as_zero(key: &'static str, value: i64) -> u32 {
+    if value < 0 {
+        warn!(config_key = key, "Negative value {value} reads as 0.");
+        return 0;
+    }
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+/// Splits a `filter_tags` rule as the trace-agent does: at the first `:`, trimming both sides, and reading an empty
+/// value as no value.
+fn split_tag(tag: &str) -> TagFilter {
+    let (key, value) = tag.split_once(':').unwrap_or((tag, ""));
+    let value = value.trim();
+    TagFilter {
+        key: key.trim().to_string(),
+        value: (!value.is_empty()).then(|| value.to_string()),
+    }
+}
+
+/// Splits a `filter_tags_regex` rule as the trace-agent does: like [`split_tag`], except that an empty value after a
+/// `:` is kept as an empty pattern.
+fn split_tag_regex(tag: &str) -> TagFilter {
+    let (key, value) = match tag.split_once(':') {
+        Some((key, value)) => (key, Some(value.trim().to_string())),
+        None => (tag, None),
+    };
+    TagFilter {
+        key: key.trim().to_string(),
+        value,
     }
 }
 
@@ -163,6 +231,23 @@ fn parse_v3_series_mode(key: &'static str, value: &str) -> V3SeriesMode {
         );
         V3SeriesMode::Disabled
     })
+}
+
+/// Parses a byte-size setting that the Agent reads with `GetSizeInBytes`.
+///
+/// A value the Agent can parse yields the Agent's byte count. The Agent reads any other value as `0`,
+/// which makes its log writer rotate on every write. ADP parses such a value with `bytesize` instead,
+/// which reads spellings such as `10MiB` and `1.5MB` in its own units and rejects the rest.
+// TODO: revisit the `bytesize` fallback once ADP decides how to treat values the Agent cannot cast
+// (https://github.com/DataDog/saluki/issues/2755).
+fn parse_byte_size(key: &str, value: &str) -> Result<u64> {
+    match parse_size_in_bytes(value) {
+        Some(size) => Ok(size),
+        None => value
+            .parse::<ByteSize>()
+            .map(|size| size.as_u64())
+            .map_err(|reason| TranslateError::new_with_message(key, reason)),
+    }
 }
 
 /// Returns `None` for an empty `s`; otherwise returns `Some(s)`.
@@ -268,6 +353,94 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> Result<MetricTag
     })
 }
 
+/// Decodes `metric_filterlist_prefix` as the Agent's `structure.UnmarshalKey` does: `mapstructure` with
+/// weakly typed input.
+///
+/// Unknown fields are ignored, and a field name matches case-insensitively when no exact key exists. An
+/// absent or null field keeps its zero value, so an entry without `prefix` matches every name. A scalar
+/// becomes a string (`true` is `"1"`), and a list field also accepts a comma-separated string or a
+/// single scalar.
+///
+/// # Errors
+///
+/// Returns an error for the first field holding a value `mapstructure` cannot convert: a list or a map
+/// where a string is expected, or a non-empty map where a list is expected.
+fn parse_metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Value>]) -> Result<Vec<MetricPrefixRule>> {
+    fn field<'a>(entry: &'a serde_json::Map<String, serde_json::Value>, name: &str) -> &'a serde_json::Value {
+        entry
+            .get(name)
+            .or_else(|| {
+                entry
+                    .iter()
+                    .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value))
+            })
+            .unwrap_or(&serde_json::Value::Null)
+    }
+
+    fn string(path: &str, value: &serde_json::Value) -> Result<String> {
+        use serde_json::Value;
+        match value {
+            Value::Null => Ok(String::new()),
+            Value::String(value) => Ok(value.clone()),
+            Value::Bool(value) => Ok(if *value { "1" } else { "0" }.to_string()),
+            // Go's `FormatFloat(f, 'f', -1, 64)`, like Rust's `Display`, never uses an exponent.
+            Value::Number(value) if value.is_f64() => Ok(value.as_f64().unwrap_or_default().to_string()),
+            Value::Number(value) => Ok(value.to_string()),
+            Value::Array(_) => Err(TranslateError::new_with_message(
+                "metric_filterlist_prefix",
+                format!("`{path}` expected a string, got a list"),
+            )),
+            Value::Object(_) => Err(TranslateError::new_with_message(
+                "metric_filterlist_prefix",
+                format!("`{path}` expected a string, got a map"),
+            )),
+        }
+    }
+
+    fn string_list(path: &str, value: &serde_json::Value) -> Result<Vec<String>> {
+        use serde_json::Value;
+        match value {
+            Value::Null => Ok(Vec::new()),
+            Value::String(value) if value.is_empty() => Ok(Vec::new()),
+            Value::String(value) => Ok(value.split(',').map(str::to_string).collect()),
+            Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| string(&format!("{path}[{index}]"), item))
+                .collect(),
+            Value::Object(map) if map.is_empty() => Ok(Vec::new()),
+            other => Ok(vec![string(&format!("{path}[0]"), other)?]),
+        }
+    }
+
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let path = format!("metric_filterlist_prefix[{index}]");
+            Ok(MetricPrefixRule {
+                prefix: string(&format!("{path}.prefix"), field(entry, "prefix"))?,
+                except_prefix: string_list(&format!("{path}.except_prefix"), field(entry, "except_prefix"))?,
+                except_exact: string_list(&format!("{path}.except_exact"), field(entry, "except_exact"))?,
+            })
+        })
+        .collect()
+}
+
+/// The prefix rules ADP runs with for a `metric_filterlist_prefix` value.
+///
+/// Like the Agent, a field value that does not convert drops every rule instead of failing the
+/// configuration: on a decode error the Agent logs it and discards the entries `mapstructure` did
+/// decode. A value that is not a list of objects never reaches this: it fails to deserialize.
+///
+/// https://github.com/DataDog/datadog-agent/blob/a682da124ffbc9ec820c118e3b2daaadff97623c/comp/filterlist/impl/filterlist.go#L103-L108
+pub(crate) fn metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Value>]) -> Vec<MetricPrefixRule> {
+    parse_metric_prefix_rules(entries).unwrap_or_else(|error| {
+        warn!(%error, "Failed to load `metric_filterlist_prefix`; using no prefix rules.");
+        Vec::new()
+    })
+}
+
 impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_additional_endpoints(&mut self, value: HashMap<String, Vec<String>>) {
         self.config.shared.endpoints.additional_endpoints = value;
@@ -334,12 +507,34 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.analyzed_spans_by_service = rates_by_service;
     }
 
+    fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool) {
+        let provenance = self.sources.provenance("apm_config.apm_non_local_traffic");
+        self.config.domains.apm.non_local_traffic = ConfigValue::new(value, provenance);
+    }
+
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool) {
         self.config.domains.traces.compute_stats_by_span_kind = value;
     }
 
+    fn consume_apm_config_connection_limit(&mut self, value: i64) {
+        // The trace-agent reads the key only when it is set, so the schema default of 2000 never applies.
+        self.config.domains.apm.connection_limit =
+            if self.sources.provenance("apm_config.connection_limit") == Provenance::Explicit {
+                non_positive_as_zero("apm_config.connection_limit", value)
+            } else {
+                0
+            };
+    }
+
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool) {
         self.config.domains.traces.enable_rare_sampler = value;
+    }
+
+    fn consume_apm_config_env(&mut self, value: String) {
+        // The trace environment falls back to `env` only when this key is unset, so an explicit empty
+        // value must stay distinguishable from the schema default.
+        let configured = self.sources.provenance("apm_config.env") == Provenance::Explicit;
+        self.config.domains.traces.apm_env = configured.then_some(value);
     }
 
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool) {
@@ -366,6 +561,26 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.features = value.iter().map(|feature| ApmFeature::from(feature.as_str())).collect();
     }
 
+    fn consume_apm_config_filter_tags_reject(&mut self, value: Vec<String>) {
+        self.config.domains.traces.filter_tags.reject = value.iter().map(|tag| split_tag(tag)).collect();
+    }
+
+    fn consume_apm_config_filter_tags_require(&mut self, value: Vec<String>) {
+        self.config.domains.traces.filter_tags.require = value.iter().map(|tag| split_tag(tag)).collect();
+    }
+
+    fn consume_apm_config_filter_tags_regex_reject(&mut self, value: Vec<String>) {
+        self.config.domains.traces.filter_tags_regex.reject = value.iter().map(|tag| split_tag_regex(tag)).collect();
+    }
+
+    fn consume_apm_config_filter_tags_regex_require(&mut self, value: Vec<String>) {
+        self.config.domains.traces.filter_tags_regex.require = value.iter().map(|tag| split_tag_regex(tag)).collect();
+    }
+
+    fn consume_apm_config_ignore_resources(&mut self, value: Vec<String>) {
+        self.config.domains.traces.ignore_resources = value;
+    }
+
     fn consume_apm_config_max_catalog_entries(&mut self, value: i64) {
         match usize::try_from(value) {
             Ok(entries) => self.config.domains.traces.max_catalog_entries = entries,
@@ -373,8 +588,28 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_apm_config_max_cpu_percent(&mut self, value: f64) {
+        let provenance = self.sources.provenance("apm_config.max_cpu_percent");
+        self.config.domains.apm.max_cpu_percent = ConfigValue::new(value, provenance);
+    }
+
     fn consume_apm_config_max_events_per_second(&mut self, value: f64) {
         self.config.domains.traces.max_events_per_second = value;
+    }
+
+    fn consume_apm_config_max_memory(&mut self, value: f64) {
+        let provenance = self.sources.provenance("apm_config.max_memory");
+        self.config.domains.apm.max_memory = ConfigValue::new(value, provenance);
+    }
+
+    fn consume_apm_config_max_payload_size(&mut self, value: i64) {
+        match u64::try_from(value) {
+            Ok(bytes) => self.config.domains.apm.max_payload_size = bytes,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "apm_config.max_payload_size",
+                "size must not be negative",
+            )),
+        }
     }
 
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64) {
@@ -460,6 +695,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.obfuscation.redis.remove_all_args = value;
     }
 
+    fn consume_apm_config_obfuscation_remove_stack_traces(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.remove_stack_traces = value;
+    }
+
+    fn consume_apm_config_obfuscation_sql_exec_plan_enabled(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.sql_exec_plan_enabled = value;
+    }
+
+    fn consume_apm_config_obfuscation_sql_exec_plan_normalize_enabled(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.sql_exec_plan_normalize_enabled = value;
+    }
+
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.valkey.enabled = value;
     }
@@ -489,6 +736,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
         self.config.domains.traces.probabilistic_sampler.sampling_percentage = value;
+    }
+
+    fn consume_apm_config_receiver_port(&mut self, value: i64) {
+        if let Some(port) = self.parse_port("apm_config.receiver_port", value) {
+            self.config.domains.apm.receiver_port = port;
+        }
+    }
+
+    fn consume_apm_config_receiver_socket(&mut self, value: String) {
+        // The schema's platform default is applied by the generated model; an explicit empty string disables the
+        // socket.
+        self.config.domains.apm.receiver_socket = non_empty(value);
+    }
+
+    fn consume_apm_config_receiver_timeout(&mut self, value: i64) {
+        self.config.domains.apm.receiver_timeout = non_positive_as_zero("apm_config.receiver_timeout", value);
     }
 
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
@@ -525,8 +788,23 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.replace_tags = rules;
     }
 
+    fn consume_apm_config_sql_obfuscation_mode(&mut self, value: String) {
+        // The trace-agent defines the recovery: it warns and falls back to the default obfuscator.
+        self.config.domains.traces.obfuscation.sql_obfuscation_mode = value.parse().unwrap_or_else(|error| {
+            warn!(
+                config_key = "apm_config.sql_obfuscation_mode",
+                "{error}; falling back to the default obfuscator."
+            );
+            SqlObfuscationMode::Default
+        });
+    }
+
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64) {
         self.config.domains.traces.target_traces_per_second = value;
+    }
+
+    fn consume_apm_config_telemetry_enabled(&mut self, value: bool) {
+        self.config.domains.apm.telemetry_enabled = value;
     }
 
     fn consume_auth_token_file_path(&mut self, value: String) {
@@ -546,7 +824,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_bind_host(&mut self, value: String) {
-        self.config.domains.dogstatsd.listeners.bind_host = non_empty(value);
+        let provenance = self.sources.provenance("bind_host");
+        self.config.shared.bind_host = ConfigValue::new(non_empty(value), provenance);
     }
 
     fn consume_cluster_agent_auth_token(&mut self, value: String) {
@@ -569,6 +848,15 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_cluster_name(&mut self, value: String) {
         self.config.shared.static_tags.cluster_name = value;
+    }
+
+    fn consume_cmd_host(&mut self, value: String) {
+        // Like the Datadog Agent, an explicitly set `ipc_address` (the deprecated name for `cmd_host`) takes
+        // precedence; `consume_ipc_address` writes the host in that case. Checking provenance on both sides, rather
+        // than relying on the order the two keys are consumed in, keeps the result the same either way.
+        if self.sources.provenance("ipc_address") != Provenance::Explicit {
+            self.config.control.ipc.cmd_host = value;
+        }
     }
 
     fn consume_cmd_port(&mut self, value: i64) {
@@ -632,6 +920,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.control.enabled = value;
     }
 
+    fn consume_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(&mut self, value: String) {
+        self.config.domains.otlp.proxy.grpc_endpoint = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_logs(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.logs_enabled = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_metrics(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.metrics_enabled = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_traces(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.traces_enabled = value;
+    }
+
     fn consume_data_plane_log_file(&mut self, value: String) {
         let provenance = self.sources.provenance("data_plane.log_file");
         self.config.control.logging.file = ConfigValue::new(value, provenance);
@@ -639,26 +943,6 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_data_plane_otlp_enabled(&mut self, value: bool) {
         self.config.control.otlp = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_logs_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.logs_enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_metrics_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.metrics_enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(&mut self, value: String) {
-        self.config.domains.otlp.proxy.grpc_endpoint = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_traces_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.traces_enabled = value;
     }
 
     fn consume_data_plane_remote_agent_enabled(&mut self, value: bool) {
@@ -777,9 +1061,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_log_file_max_size(&mut self, value: String) {
-        match value.parse::<ByteSize>() {
-            Ok(size) => self.config.domains.dogstatsd.debug_log.log_file_max_size = size.as_u64(),
-            Err(reason) => self.record_error(TranslateError::new_with_message("dogstatsd_log_file_max_size", reason)),
+        match parse_byte_size("dogstatsd_log_file_max_size", &value) {
+            Ok(size) => self.config.domains.dogstatsd.debug_log.log_file_max_size = size,
+            Err(error) => self.record_error(error),
         }
     }
 
@@ -803,7 +1087,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             match parse_mapper_profile("dogstatsd_mapper_profiles", raw) {
                 Ok(profile) => profiles.push(profile),
                 Err(error) => {
-                    self.record_error(error);
+                    // Like the Datadog Agent, profiles that can't be parsed disable metric mapping, rather than
+                    // failing the configuration: DogStatsD keeps running, with metrics passing through unmapped.
+                    // https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/comp/dogstatsd/server/impl/server.go#L915-L924
+                    warn!("Could not parse dogstatsd_mapper_profiles: {}", error);
+                    self.config.domains.dogstatsd.mapper.profiles = Vec::new();
                     return;
                 }
             }
@@ -845,6 +1133,20 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_dogstatsd_queue_size(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(queue_size) => self.config.domains.dogstatsd.listeners.queue_size = queue_size,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_queue_size",
+                "queue size must be greater than or equal to 0",
+            )),
+        }
+    }
+
+    fn consume_dogstatsd_set_timing_unit(&mut self, value: bool) {
+        self.config.domains.dogstatsd.listeners.set_timing_unit = value;
+    }
+
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64) {
         // A negative receive buffer size is invalid and must be rejected.
         match usize::try_from(value) {
@@ -856,12 +1158,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
-    fn consume_dogstatsd_socket(&mut self, value: Option<String>) {
-        self.config.domains.dogstatsd.listeners.socket = value.and_then(non_empty);
+    fn consume_dogstatsd_socket(&mut self, value: String) {
+        self.config.domains.dogstatsd.listeners.socket = non_empty(value);
     }
 
     fn consume_dogstatsd_stream_log_too_big(&mut self, value: bool) {
         self.config.domains.dogstatsd.listeners.stream_log_too_big = value;
+    }
+
+    fn consume_dogstatsd_require_listener(&mut self, value: bool) {
+        self.config.domains.dogstatsd.listeners.require_listener = value;
     }
 
     fn consume_dogstatsd_stream_socket(&mut self, value: String) {
@@ -914,19 +1220,32 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_env(&mut self, value: String) {
-        self.config.domains.traces.env = value;
+        // The trace environment falls back to the `env:` global tags only when this key is unset, so
+        // an explicit empty value must stay distinguishable from the schema default.
+        let configured = self.sources.provenance("env") == Provenance::Explicit;
+        self.config.domains.traces.env = configured.then_some(value);
     }
 
     fn consume_eks_fargate(&mut self, value: bool) {
         self.config.shared.static_tags.eks_fargate = value;
     }
 
-    fn consume_extra_tags(&mut self, value: Vec<String>) {
-        self.config.shared.tags.extra_tags = value;
-    }
-
     fn consume_expected_tags_duration(&mut self, value: Duration) {
         self.config.shared.tags.expected_tags_duration = value;
+    }
+
+    fn consume_experimental_metrics_endpoint_routing_metric_allowlist(&mut self, value: HashMap<String, Vec<String>>) {
+        self.config.domains.metrics_endpoint_routing.metric_allowlists = value;
+    }
+
+    fn consume_experimental_metrics_endpoint_routing_metric_prefix_allowlist(
+        &mut self, value: HashMap<String, Vec<String>>,
+    ) {
+        self.config.domains.metrics_endpoint_routing.metric_prefix_allowlists = value;
+    }
+
+    fn consume_extra_tags(&mut self, value: Vec<String>) {
+        self.config.shared.tags.extra_tags = value;
     }
 
     fn consume_forwarder_apikey_validation_interval(&mut self, value: i64) {
@@ -1054,6 +1373,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_forwarder_stop_wait_for_inflight(&mut self, value: bool) {
+        self.config.shared.endpoints.forwarder.stop_wait_for_inflight = value;
+    }
+
     fn consume_forwarder_storage_max_disk_ratio(&mut self, value: f64) {
         self.config.shared.endpoints.forwarder.storage_max_disk_ratio = value;
     }
@@ -1097,12 +1420,28 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.environment.hostname = ConfigValue::new(value, provenance);
     }
 
+    fn consume_ipc_address(&mut self, value: String) {
+        // The deprecated `ipc_address` only takes precedence over `cmd_host` when it's explicitly set: the Core Agent
+        // streams it at its default even when only `cmd_host` is configured. See `consume_cmd_host`.
+        if self.sources.provenance("ipc_address") == Provenance::Explicit {
+            // Matches the warning the Datadog Agent logs when it uses `ipc_address`.
+            warn!("ipc_address is deprecated, use cmd_host instead");
+            self.config.control.ipc.cmd_host = value;
+        }
+    }
+
     fn consume_ipc_cert_file_path(&mut self, value: String) {
         self.config.control.ipc.ipc_cert_file_path = PathBuf::from(value);
     }
 
     fn consume_kubernetes_kubelet_nodename(&mut self, value: String) {
         self.config.shared.static_tags.kubernetes_kubelet_nodename = value;
+    }
+
+    fn consume_log_enabled(&mut self, value: bool) {
+        // Like the Datadog Agent, the deprecated `log_enabled` enables the logs agent alongside `logs_enabled`, so
+        // either key being `true` is enough, whichever order they're read in.
+        self.config.control.logs_enabled |= value;
     }
 
     fn consume_log_file_max_rolls(&mut self, value: i64) {
@@ -1117,9 +1456,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_log_file_max_size(&mut self, value: String) {
         let provenance = self.sources.provenance("log_file_max_size");
-        match value.parse::<ByteSize>() {
-            Ok(size) => self.config.control.logging.file_max_size = ConfigValue::new(size.as_u64(), provenance),
-            Err(reason) => self.record_error(TranslateError::new_with_message("log_file_max_size", reason)),
+        match parse_byte_size("log_file_max_size", &value) {
+            Ok(size) => self.config.control.logging.file_max_size = ConfigValue::new(size, provenance),
+            Err(error) => self.record_error(error),
         }
     }
 
@@ -1147,17 +1486,21 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.control.logging.to_syslog = value;
     }
 
+    fn consume_logs_enabled(&mut self, value: bool) {
+        // See `consume_log_enabled`.
+        self.config.control.logs_enabled |= value;
+    }
+
     fn consume_metric_filterlist(&mut self, value: Vec<String>) {
-        // A non-empty current filterlist takes precedence over the legacy blocklist.
-        if !self.datadog.metric_filterlist.is_empty() {
-            self.config.domains.dogstatsd.metric_filter.values = value;
-        }
+        self.config.domains.dogstatsd.metric_filter.values = value;
     }
 
     fn consume_metric_filterlist_match_prefix(&mut self, value: bool) {
-        if !self.datadog.metric_filterlist.is_empty() {
-            self.config.domains.dogstatsd.metric_filter.match_prefix = value;
-        }
+        self.config.domains.dogstatsd.metric_filter.match_prefix = value;
+    }
+
+    fn consume_metric_filterlist_prefix(&mut self, value: Vec<serde_json::Map<String, serde_json::Value>>) {
+        self.config.domains.dogstatsd.metric_filter.prefix_rules = metric_prefix_rules(&value);
     }
 
     fn consume_metric_tag_filterlist(&mut self, value: Vec<serde_json::Value>) {
@@ -1433,6 +1776,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.traces.enabled = value;
     }
 
+    fn consume_otlp_config_traces_infra_attributes_container_tag_promotion(&mut self, value: String) {
+        match value.parse::<ContainerTagPromotion>() {
+            Ok(mode) => self.config.domains.otlp.traces.container_tag_promotion = mode,
+            Err(error) => {
+                self.record_error(TranslateError::new(
+                    "otlp_config.traces.infra_attributes.container_tag_promotion",
+                    error,
+                ));
+            }
+        }
+    }
+
+    fn consume_otlp_config_traces_infra_attributes_enabled(&mut self, value: bool) {
+        self.config.domains.otlp.traces.infra_attributes_enabled = value;
+    }
+
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64) {
         match u16::try_from(value) {
             Ok(port) => self.config.domains.otlp.traces.internal_port = port,
@@ -1446,6 +1805,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             .otlp
             .traces
             .probabilistic_sampler_sampling_percentage = value;
+    }
+
+    fn consume_otlp_config_traces_span_name_as_resource_name(&mut self, value: bool) {
+        self.config.domains.otlp.traces.span_name_as_resource_name = value;
+    }
+
+    fn consume_otlp_config_traces_span_name_remappings(&mut self, value: HashMap<String, String>) {
+        self.config.domains.otlp.traces.span_name_remappings = value;
     }
 
     fn consume_provider_kind(&mut self, value: String) {
@@ -1519,8 +1886,47 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.compression_level = value as i32;
     }
 
+    fn consume_serializer_experimental_use_v3_api_sketches_beta_route(&mut self, value: String) {
+        self.config.shared.metrics_encoding.v3_api.sketches.beta_route = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(&mut self, value: f64) {
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sites(&mut self, value: Vec<String>) {
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sites = value;
+    }
+
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_compressed_payload_size = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_points_per_payload = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_uncompressed_payload_size = value.max(0) as usize;
     }
 
     fn consume_serializer_max_payload_size(&mut self, value: i64) {
@@ -1576,19 +1982,6 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_statsd_forward_port(&mut self, value: i64) {
         if let Some(port) = self.parse_port("statsd_forward_port", value) {
             self.config.domains.dogstatsd.listeners.forward_port = port;
-        }
-    }
-
-    fn consume_statsd_metric_blocklist(&mut self, value: Vec<String>) {
-        // The legacy blocklist is effective only when the current filterlist is empty.
-        if self.datadog.metric_filterlist.is_empty() {
-            self.config.domains.dogstatsd.metric_filter.values = value;
-        }
-    }
-
-    fn consume_statsd_metric_blocklist_match_prefix(&mut self, value: bool) {
-        if self.datadog.metric_filterlist.is_empty() {
-            self.config.domains.dogstatsd.metric_filter.match_prefix = value;
         }
     }
 
@@ -1662,18 +2055,19 @@ fn parse_seconds(key: &str, value: i64) -> Result<Duration> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fmt;
     use std::path::PathBuf;
     use std::time::Duration;
 
     use agent_data_plane_config::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use agent_data_plane_config::domains::{
-        dogstatsd::{MetricFilter, OriginTagCardinality},
+        dogstatsd::{MetricFilter, MetricPrefixRule, OriginTagCardinality},
         otlp::{
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
-        traces::ApmFeature,
+        traces::{ApmFeature, SqlObfuscationMode, TagFilter},
     };
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -1800,6 +2194,18 @@ mod tests {
     }
 
     #[test]
+    fn apm_config_obfuscation_remove_stack_traces_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(!config.domains.traces.obfuscation.remove_stack_traces);
+
+        let (config, errors) =
+            translate_explicit(json!({ "apm_config": { "obfuscation": { "remove_stack_traces": true } } }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(config.domains.traces.obfuscation.remove_stack_traces);
+    }
+
+    #[test]
     fn remote_configuration_keys_translate() {
         // Exercise non-default values and distinguish every pair of keys to catch swapped translations.
         for (enabled, sampling, semantics) in [(false, false, true), (false, true, false)] {
@@ -1832,6 +2238,43 @@ mod tests {
     }
 
     #[test]
+    fn otlp_proxy_keys_translate() {
+        // Set one signal at a time to catch swapped translations.
+        for (logs, metrics, traces) in [(true, false, false), (false, true, false), (false, false, true)] {
+            let (config, errors) = translate_explicit(json!({
+                "data_plane": { "experimental": { "otlp": { "proxy": {
+                    "logs": logs,
+                    "metrics": metrics,
+                    "traces": traces,
+                    "agent_receiver_grpc_endpoint": "127.0.0.1:5000"
+                }}}}
+            }));
+            assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+            let proxy = &config.domains.otlp.proxy;
+            assert_eq!(
+                (proxy.logs_enabled, proxy.metrics_enabled, proxy.traces_enabled),
+                (logs, metrics, traces)
+            );
+            assert_eq!(proxy.grpc_endpoint, "127.0.0.1:5000");
+            assert!(proxy.enabled());
+        }
+    }
+
+    #[test]
+    fn otlp_proxy_keys_default_from_the_schema() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let proxy = &config.domains.otlp.proxy;
+        assert!(!proxy.logs_enabled);
+        assert!(!proxy.metrics_enabled);
+        assert!(!proxy.traces_enabled);
+        assert!(!proxy.enabled());
+        assert_eq!(proxy.grpc_endpoint, "127.0.0.1:4319");
+    }
+
+    #[test]
     fn apm_config_features_and_probabilistic_hash_seed_translate() {
         let (config, errors) = translate_explicit(json!({
             "apm_config": {
@@ -1859,6 +2302,35 @@ mod tests {
     }
 
     #[test]
+    fn otlp_span_name_settings_translate_and_default_to_the_agent_defaults() {
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": {
+                "traces": {
+                    "span_name_as_resource_name": true,
+                    "span_name_remappings": { "io.opentelemetry.javaagent.spring.client": "spring.client" }
+                }
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.otlp.traces;
+        assert!(traces.span_name_as_resource_name);
+        assert_eq!(
+            traces.span_name_remappings,
+            HashMap::from([(
+                "io.opentelemetry.javaagent.spring.client".to_owned(),
+                "spring.client".to_owned()
+            )])
+        );
+
+        // Unset, both arrive at their schema defaults.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(!config.domains.otlp.traces.span_name_as_resource_name);
+        assert!(config.domains.otlp.traces.span_name_remappings.is_empty());
+    }
+
+    #[test]
     fn apm_config_extra_sample_rate_passes_explicit_values_and_defaults_to_one() {
         // Unset, the schema default of 0 must not pass through: the effective default is 1.0,
         // leaving every computed rate unchanged.
@@ -1879,6 +2351,30 @@ mod tests {
         }));
         assert!(errors.is_none());
         assert_eq!(config.domains.traces.extra_sample_rate, 2.5);
+    }
+
+    #[test]
+    fn otlp_receiver_and_apm_probabilistic_sampling_percentages_translate_independently() {
+        // Unset, the OTLP receiver keeps every trace while the APM probabilistic sampler stays disabled at 0%.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.otlp.traces.probabilistic_sampler_sampling_percentage,
+            100.0
+        );
+        assert!(!config.domains.traces.probabilistic_sampler.enabled);
+        assert_eq!(config.domains.traces.probabilistic_sampler.sampling_percentage, 0.0);
+
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "traces": { "probabilistic_sampler": { "sampling_percentage": 25.0 } } },
+            "apm_config": { "probabilistic_sampler": { "sampling_percentage": 40.0 } }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.otlp.traces.probabilistic_sampler_sampling_percentage,
+            25.0
+        );
+        assert_eq!(config.domains.traces.probabilistic_sampler.sampling_percentage, 40.0);
     }
 
     #[test]
@@ -2052,6 +2548,26 @@ mod tests {
     }
 
     #[test]
+    fn dogstatsd_queue_size_defaults_to_the_schema_default_and_can_be_set() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 1024);
+
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_queue_size": 4096 }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 4096);
+    }
+
+    #[test]
+    fn negative_dogstatsd_queue_size_records_translation_error() {
+        let (_, errors) = translate_explicit(json!({ "dogstatsd_queue_size": -1 }));
+
+        let errors = errors.expect("a negative queue size should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_queue_size"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
     fn negative_dogstatsd_so_rcvbuf_records_translation_error() {
         let (config, errors) = translate_explicit(json!({
             "dogstatsd_so_rcvbuf": -1,
@@ -2077,6 +2593,187 @@ mod tests {
             let errors = errors.unwrap_or_else(|| panic!("{key} = {value} should record a translation error"));
             assert!(errors.to_string().contains(key));
             assert!(errors.to_string().contains("between 0 and 65535"));
+        }
+    }
+
+    #[test]
+    fn apm_receiver_settings_translate_to_the_apm_domain() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "receiver_port": 9126,
+                "receiver_socket": "/tmp/apm.socket",
+                "apm_non_local_traffic": true,
+            },
+        }));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        assert_eq!(apm.receiver_port, 9126);
+        assert_eq!(apm.receiver_socket.as_deref(), Some("/tmp/apm.socket"));
+        assert_explicit(&apm.non_local_traffic, true);
+    }
+
+    #[test]
+    fn trace_agent_reported_settings_default_as_the_trace_agent_reads_them() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        // The trace-agent reads `connection_limit` only when it is set, so its schema default of 2000 never applies.
+        assert_eq!(apm.connection_limit, 0);
+        assert_eq!(apm.receiver_timeout, 0);
+        assert_eq!(apm.max_payload_size, 25 * 1024 * 1024);
+        assert_defaulted(&apm.max_memory, 5e8);
+        assert_defaulted(&apm.max_cpu_percent, 50.0);
+        assert!(apm.telemetry_enabled);
+
+        let traces = &config.domains.traces;
+        assert!(traces.filter_tags.require.is_empty() && traces.filter_tags.reject.is_empty());
+        assert!(traces.filter_tags_regex.require.is_empty() && traces.filter_tags_regex.reject.is_empty());
+        assert!(traces.ignore_resources.is_empty());
+        let obfuscation = &traces.obfuscation;
+        assert_eq!(obfuscation.sql_obfuscation_mode, SqlObfuscationMode::Default);
+        assert!(!obfuscation.sql_exec_plan_enabled);
+        assert!(!obfuscation.sql_exec_plan_normalize_enabled);
+        assert!(!obfuscation.remove_stack_traces);
+    }
+
+    #[test]
+    fn trace_agent_reported_settings_translate_when_set() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "connection_limit": 100,
+                "receiver_timeout": 7,
+                "max_payload_size": 1024,
+                "max_memory": 1e9,
+                "max_cpu_percent": 200,
+                "telemetry": { "enabled": false },
+                "ignore_resources": ["GET /ping"],
+                "sql_obfuscation_mode": "obfuscate_and_normalize",
+                "obfuscation": {
+                    "sql_exec_plan": { "enabled": true },
+                    "sql_exec_plan_normalize": { "enabled": true },
+                    "remove_stack_traces": true,
+                },
+            },
+        }));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        assert_eq!(apm.connection_limit, 100);
+        assert_eq!(apm.receiver_timeout, 7);
+        assert_eq!(apm.max_payload_size, 1024);
+        assert_explicit(&apm.max_memory, 1e9);
+        assert_explicit(&apm.max_cpu_percent, 200.0);
+        assert!(!apm.telemetry_enabled);
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.ignore_resources, ["GET /ping"]);
+        let obfuscation = &traces.obfuscation;
+        assert_eq!(
+            obfuscation.sql_obfuscation_mode,
+            SqlObfuscationMode::ObfuscateAndNormalize
+        );
+        assert!(obfuscation.sql_exec_plan_enabled);
+        assert!(obfuscation.sql_exec_plan_normalize_enabled);
+        assert!(obfuscation.remove_stack_traces);
+    }
+
+    #[test]
+    fn negative_trace_agent_limits_recover_as_the_trace_agent_does() {
+        // The trace-agent applies no connection limit and its default timeout for any value up to 0.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "connection_limit": -1, "receiver_timeout": -5 },
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.apm.connection_limit, 0);
+        assert_eq!(config.domains.apm.receiver_timeout, 0);
+
+        // A negative payload size has no recovery: the trace-agent would reject every request.
+        let (_, errors) = translate_explicit(json!({ "apm_config": { "max_payload_size": -1 } }));
+        let errors = errors.expect("a negative payload size should record a translation error");
+        assert!(errors.to_string().contains("apm_config.max_payload_size"));
+    }
+
+    #[test]
+    fn an_unknown_sql_obfuscation_mode_falls_back_to_the_default_obfuscator() {
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "sql_obfuscation_mode": "obfuscate" } }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.traces.obfuscation.sql_obfuscation_mode,
+            SqlObfuscationMode::Default
+        );
+    }
+
+    #[test]
+    fn filter_tags_split_as_the_trace_agent_does() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "filter_tags": {
+                    "require": [" env : prod ", "team", "empty:", "url:http://a:b"],
+                    "reject": ["debug:true"],
+                },
+                "filter_tags_regex": {
+                    "require": ["env:^staging$", "service: ^web.* ", "any:"],
+                    "reject": ["debug:^t", "key"],
+                },
+            },
+        }));
+
+        assert!(errors.is_none());
+        let rule = |key: &str, value: Option<&str>| TagFilter {
+            key: key.to_string(),
+            value: value.map(str::to_string),
+        };
+        let traces = &config.domains.traces;
+        assert_eq!(
+            traces.filter_tags.require,
+            [
+                rule("env", Some("prod")),
+                rule("team", None),
+                rule("empty", None),
+                rule("url", Some("http://a:b")),
+            ]
+        );
+        assert_eq!(traces.filter_tags.reject, [rule("debug", Some("true"))]);
+        // A regex rule for a key an exact rule in the same list has is dropped, and an empty pattern is kept.
+        assert_eq!(
+            traces.filter_tags_regex.require,
+            [rule("service", Some("^web.*")), rule("any", Some(""))]
+        );
+        assert_eq!(traces.filter_tags_regex.reject, [rule("key", None)]);
+    }
+
+    #[test]
+    fn apm_receiver_defaults_match_the_trace_agent() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        assert_eq!(apm.receiver_port, 8126);
+        assert!(!apm.non_local_traffic.value);
+        // The socket default is platform-specific: on by default only where the trace-agent enables it.
+        let expected_socket =
+            cfg!(any(target_os = "linux", target_os = "aix")).then_some("/var/run/datadog/apm.socket");
+        assert_eq!(apm.receiver_socket.as_deref(), expected_socket);
+    }
+
+    #[test]
+    fn an_empty_apm_receiver_socket_disables_the_socket() {
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "receiver_socket": "" } }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.apm.receiver_socket, None);
+    }
+
+    #[test]
+    fn out_of_range_apm_receiver_ports_record_translation_errors() {
+        for value in [-1, 70_000] {
+            let (_, errors) = translate_explicit(json!({ "apm_config": { "receiver_port": value } }));
+
+            let errors = errors.unwrap_or_else(|| panic!("receiver_port = {value} should record a translation error"));
+            assert!(errors.to_string().contains("apm_config.receiver_port"));
         }
     }
 
@@ -2113,12 +2810,34 @@ mod tests {
         }));
 
         assert!(errors.is_none());
+        assert_eq!(config.shared.bind_host.value, None);
         let listeners = &config.domains.dogstatsd.listeners;
-        assert_eq!(listeners.bind_host, None);
         assert_eq!(listeners.pipe_name, None);
         assert_eq!(listeners.socket, None);
         assert_eq!(listeners.stream_socket, None);
         assert_eq!(listeners.forward_host, None);
+    }
+
+    #[test]
+    fn dogstatsd_socket_defaults_to_the_platform_default() {
+        // The schema declares `dogstatsd_socket` per platform: a UDS path on Linux and AIX, unset elsewhere.
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let expected =
+            cfg!(any(target_os = "linux", target_os = "aix")).then(|| "/var/run/datadog/dsd.socket".to_string());
+        assert_eq!(config.domains.dogstatsd.listeners.socket, expected);
+    }
+
+    #[test]
+    fn dogstatsd_set_timing_unit_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(!config.domains.dogstatsd.listeners.set_timing_unit);
+
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_set_timing_unit": true }));
+        assert!(errors.is_none());
+        assert!(config.domains.dogstatsd.listeners.set_timing_unit);
     }
 
     #[test]
@@ -2129,7 +2848,7 @@ mod tests {
         assert!(debug_log.logging_enabled);
         assert!(debug_log.log_file.is_none());
         assert_eq!(debug_log.log_file_max_rolls, 3);
-        assert_eq!(debug_log.log_file_max_size, 10_000_000);
+        assert_eq!(debug_log.log_file_max_size, 10_485_760);
         assert!(!debug_log.metrics_stats_enable);
 
         let (config, errors) = translate_explicit(json!({
@@ -2143,7 +2862,7 @@ mod tests {
         let debug_log = &config.domains.dogstatsd.debug_log;
         assert_eq!(debug_log.log_file, Some(std::path::PathBuf::from("/tmp/dsd-debug.log")));
         assert_eq!(debug_log.log_file_max_rolls, 0);
-        assert_eq!(debug_log.log_file_max_size, 42_000_000);
+        assert_eq!(debug_log.log_file_max_size, 44_040_192);
         assert!(!debug_log.logging_enabled);
         assert!(debug_log.metrics_stats_enable);
     }
@@ -2197,8 +2916,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_dogstatsd_mapper_profiles_record_translation_errors() {
-        for profile in [
+    fn malformed_dogstatsd_mapper_profiles_disable_mapping_without_failing() {
+        // Like the Datadog Agent, profiles that can't be parsed disable metric mapping, rather than failing the
+        // configuration. A valid profile configured alongside a malformed one doesn't apply either.
+        let valid = json!({ "name": "valid", "prefix": "valid.", "mappings": [] });
+        for malformed in [
             json!({ "prefix": "worker.", "mappings": [] }),
             json!({ "name": "workers", "mappings": [] }),
             json!({
@@ -2207,11 +2929,14 @@ mod tests {
                 "mappings": [{ "match": "worker.*" }]
             }),
         ] {
-            let (config, errors) = translate_explicit(json!({ "dogstatsd_mapper_profiles": [profile] }));
+            let (config, errors) =
+                translate_explicit(json!({ "dogstatsd_mapper_profiles": [valid.clone(), malformed.clone()] }));
 
+            assert!(
+                errors.is_none(),
+                "a malformed mapper profile should not fail the configuration: {malformed}"
+            );
             assert!(config.domains.dogstatsd.mapper.profiles.is_empty());
-            let error = errors.expect("a malformed mapper profile should record an error");
-            assert!(error.to_string().contains("dogstatsd_mapper_profiles"));
         }
     }
 
@@ -2302,6 +3027,33 @@ mod tests {
     }
 
     #[test]
+    fn apm_listen_host_settings_keep_their_provenance() {
+        let (config, errors) = translate_stream(&[
+            ("bind_host", json!("localhost"), StreamProvenance::Default),
+            (
+                "apm_config.apm_non_local_traffic",
+                json!(true),
+                StreamProvenance::Default,
+            ),
+        ]);
+        assert!(errors.is_none());
+        assert_defaulted(&config.shared.bind_host, Some("localhost".to_string()));
+        assert_defaulted(&config.domains.apm.non_local_traffic, true);
+
+        let (config, errors) = translate_stream(&[
+            ("bind_host", json!("10.0.0.1"), StreamProvenance::Explicit),
+            (
+                "apm_config.apm_non_local_traffic",
+                json!(false),
+                StreamProvenance::Explicit,
+            ),
+        ]);
+        assert!(errors.is_none());
+        assert_explicit(&config.shared.bind_host, Some("10.0.0.1".to_string()));
+        assert_explicit(&config.domains.apm.non_local_traffic, false);
+    }
+
+    #[test]
     fn defaulted_environment_settings_stay_distinguishable_from_configured_ones() {
         let (config, errors) = translate_stream(&[
             ("hostname", json!(""), StreamProvenance::Default),
@@ -2379,6 +3131,56 @@ mod tests {
     }
 
     #[test]
+    fn trace_env_keys_record_configured_values() {
+        // The trace environment selects by whether a key was configured, not by whether it is empty,
+        // so each key records its value only when an input set it.
+        #[track_caller]
+        fn assert_trace_env(config: &SalukiConfiguration, apm_env: Option<&str>, env: Option<&str>) {
+            let traces = &config.domains.traces;
+            assert_eq!((traces.apm_env.as_deref(), traces.env.as_deref()), (apm_env, env));
+        }
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, None);
+
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "env": "Staging" } }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some("Staging"), None);
+
+        let (config, errors) = translate_explicit(json!({ "env": "Prod" }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, Some("Prod"));
+
+        // An explicit empty file value is configured.
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "env": "" }, "env": "" }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some(""), Some(""));
+
+        // A streamed default is not configured, even when it is nonempty.
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!("staging"), StreamProvenance::Default),
+            ("env", json!("prod"), StreamProvenance::Default),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, None);
+
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!(""), StreamProvenance::Default),
+            ("env", json!("prod"), StreamProvenance::Explicit),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, Some("prod"));
+
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!(""), StreamProvenance::Explicit),
+            ("env", json!("prod"), StreamProvenance::Explicit),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some(""), Some("prod"));
+    }
+
+    #[test]
     fn an_explicit_dd_url_is_an_override_even_at_the_default_intake() {
         // Comparing values cannot see this: the operator chose the default intake deliberately, and
         // that choice must still override `site`.
@@ -2422,6 +3224,48 @@ mod tests {
         assert!(errors.is_none());
         assert_defaulted(&config.shared.endpoints.site, "");
         assert_defaulted(&config.shared.endpoints.dd_url, "");
+    }
+
+    #[test]
+    fn v3_sketch_payload_limits_resolve_fallbacks_and_overrides() {
+        for (compressed, uncompressed, points, expected) in [
+            (0, 0, 0, (100_000, 300_000, usize::MAX)),
+            (-1, -2, -3, (100_000, 300_000, usize::MAX)),
+            (110_000, 330_000, 43, (110_000, 330_000, 43)),
+            (110_000, 0, 0, (110_000, 300_000, usize::MAX)),
+        ] {
+            let (config, errors) = translate_explicit(json!({
+                "serializer_max_payload_size": 100_000,
+                "serializer_max_uncompressed_payload_size": 300_000,
+                "serializer_experimental_use_v3_api": {"sketches": {
+                    "max_compressed_payload_size": compressed,
+                    "max_uncompressed_payload_size": uncompressed,
+                    "max_points_per_payload": points,
+                }},
+            }));
+            assert!(errors.is_none(), "{errors:?}");
+            let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+            assert_eq!(
+                (
+                    sketches.max_compressed_payload_size,
+                    sketches.max_uncompressed_payload_size,
+                    sketches.max_points_per_payload
+                ),
+                expected
+            );
+        }
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "{errors:?}");
+        let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+        assert_eq!(
+            (
+                sketches.max_compressed_payload_size,
+                sketches.max_uncompressed_payload_size,
+                sketches.max_points_per_payload
+            ),
+            (2_621_440, 4_194_304, usize::MAX)
+        );
     }
 
     // The Agent streams `serializer_zstd_compressor_level` at its schema default of 1 even when the
@@ -2563,7 +3407,7 @@ mod tests {
         assert!(errors.is_none());
         let logging = &config.control.logging;
         assert_defaulted(&logging.file, "/var/log/datadog/agent-data-plane.log".to_string());
-        assert_defaulted(&logging.file_max_size, 10_000_000);
+        assert_defaulted(&logging.file_max_size, 10_485_760);
 
         let (config, errors) = translate_explicit(json!({
             "data_plane": { "log_file": "/tmp/adp.log" },
@@ -2573,6 +3417,49 @@ mod tests {
         let logging = &config.control.logging;
         assert_explicit(&logging.file, "/tmp/adp.log".to_string());
         assert_explicit(&logging.file_max_size, 1024 * 1024);
+    }
+
+    /// Reads one translated byte count out of the model.
+    type ReadSize = fn(&SalukiConfiguration) -> u64;
+
+    /// Each `GetSizeInBytes` key with a reader for its translated byte count.
+    const SIZE_KEYS: [(&str, ReadSize); 2] = [
+        ("log_file_max_size", |config| config.control.logging.file_max_size.value),
+        ("dogstatsd_log_file_max_size", |config| {
+            config.domains.dogstatsd.debug_log.log_file_max_size
+        }),
+    ];
+
+    #[test]
+    fn size_settings_translate_the_agents_size_grammar() {
+        // Each value is an Agent-valid spelling; the exact parser matrix is in `size_in_bytes`.
+        for (key, size) in SIZE_KEYS {
+            for (raw, expected) in [("10MB", 10_485_760), ("5KB", 5_120), ("0x10KB", 16_384)] {
+                let (config, errors) = translate_explicit(json!({ key: raw }));
+                assert!(errors.is_none(), "{key}: {raw}");
+                assert_eq!(size(&config), expected, "{key}: {raw}");
+            }
+        }
+    }
+
+    #[test]
+    fn size_settings_the_agent_cannot_parse_keep_their_bytesize_reading() {
+        // The Agent reads each of these as 0. ADP reads them with `bytesize`, in its units, and rejects
+        // what `bytesize` cannot parse.
+        for (key, size) in SIZE_KEYS {
+            for (raw, expected) in [("10MiB", 10_485_760), ("1.5MB", 1_500_000), ("10K", 10_000), ("1B", 1)] {
+                let (config, errors) = translate_explicit(json!({ key: raw }));
+                assert!(errors.is_none(), "{key}: {raw}");
+                assert_eq!(size(&config), expected, "{key}: {raw}");
+            }
+
+            for raw in ["-1MB", "abc"] {
+                let (_, errors) = translate_explicit(json!({ key: raw }));
+                let error = errors.unwrap_or_else(|| panic!("`{raw}` for {key} should record an error"));
+                assert!(error.to_string().contains(key), "{error}");
+                assert!(error.to_string().contains(raw), "{error}");
+            }
+        }
     }
 
     #[test]
@@ -2771,44 +3658,176 @@ mod tests {
     }
 
     #[test]
-    fn metric_filter_resolves_current_and_legacy_precedence() {
+    fn metric_filterlist_and_match_prefix_translate_independently() {
         let cases = [
             (
-                json!({
-                    "metric_filterlist": ["current"],
-                    "metric_filterlist_match_prefix": true,
-                    "statsd_metric_blocklist": ["legacy"],
-                    "statsd_metric_blocklist_match_prefix": false,
-                }),
+                json!({ "metric_filterlist": ["current"], "metric_filterlist_match_prefix": true }),
                 MetricFilter {
                     values: vec!["current".to_string()],
                     match_prefix: true,
+                    prefix_rules: Vec::new(),
                 },
             ),
             (
-                json!({
-                    "metric_filterlist": [],
-                    "metric_filterlist_match_prefix": true,
-                    "statsd_metric_blocklist": ["legacy"],
-                    "statsd_metric_blocklist_match_prefix": false,
-                }),
+                json!({ "metric_filterlist": [], "metric_filterlist_match_prefix": true }),
                 MetricFilter {
-                    values: vec!["legacy".to_string()],
-                    match_prefix: false,
+                    values: Vec::new(),
+                    match_prefix: true,
+                    prefix_rules: Vec::new(),
                 },
             ),
             (json!({}), MetricFilter::default()),
         ];
 
         for (source, expected) in cases {
-            let (config, errors) = translate_explicit(source);
-            assert!(errors.is_none());
-            assert_eq!(config.domains.dogstatsd.metric_filter, expected);
+            let (config, errors) = translate_explicit(source.clone());
+            assert!(errors.is_none(), "{source}");
+            assert_eq!(config.domains.dogstatsd.metric_filter, expected, "{source}");
         }
     }
 
     #[test]
-    fn metric_namespace_translates_schema_default_and_blocklist_alias() {
+    fn metric_filter_prefix_rules_translate() {
+        let (config, errors) = translate_explicit(json!({
+            "metric_filterlist_prefix": [
+                {
+                    "prefix": "service.",
+                    "except_prefix": ["service.keep."],
+                    "except_exact": ["service.keep.exact"],
+                },
+                {
+                    "prefix": "db.",
+                    "except_exact": ["db.status"],
+                },
+            ],
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.dogstatsd.metric_filter.prefix_rules,
+            vec![
+                MetricPrefixRule {
+                    prefix: "service.".to_string(),
+                    except_prefix: vec!["service.keep.".to_string()],
+                    except_exact: vec!["service.keep.exact".to_string()],
+                },
+                MetricPrefixRule {
+                    prefix: "db.".to_string(),
+                    except_prefix: Vec::new(),
+                    except_exact: vec!["db.status".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn metric_filter_prefix_rules_without_optional_fields_keep_empty_exceptions() {
+        let (config, errors) = translate_explicit(json!({
+            "metric_filterlist_prefix": [
+                { "prefix": "requests." }
+            ],
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.dogstatsd.metric_filter.prefix_rules,
+            vec![MetricPrefixRule {
+                prefix: "requests.".to_string(),
+                except_prefix: Vec::new(),
+                except_exact: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn metric_filter_prefix_rules_with_null_optional_fields_keep_empty_exceptions() {
+        let (config, errors) = translate_explicit(json!({
+            "metric_filterlist_prefix": [
+                {
+                    "prefix": "requests.",
+                    "except_prefix": null,
+                    "except_exact": null,
+                }
+            ],
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.dogstatsd.metric_filter.prefix_rules,
+            vec![MetricPrefixRule {
+                prefix: "requests.".to_string(),
+                except_prefix: Vec::new(),
+                except_exact: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn metric_filter_prefix_rules_decode_like_mapstructure() {
+        // `structure.UnmarshalKey` decodes with weakly typed input: a missing `prefix` is the empty
+        // prefix, scalars become strings, and list fields take a comma-separated string or one scalar.
+        let (config, errors) = translate_explicit(json!({
+            "metric_filterlist_prefix": [
+                { "except_exact": ["keep.exact"], "unknown": {"nested": true} },
+                { "Prefix": "cased.", "EXCEPT_PREFIX": "cased.a,cased.b", "prefix_typo": "ignored" },
+                { "prefix": 1.5, "except_prefix": true, "except_exact": [7, false, null] },
+                { "prefix": "empty.", "except_prefix": "", "except_exact": {} },
+            ],
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.dogstatsd.metric_filter.prefix_rules,
+            vec![
+                MetricPrefixRule {
+                    prefix: String::new(),
+                    except_prefix: Vec::new(),
+                    except_exact: vec!["keep.exact".to_string()],
+                },
+                MetricPrefixRule {
+                    prefix: "cased.".to_string(),
+                    except_prefix: vec!["cased.a".to_string(), "cased.b".to_string()],
+                    except_exact: Vec::new(),
+                },
+                MetricPrefixRule {
+                    prefix: "1.5".to_string(),
+                    except_prefix: vec!["1".to_string()],
+                    except_exact: vec!["7".to_string(), "0".to_string(), String::new()],
+                },
+                MetricPrefixRule {
+                    prefix: "empty.".to_string(),
+                    except_prefix: Vec::new(),
+                    except_exact: Vec::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_undecodable_metric_filter_prefix_list_yields_no_rules() {
+        // The Agent logs the decoding error and runs with no prefix rules at all, so one bad entry
+        // also drops the valid ones, and the configuration is not rejected.
+        let malformed = [
+            json!({ "prefix": ["not", "a", "string"] }),
+            json!({ "prefix": { "not": "a string" } }),
+            json!({ "prefix": "x.", "except_prefix": { "not": "a list" } }),
+            json!({ "prefix": "x.", "except_exact": [["nested"]] }),
+        ];
+        for entry in malformed {
+            let (config, errors) = translate_explicit(json!({
+                "metric_filterlist_prefix": [{ "prefix": "valid." }, entry.clone()],
+            }));
+
+            assert!(errors.is_none(), "{entry}");
+            assert!(
+                config.domains.dogstatsd.metric_filter.prefix_rules.is_empty(),
+                "{entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn metric_namespace_translates_schema_default_and_blacklist() {
         let (default_config, errors) = translate_explicit(json!({}));
         assert!(errors.is_none());
         assert_eq!(
@@ -2822,7 +3841,9 @@ mod tests {
 
         let (config, errors) = translate_explicit(json!({
             "statsd_metric_namespace": "tenant",
-            "statsd_metric_namespace_blocklist": ["custom"],
+            "statsd_metric_namespace_blacklist": ["custom"],
+            // The Agent has no such key, so it is ignored rather than read as the blacklist.
+            "statsd_metric_namespace_blocklist": ["ignored"],
         }));
         assert!(errors.is_none());
         assert_eq!(config.domains.dogstatsd.prefix_filter.metric_namespace, "tenant");
@@ -2934,6 +3955,60 @@ mod tests {
             config.control.ipc.ipc_cert_file_path,
             PathBuf::from("/secret/ipc_cert.pem")
         );
+    }
+
+    #[test]
+    fn logs_agent_is_enabled_by_either_logs_enabled_or_log_enabled() {
+        // Like the Datadog Agent, the deprecated `log_enabled` isn't a former name of `logs_enabled`: either key being
+        // `true` enables the logs agent, whichever of the two is read last.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(!config.control.logs_enabled);
+
+        let (config, errors) = translate_explicit(json!({ "logs_enabled": true, "log_enabled": false }));
+        assert!(errors.is_none());
+        assert!(config.control.logs_enabled);
+
+        let (config, errors) = translate_explicit(json!({ "logs_enabled": false, "log_enabled": true }));
+        assert!(errors.is_none());
+        assert!(config.control.logs_enabled);
+    }
+
+    #[test]
+    fn ipc_host_defaults_to_localhost() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        assert_eq!(config.control.ipc.cmd_host, "localhost");
+    }
+
+    #[test]
+    fn ipc_host_uses_cmd_host_unless_ipc_address_is_explicitly_set() {
+        #[track_caller]
+        fn assert_ipc_host(config: &SalukiConfiguration, errors: Option<TranslateErrors>, expected: &str) {
+            assert!(errors.is_none());
+            assert_eq!(config.control.ipc.cmd_host, expected);
+        }
+
+        // `cmd_host` alone.
+        let (config, errors) = translate_explicit(json!({ "cmd_host": "::1" }));
+        assert_ipc_host(&config, errors, "::1");
+
+        // `ipc_address` alone.
+        let (config, errors) = translate_explicit(json!({ "ipc_address": "127.0.0.2" }));
+        assert_ipc_host(&config, errors, "127.0.0.2");
+
+        // Like the Datadog Agent, an explicitly set `ipc_address` takes precedence over `cmd_host`.
+        let (config, errors) = translate_explicit(json!({ "cmd_host": "127.0.0.2", "ipc_address": "::1" }));
+        assert_ipc_host(&config, errors, "::1");
+
+        // The Core Agent streams `ipc_address` at its default even when only `cmd_host` is configured, and that
+        // default must not override `cmd_host`.
+        let (config, errors) = translate_stream(&[
+            ("cmd_host", json!("127.0.0.2"), StreamProvenance::Explicit),
+            ("ipc_address", json!("localhost"), StreamProvenance::Default),
+        ]);
+        assert_ipc_host(&config, errors, "127.0.0.2");
     }
 
     #[test]

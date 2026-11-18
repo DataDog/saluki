@@ -15,11 +15,11 @@ default = []
 taskdump = ["dep:tokio"]
 
 [dependencies]
-arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-agent-commons = { workspace = true }
+datadog-agent-remote-config = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 process-memory = { workspace = true }
@@ -40,14 +40,24 @@ stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tonic = { workspace = true, features = ["router"] }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 # The targets where Tokio supports task dumps. This must match the `cfg` guarding the task dump code.
 [target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64", target_arch = "s390x")))'.dependencies]
 tokio = { workspace = true, features = ["taskdump"], optional = true }
 
 [dev-dependencies]
-# `start_paused` in tests, for deterministic clock control in the InvalidApiKey report throttle tests.
-tokio = { workspace = true, features = ["test-util"] }
+arc-swap = { workspace = true }
+# The facade tests serve a fake Datadog Agent over the IPC gRPC API, which also needs `tokio/net`.
+hyper = { workspace = true, features = ["http2", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+saluki-core = { workspace = true, features = ["test-util"] }
+saluki-tls = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "test-util"] }
+tokio-rustls = { workspace = true }
+tonic-prost = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

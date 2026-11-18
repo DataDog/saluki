@@ -31,24 +31,25 @@
 use std::sync::RwLock;
 use std::{
     collections::HashMap,
-    ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use airlock::unix::{LogSink, UnixProcess, UnixProcessConfig};
-use rand::distr::SampleString as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::{
-    assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
+    assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::parse_port_spec,
+    core::ledger::random_id,
+    core::probe::{probe, ProbeError},
+    core::record::Verdict,
+    core::result::{ErrorKind, PhaseTiming, TestResult},
     integration::IntegrationTestCase,
-    reporter::{ErrorKind, PhaseTiming, TestResult},
     test::{Test, TestContext},
 };
 
@@ -108,10 +109,11 @@ pub(crate) struct UnixIntegrationRunner {
 impl UnixIntegrationRunner {
     /// Creates a new runner for the given test case.
     pub(crate) fn new(test_case: IntegrationTestCase, tctx: TestContext) -> Self {
+        let log_buffer = tctx.host_logs.get_or_init(Default::default).clone();
         Self {
             test_case,
             tctx,
-            log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
+            log_buffer,
         }
     }
 
@@ -151,6 +153,7 @@ impl UnixIntegrationRunner {
             Ok(d) => d,
             Err(e) => return make_error_result(test_name, started, "prepare_state_dir", e, phase_timings),
         };
+        self.tctx.ledger.directory(state_dir.clone());
         let config_path = state_dir.join("datadog.yaml");
         if let Err(e) = std::fs::write(&config_path, b"") {
             return make_error_result(
@@ -216,25 +219,24 @@ impl UnixIntegrationRunner {
             ])
             .with_env_map(agent_env);
 
-        let agent = match UnixProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
-            Ok(p) => p,
+        match UnixProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
+            Ok(agent) => self.tctx.ledger.process(agent),
             Err(e) => {
                 phase_timings.push(phase.finish());
                 return make_error_result(test_name, started, "core_agent_spawn", e, phase_timings);
             }
-        };
+        }
         phase_timings.push(phase.finish());
         info!(test = %test_name, "Core Agent process started.");
 
         let phase = self.tctx.phases.enter("core_agent_ipc_ready");
-        if let Err(e) = wait_for_agent_ipc_ready(&state_dir, CORE_AGENT_IPC_READY_TIMEOUT).await {
-            agent.cleanup().await;
+        if let Err(e) = wait_for_agent_ipc_ready(&state_dir, &self.tctx.test_cancel_token()).await {
             phase_timings.push(phase.finish());
-            return make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
+            let result = make_error_result(test_name, started, "core_agent_ipc_ready", e.into(), phase_timings);
+            return self.fail_setup(result);
         }
         phase_timings.push(phase.finish());
         debug!(test = %test_name, "Core Agent IPC credentials present.");
-        let mut core_agent = Some(agent);
 
         // Phase: spawn ADP.
         let phase = self.tctx.phases.enter("spawn");
@@ -247,53 +249,44 @@ impl UnixIntegrationRunner {
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
             .with_env_map(adp_env);
 
-        let process = match UnixProcess::spawn(process_config, log_sink, adp_exit_token.clone()).await {
-            Ok(p) => p,
-            Err(e) => {
-                if let Some(agent) = core_agent.take() {
-                    agent.cleanup().await;
+        // Register ADP last so cleanup stops it first: the Core Agent may wait for ADP's connections to close.
+        let (process_name, exit_code_cell) =
+            match UnixProcess::spawn(process_config, log_sink, adp_exit_token.clone()).await {
+                Ok(process) => {
+                    let identity = (process.name().to_string(), process.exit_code_cell());
+                    self.tctx.ledger.process(process);
+                    identity
                 }
-                phase_timings.push(phase.finish());
-                return make_error_result(test_name, started, "spawn", e, phase_timings);
-            }
-        };
+                Err(e) => {
+                    phase_timings.push(phase.finish());
+                    let result = make_error_result(test_name, started, "spawn", e, phase_timings);
+                    return self.fail_setup(result);
+                }
+            };
         phase_timings.push(phase.finish());
 
         info!(test = %test_name, "ADP process started.");
 
         // Phase: run assertions.
         let phase = self.tctx.phases.enter("assertions");
-        let assertion_results = self
-            .run_assertions(
-                process.name().to_string(),
-                adp_exit_token.clone(),
-                process.exit_code_cell(),
-                Some(core_agent_auth_token_path),
-                adp_cli_command,
-                core_agent_cli_command,
-            )
-            .await;
+        self.run_assertions(
+            process_name,
+            adp_exit_token.clone(),
+            exit_code_cell,
+            Some(core_agent_auth_token_path),
+            adp_cli_command,
+            core_agent_cli_command,
+        )
+        .await;
         phase_timings.push(phase.finish());
 
-        // Phase: cleanup. ADP first, Core Agent second — in case the Agent's shutdown depends on
-        // ADP releasing connections gracefully.
-        let phase = self.tctx.phases.enter("cleanup");
-        process.cleanup().await;
-        if let Some(agent) = core_agent.take() {
-            agent.cleanup().await;
-        }
-        phase_timings.push(phase.finish());
+        self.tctx.record.result(&test_name, started.elapsed(), phase_timings)
+    }
 
-        // Phase: write captured logs to disk so the artifact upload picks them up. Matches the
-        // Docker runner's behavior; without this the artifact only contains result.log and a
-        // failed assertion's truncated context is all we have to debug from.
-        let phase = self.tctx.phases.enter("write_logs");
-        if let Err(e) = self.write_logs().await {
-            debug!(test = %test_name, error = %e, "Failed to write captured logs to disk.");
-        }
-        phase_timings.push(phase.finish());
-
-        TestResult::from_assertions(test_name, started.elapsed(), assertion_results, phase_timings)
+    /// Records and returns a setup failure.
+    fn fail_setup(&self, result: TestResult) -> TestResult {
+        self.tctx.record.decide(Verdict::SetupFailed(Box::new(result.clone())));
+        result
     }
 
     /// Builds the port mappings for assertions. In the Docker runner this maps container ports
@@ -311,34 +304,11 @@ impl UnixIntegrationRunner {
         mappings
     }
 
-    async fn write_logs(&self) -> Result<(), GenericError> {
-        use std::io::Write as _;
-
-        let log_dir = self.tctx.log_dir();
-        let buffer = self.log_buffer.read().unwrap();
-
-        let stdout_path = log_dir.join("stdout.log");
-        let mut stdout_file = std::fs::File::create(&stdout_path)
-            .with_error_context(|| format!("Failed to create stdout log at '{}'.", stdout_path.display()))?;
-        for line in &buffer.stdout {
-            writeln!(stdout_file, "{}", line).error_context("Failed to write stdout log line.")?;
-        }
-
-        let stderr_path = log_dir.join("stderr.log");
-        let mut stderr_file = std::fs::File::create(&stderr_path)
-            .with_error_context(|| format!("Failed to create stderr log at '{}'.", stderr_path.display()))?;
-        for line in &buffer.stderr {
-            writeln!(stderr_file, "{}", line).error_context("Failed to write stderr log line.")?;
-        }
-
-        Ok(())
-    }
-
     async fn run_assertions(
         &self, process_display_name: String, exit_token: CancellationToken,
         exit_code_cell: airlock::unix::ExitCodeCell, core_agent_auth_token_path: Option<PathBuf>,
         adp_cli_command: TargetCommand, core_agent_cli_command: TargetCommand,
-    ) -> Vec<AssertionResult> {
+    ) {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             container_exit_token: exit_token,
@@ -355,7 +325,7 @@ impl UnixIntegrationRunner {
             adp_cli_command,
             core_agent_cli_command,
         };
-        crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline, &self.tctx.record).await
     }
 }
 
@@ -413,57 +383,32 @@ fn build_adp_forced_env(auth_token_path: String) -> Vec<(&'static str, String)> 
     vec![("DD_AUTH_TOKEN_FILE_PATH", auth_token_path)]
 }
 
-async fn wait_for_agent_ipc_ready(state_dir: &Path, timeout: Duration) -> Result<(), GenericError> {
+/// Waits up to [`CORE_AGENT_IPC_READY_TIMEOUT`] for the Core Agent to write its IPC credentials to `state_dir`.
+///
+/// # Errors
+///
+/// Returns a [`ProbeError`] naming the wait if it times out or `cancel` fires first.
+async fn wait_for_agent_ipc_ready(state_dir: &Path, cancel: &CancellationToken) -> Result<(), ProbeError> {
     let auth_token = state_dir.join("auth_token");
     let ipc_cert = state_dir.join("ipc_cert.pem");
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if auth_token.is_file() && ipc_cert.is_file() {
-            return Ok(());
+    let what = format!(
+        "the Core Agent to write 'auth_token' and 'ipc_cert.pem' to '{}'",
+        state_dir.display()
+    );
+    let written = async {
+        while !(auth_token.is_file() && ipc_cert.is_file()) {
+            tokio::time::sleep(CORE_AGENT_IPC_READY_POLL).await;
         }
-        tokio::time::sleep(CORE_AGENT_IPC_READY_POLL).await;
-    }
-    Err(saluki_error::generic_error!(
-        "Core Agent did not write 'auth_token' and 'ipc_cert.pem' to '{}' within {:?}.",
-        state_dir.display(),
-        timeout
-    ))
+    };
+    probe(&what, CORE_AGENT_IPC_READY_TIMEOUT, cancel, written).await
 }
 
-struct TestStateDir {
-    path: PathBuf,
-}
-
-impl TestStateDir {
-    fn create() -> Result<Self, GenericError> {
-        let suffix = rand::distr::Alphanumeric
-            .sample_string(&mut rand::rng(), 8)
-            .to_lowercase();
-        let path = std::env::temp_dir().join(format!("panoramic-unix-{}", suffix));
-        std::fs::create_dir_all(&path)
-            .with_error_context(|| format!("Failed to create state directory '{}'.", path.display()))?;
-        Ok(Self { path })
-    }
-}
-
-impl Deref for TestStateDir {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.path
-    }
-}
-
-impl Drop for TestStateDir {
-    fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_dir_all(&self.path) {
-            debug!(state_dir = %self.path.display(), error = %e, "Failed to remove per-test state directory.");
-        }
-    }
-}
-
-fn create_test_state_dir() -> Result<TestStateDir, GenericError> {
-    TestStateDir::create()
+/// Creates a per-test state directory under the system temporary directory.
+fn create_test_state_dir() -> Result<PathBuf, GenericError> {
+    let path = std::env::temp_dir().join(format!("panoramic-unix-{}", random_id()));
+    std::fs::create_dir_all(&path)
+        .with_error_context(|| format!("Failed to create state directory '{}'.", path.display()))?;
+    Ok(path)
 }
 
 fn make_error_result(
@@ -502,6 +447,29 @@ impl LogSink for PanoramicLogSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn the_core_agent_ipc_wait_names_itself_and_its_budget() {
+        let state_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let started = tokio::time::Instant::now();
+
+        let waited = tokio::time::timeout(
+            Duration::from_secs(120),
+            wait_for_agent_ipc_ready(state_dir.path(), &CancellationToken::new()),
+        )
+        .await
+        .expect("the wait should expire within the bound");
+
+        let error = waited.expect_err("the Core Agent never writes its credentials");
+        assert_eq!(started.elapsed(), Duration::from_secs(60));
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Timed out after 60s waiting for the Core Agent to write 'auth_token' and 'ipc_cert.pem' to '{}'.",
+                state_dir.path().display()
+            )
+        );
+    }
 
     #[test]
     fn adp_env_points_ipc_credentials_at_test_state_dir() {

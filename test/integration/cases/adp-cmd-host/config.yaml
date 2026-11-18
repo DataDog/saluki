@@ -1,0 +1,44 @@
+# Issue #3066: cmd_host support
+#
+# The Core Agent reads `cmd_host` to decide which loopback address its IPC/CMD API server listens on. ADP connects to
+# that server for remote agent registration and config streaming.
+#
+# With `cmd_host` set to `::1` (an IPv6-only loopback), the Core Agent listens on `[::1]`, so ADP must read `cmd_host`
+# and connect there. Without the fix, ADP connects to `127.0.0.1`, never becomes ready, and crash-loops.
+
+type: integration
+name: "adp-cmd-host"
+description: "Verifies ADP connects to the IPC server on the host set by cmd_host"
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-cmd-host"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_CMD_HOST: "::1"
+
+procedure:
+  # The Core Agent should start its CMD API server on IPv6 loopback only.
+  - assertion: log_contains
+    pattern: "Started HTTP server 'CMD API Server' on \\[::1\\]:\\d+"
+    regex: true
+    timeout: 60s
+  # ADP should successfully register with the Core Agent there.
+  - assertion: log_contains
+    pattern: "Successfully registered with the Datadog Agent."
+    timeout: 60s
+  # ADP should become healthy and stay up.
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_contains
+        pattern: "Topology healthy"
+        timeout: 60s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

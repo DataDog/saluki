@@ -14,7 +14,7 @@ env:
 
 container:
   exposed_ports:
-    - "55101/tcp"
+    - "45101/tcp"
 
 procedure:
   # Docker's host proxy can accept connections before the target ADP is ready. Wait for ADP's

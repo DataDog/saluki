@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use serde::Deserialize;
 
 use crate::config::{deserialize_env_map, CaseConfig};
-use crate::correctness::analysis::AnalysisMode;
+use crate::correctness::analysis::{AnalysisMode, LogsAnalysisOptions};
 
 /// The container runtime backend to use for a correctness test.
 #[derive(Clone, Deserialize, PartialEq, Eq)]
@@ -54,6 +54,10 @@ pub struct Config {
     /// Merged with the built-in list (SSI metadata, deprecated fields). Use for OTel vs ADP differences (for example, `agent_metadata.target_tps`, `metrics._top_level`, `metrics._dd.measured`).
     #[serde(default)]
     pub additional_span_ignore_fields: Vec<String>,
+
+    /// When analysis mode is logs: pairing and count options.
+    #[serde(default)]
+    pub logs: LogsAnalysisOptions,
 
     /// Whether the correctness run must capture at least one forwarded DogStatsD packet.
     #[serde(default)]

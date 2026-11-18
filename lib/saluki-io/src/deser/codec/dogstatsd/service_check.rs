@@ -1,5 +1,5 @@
 use nom::{
-    bytes::complete::tag,
+    bytes::complete::{tag, take_while1},
     character::complete::u8 as parse_u8,
     combinator::all_consuming,
     error::{Error, ErrorKind},
@@ -8,8 +8,18 @@ use nom::{
 };
 use saluki_core::data_model::{event::service_check::*, origin::OriginTagCardinality, tags::RawTags};
 use stringtheory::MetaString;
+use tracing::debug;
 
-use super::{helpers::*, DogStatsDCodecConfiguration};
+use super::{helpers::*, DogStatsDCodecConfiguration, NomParserError};
+
+/// Parses a service check name in permissive mode: any UTF-8, up to the `|` field delimiter.
+fn permissive_service_check_name(input: &[u8]) -> IResult<&[u8], &str> {
+    let (remaining, raw_name) = take_while1(|c: u8| c != b'|').parse(input)?;
+    match simdutf8::basic::from_utf8(raw_name) {
+        Ok(name) => Ok((remaining, name)),
+        Err(_) => Err(nom::Err::Error(Error::new(raw_name, ErrorKind::Verify))),
+    }
+}
 
 /// A DogStatsD service check packet.
 pub struct ServiceCheckPacket<'a> {
@@ -27,9 +37,17 @@ pub struct ServiceCheckPacket<'a> {
 pub fn parse_dogstatsd_service_check<'a>(
     input: &'a [u8], config: &DogStatsDCodecConfiguration,
 ) -> IResult<&'a [u8], ServiceCheckPacket<'a>> {
+    // In permissive mode, the name and hostname accept any UTF-8 (other than the `|` field delimiter), matching the
+    // reference DogStatsD server. Otherwise, they're restricted to ASCII alphanumerics and separators.
+    let (name_field, string_field): (StrParser, StrParser) = if config.permissive {
+        (permissive_service_check_name, non_empty_utf8)
+    } else {
+        (ascii_alphanum_and_seps, ascii_alphanum_and_seps)
+    };
+
     let (remaining, (name, raw_check_status)) = preceded(
         tag(SERVICE_CHECK_PREFIX),
-        separated_pair(ascii_alphanum_and_seps, tag("|"), parse_u8),
+        separated_pair(name_field, tag("|"), parse_u8),
     )
     .parse(input)?;
 
@@ -44,56 +62,81 @@ pub fn parse_dogstatsd_service_check<'a>(
     let mut maybe_external_data = None;
     let mut maybe_cardinality = None;
 
+    let mut parse_field = |chunk: &'a [u8]| -> Result<(), NomParserError<'a>> {
+        // Match on the two-byte field prefix. A one-byte field (for example, a bare `#`) can't match any of the
+        // two-byte prefixes, so it either matches a single-byte prefix below or is unknown.
+        match chunk.get(..2).unwrap_or(chunk) {
+            // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
+            TIMESTAMP_PREFIX => {
+                let (_, timestamp) = all_consuming(preceded(tag(TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
+                maybe_timestamp = Some(timestamp);
+            }
+            // Hostname: client-provided hostname for the host that this service check originated from.
+            HOSTNAME_PREFIX => {
+                let (_, hostname) = all_consuming(preceded(tag(HOSTNAME_PREFIX), string_field)).parse(chunk)?;
+                maybe_hostname = Some(hostname);
+            }
+            // Local Data: client-provided data used for resolving the entity ID that this service check originated from.
+            LOCAL_DATA_PREFIX if config.client_origin_detection => {
+                let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
+                maybe_local_data = Some(local_data);
+            }
+            // External Data: client-provided data used for resolving the entity ID that this service check originated from.
+            EXTERNAL_DATA_PREFIX if config.client_origin_detection => {
+                let (_, external_data) =
+                    all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
+                maybe_external_data = Some(external_data);
+            }
+            // Tags: additional tags to be added to the service check. A bare `#` is a valid, empty set of tags.
+            _ if chunk.starts_with(TAGS_PREFIX) => {
+                let (_, tags) = all_consuming(preceded(tag(TAGS_PREFIX), tags(config))).parse(chunk)?;
+                maybe_tags = Some(tags);
+            }
+            // Message: A message describing the current state of the service check.
+            SERVICE_CHECK_MESSAGE_PREFIX => {
+                let (_, message) = all_consuming(preceded(tag(SERVICE_CHECK_MESSAGE_PREFIX), utf8)).parse(chunk)?;
+                maybe_message = Some(message);
+            }
+            // Cardinality: client-provided cardinality for the service check.
+            _ if chunk.starts_with(CARDINALITY_PREFIX) && config.client_origin_detection => {
+                let (_, cardinality) = cardinality(chunk)?;
+                maybe_cardinality = cardinality;
+            }
+            // Origin detection fields are ignored when client origin detection is disabled.
+            LOCAL_DATA_PREFIX | EXTERNAL_DATA_PREFIX => {}
+            _ if chunk.starts_with(CARDINALITY_PREFIX) => {}
+            // An unknown or malformed field (for example, a stray `T`). Like any other invalid field, the caller
+            // skips it in permissive mode, matching the reference DogStatsD server, and rejects the service check
+            // otherwise.
+            _ => return Err(nom::Err::Error(Error::new(chunk, ErrorKind::Verify))),
+        }
+        Ok(())
+    };
+
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
-            if chunk.len() < 2 {
-                break;
+            // An empty field (for example, `0||#tags`) is a structural defect. In permissive mode, we skip it and keep
+            // parsing the fields after it, matching the reference DogStatsD server. Otherwise, we reject the service
+            // check.
+            if chunk.is_empty() {
+                if !config.permissive {
+                    return Err(nom::Err::Error(Error::new(remaining, ErrorKind::Verify)));
+                }
+                remaining = tail;
+                continue;
             }
 
-            match &chunk[..2] {
-                // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
-                TIMESTAMP_PREFIX => {
-                    let (_, timestamp) = all_consuming(preceded(tag(TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
-                    maybe_timestamp = Some(timestamp);
+            // In permissive mode, an invalid optional field is ignored rather than rejecting the whole service check,
+            // matching the reference DogStatsD server.
+            if let Err(e) = parse_field(chunk) {
+                if !config.permissive {
+                    return Err(e);
                 }
-                // Hostname: client-provided hostname for the host that this service check originated from.
-                HOSTNAME_PREFIX => {
-                    let (_, hostname) =
-                        all_consuming(preceded(tag(HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_hostname = Some(hostname);
-                }
-                // Local Data: client-provided data used for resolving the entity ID that this service check originated from.
-                LOCAL_DATA_PREFIX if config.client_origin_detection => {
-                    let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
-                    maybe_local_data = Some(local_data);
-                }
-                // External Data: client-provided data used for resolving the entity ID that this service check originated from.
-                EXTERNAL_DATA_PREFIX if config.client_origin_detection => {
-                    let (_, external_data) =
-                        all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
-                    maybe_external_data = Some(external_data);
-                }
-                // Tags: additional tags to be added to the service check.
-                _ if chunk.starts_with(TAGS_PREFIX) => {
-                    let (_, tags) = all_consuming(preceded(tag(TAGS_PREFIX), tags(config))).parse(chunk)?;
-                    maybe_tags = Some(tags);
-                }
-                // Message: A message describing the current state of the service check.
-                SERVICE_CHECK_MESSAGE_PREFIX => {
-                    let (_, message) = all_consuming(preceded(tag(SERVICE_CHECK_MESSAGE_PREFIX), utf8)).parse(chunk)?;
-                    maybe_message = Some(message);
-                }
-                // Cardinality: client-provided cardinality for the service check.
-                _ if chunk.starts_with(CARDINALITY_PREFIX) && config.client_origin_detection => {
-                    let (_, cardinality) = cardinality(chunk)?;
-                    maybe_cardinality = cardinality;
-                }
-                _ => {
-                    // We don't know what this is, so we just skip it.
-                    //
-                    // TODO: Should we throw an error, warn, or be silently permissive?
-                }
+                debug!(
+                    field = %String::from_utf8_lossy(chunk),
+                    "Ignoring invalid optional field in DogStatsD service check."
+                );
             }
             remaining = tail;
         }
@@ -196,6 +239,51 @@ mod tests {
         let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
         let expected = ServiceCheck::new(name, sc_status).with_timestamp(sc_timestamp);
         check_basic_service_check_eq(expected, actual);
+    }
+
+    #[test]
+    fn service_check_fields_after_empty_or_one_byte_field_are_parsed() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+        let name = "testsvc";
+        let sc_status = CheckStatus::Warning;
+        let tags = ["tag1", "tag2"];
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
+        let expected = || ServiceCheck::new(name, sc_status).with_tags(shared_tag_set.clone());
+
+        // An empty field is skipped in permissive mode, but rejects the service check in strict mode.
+        let raw = format!("_sc|{}|{}||#{}", name, sc_status.as_u8(), tags.join(","));
+        let actual = parse_dsd_service_check_with_conf(raw.as_bytes(), &permissive).unwrap();
+        check_basic_service_check_eq(expected(), actual);
+        assert!(parse_dogstatsd_service_check(raw.as_bytes(), &strict).is_err());
+
+        // A one-byte field, such as a bare `#`, carries no value, and the fields after it are parsed in both modes.
+        let raw = format!("_sc|{}|{}|#|#{}", name, sc_status.as_u8(), tags.join(","));
+        for config in [&permissive, &strict] {
+            let actual = parse_dsd_service_check_with_conf(raw.as_bytes(), config).unwrap();
+            check_basic_service_check_eq(expected(), actual);
+        }
+    }
+
+    #[test]
+    fn unknown_or_malformed_fields_are_rejected_only_in_strict_mode() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+
+        // A stray one-byte field, and an unknown field.
+        for raw in [
+            b"_sc|my.check|0|T|#env:prod".as_slice(),
+            b"_sc|my.check|0|x:unknown|#env:prod",
+        ] {
+            let (_, service_check) = parse_dogstatsd_service_check(raw, &permissive)
+                .unwrap_or_else(|e| panic!("permissive mode should skip the field in {raw:?}: {e:?}"));
+            assert_eq!(service_check.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
+
+            assert!(
+                parse_dogstatsd_service_check(raw, &strict).is_err(),
+                "strict mode should reject {raw:?}"
+            );
+        }
     }
 
     #[test]
@@ -303,6 +391,35 @@ mod tests {
         assert_eq!(packet.local_data, Some(sc_local_data));
         assert_eq!(packet.external_data, Some(sc_external_data));
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::None));
+    }
+
+    #[test]
+    fn permissive_mode_accepts_utf8_names_and_hostnames() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+
+        let raw = "_sc|my/chéck|0|h:host:1|#env:prod";
+        let (_, service_check) = parse_dogstatsd_service_check(raw.as_bytes(), &permissive)
+            .expect("permissive mode should accept any UTF-8 in the name and hostname");
+        assert_eq!(&*service_check.name, "my/chéck");
+        assert_eq!(service_check.hostname, Some("host:1"));
+        assert_eq!(service_check.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
+
+        assert!(parse_dogstatsd_service_check(raw.as_bytes(), &strict).is_err());
+    }
+
+    #[test]
+    fn permissive_mode_ignores_invalid_optional_fields() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+
+        let raw = b"_sc|my.check|0|d:notanumber|#env:prod";
+        let (_, service_check) =
+            parse_dogstatsd_service_check(raw, &permissive).expect("permissive mode should ignore the invalid field");
+        assert_eq!(service_check.timestamp, None);
+        assert_eq!(service_check.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
+
+        assert!(parse_dogstatsd_service_check(raw, &strict).is_err());
     }
 
     #[test]

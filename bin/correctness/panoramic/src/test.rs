@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -7,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::reporter::{PhaseTracker, TestResult};
+use crate::assertions::LogBuffer;
+use crate::core::deadline::Deadline;
+use crate::core::ledger::ResourceLedger;
+use crate::core::record::CaseRecord;
+use crate::core::result::{PhaseTracker, TestResult};
+use crate::core::tasks::CaseTasks;
 
 /// Signal used to notify kind-runtime tests when the cluster is ready.
 ///
@@ -47,12 +53,13 @@ pub(crate) struct RunnerSettings {
 /// Carries information that a test needs at runtime such as the logging directory and the cancellation channel.
 #[derive(Debug, Clone)]
 pub(crate) struct TestContext {
-    /// Provides a teardown signal to a running test.
+    /// Signals a running test to stop.
     ///
-    /// Tests should watch this in a `tokio::select!` block so that they can tear down their resources when they have
-    /// been canceled either by an event or because they have timed out. They will be given a short grace period after
-    /// this fires to tear down resources.
+    /// The runner cancels it on an interrupt or timeout. Tests should return their result within the grace period.
     test_cancel_token: CancellationToken,
+
+    /// The case deadline; the runner cancels the test token when it passes.
+    pub(crate) deadline: Deadline,
 
     /// A directory, which has been created for them, into which tests may write their logs.
     log_dir: PathBuf,
@@ -66,16 +73,35 @@ pub(crate) struct TestContext {
 
     /// Where a test marks the phase it is executing, so the runner can name it if a deadline fires.
     pub(crate) phases: PhaseTracker,
+
+    /// Step states and verdict shared with the runner for reporting after cancellation.
+    pub(crate) record: CaseRecord,
+
+    /// Test resources registered for cleanup by the runner.
+    pub(crate) ledger: ResourceLedger,
+
+    /// Host-process logs retained for the runner to save after reclaim drains the log pumps.
+    pub(crate) host_logs: Arc<OnceLock<Arc<RwLock<LogBuffer>>>>,
+
+    /// Explicitly tracked background work, given a bounded stop period before resource cleanup.
+    pub(crate) tasks: CaseTasks,
 }
 
 impl TestContext {
-    pub(crate) fn new(cancel: CancellationToken, log_dir: PathBuf, settings: RunnerSettings) -> Self {
+    pub(crate) fn new(
+        cancel: CancellationToken, deadline: Deadline, log_dir: PathBuf, settings: RunnerSettings,
+    ) -> Self {
         Self {
+            tasks: CaseTasks::new(&cancel),
             test_cancel_token: cancel,
+            deadline,
             log_dir,
             settings,
             kind_ready: None,
             phases: PhaseTracker::default(),
+            record: CaseRecord::default(),
+            ledger: ResourceLedger::default(),
+            host_logs: Arc::default(),
         }
     }
 
@@ -127,11 +153,10 @@ pub(crate) trait Test: Send + Sync {
         "docker".to_string()
     }
 
-    /// Run the test and return the `TestResult`. Note that we don't return an error here. It's expected that you
-    /// should handle errors and turn them into a failed `TestResult` and try not to panic.
+    /// Runs the test, reporting errors in its `TestResult`.
     ///
-    /// `TestContext` carries a `CancelToken`. created by the `Runner` which a test should watch in a `tokio::select!`
-    /// structure. When a cancellation signal is received, the test should stop executing and tear down its resources.
+    /// Watch the context's cancellation token and return when it fires. Register resources in its ledger for cleanup
+    /// after the test ends. Use its `tasks` for runner-managed background work.
     async fn run(&self, tctx: TestContext) -> TestResult;
 }
 

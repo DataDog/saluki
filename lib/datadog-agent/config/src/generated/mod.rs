@@ -10,11 +10,17 @@ pub(crate) mod classifier_data;
 pub mod datadog_configuration;
 
 /// Table of every modeled key's real environment variable names, nested path, and decode
-/// strategy, driving the figment-free `env_reader`.
+/// strategy, driving the figment-free `env_reader`, and the table of former key names.
 pub(crate) mod env_keys;
+
+/// Table of supported keys and borrowing accessors into `DatadogConfiguration`.
+pub mod leaves {
+    include!(concat!(env!("OUT_DIR"), "/leaves.rs"));
+}
 
 /// Witness trait and fallible driver over the supported Datadog configuration keys.
 pub mod witness;
 
 pub use datadog_configuration::DatadogConfiguration;
+pub use leaves::{Leaf, LeafValue, LEAVES};
 pub use witness::{drive, DatadogConfigWitness};

@@ -1,16 +1,20 @@
 ---
 name: Stale Comments Cleaner
 description: Clean up comments, paths and docs that have gone stale.
+disabled: true
 schedule:
   - cron: "0 9 * * *"    # run every day at 9:00 AM UTC
 repo: DataDog/saluki
 branch: main
 pull_request: draft      # open | draft | none  (default: draft)
 model: claude-sonnet    # optional LLM override (default: auto)
+team: agent-data-plane
 notifications:
   slack:
     channel: "#agent-data-plane"
-    on: [pr_created]     # [pr_created, session_started, session_failed]
+    # DataDog/saluki is public, so Bits Code does not open the PR itself and `pr_created` does not
+    # fire. `session_completed` posts the agent's summary and a link to the session.
+    on: [session_completed, session_failed]
 ---
 - Find code comments in `bin/` and `lib/` that appear provably untrue and fix them to make them
   true.
@@ -21,3 +25,5 @@ notifications:
 - Delete TODOs that appear to have already been resolved.
 
 When opening your PR, please use `.github/PULL_REQUEST_TEMPLATE.md`
+
+Finish with a short summary of what you changed. If nothing was stale, say so.

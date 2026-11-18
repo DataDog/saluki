@@ -236,6 +236,15 @@ pub(crate) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut Strin
     normalize_tag_value_append_unchecked(value, out);
 }
 
+/// Normalizes a tag into `out`, clearing any existing contents first.
+///
+/// Differs from normalizing a tag value by dropping leading characters that
+/// can't start a tag, such as digits.
+pub(super) fn normalize_tag_into<I>(value: &str, out: &mut StringBuilder<I>) {
+    out.clear();
+    normalize_unchecked(value, true, out);
+}
+
 /// Appends the normalized form of `value` to `out` without clearing it first.
 ///
 /// Use this when extending an existing normalized prefix with a value already known to
@@ -247,8 +256,21 @@ pub(super) fn normalize_tag_value_append_unchecked<I>(value: &str, out: &mut Str
     normalize_unchecked(value, false, out);
 }
 
-pub(super) fn is_normalized_tag_value(value: &str) -> bool {
+pub(crate) fn is_normalized_tag_value(value: &str) -> bool {
     is_normalized_ascii_tag(value, false)
+}
+
+/// Returns `value` normalized as a tag value.
+///
+/// A value that's already normalized is returned as is, without copying it.
+pub(crate) fn normalized_tag_value(value: &MetaString) -> MetaString {
+    if is_normalized_tag_value(value) {
+        return value.clone();
+    }
+
+    let mut normalized = StringBuilder::new();
+    normalize_tag_value_into_unchecked(value, &mut normalized);
+    MetaString::from(normalized.as_str())
 }
 
 /// Normalization function that writes directly into a [`StringBuilder`].
@@ -495,7 +517,7 @@ mod tests {
 
     fn normalize_tag(value: &str) -> MetaString {
         let mut sb = StringBuilder::new();
-        normalize_unchecked(value, true, &mut sb);
+        normalize_tag_into(value, &mut sb);
         MetaString::from(sb.as_str())
     }
 

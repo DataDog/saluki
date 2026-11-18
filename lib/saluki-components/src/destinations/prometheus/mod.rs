@@ -204,34 +204,32 @@ impl Destination for Prometheus {
                     Some(events) => {
                         // Process each metric event in the batch, either merging it with the existing value or
                         // inserting it for the first time.
-                        for event in events {
-                            if let Some(metric) = event.try_into_metric() {
-                                // Break apart our metric into its constituent parts, and then normalize it for
-                                // Prometheus: adjust the name if necessary, figuring out the equivalent Prometheus
-                                // metric type, and so on.
-                                let prom_context = match into_prometheus_metric(&metric, &mut renderer, &interner) {
-                                    Some(prom_context) => prom_context,
-                                    None => continue,
-                                };
+                        for metric in events.into_events::<Metric>() {
+                            // Break apart our metric into its constituent parts, and then normalize it for
+                            // Prometheus: adjust the name if necessary, figuring out the equivalent Prometheus
+                            // metric type, and so on.
+                            let prom_context = match into_prometheus_metric(&metric, &mut renderer, &interner) {
+                                Some(prom_context) => prom_context,
+                                None => continue,
+                            };
 
-                                let (context, values, _) = metric.into_parts();
+                            let (context, values, _) = metric.into_parts();
 
-                                // Create an entry for the context if we don't already have one, obeying our configured context limit.
-                                let existing_contexts = metrics.entry(prom_context.clone()).or_default();
-                                match existing_contexts.get_mut(&context) {
-                                    Some(existing_prom_value) => merge_metric_values_with_prom_value(values, existing_prom_value),
-                                    None => {
-                                        if contexts >= CONTEXT_LIMIT {
-                                            debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
-                                            continue
-                                        }
-
-                                        let mut new_prom_value = get_prom_value_for_prom_context(&prom_context);
-                                        merge_metric_values_with_prom_value(values, &mut new_prom_value);
-
-                                        existing_contexts.insert(context, new_prom_value);
-                                        contexts += 1;
+                            // Create an entry for the context if we don't already have one, obeying our configured context limit.
+                            let existing_contexts = metrics.entry(prom_context.clone()).or_default();
+                            match existing_contexts.get_mut(&context) {
+                                Some(existing_prom_value) => merge_metric_values_with_prom_value(values, existing_prom_value),
+                                None => {
+                                    if contexts >= CONTEXT_LIMIT {
+                                        debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
+                                        continue
                                     }
+
+                                    let mut new_prom_value = get_prom_value_for_prom_context(&prom_context);
+                                    merge_metric_values_with_prom_value(values, &mut new_prom_value);
+
+                                    existing_contexts.insert(context, new_prom_value);
+                                    contexts += 1;
                                 }
                             }
                         }
@@ -656,11 +654,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scrape_routes_serve_raw_compat_and_404() {
+    async fn scrape_routes_serve_raw_additional_and_404() {
         let payload = Arc::new(RwLock::new("raw".to_string()));
         let routes = vec![PrometheusAdditionalRoute {
-            path: "/compat/metrics".to_string(),
-            provider: Arc::new(|| "compat".to_string()),
+            path: "/additional/metrics".to_string(),
+            provider: Arc::new(|| "additional".to_string()),
         }];
 
         let raw_response = build_scrape_response("/metrics", &payload, &routes).await;
@@ -683,15 +681,15 @@ mod tests {
             .to_bytes();
         assert_eq!(&legacy_body[..], b"raw");
 
-        let compat_response = build_scrape_response("/compat/metrics", &payload, &routes).await;
-        assert_eq!(compat_response.status(), StatusCode::OK);
-        let compat_body = compat_response
+        let additional_response = build_scrape_response("/additional/metrics", &payload, &routes).await;
+        assert_eq!(additional_response.status(), StatusCode::OK);
+        let additional_body = additional_response
             .into_body()
             .collect()
             .await
             .expect("body should collect")
             .to_bytes();
-        assert_eq!(&compat_body[..], b"compat");
+        assert_eq!(&additional_body[..], b"additional");
 
         let missing_response = build_scrape_response("/missing", &payload, &routes).await;
         assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);

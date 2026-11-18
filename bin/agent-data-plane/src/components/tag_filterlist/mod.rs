@@ -15,15 +15,9 @@ mod telemetry;
 
 use std::{collections::hash_map::Entry, num::NonZeroUsize, time::Duration};
 
-use agent_data_plane_config::{
-    domains::dogstatsd::{
-        validate_metric_tag_value_allowlists, FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry,
-        TagValueMismatchAction,
-    },
-    Live,
-};
 use async_trait::async_trait;
 use saluki_common::collections::{FastHashMap, FastHashSet};
+use saluki_common::sync::live::Live;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     cache::{Cache, CacheBuilder},
@@ -44,10 +38,64 @@ use saluki_core::{
     observability::ComponentMetricsExt,
     topology::OutputDefinition,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
+
+/// One whole-tag filter entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricTagFilterEntry {
+    /// Metric name the entry applies to. An entry with an empty name is ignored.
+    pub metric_name: String,
+
+    /// Whether the listed tags are kept or removed.
+    pub action: FilterAction,
+
+    /// Tag keys the action applies to.
+    pub tags: Vec<String>,
+}
+
+/// Whether a whole-tag filter entry keeps or removes its tags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterAction {
+    /// Keep only the listed tags.
+    Include,
+
+    /// Remove the listed tags.
+    Exclude,
+}
+
+/// One tag value allow-list entry.
+///
+/// Matching is exact and case-sensitive, including any whitespace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricTagValueAllowlistEntry {
+    /// Metric-name prefix the entry applies to.
+    pub metric_prefix: String,
+
+    /// Tag key whose values are constrained. Bare tags have no value and are not changed.
+    pub tag_name: String,
+
+    /// Tag values retained unchanged. An empty list treats every key/value tag as a mismatch.
+    pub values: Vec<String>,
+
+    /// Action applied when a tag value is absent from `values`.
+    pub on_miss: TagValueMismatchAction,
+
+    /// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace], emitted as configured.
+    pub replacement: String,
+}
+
+/// Action applied when a tag value is absent from its allow-list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TagValueMismatchAction {
+    /// Removes the tag.
+    Remove,
+
+    /// Replaces the tag value with the entry's replacement.
+    Replace,
+}
 
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
@@ -173,17 +221,8 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 /// Adds value allow-list entries to a compiled filter table.
 ///
 /// Distinct metric prefixes must not overlap, ensuring that each metric matches at most one prefix. Multiple rules may
-/// use the same prefix when they target different tags.
-///
-/// # Errors
-///
-/// Returns an error when an entry has invalid fields, distinct metric prefixes overlap, or the same prefix and tag are
-/// configured more than once.
-pub fn add_value_allowlists(
-    filters: &mut CompiledFilters, entries: &[MetricTagValueAllowlistEntry],
-) -> Result<(), GenericError> {
-    validate_metric_tag_value_allowlists(entries).map_err(|error| generic_error!(error.to_string()))?;
-
+/// use the same prefix when they target different tags. The configuration boundary validates entries; this does not.
+pub fn add_value_allowlists(filters: &mut CompiledFilters, entries: &[MetricTagValueAllowlistEntry]) {
     for entry in entries {
         let on_miss = match entry.on_miss {
             TagValueMismatchAction::Remove => CompiledMismatchAction::Remove,
@@ -218,15 +257,14 @@ pub fn add_value_allowlists(
     }
 
     filters.value_prefix_filters.sort();
-    Ok(())
 }
 
 fn compile_all_filters(
     entries: &[MetricTagFilterEntry], value_allowlists: &[MetricTagValueAllowlistEntry],
-) -> Result<CompiledFilters, GenericError> {
+) -> CompiledFilters {
     let mut filters = compile_filters(entries);
-    add_value_allowlists(&mut filters, value_allowlists)?;
-    Ok(filters)
+    add_value_allowlists(&mut filters, value_allowlists);
+    filters
 }
 
 fn compile_filters_with_values(
@@ -249,9 +287,8 @@ pub struct TagFilterlistConfiguration {
     /// Compiled per-metric-prefix tag value allow-list rules.
     ///
     /// Configured independently from `metric_tag_filterlist` so a remotely configured whole-tag filter does not
-    /// replace locally configured value rules. This key is static in the initial implementation; changing it requires
-    /// restarting ADP. The configuration boundary rejects invalid rules, and construction compiles them once so
-    /// dynamic whole-tag updates cannot fail on unchanged static configuration.
+    /// replace locally configured value rules. This key is static: changing it requires restarting ADP. Construction
+    /// compiles the rules once.
     value_prefix_filters: CompiledValuePrefixFilters,
 
     /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
@@ -259,27 +296,24 @@ pub struct TagFilterlistConfiguration {
     /// Configured via `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` in the agent config
     /// stream. High-throughput deployments with many unique metric contexts may benefit from
     /// increasing this value to reduce cache churn.
-    ///
-    /// Defaults to 100,000.
     context_cache_capacity: usize,
 }
 
 impl TagFilterlistConfiguration {
     /// Creates a new `TagFilterlistConfiguration`.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the initial value allow-list rules are invalid.
+    /// `value_allowlists` must already be valid: distinct metric prefixes don't overlap, and each prefix and tag pair
+    /// appears once. The configuration boundary rejects invalid rules, at startup and on update.
     pub fn new(
         entries: Live<Vec<MetricTagFilterEntry>>, value_allowlists: &[MetricTagValueAllowlistEntry],
         context_cache_capacity: usize,
-    ) -> Result<Self, GenericError> {
-        let value_prefix_filters = compile_all_filters(&[], value_allowlists)?.value_prefix_filters;
-        Ok(Self {
+    ) -> Self {
+        let value_prefix_filters = compile_all_filters(&[], value_allowlists).value_prefix_filters;
+        Self {
             entries,
             value_prefix_filters,
             context_cache_capacity,
-        })
+        }
     }
 }
 
@@ -355,36 +389,34 @@ impl Transform for TagFilterlist {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        for event in &mut events {
-                            if let Some(metric) = event.try_as_metric_mut() {
-                                if metric.values().is_sketch()
-                                    || matches!(metric.values(), MetricValues::Counter(_))
-                                {
-                                    let original_context = metric.context().clone();
+                        for metric in events.events_mut::<Metric>() {
+                            if metric.values().is_sketch()
+                                || matches!(metric.values(), MetricValues::Counter(_))
+                            {
+                                let original_context = metric.context().clone();
 
-                                    if let Some(cached) = self.context_cache.get(&original_context) {
-                                        match cached {
-                                            None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
-                                            Some((filtered_ctx, removed_tags)) => {
-                                                *metric.context_mut() = filtered_ctx;
-                                                self.telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags });
-                                            }
+                                if let Some(cached) = self.context_cache.get(&original_context) {
+                                    match cached {
+                                        None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
+                                        Some((filtered_ctx, removed_tags)) => {
+                                            *metric.context_mut() = filtered_ctx;
+                                            self.telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags });
                                         }
-                                    } else {
-                                        let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
-                                        self.telemetry.record(outcome);
+                                    }
+                                } else {
+                                    let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
+                                    self.telemetry.record(outcome);
 
-                                        match outcome {
-                                            FilterMetricTagsOutcome::RuleMiss => {}
-                                            FilterMetricTagsOutcome::NoChange => {
-                                                self.context_cache.insert(original_context, None);
-                                            }
-                                            FilterMetricTagsOutcome::Modified { removed_tags } => {
-                                                self.context_cache.insert(
-                                                    original_context,
-                                                    Some((metric.context().clone(), removed_tags)),
-                                                );
-                                            }
+                                    match outcome {
+                                        FilterMetricTagsOutcome::RuleMiss => {}
+                                        FilterMetricTagsOutcome::NoChange => {
+                                            self.context_cache.insert(original_context, None);
+                                        }
+                                        FilterMetricTagsOutcome::Modified { removed_tags } => {
+                                            self.context_cache.insert(
+                                                original_context,
+                                                Some((metric.context().clone(), removed_tags)),
+                                            );
                                         }
                                     }
                                 }
@@ -501,10 +533,8 @@ pub fn filter_metric_tags(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use saluki_core::{
-        components::test_util::TestComponentDriver,
+        components::test_util::{ComponentControl, Output, TestComponentDriver},
         data_model::{
             event::{
                 metric::{
@@ -515,6 +545,7 @@ mod tests {
             },
             tags::{Tag, TagSet},
         },
+        topology::EventsBuffer,
     };
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
@@ -651,8 +682,7 @@ mod tests {
                 TagValueMismatchAction::Remove,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut state = TagSetMutViewState::default();
 
         let mut allowed = counter_metric("my.metric", &["customer_id:top-1", "service:web"]);
@@ -688,8 +718,7 @@ mod tests {
                 TagValueMismatchAction::Replace,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut metric = distribution_metric(
             "my.metric",
             &[
@@ -720,8 +749,7 @@ mod tests {
                 TagValueMismatchAction::Remove,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut unlisted_empty = counter_metric("my.metric", &["customer_id", "customer_id:", "service:web"]);
 
         assert_eq!(
@@ -739,8 +767,7 @@ mod tests {
                 TagValueMismatchAction::Remove,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut listed_empty = counter_metric("my.metric", &["customer_id", "customer_id:", "service:web"]);
 
         assert_eq!(
@@ -764,8 +791,7 @@ mod tests {
                 TagValueMismatchAction::Replace,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut metric = distribution_metric_with_origin_tags(
             "my.metric",
             &[],
@@ -784,52 +810,6 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_value_allowlist_prefixes_are_rejected_across_tags() {
-        let broad = value_allowlist(
-            "my.",
-            "customer_id",
-            &["top-1"],
-            TagValueMismatchAction::Replace,
-            "other",
-        );
-        let narrow = value_allowlist(
-            "my.metric",
-            "region",
-            &["us-east-1"],
-            TagValueMismatchAction::Replace,
-            "other",
-        );
-
-        let error = compile_all_filters(&[], &[broad, narrow])
-            .err()
-            .expect("overlapping distinct prefixes must fail even for different tags");
-        assert!(error
-            .to_string()
-            .contains("overlapping metric prefixes 'my.' and 'my.metric' are configured"));
-
-        let duplicate = value_allowlist(
-            "my.",
-            "customer_id",
-            &["top-2"],
-            TagValueMismatchAction::Replace,
-            "other",
-        );
-        let error = compile_all_filters(
-            &[],
-            &[
-                value_allowlist("my.", "customer_id", &[], TagValueMismatchAction::Remove, "other"),
-                value_allowlist("my.", "region", &[], TagValueMismatchAction::Remove, "other"),
-                duplicate,
-            ],
-        )
-        .err()
-        .expect("duplicate prefix and tag pairs must fail");
-        assert!(error
-            .to_string()
-            .contains("metric prefix 'my.' is configured more than once for tag 'customer_id'"));
-    }
-
-    #[test]
     fn same_value_allowlist_prefix_for_different_tags_applies_both_rules() {
         let filters = compile_all_filters(
             &[],
@@ -843,8 +823,7 @@ mod tests {
                 ),
                 value_allowlist("my.", "region", &["us-east-1"], TagValueMismatchAction::Remove, "other"),
             ],
-        )
-        .expect("different tags may use the same prefix");
+        );
         let mut metric = distribution_metric("my.metric.requests", &["customer_id:long-tail", "region:us-west-2"]);
         let mut state = TagSetMutViewState::default();
 
@@ -853,30 +832,6 @@ mod tests {
             FilterMetricTagsOutcome::Modified { removed_tags: 2 }
         );
         assert!(tag_names(&metric).is_empty());
-    }
-
-    #[test]
-    fn empty_value_allowlist_prefixes_and_tag_names_are_rejected() {
-        let empty_prefix = value_allowlist("", "customer_id", &[], TagValueMismatchAction::Remove, "other");
-        let error = compile_all_filters(&[], &[empty_prefix])
-            .err()
-            .expect("an empty metric prefix must fail");
-        assert!(error.to_string().contains("empty `metric_prefix`"));
-
-        let empty_tag_name = value_allowlist("my.", "", &[], TagValueMismatchAction::Remove, "other");
-        let error = compile_all_filters(&[], &[empty_tag_name])
-            .err()
-            .expect("an empty tag name must fail");
-        assert!(error.to_string().contains("empty `tag_name`"));
-    }
-
-    #[test]
-    fn value_allowlist_rejects_tag_names_containing_a_colon() {
-        let entry = value_allowlist("my.", "customer:id", &[], TagValueMismatchAction::Remove, "other");
-        let error = compile_all_filters(&[], &[entry])
-            .err()
-            .expect("a tag name containing a colon must fail");
-        assert!(error.to_string().contains("tag name 'customer:id' contains ':'"));
     }
 
     #[test]
@@ -890,8 +845,7 @@ mod tests {
                 TagValueMismatchAction::Replace,
                 " other ",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut state = TagSetMutViewState::default();
 
         let mut allowed = distribution_metric("my. requests", &["customer_id : top-1 "]);
@@ -921,7 +875,7 @@ mod tests {
             value_allowlist("my.", "region", &[], TagValueMismatchAction::Remove, "other"),
         ];
 
-        let filters = compile_all_filters(&key_entries, &value_entries).expect("rules should compile");
+        let filters = compile_all_filters(&key_entries, &value_entries);
         assert_eq!(filters.rule_count(), 3);
     }
 
@@ -1272,13 +1226,32 @@ mod tests {
 
     #[tokio::test]
     async fn typed_live_updates_replace_whole_tag_rules_without_replacing_static_value_rules() {
-        let cell = Arc::new(arc_swap::ArcSwap::from_pointee(
-            agent_data_plane_config::SalukiConfiguration::default(),
-        ));
-        let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
-        let mut entries = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
-            &config.domains.dogstatsd.tag_filterlist
-        });
+        /// Sends the probe metric through the transform, and returns its tags as dispatched.
+        async fn filter_probe(
+            control: &ComponentControl<EventsBuffer>, output: &mut Output<EventsBuffer>,
+        ) -> Vec<String> {
+            let probe = distribution_metric("my.metric", &["customer_id:long-tail", "host:h1", "service:web"]);
+            control.send_event(Event::Metric(probe)).await;
+            let metric = output
+                .next()
+                .await
+                .and_then(|buffer| buffer.into_iter().next())
+                .and_then(Event::try_into_metric)
+                .expect("the probe should be dispatched");
+            tag_names(&metric)
+        }
+
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let updates = || {
+            recorder.counter((
+                "tag_filterlist_updates_total",
+                &[("component_id", "tag_filterlist"), ("component_type", "transform")],
+            ))
+        };
+
+        let (mut publisher, source) = saluki_common::sync::live::channel(Vec::<MetricTagFilterEntry>::new());
+        let entries = source.live(|entries| entries);
         let value_allowlists = [value_allowlist(
             "my.",
             "customer_id",
@@ -1286,40 +1259,40 @@ mod tests {
             TagValueMismatchAction::Remove,
             "other",
         )];
-        let value_prefix_filters = compile_all_filters(&[], &value_allowlists)
-            .expect("static value rules should compile")
-            .value_prefix_filters;
+        let builder = TagFilterlistConfiguration::new(entries, &value_allowlists, 100_000);
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_component_id("tag_filterlist")
+            .transform(builder)
+            .await
+            .expect("tag filterlist should build");
+        let output = outputs.default_output();
 
-        let mut updated = (*cell.load_full()).clone();
-        updated.domains.dogstatsd.tag_filterlist = vec![MetricTagFilterEntry {
+        // This caches the probe's context, so later probes only change if an update rebuilds the cache.
+        assert_eq!(filter_probe(&control, output).await, ["host:h1", "service:web"]);
+
+        publisher.publish(vec![MetricTagFilterEntry {
             metric_name: "my.metric".to_string(),
             action: FilterAction::Exclude,
             tags: vec!["host".to_string()],
-        }];
-        cell.store(Arc::new(updated));
-        tick_tx.send_replace(());
+        }]);
+        control
+            .wait_until(
+                || updates() == Some(1),
+                || "the typed tag filter update is applied".to_string(),
+            )
+            .await;
+        assert_eq!(filter_probe(&control, output).await, ["service:web"]);
 
-        let new_entries = tokio::time::timeout(Duration::from_secs(2), entries.changed())
-            .await
-            .expect("timed out waiting for typed tag filter update");
-        let filters = compile_filters_with_values(&new_entries, value_prefix_filters.clone());
-        let mut metric = distribution_metric("my.metric", &["customer_id:long-tail", "host:h1", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
-        assert_eq!(tag_names(&metric), vec!["service:web"]);
+        publisher.publish(Vec::new());
+        control
+            .wait_until(
+                || updates() == Some(2),
+                || "the cleared tag filter update is applied".to_string(),
+            )
+            .await;
+        assert_eq!(filter_probe(&control, output).await, ["host:h1", "service:web"]);
 
-        let mut updated = (*cell.load_full()).clone();
-        updated.domains.dogstatsd.tag_filterlist.clear();
-        cell.store(Arc::new(updated));
-        tick_tx.send_replace(());
-
-        let new_entries = tokio::time::timeout(Duration::from_secs(2), entries.changed())
-            .await
-            .expect("timed out waiting for cleared typed tag filter update");
-        let filters = compile_filters_with_values(&new_entries, value_prefix_filters);
-        let mut metric = distribution_metric("my.metric", &["customer_id:long-tail", "host:h1", "service:web"]);
-        filter_metric_tags(&mut metric, &mut state, &filters);
-        assert_eq!(tag_names(&metric), vec!["host:h1", "service:web"]);
+        control.shutdown().await.expect("tag filterlist run should succeed");
     }
 
     #[test]
@@ -1391,8 +1364,7 @@ mod tests {
             TagValueMismatchAction::Replace,
             "other",
         )];
-        let builder = TagFilterlistConfiguration::new(Live::new_fixed(entries), &value_allowlists, 100_000)
-            .expect("typed configuration should be valid");
+        let builder = TagFilterlistConfiguration::new(Live::new_fixed(entries), &value_allowlists, 100_000);
         let (control, mut outputs) = TestComponentDriver::transform(builder)
             .await
             .expect("tag filterlist should build");
@@ -1458,5 +1430,472 @@ mod tests {
         // Repeated distribution -> filtered via the cache-hit branch, identical to the first distribution.
         assert!(dispatched[3].values().is_sketch());
         assert_eq!(sorted_tags(&dispatched[3]), vec!["customer_id:other", "env:prod"]);
+    }
+
+    mod pipeline_integration {
+        use std::{
+            num::{NonZeroU64, NonZeroUsize},
+            sync::Mutex,
+            time::Duration,
+        };
+
+        use async_trait::async_trait;
+        use saluki_common::sync::live::Live;
+        use saluki_components::transforms::{
+            aggregate_context_snapshot_channel, AggregateConfiguration, AggregateMetricType, ChainedConfiguration,
+            DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
+        };
+        use saluki_core::{
+            accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
+            components::{
+                destinations::{Destination, DestinationBuilder, DestinationContext},
+                sources::{Source, SourceBuilder, SourceContext},
+                BuildContext,
+            },
+            data_model::event::{metric::Metric, EventType},
+            health::HealthRegistry,
+            runtime::{state::ResourceRegistry, Supervisor},
+            topology::{OutputDefinition, TopologyBlueprint},
+        };
+        use saluki_error::{generic_error, GenericError};
+        use tokio::sync::{mpsc, oneshot};
+
+        use super::*;
+        use crate::components::dogstatsd_filterlist::MetricNameFilter;
+        use crate::components::{
+            dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
+            dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration,
+        };
+
+        #[tokio::test]
+        async fn retained_context_identity_follows_dogstatsd_post_processing() {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mapper = DogStatsDMapperConfiguration::new(
+                    NonZeroUsize::new(64 * 1024).expect("not zero"),
+                    1_000,
+                    vec![DogStatsDMapperProfile {
+                        name: "retained-context-test".to_string(),
+                        prefix: "raw.requests.".to_string(),
+                        mappings: vec![DogStatsDMetricMapping {
+                            metric_match: "raw.requests.*".to_string(),
+                            match_type: String::new(),
+                            name: "mapped.requests".to_string(),
+                            tags: [("route".to_string(), "$1".to_string())].into(),
+                        }],
+                    }],
+                );
+                let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
+                let prefix_filter = DogStatsDPrefixFilterConfiguration::new(
+                    "tenant".to_string(),
+                    Vec::new(),
+                    Live::new_fixed(MetricNameFilter {
+                        values: vec!["tenant.raw.blocked".to_string()],
+                        match_prefix: false,
+                        prefix_rules: Vec::new(),
+                    }),
+                );
+                let tag_filter = TagFilterlistConfiguration::new(
+                    Live::new_fixed(vec![MetricTagFilterEntry {
+                        metric_name: "tenant.mapped.requests".to_string(),
+                        action: FilterAction::Exclude,
+                        tags: vec!["remove".to_string()],
+                    }]),
+                    &[MetricTagValueAllowlistEntry {
+                        metric_prefix: "tenant.mapped.".to_string(),
+                        tag_name: "customer_id".to_string(),
+                        values: vec!["top-1".to_string()],
+                        on_miss: TagValueMismatchAction::Remove,
+                        replacement: "other".to_string(),
+                    }],
+                    0,
+                );
+                let hist_config = HistogramConfiguration::new(
+                    &[
+                        "max".to_string(),
+                        "median".to_string(),
+                        "avg".to_string(),
+                        "count".to_string(),
+                    ],
+                    &["0.95".to_string()],
+                    false,
+                    String::new(),
+                );
+                let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+                let aggregate = AggregateConfiguration {
+                    window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                    primary_flush_interval: Duration::from_secs(60),
+                    context_limit: 1_000_000,
+                    flush_open_windows: false,
+                    counter_expiry_seconds: Some(300),
+                    hist_config,
+                    origin_telemetry_enabled: false,
+                    context_snapshot_receiver,
+                };
+
+                let (events_tx, events_rx) = mpsc::channel(2);
+                let source = ControlledMetricSourceBuilder {
+                    events: Mutex::new(Some(events_rx)),
+                    outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+                };
+                let component_registry = ComponentRegistry::default();
+                let mut blueprint = TopologyBlueprint::new("dogstatsd_retained_identity", &component_registry);
+                blueprint
+                    .add_source("source", source)
+                    .expect("controlled source should be accepted")
+                    .add_transform("mapper", mapper_chain)
+                    .expect("mapper should be accepted")
+                    .add_transform("prefix_filter", prefix_filter)
+                    .expect("prefix filter should be accepted")
+                    .add_transform("tag_filter", tag_filter)
+                    .expect("tag filter should be accepted")
+                    .add_transform("aggregate", aggregate)
+                    .expect("aggregate should be accepted")
+                    .add_destination("destination", DrainingMetricDestinationBuilder)
+                    .expect("draining destination should be accepted");
+                blueprint
+                    .connect_components_in_order([
+                        "source",
+                        "mapper",
+                        "prefix_filter",
+                        "tag_filter",
+                        "aggregate",
+                        "destination",
+                    ])
+                    .expect("DogStatsD post-processing topology should connect");
+                blueprint
+                    .with_health_registry(HealthRegistry::new())
+                    .with_memory_limiter(MemoryLimiter::noop())
+                    .with_resource_registry(ResourceRegistry::new())
+                    .with_ambient_worker_pool();
+
+                let mut supervisor =
+                    Supervisor::new("dogstatsd-retained-identity").expect("test supervisor should be created");
+                supervisor.add_worker(blueprint);
+                let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+                let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+                events_tx
+                    .send(Event::Metric(Metric::counter("raw.blocked", 1.0)))
+                    .await
+                    .expect("controlled source should accept the blocked metric");
+                let input_context = Context::from_static_parts(
+                    "raw.requests.checkout",
+                    &[
+                        "customer_id:top-1",
+                        "customer_id:long-tail",
+                        "keep:client",
+                        "remove:secret",
+                    ],
+                );
+                events_tx
+                    .send(Event::Metric(Metric::counter(input_context.clone(), 1.0)))
+                    .await
+                    .expect("controlled source should accept the retained metric");
+
+                let expected_context = Context::from_static_parts(
+                    "tenant.mapped.requests",
+                    &["customer_id:top-1", "keep:client", "route:checkout"],
+                );
+                let snapshot = loop {
+                    let snapshot = snapshot_handle
+                        .snapshot()
+                        .await
+                        .expect("running aggregate should fulfill snapshots");
+                    if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                        break snapshot;
+                    }
+                    tokio::task::yield_now().await;
+                };
+
+                assert_eq!(snapshot.len(), 1);
+                assert_eq!(snapshot[0].context(), &expected_context);
+                assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Counter);
+                assert_eq!(snapshot[0].context().tags().len(), 3);
+                assert_eq!(
+                    snapshot[0]
+                        .context()
+                        .tags()
+                        .get_single_tag("customer_id")
+                        .and_then(|tag| tag.value()),
+                    Some("top-1")
+                );
+                assert_eq!(
+                    snapshot[0]
+                        .context()
+                        .tags()
+                        .get_single_tag("keep")
+                        .and_then(|tag| tag.value()),
+                    Some("client")
+                );
+                assert_eq!(
+                    snapshot[0]
+                        .context()
+                        .tags()
+                        .get_single_tag("route")
+                        .and_then(|tag| tag.value()),
+                    Some("checkout")
+                );
+                assert!(snapshot[0].context().tags().get_single_tag("remove").is_none());
+                assert!(snapshot.iter().all(|entry| entry.context() != &input_context));
+                assert!(snapshot
+                    .iter()
+                    .all(|entry| !matches!(entry.context().name().as_ref(), "raw.blocked" | "tenant.raw.blocked")));
+
+                drop(events_tx);
+                drop(snapshot_handle);
+                shutdown_tx.send(()).expect("test topology should still be running");
+                let topology_result = topology_task.await.expect("topology task should not panic");
+                assert!(
+                    topology_result.is_ok(),
+                    "topology should stop cleanly: {topology_result:?}"
+                );
+            })
+            .await
+            .expect("DogStatsD retained identity test should complete without hanging");
+        }
+
+        #[tokio::test]
+        async fn no_agg_split_excludes_timestamped_metrics_from_tag_filterlist() {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let no_agg_split = DogStatsDNoAggSplitConfiguration::new(Duration::from_millis(50));
+                let tag_filter = TagFilterlistConfiguration::new(
+                    Live::new_fixed(vec![MetricTagFilterEntry {
+                        metric_name: "app.requests".to_string(),
+                        action: FilterAction::Exclude,
+                        tags: vec!["remove".to_string()],
+                    }]),
+                    &[],
+                    0,
+                );
+                let hist_config = HistogramConfiguration::new(&[], &[], false, String::new());
+                let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+                let aggregate = AggregateConfiguration {
+                    window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                    primary_flush_interval: Duration::from_secs(60),
+                    context_limit: 1_000_000,
+                    flush_open_windows: false,
+                    counter_expiry_seconds: Some(300),
+                    hist_config,
+                    origin_telemetry_enabled: false,
+                    context_snapshot_receiver,
+                };
+
+                let (events_tx, events_rx) = mpsc::channel(2);
+                let source = ControlledMetricSourceBuilder {
+                    events: Mutex::new(Some(events_rx)),
+                    outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+                };
+                let (passthrough_tx, mut passthrough_rx) = mpsc::unbounded_channel();
+                let passthrough_destination = CollectingMetricDestinationBuilder { sender: passthrough_tx };
+
+                let component_registry = ComponentRegistry::default();
+                let mut blueprint = TopologyBlueprint::new("dogstatsd_no_agg_split_filterlist", &component_registry);
+                blueprint
+                    .add_source("source", source)
+                    .expect("controlled source should be accepted")
+                    .add_transform("no_agg_split", no_agg_split)
+                    .expect("no-agg split should be accepted")
+                    .add_transform("tag_filter", tag_filter)
+                    .expect("tag filter should be accepted")
+                    .add_transform("aggregate", aggregate)
+                    .expect("aggregate should be accepted")
+                    .add_destination("aggregate_out", DrainingMetricDestinationBuilder)
+                    .expect("draining destination should be accepted")
+                    .add_destination("passthrough_out", passthrough_destination)
+                    .expect("collecting destination should be accepted");
+                blueprint
+                    .connect_components_in_order(["source", "no_agg_split", "tag_filter", "aggregate", "aggregate_out"])
+                    .expect("no-agg split topology should connect")
+                    .connect_components("no_agg_split.passthrough", "passthrough_out")
+                    .expect("passthrough output should connect");
+                blueprint
+                    .with_health_registry(HealthRegistry::new())
+                    .with_memory_limiter(MemoryLimiter::noop())
+                    .with_resource_registry(ResourceRegistry::new())
+                    .with_ambient_worker_pool();
+
+                let mut supervisor =
+                    Supervisor::new("dogstatsd-no-agg-split-filterlist").expect("test supervisor should be created");
+                supervisor.add_worker(blueprint);
+                let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+                let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+                let timestamped_context =
+                    Context::from_static_parts("app.requests", &["keep:client", "remove:secret", "which:timestamped"]);
+                events_tx
+                    .send(Event::Metric(Metric::counter(
+                        timestamped_context.clone(),
+                        (1_700_000_000, 1.0),
+                    )))
+                    .await
+                    .expect("controlled source should accept the timestamped metric");
+
+                let non_timestamped_context = Context::from_static_parts(
+                    "app.requests",
+                    &["keep:client", "remove:secret", "which:non_timestamped"],
+                );
+                events_tx
+                    .send(Event::Metric(Metric::counter(non_timestamped_context.clone(), 1.0)))
+                    .await
+                    .expect("controlled source should accept the non-timestamped metric");
+
+                let passthrough_metric = passthrough_rx
+                    .recv()
+                    .await
+                    .expect("passthrough destination should receive the timestamped metric");
+                assert_eq!(
+                    passthrough_metric
+                        .context()
+                        .tags()
+                        .get_single_tag("remove")
+                        .and_then(|tag| tag.value()),
+                    Some("secret"),
+                    "timestamped metrics must not be filtered by the tag filterlist"
+                );
+
+                let expected_context =
+                    Context::from_static_parts("app.requests", &["keep:client", "which:non_timestamped"]);
+                let snapshot = loop {
+                    let snapshot = snapshot_handle
+                        .snapshot()
+                        .await
+                        .expect("running aggregate should fulfill snapshots");
+                    if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                        break snapshot;
+                    }
+                    tokio::task::yield_now().await;
+                };
+                assert!(snapshot.iter().all(|entry| entry.context() != &non_timestamped_context));
+                assert_eq!(snapshot.len(), 1);
+                assert!(snapshot[0].context().tags().get_single_tag("remove").is_none());
+
+                drop(events_tx);
+                drop(snapshot_handle);
+                shutdown_tx.send(()).expect("test topology should still be running");
+                let topology_result = topology_task.await.expect("topology task should not panic");
+                assert!(
+                    topology_result.is_ok(),
+                    "topology should stop cleanly: {topology_result:?}"
+                );
+            })
+            .await
+            .expect("no-agg split filterlist exclusion test should complete without hanging");
+        }
+
+        struct ControlledMetricSource {
+            events: mpsc::Receiver<Event>,
+        }
+
+        #[async_trait]
+        impl Source for ControlledMetricSource {
+            async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+                let shutdown = context.take_shutdown_handle();
+                tokio::pin!(shutdown);
+                let mut events_open = true;
+
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown => break,
+                        maybe_event = self.events.recv(), if events_open => match maybe_event {
+                            Some(event) => context.dispatcher().dispatch_one(event).await?,
+                            None => events_open = false,
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        struct ControlledMetricSourceBuilder {
+            events: Mutex<Option<mpsc::Receiver<Event>>>,
+            outputs: Vec<OutputDefinition<EventType>>,
+        }
+
+        #[async_trait]
+        impl SourceBuilder for ControlledMetricSourceBuilder {
+            fn outputs(&self) -> &[OutputDefinition<EventType>] {
+                &self.outputs
+            }
+
+            async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
+                let events = self
+                    .events
+                    .lock()
+                    .map_err(|_| generic_error!("controlled metric source receiver lock is poisoned"))?
+                    .take()
+                    .ok_or_else(|| generic_error!("controlled metric source receiver has already been taken"))?;
+                Ok(Box::new(ControlledMetricSource { events }))
+            }
+        }
+
+        impl MemoryBounds for ControlledMetricSourceBuilder {
+            fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+        }
+
+        struct DrainingMetricDestination;
+
+        #[async_trait]
+        impl Destination for DrainingMetricDestination {
+            async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+                while context.events().next().await.is_some() {}
+                Ok(())
+            }
+        }
+
+        struct DrainingMetricDestinationBuilder;
+
+        #[async_trait]
+        impl DestinationBuilder for DrainingMetricDestinationBuilder {
+            fn input_event_type(&self) -> EventType {
+                EventType::Metric
+            }
+
+            async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+                Ok(Box::new(DrainingMetricDestination))
+            }
+        }
+
+        impl MemoryBounds for DrainingMetricDestinationBuilder {
+            fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+        }
+
+        struct CollectingMetricDestination {
+            sender: mpsc::UnboundedSender<Metric>,
+        }
+
+        #[async_trait]
+        impl Destination for CollectingMetricDestination {
+            async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+                while let Some(events) = context.events().next().await {
+                    for event in events {
+                        if let Some(metric) = event.try_into_metric() {
+                            let _ = self.sender.send(metric);
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        struct CollectingMetricDestinationBuilder {
+            sender: mpsc::UnboundedSender<Metric>,
+        }
+
+        #[async_trait]
+        impl DestinationBuilder for CollectingMetricDestinationBuilder {
+            fn input_event_type(&self) -> EventType {
+                EventType::Metric
+            }
+
+            async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+                Ok(Box::new(CollectingMetricDestination {
+                    sender: self.sender.clone(),
+                }))
+            }
+        }
+
+        impl MemoryBounds for CollectingMetricDestinationBuilder {
+            fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+        }
     }
 }

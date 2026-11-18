@@ -1,35 +1,19 @@
-use saluki_app::api::APIBuilder;
+use async_trait::async_trait;
+use saluki_api::{APIHandler, DynamicRoute, EndpointType};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_components::{
     destinations::DogStatsDStatsAPIHandler,
     sources::{DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler},
 };
+use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
+use saluki_error::generic_error;
 
 use crate::dogstatsd_contexts::DogStatsDContextDumpAPIHandler;
 
-/// Combined set of control surfaces to expose from the privileged API endpoint.
-#[derive(Default)]
-pub struct TopologyControlSurfaces {
-    dogstatsd: Option<DogStatsDControlSurface>,
-}
-
-impl TopologyControlSurfaces {
-    /// Attaches the DogStatsD-specific control surfaces to this set of topology control surfaces.
-    pub fn attach_dogstatsd(&mut self, dsd_control_surface: DogStatsDControlSurface) {
-        self.dogstatsd = Some(dsd_control_surface);
-    }
-
-    /// Registers all configured control surfaces with the given API builder.
-    pub fn register_control_surfaces(self, mut builder: APIBuilder) -> APIBuilder {
-        if let Some(dogstatsd) = self.dogstatsd {
-            builder = dogstatsd.register_control_surfaces(builder);
-        }
-
-        builder
-    }
-}
-
-/// DogStatsD-specific control surfaces.
-pub struct DogStatsDControlSurface {
+/// A worker for exposing the DogStatsD control surfaces.
+///
+/// When running, the worker asserts the routes of each DogStatsD API handler on the privileged API endpoint.
+pub struct DogStatsDAPIWorker {
     /// API handler for the `/dogstatsd/stats` endpoint.
     pub(crate) stats_api_handler: DogStatsDStatsAPIHandler,
     /// API handler for the `/dogstatsd/capture/trigger` endpoint.
@@ -40,12 +24,34 @@ pub struct DogStatsDControlSurface {
     pub(crate) context_dump_api_handler: DogStatsDContextDumpAPIHandler,
 }
 
-impl DogStatsDControlSurface {
-    fn register_control_surfaces(self, builder: APIBuilder) -> APIBuilder {
-        builder
-            .with_handler(self.stats_api_handler)
-            .with_handler(self.capture_api_handler)
-            .with_handler(self.replay_api_handler)
-            .with_handler(self.context_dump_api_handler)
+#[async_trait]
+impl Supervisable for DogStatsDAPIWorker {
+    fn name(&self) -> &str {
+        "dsd-control-surfaces"
     }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let routes = [
+            ("dsd-stats-api", privileged_route(&self.stats_api_handler)),
+            ("dsd-capture-api", privileged_route(&self.capture_api_handler)),
+            ("dsd-replay-api", privileged_route(&self.replay_api_handler)),
+            ("dsd-ctx-dump-api", privileged_route(&self.context_dump_api_handler)),
+        ];
+
+        Ok(Box::pin(async move {
+            let dataspace =
+                DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
+
+            for (id, route) in routes {
+                dataspace.assert(route, id);
+            }
+
+            process_shutdown.await;
+            Ok(())
+        }))
+    }
+}
+
+fn privileged_route<H: APIHandler>(handler: H) -> DynamicRoute {
+    DynamicRoute::http(EndpointType::Privileged, handler)
 }

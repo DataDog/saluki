@@ -1,0 +1,12 @@
+# Disables core_agent in YAML, then enables series payloads in a fleet policy.
+# Shows that the Agent's load-time series switch-off takes priority over the policy.
+name: core-agent-disabled-shadows-fleet-payloads
+group: behavior
+why: [core-agent-disabled-forces-payloads-off, load-fixup-source-outranks-fleet]
+yaml: |
+  core_agent:
+    enabled: false
+fleet_policy: |
+  enable_payloads:
+    series: true
+keys: [enable_payloads.series]

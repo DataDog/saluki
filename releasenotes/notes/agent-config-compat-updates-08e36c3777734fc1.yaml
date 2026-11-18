@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    ``metric_filterlist_prefix`` entries now decode as the Datadog Agent decodes them: an entry without ``prefix``
+    uses the empty prefix, which matches every metric name apart from the entry's exceptions. When an entry's field
+    holds a value that can't be converted, such as a list where a string is expected, ADP now logs a warning and
+    applies no prefix rules instead of rejecting the configuration. ADP still rejects a value that is not a list of
+    objects; a null entry is an empty entry and matches every metric, as in the Datadog Agent.

@@ -7,39 +7,45 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
+use metrics::Counter;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},
     data_model::{
         event::{
             trace::{AttributeValue, Trace},
-            trace_stats::{ClientStatsPayload, TraceStats},
+            trace_stats::{ClientStatsBucket, ClientStatsPayload, TraceStats},
             Event, EventType,
         },
         origin::OriginTagCardinality,
         tags::TagSet,
     },
+    observability::ComponentMetricsExt as _,
     topology::OutputDefinition,
 };
 use saluki_env::{
     host::providers::BoxedHostProvider, workload::EntityId, EnvironmentProvider, HostProvider, WorkloadProvider,
 };
 use saluki_error::{ErrorContext as _, GenericError};
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
+use crate::common::datadog::get_tracer_hostname;
+use crate::common::datadog::version_data::ContainerVersionData;
+use crate::common::otlp::traces::normalize::normalized_tag_value;
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
+use crate::config::AgentEnv;
 
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
 
 mod peer_ip_quantize;
 
-mod peer_tags;
+pub(crate) mod peer_tags;
 
 mod span_concentrator;
 pub(crate) use self::span_concentrator::{InfraTags, SpanConcentrator};
@@ -55,6 +61,9 @@ const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(10);
 /// Tag key for process tags in span meta.
 const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
 
+/// Attribute key for the Git commit SHA, set on the tracer payload or in span meta.
+const TAG_GIT_COMMIT_SHA: &str = "_dd.git.commit.sha";
+
 /// Maximum number of `ClientGroupedStats` entries per `TraceStats` event.
 const MAX_STATS_GROUPS_PER_EVENT: usize = 4000;
 
@@ -63,29 +72,35 @@ const MAX_STATS_GROUPS_PER_EVENT: usize = 4000;
 /// Aggregates incoming `Trace` events into time-bucketed statistics, emitting
 /// `TraceStats` events.
 pub struct ApmStatsTransformConfiguration {
-    compute_stats_by_span_kind: bool,
-    peer_tags_aggregation: bool,
-    peer_tags: Vec<MetaString>,
-    default_env: MetaString,
-    default_hostname: Option<String>,
-    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
-    semantic_registry: SemanticRegistryProvider,
+    /// Whether stats are computed separately per span kind.
+    pub compute_stats_by_span_kind: bool,
+
+    /// Whether stats are aggregated by peer tags.
+    pub peer_tags_aggregation: bool,
+
+    /// Custom span tags promoted to peer tags, in addition to those from the semantic registry.
+    pub peer_tags: Vec<MetaString>,
+
+    /// Environment used for traces whose spans and payload carry none.
+    pub agent_env: AgentEnv,
+
+    /// Hostname of emitted stats.
+    ///
+    /// If unset, stats carry an empty hostname. See [`with_environment_provider`](Self::with_environment_provider).
+    pub default_hostname: Option<String>,
+
+    /// Workload provider used to resolve container tags, if any.
+    pub workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+
+    /// Provider of semantic mappings used to choose peer tag names for stats grouping.
+    ///
+    /// Peer tags describe the remote service or resource a span calls. The transform combines their names from the
+    /// registry with configured custom peer tags. With a subscribed provider, it checks for changed mappings before
+    /// each input event buffer; all spans in that buffer use the same key set.
+    pub semantic_registry: SemanticRegistryProvider,
 }
 
 impl ApmStatsTransformConfiguration {
-    /// Creates a new `ApmStatsTransformConfiguration` from the resolved traces configuration.
-    pub fn from_configuration(config: &domains::traces::Domain) -> Self {
-        Self {
-            compute_stats_by_span_kind: config.compute_stats_by_span_kind,
-            peer_tags_aggregation: config.peer_tags_aggregation,
-            peer_tags: config.peer_tags.iter().cloned().map(MetaString::from).collect(),
-            default_env: MetaString::from(config.default_env.clone()),
-            default_hostname: None,
-            workload_provider: None,
-            semantic_registry: SemanticRegistryProvider::default(),
-        }
-    }
-
     /// Sets the default hostname using the environment provider.
     pub async fn with_environment_provider<E>(mut self, env_provider: E) -> Result<Self, GenericError>
     where
@@ -95,34 +110,12 @@ impl ApmStatsTransformConfiguration {
         self.default_hostname = Some(hostname);
         Ok(self)
     }
-
-    /// Sets the workload provider.
-    ///
-    /// Defaults to unset.
-    pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self
-    where
-        W: WorkloadProvider + Send + Sync + 'static,
-    {
-        self.workload_provider = Some(Arc::new(workload_provider));
-        self
-    }
-
-    /// Sets the provider of semantic mappings used to choose peer tag names for stats grouping.
-    ///
-    /// Peer tags describe the remote service or resource a span calls. The transform combines their names from the
-    /// registry with configured custom peer tags. With a subscribed provider, it checks for changed mappings before
-    /// each input event buffer; all spans in that buffer use the same key set.
-    ///
-    /// Defaults to embedded mappings without remote updates.
-    pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
-        self.semantic_registry = semantic_registry;
-        self
-    }
 }
 
 #[async_trait]
 impl TransformBuilder for ApmStatsTransformConfiguration {
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let agent_hostname = MetaString::from(self.default_hostname.clone().unwrap_or_default());
         let concentrator = SpanConcentrator::new(
             self.compute_stats_by_span_kind,
@@ -135,9 +128,10 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
         Ok(Box::new(ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
-            agent_env: self.default_env.clone(),
+            agent_env: self.agent_env.clone().into(),
             agent_hostname,
             workload_provider: self.workload_provider.clone(),
+            splits: metrics_builder.register_counter("component_stats_splits_total"),
         }))
     }
 
@@ -164,9 +158,19 @@ struct ApmStats {
     agent_env: MetaString,
     agent_hostname: MetaString,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    splits: Counter,
 }
 
 impl ApmStats {
+    /// Splits flushed stats into events, counting a split whenever a flush needs more than one event.
+    fn split_flushed_stats(&self, client_payloads: Vec<ClientStatsPayload>) -> Vec<TraceStats> {
+        let events = split_into_trace_stats(client_payloads, MAX_STATS_GROUPS_PER_EVENT);
+        if events.len() > 1 {
+            self.splits.increment(1);
+        }
+        events
+    }
+
     fn process_trace(&mut self, trace: &Trace) {
         let root_span = trace
             .spans()
@@ -178,8 +182,9 @@ impl ApmStats {
 
         let process_tags = extract_process_tags(trace);
 
-        let payload_key = self.build_payload_key(trace, &process_tags);
         let infra_tags = self.build_infra_tags(trace, &process_tags);
+        let container_version = ContainerVersionData::from_tags(&infra_tags.container_tags);
+        let payload_key = self.build_payload_key(trace, &process_tags, container_version);
 
         let origin = trace
             .spans()
@@ -218,7 +223,12 @@ impl ApmStats {
         InfraTags::new(container_id, container_tags, process_tags)
     }
 
-    fn build_payload_key(&self, trace: &Trace, process_tags: &str) -> PayloadAggregationKey {
+    /// Builds the payload aggregation key of a trace.
+    ///
+    /// `container_version` supplies the version data that the trace itself leaves empty.
+    fn build_payload_key(
+        &self, trace: &Trace, process_tags: &str, container_version: ContainerVersionData<'_>,
+    ) -> PayloadAggregationKey {
         let root_span = trace
             .spans()
             .iter()
@@ -245,32 +255,21 @@ impl ApmStats {
                 })
             })
             .unwrap_or_else(|| {
-                if !trace.payload.env.is_empty() {
-                    trace.payload.env.clone()
+                // The trace encoder normalizes the payload's env, so stats do the same to keep both on one env.
+                let payload_env = normalized_tag_value(&trace.payload.env);
+                if !payload_env.is_empty() {
+                    payload_env
                 } else {
                     self.agent_env.clone()
                 }
             });
 
-        let hostname = root_span
-            .and_then(|s| {
-                s.attributes
-                    .get("_dd.hostname")
-                    .and_then(AttributeValue::as_string)
-                    .filter(|s| !s.is_empty())
-            })
+        let hostname = get_tracer_hostname(trace)
             .cloned()
-            .unwrap_or_else(|| {
-                if !trace.payload.hostname.is_empty() {
-                    trace.payload.hostname.clone()
-                } else {
-                    self.agent_hostname.clone()
-                }
-            });
+            .unwrap_or_else(|| self.agent_hostname.clone());
 
-        // Version resolution mirrors Go agent pkg/trace/version/version.go:GetAppVersionFromTrace:
-        // root span meta["version"] (set by otel_span_to_dd_span with span-over-resource precedence)
-        // takes priority, falling back to the resource-level payload.app_version.
+        // The root span's `version` attribute takes priority: for OTLP traces it already prefers the span's version
+        // over the resource's. The payload's version comes next, then the container's `version` tag.
         let version = root_span
             .and_then(|s| {
                 s.attributes
@@ -279,7 +278,13 @@ impl ApmStats {
                     .filter(|s| !s.is_empty())
             })
             .cloned()
-            .unwrap_or_else(|| trace.payload.app_version.clone());
+            .unwrap_or_else(|| {
+                if !trace.payload.app_version.is_empty() {
+                    trace.payload.app_version.clone()
+                } else {
+                    MetaString::from(container_version.app_version)
+                }
+            });
 
         let container_id = if !trace.payload.container_id.is_empty() {
             trace.payload.container_id.clone()
@@ -290,15 +295,22 @@ impl ApmStats {
                 .unwrap_or_default()
         };
 
-        let git_commit_sha = root_span
-            .and_then(|s| {
-                s.attributes
-                    .get("_dd.git.commit.sha")
-                    .and_then(AttributeValue::as_string)
-                    .filter(|s| !s.is_empty())
+        // The commit SHA set on the tracer payload wins over the root span's, and both win over the container's tag.
+        let git_commit_sha = trace
+            .attributes
+            .get(TAG_GIT_COMMIT_SHA)
+            .and_then(AttributeValue::as_string)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                root_span.and_then(|s| {
+                    s.attributes
+                        .get(TAG_GIT_COMMIT_SHA)
+                        .and_then(AttributeValue::as_string)
+                        .filter(|s| !s.is_empty())
+                })
             })
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(|| MetaString::from(container_version.git_commit_sha));
 
         let image_tag = root_span
             .and_then(|s| {
@@ -308,7 +320,7 @@ impl ApmStats {
                     .filter(|s| !s.is_empty())
             })
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(|| MetaString::from(container_version.image_tag));
 
         let lang = if !trace.payload.language_name.is_empty() {
             trace.payload.language_name.clone()
@@ -332,11 +344,19 @@ impl ApmStats {
     }
 }
 
-/// Splits stats payloads into multiple `TraceStats` events, each containing at most `max_entries_per_event` grouped
-/// entries.
+/// Splits stats payloads into multiple `TraceStats` events, each holding at most `max_entries_per_event` grouped
+/// entries. Each event becomes one outer stats payload when it is encoded.
 ///
-/// This function won't attempt to collapse/pack payloads to optimize the number of events generated: there will always
-/// be at least as many output client payloads as there are input client payloads.
+/// This happens in two steps:
+///
+/// 1. A client payload with more than `max_entries_per_event` entries is divided into
+///    `ceil(entry_count / max_entries_per_event)` smaller client payloads, which is the fewest that can each stay
+///    within the limit. Its entries are dealt out to them round-robin, so they end up evenly sized, and each one
+///    keeps its entries in one bucket per time window.
+/// 2. The client payloads are then packed into events in order, without being divided again. A new event is started
+///    whenever the next client payload would push the current one past the limit.
+///
+/// If the stats need more than one event, every event is marked as part of a split flush.
 fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_per_event: usize) -> Vec<TraceStats> {
     if client_payloads.is_empty() {
         return Vec::new();
@@ -344,89 +364,104 @@ fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_
 
     // If the total number of grouped stats entries is below the specified threshold, then we don't do any splitting or
     // collapsing or anything.
-    let total_grouped_entries = client_payloads
-        .iter()
-        .map(|p| p.stats().iter().map(|b| b.stats().len()).sum::<usize>())
-        .sum::<usize>();
+    let total_grouped_entries = client_payloads.iter().map(count_grouped_entries).sum::<usize>();
     if total_grouped_entries <= max_entries_per_event {
         return vec![TraceStats::new(client_payloads)];
     }
 
-    let mut events = Vec::new();
+    // The fewest events these entries can need. Whole client payloads are never divided while packing, so it can take
+    // more.
+    let mut finished_events = Vec::with_capacity(total_grouped_entries.div_ceil(max_entries_per_event));
     let mut current_client_payloads = Vec::new();
-    let mut current_event_len = 0;
+    let mut current_event_entries = 0;
 
-    for mut client_payload in client_payloads {
-        // If the current payload can fit entirely in the current event, then collect it as-is.
-        let client_payload_len = client_payload.stats().iter().map(|b| b.stats().len()).sum::<usize>();
-        if current_event_len + client_payload_len <= max_entries_per_event {
-            current_client_payloads.push(client_payload);
-            current_event_len += client_payload_len;
-            continue;
+    // Adds a client payload to the event being built, closing that event first if the payload would not fit.
+    let mut add_to_event = |client_payload: ClientStatsPayload, entries: usize| {
+        if !current_client_payloads.is_empty() && current_event_entries + entries > max_entries_per_event {
+            finished_events.push(std::mem::take(&mut current_client_payloads));
+            current_event_entries = 0;
         }
+        current_client_payloads.push(client_payload);
+        current_event_entries += entries;
+    };
 
-        // Consume all the stats buckets from the current client payload, and set ourselves up to go through each
-        // bucket, splitting them as necessary.
-        //
-        // We basically iterate until we find a bucket where adding its entries would cause us to exceed our threshold,
-        // and then we split that bucket, creating a new client payload in the process, and keep repeating that until
-        // we've exhausted all buckets for our starting client payload.
-        let mut current_client_stats_buckets = Vec::new();
-        for mut client_stats_bucket in client_payload.take_stats() {
-            let bucket_len = client_stats_bucket.stats().len();
-            // If this bucket can fit in the current event, then collect it as-is.
-            if current_event_len + bucket_len <= max_entries_per_event {
-                current_client_stats_buckets.push(client_stats_bucket);
-                current_event_len += bucket_len;
-                continue;
+    for client_payload in client_payloads {
+        let client_payload_entries = count_grouped_entries(&client_payload);
+        if client_payload_entries <= max_entries_per_event {
+            add_to_event(client_payload, client_payload_entries);
+        } else {
+            for split_payload in split_client_payload(client_payload, max_entries_per_event) {
+                let split_payload_entries = count_grouped_entries(&split_payload);
+                add_to_event(split_payload, split_payload_entries);
             }
-
-            // We have to split this bucket. We take the grouped entries it has, and we subdivide those into a new
-            // client bucket, or buckets in order to ensure we don't exceed our threshold.
-            let mut bucket_entries = client_stats_bucket.take_stats();
-            while current_event_len + bucket_entries.len() > max_entries_per_event {
-                // We calculate the split point this way because the returned vector from `split_off` is referenced
-                // against the end of the vector, so if we have 100 items, and we only want 20, we need to split at
-                // index 80 (100 - 20 == 80).
-                let split_amount = max_entries_per_event - current_event_len;
-                let split_point = bucket_entries.len() - split_amount;
-                let split_entries = bucket_entries.split_off(split_point);
-
-                // Create a new "split" bucket based on the current bucket (`client_stats_bucket`) but containing only
-                // the split-off entries. This will feed into the current client payload (`client_payload`) which we'll
-                // finalize and add to the current event before starting a new event.
-                let split_bucket = client_stats_bucket.clone().with_stats(split_entries);
-                current_client_stats_buckets.push(split_bucket);
-
-                let split_client_payload = client_payload
-                    .clone()
-                    .with_stats(std::mem::take(&mut current_client_stats_buckets));
-                current_client_payloads.push(split_client_payload);
-
-                events.push(TraceStats::new(std::mem::take(&mut current_client_payloads)));
-                current_event_len = 0;
-            }
-
-            // If we have any leftover entries from the bucket after splitting it up, put them back in the current bucket
-            // and add that bucket to the current client payload.
-            if !bucket_entries.is_empty() {
-                current_event_len += bucket_entries.len();
-                current_client_stats_buckets.push(client_stats_bucket.with_stats(bucket_entries));
-            }
-        }
-
-        // If we have buckets for this client payload (whether we split or not), add them back to the current client payload.
-        if !current_client_stats_buckets.is_empty() {
-            current_client_payloads.push(client_payload.with_stats(current_client_stats_buckets));
         }
     }
 
-    // Stick the remaining entries into a final `TraceStats` event, if any.
     if !current_client_payloads.is_empty() {
-        events.push(TraceStats::new(current_client_payloads));
+        finished_events.push(current_client_payloads);
     }
 
-    events
+    let is_split = finished_events.len() > 1;
+    finished_events
+        .into_iter()
+        .map(|payloads| TraceStats::new(payloads).with_split_payload(is_split))
+        .collect()
+}
+
+fn count_grouped_entries(client_payload: &ClientStatsPayload) -> usize {
+    client_payload.stats().iter().map(|b| b.stats().len()).sum()
+}
+
+/// Divides a client payload into `ceil(entry_count / max_entries)` client payloads, so that each holds at most
+/// `max_entries` grouped entries.
+///
+/// Entries are dealt out round-robin, so the resulting payloads differ in size by at most one entry, and each one has
+/// a single bucket per time window.
+fn split_client_payload(mut client_payload: ClientStatsPayload, max_entries: usize) -> Vec<ClientStatsPayload> {
+    let total_entries = count_grouped_entries(&client_payload);
+    if total_entries <= max_entries {
+        return vec![client_payload];
+    }
+
+    let payload_count = total_entries.div_ceil(max_entries);
+    let mut payload_buckets: Vec<Vec<ClientStatsBucket>> = vec![Vec::new(); payload_count];
+
+    let mut next_entry = 0;
+    for mut source_bucket in client_payload.take_stats() {
+        let entries = source_bucket.take_stats();
+
+        // Each split payload gets `entries.len() / payload_count` of this bucket's entries, and the first
+        // `entries.len() % payload_count` payloads in dealing order get one more, so a new bucket can be sized exactly.
+        let base = entries.len() / payload_count;
+        let extra = entries.len() % payload_count;
+        let first_payload = next_entry % payload_count;
+
+        for entry in entries {
+            let payload_index = next_entry % payload_count;
+            let buckets = &mut payload_buckets[payload_index];
+            next_entry += 1;
+
+            // The source bucket is now empty, so cloning it gives us a new bucket for the same time window.
+            let bucket_index = match buckets
+                .iter()
+                .position(|b| b.start() == source_bucket.start() && b.duration() == source_bucket.duration())
+            {
+                Some(index) => index,
+                None => {
+                    let dealing_order = (payload_index + payload_count - first_payload) % payload_count;
+                    let capacity = base + usize::from(dealing_order < extra);
+                    buckets.push(source_bucket.clone().with_stats(Vec::with_capacity(capacity)));
+                    buckets.len() - 1
+                }
+            };
+            buckets[bucket_index].stats_mut().push(entry);
+        }
+    }
+
+    payload_buckets
+        .into_iter()
+        .map(|buckets| client_payload.clone().with_stats(buckets))
+        .collect()
 }
 
 #[async_trait]
@@ -451,7 +486,7 @@ impl Transform for ApmStats {
                     if !stats_payloads.is_empty() {
                         debug!(stats_payloads = stats_payloads.len(), "Flushing APM stats.");
 
-                        let events = split_into_trace_stats(stats_payloads, MAX_STATS_GROUPS_PER_EVENT);
+                        let events = self.split_flushed_stats(stats_payloads);
                         let dispatcher = context.dispatcher().buffered()
                             .error_context("Default output should be available.")?;
 
@@ -471,10 +506,8 @@ impl Transform for ApmStats {
                         Some(events) => {
                             // Use one peer tag key set for the whole buffer.
                             self.concentrator.refresh_registry();
-                            for event in events {
-                                if let Event::Trace(trace) = event {
-                                    self.process_trace(&trace);
-                                }
+                            for trace in events.into_events::<Trace>() {
+                                self.process_trace(&trace);
                             }
                         },
                         None => {
@@ -533,9 +566,12 @@ mod tests {
     use datadog_agent_apm::semantics::{test_util::registry_json, Registry};
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span};
+    use saluki_core::components::test_util::TestComponentDriver;
+    use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
+    use saluki_env::workload::providers::TestWorkloadProvider;
+    use saluki_metrics::test::TestRecorder;
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -544,6 +580,19 @@ mod tests {
     /// Helper to align timestamp to bucket boundary
     fn align_ts(ts: u64, bsize: u64) -> u64 {
         ts - ts % bsize
+    }
+
+    /// Returns stats settings carrying the configuration defaults.
+    fn stats_configuration(agent_env: AgentEnv) -> ApmStatsTransformConfiguration {
+        ApmStatsTransformConfiguration {
+            compute_stats_by_span_kind: false,
+            peer_tags_aggregation: false,
+            peer_tags: Vec::new(),
+            agent_env,
+            default_hostname: None,
+            workload_provider: None,
+            semantic_registry: SemanticRegistryProvider::default(),
+        }
     }
 
     /// Creates a test span with the given parameters.
@@ -599,27 +648,19 @@ mod tests {
 
     #[tokio::test]
     async fn run_refreshes_peer_tag_keys_before_each_buffer() {
-        use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
-        use saluki_core::components::ComponentContext;
-        use saluki_core::health::HealthRegistry;
-        use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
-        use saluki_core::topology::interconnect::{Consumer, Dispatcher};
-        use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
-        use tokio::{runtime::Handle, sync::mpsc};
+        use saluki_core::components::test_util::TestComponentDriver;
 
         let now = now_nanos();
         let (publisher, provider) = TestRegistryPublisher::new();
-        let config = domains::traces::Domain {
+        let config = ApmStatsTransformConfiguration {
             compute_stats_by_span_kind: true,
             peer_tags_aggregation: true,
-            ..Default::default()
+            semantic_registry: provider,
+            ..stats_configuration(AgentEnv::resolve(None, None, &[], &[]))
         };
-        let component_context = ComponentContext::test_transform("apm_stats");
-        let transform = ApmStatsTransformConfiguration::from_configuration(&config)
-            .with_semantic_registry(provider)
-            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
+        let (control, mut outputs) = TestComponentDriver::transform(config)
             .await
-            .expect("build should succeed");
+            .expect("transform should build");
 
         // The buffer refresh must see a registry published after construction.
         let remapped = registry_json(
@@ -644,54 +685,59 @@ mod tests {
             0,
             Some(meta),
         );
-        let mut input = EventsBuffer::default();
-        assert!(input.try_push(Event::Trace(Trace::new(vec![span]))).is_none());
+        control
+            .send_event(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .await;
 
-        let mut dispatcher = Dispatcher::new(component_context.clone());
-        dispatcher.add_output(OutputName::Default).expect("add default output");
-        let (out_tx, mut out_rx) = mpsc::channel(4);
-        dispatcher
-            .attach_sender_to_output(&OutputName::Default, out_tx)
-            .expect("attach default sender");
-        let (in_tx, in_rx) = mpsc::channel(1);
-        in_tx.send(input).await.expect("send input buffer");
         // Closing the input makes the run loop flush and stop.
-        drop(in_tx);
-
-        let topology_context = TopologyContext::new(
-            Arc::from("test"),
-            MemoryLimiter::noop(),
-            HealthRegistry::new(),
-            Handle::current(),
-            DataspaceRegistry::new(),
-        );
-        let health = HealthRegistry::new()
-            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
-            .expect("component was not previously registered");
-        let context = TransformContext::new(
-            &topology_context,
-            &component_context,
-            ComponentRegistry::default(),
-            health,
-            dispatcher,
-            Consumer::new(component_context.clone(), in_rx),
-        );
-        transform.run(context).await.expect("run should succeed");
+        control.shutdown().await.expect("run should succeed");
 
         let mut peer_tags = Vec::new();
-        while let Ok(buffer) = out_rx.try_recv() {
-            for event in buffer {
-                let Event::TraceStats(stats) = event else { continue };
-                for payload in stats.stats() {
-                    for bucket in payload.stats() {
-                        for grouped in bucket.stats() {
-                            peer_tags.extend(grouped.peer_tags().iter().map(|tag| tag.to_string()));
-                        }
+        for event in outputs.default_output().collect_events().await {
+            let Event::TraceStats(stats) = event else { continue };
+            for payload in stats.stats() {
+                for bucket in payload.stats() {
+                    for grouped in bucket.stats() {
+                        peer_tags.extend(grouped.peer_tags().iter().map(|tag| tag.to_string()));
                     }
                 }
             }
         }
         assert_eq!(peer_tags, ["custom.remote.service:billing"]);
+    }
+
+    #[tokio::test]
+    async fn traces_without_an_env_aggregate_under_the_agent_env() {
+        let agent_env = AgentEnv::resolve(None, Some("Prod"), &[], &[]);
+        let config = stats_configuration(agent_env);
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the transform should start");
+
+        let span = make_top_level_span(
+            align_ts(now_nanos(), BUCKET_DURATION_NS),
+            1,
+            100,
+            0,
+            "svc",
+            "resource",
+            0,
+            None,
+        );
+        control
+            .send_event(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .await;
+        // Shutting down flushes every bucket.
+        control.shutdown().await.expect("the transform should stop cleanly");
+
+        let mut envs = Vec::new();
+        for event in outputs.default_output().collect_events().await {
+            let Event::TraceStats(stats) = event else {
+                panic!("unexpected event: {event:?}");
+            };
+            envs.extend(stats.stats().iter().map(|payload| payload.env().to_string()));
+        }
+        assert_eq!(envs, ["prod"]);
     }
 
     #[test]
@@ -705,10 +751,11 @@ mod tests {
             agent_env: MetaString::from("none"),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            splits: Counter::noop(),
         };
 
         let span = make_test_span("test-service", "test-operation", "test-resource");
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         transform.process_trace(&trace);
 
@@ -728,6 +775,7 @@ mod tests {
             agent_env: MetaString::from("none"),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            splits: Counter::noop(),
         };
 
         // Create a span with 0.5 sample rate (weight = 2.0)
@@ -748,7 +796,7 @@ mod tests {
         )
         .with_attributes(attrs);
 
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
         transform.process_trace(&trace);
 
         let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
@@ -770,7 +818,7 @@ mod tests {
 
         // Add a span
         let span = make_top_level_span(aligned_now, 1, 50, 5, "A1", "resource1", 0, None);
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -811,7 +859,7 @@ mod tests {
         metrics.insert(MetaString::from(METRIC_PARTIAL_VERSION), 830604.0);
 
         let span = test_span(aligned_now, 1, 0, 50, 5, "A1", "resource1", 0, None, Some(metrics));
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -1284,7 +1332,7 @@ mod tests {
         // Test with no process tags
         {
             let span = Span::default();
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when no _dd.tags.process");
         }
@@ -1297,7 +1345,7 @@ mod tests {
                 AttributeValue::String(MetaString::from("a:1,b:2,c:3")),
             );
             let span = Span::default().with_attributes(attrs);
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert_eq!(process_tags, "a:1,b:2,c:3");
         }
@@ -1310,7 +1358,7 @@ mod tests {
                 AttributeValue::String(MetaString::from("")),
             );
             let span = Span::default().with_attributes(attrs);
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(
                 process_tags.is_empty(),
@@ -1320,7 +1368,7 @@ mod tests {
 
         // Test with empty trace
         {
-            let trace = Trace::new(vec![]);
+            let trace = Trace::new(vec![], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when trace has no spans");
         }
@@ -1408,16 +1456,16 @@ mod tests {
 
     #[test]
     fn test_split_into_trace_stats_splits_single_bucket() {
-        // 250 stats in one bucket with max 100 - should split into 3 TraceStats
+        // 250 stats in one bucket with max 100 - should split into 3 evenly sized TraceStats
         let bucket = make_bucket_with_stats(250);
         let payload = make_payload_with_buckets("host1", vec![bucket]);
 
         let result = split_into_trace_stats(vec![payload], 100);
 
         assert_eq!(result.len(), 3);
-        assert_eq!(count_grouped_stats(&result[0]), 100);
-        assert_eq!(count_grouped_stats(&result[1]), 100);
-        assert_eq!(count_grouped_stats(&result[2]), 50);
+        assert_eq!(count_grouped_stats(&result[0]), 84);
+        assert_eq!(count_grouped_stats(&result[1]), 83);
+        assert_eq!(count_grouped_stats(&result[2]), 83);
 
         // Total should be preserved
         let total: usize = result.iter().map(count_grouped_stats).sum();
@@ -1426,17 +1474,15 @@ mod tests {
 
     #[test]
     fn test_split_into_trace_stats_splits_across_payloads() {
-        // Two payloads with 60 stats each, max 100 - should combine into 2 TraceStats
+        // Two payloads with 60 stats each, max 100 - each payload stays whole, so we get 2 TraceStats
         let payload1 = make_payload_with_buckets("host1", vec![make_bucket_with_stats(60)]);
         let payload2 = make_payload_with_buckets("host2", vec![make_bucket_with_stats(60)]);
 
         let result = split_into_trace_stats(vec![payload1, payload2], 100);
 
         assert_eq!(result.len(), 2);
-        // First TraceStats: 60 from payload1 + 40 from payload2 = 100
-        assert_eq!(count_grouped_stats(&result[0]), 100);
-        // Second TraceStats: remaining 20 from payload2
-        assert_eq!(count_grouped_stats(&result[1]), 20);
+        assert_eq!(count_grouped_stats(&result[0]), 60);
+        assert_eq!(count_grouped_stats(&result[1]), 60);
     }
 
     #[test]
@@ -1519,16 +1565,142 @@ mod tests {
 
     #[test]
     fn test_split_into_trace_stats_large_split() {
-        // 10,000 stats with max 4000 - should produce 3 TraceStats
+        // 10,000 stats with max 4000 - should produce 3 evenly sized TraceStats
         let bucket = make_bucket_with_stats(10_000);
         let payload = make_payload_with_buckets("host1", vec![bucket]);
 
         let result = split_into_trace_stats(vec![payload], 4000);
 
         assert_eq!(result.len(), 3);
-        assert_eq!(count_grouped_stats(&result[0]), 4000);
-        assert_eq!(count_grouped_stats(&result[1]), 4000);
-        assert_eq!(count_grouped_stats(&result[2]), 2000);
+        assert_eq!(count_grouped_stats(&result[0]), 3334);
+        assert_eq!(count_grouped_stats(&result[1]), 3333);
+        assert_eq!(count_grouped_stats(&result[2]), 3333);
+    }
+
+    #[test]
+    fn split_flushed_stats_counts_one_split_per_split_flush() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::default(),
+            workload_provider: None,
+            splits: MetricsBuilder::default().register_counter("component_stats_splits_total"),
+        };
+        let flush = |groups: usize| vec![make_payload_with_buckets("host1", vec![make_bucket_with_stats(groups)])];
+
+        // A flush that fits in one event is not a split.
+        assert_eq!(
+            transform.split_flushed_stats(flush(MAX_STATS_GROUPS_PER_EVENT)).len(),
+            1
+        );
+        assert_eq!(recorder.counter("component_stats_splits_total"), Some(0));
+
+        // A flush is counted once however many events it splits into.
+        assert_eq!(transform.split_flushed_stats(flush(9000)).len(), 3);
+        assert_eq!(transform.split_flushed_stats(flush(4001)).len(), 2);
+        assert_eq!(recorder.counter("component_stats_splits_total"), Some(2));
+    }
+
+    #[test]
+    fn split_into_trace_stats_marks_and_balances_by_group_count() {
+        // The sizes the backend sees for a single client payload, using the production limit.
+        let cases: [(usize, &[usize]); 4] = [
+            (1, &[1]),
+            (4000, &[4000]),
+            (4001, &[2001, 2000]),
+            (9000, &[3000, 3000, 3000]),
+        ];
+        for (groups, expected) in cases {
+            let payload = make_payload_with_buckets("host1", vec![make_bucket_with_stats(groups)]);
+
+            let result = split_into_trace_stats(vec![payload], MAX_STATS_GROUPS_PER_EVENT);
+
+            let sizes: Vec<usize> = result.iter().map(count_grouped_stats).collect();
+            assert_eq!(sizes, expected, "unexpected event sizes for {groups} groups");
+            for event in &result {
+                assert_eq!(
+                    event.is_split_payload(),
+                    expected.len() > 1,
+                    "split flag for {groups} groups"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_into_trace_stats_balances_entries_with_one_bucket_per_window() {
+        // 15 entries over three buckets of the same time window, max 12: two events of 8 and 7 entries, each with a
+        // single client payload holding a single bucket.
+        let buckets = vec![
+            make_bucket_with_stats(5),
+            make_bucket_with_stats(5),
+            make_bucket_with_stats(5),
+        ];
+        let payload = make_payload_with_buckets("host1", buckets);
+
+        let result = split_into_trace_stats(vec![payload.clone()], 12);
+
+        assert_eq!(result.len(), 2);
+        for (event, expected_entries) in result.iter().zip([8, 7]) {
+            assert!(event.is_split_payload());
+            assert_eq!(event.stats().len(), 1);
+            assert_eq!(event.stats()[0].stats().len(), 1);
+            assert_eq!(count_grouped_stats(event), expected_entries);
+
+            let metadata_only = event.stats()[0].clone().with_stats(Vec::new());
+            assert_eq!(metadata_only, payload.clone().with_stats(Vec::new()));
+        }
+    }
+
+    #[test]
+    fn split_into_trace_stats_keeps_one_bucket_per_window_for_each_split_payload() {
+        // Two windows of 300 entries each, max 400: two split payloads, each holding one bucket for each window.
+        let window_a = ClientStatsBucket::new(
+            1000,
+            10,
+            (0..300).map(|i| make_grouped_stats("a", &i.to_string())).collect(),
+        );
+        let window_b = ClientStatsBucket::new(
+            2000,
+            10,
+            (0..300).map(|i| make_grouped_stats("b", &i.to_string())).collect(),
+        );
+        let payload = make_payload_with_buckets("host1", vec![window_a, window_b]);
+
+        let result = split_into_trace_stats(vec![payload], 400);
+
+        assert_eq!(result.len(), 2);
+        for event in &result {
+            assert_eq!(event.stats().len(), 1);
+            let windows: Vec<(u64, u64)> = event.stats()[0]
+                .stats()
+                .iter()
+                .map(|b| (b.start(), b.duration()))
+                .collect();
+            assert_eq!(windows, [(1000, 10), (2000, 10)]);
+            assert_eq!(count_grouped_stats(event), 300);
+        }
+    }
+
+    #[test]
+    fn split_into_trace_stats_no_split_leaves_buckets_and_flag_unset() {
+        let buckets = vec![
+            make_bucket_with_stats(5),
+            make_bucket_with_stats(5),
+            make_bucket_with_stats(5),
+        ];
+        let payload = make_payload_with_buckets("host1", buckets);
+
+        let result = split_into_trace_stats(vec![payload], 1337);
+
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].is_split_payload());
+        let bucket_sizes: Vec<usize> = result[0].stats()[0].stats().iter().map(|b| b.stats().len()).collect();
+        assert_eq!(bucket_sizes, [5, 5, 5]);
     }
 
     // Property test strategies
@@ -1582,6 +1754,7 @@ mod tests {
             agent_env: MetaString::default(),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            splits: Counter::noop(),
         };
 
         // Root span carries a span-level version attribute (set by otel_span_to_dd_span with
@@ -1593,11 +1766,11 @@ mod tests {
         );
         let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
 
-        let mut trace = Trace::new(vec![root_span]);
+        let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
         // Simulate OTLP resource extraction: payload.app_version comes from resource attrs only.
         trace.payload.app_version = MetaString::from("resource-v1");
 
-        let key = transform.build_payload_key(&trace, "");
+        let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
 
         // The Go agent resolves version from root_span.meta["version"] first, which carries
         // span-over-resource precedence. The span attribute ("span-v2") must win.
@@ -1606,6 +1779,260 @@ mod tests {
             "span-v2",
             "span-level version must take precedence over resource-level payload.app_version for OTLP traces"
         );
+    }
+
+    // Span conversion extracts no peer tag keys of its own, so a peer tag set only on the OTLP resource reaches span
+    // meta through the generic resource-attribute loop, and the concentrator reads it from there.
+    #[test]
+    fn peer_tag_set_only_on_otlp_resource_reaches_stats() {
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+        use otlp_protos::opentelemetry::proto::trace::v1::span::SpanKind;
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+        use saluki_core::data_model::event::Event;
+
+        use crate::common::otlp::origin::OtlpOriginTagResolver;
+        use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesTranslator};
+        use crate::common::otlp::Metrics;
+
+        let now = now_nanos();
+        let client_span = OtlpSpan {
+            trace_id: vec![1; 16],
+            span_id: vec![2; 8],
+            name: "SELECT ...".to_string(),
+            kind: SpanKind::Client as i32,
+            start_time_unix_nano: now - 1_000_000,
+            end_time_unix_nano: now,
+            ..Default::default()
+        };
+        let resource_spans = ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "db.instance".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("i-1234".to_string())),
+                    }),
+                }],
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans: vec![client_span],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut translator = OtlpTracesTranslator::new(
+            traces_settings(),
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let trace = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .find_map(Event::try_into_trace)
+            .expect("the client span should translate into a trace");
+        let span = &trace.spans()[0];
+        assert_eq!(
+            span.attributes.get("db.instance").and_then(AttributeValue::as_string),
+            Some(&MetaString::from("i-1234")),
+            "a resource-only peer tag must reach span meta"
+        );
+
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
+        let payload_key = PayloadAggregationKey {
+            env: MetaString::from("test"),
+            ..Default::default()
+        };
+        let stat_span = concentrator
+            .new_stat_span_from_span(span)
+            .expect("a client span with a peer tag should produce stats");
+        concentrator.add_span(&stat_span, 1.0, &payload_key, &InfraTags::default(), "");
+
+        let payloads = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
+        let peer_tags: Vec<String> = payloads
+            .iter()
+            .flat_map(|payload| payload.stats())
+            .flat_map(|bucket| bucket.stats())
+            .flat_map(|grouped| grouped.peer_tags().iter().map(|tag| tag.to_string()))
+            .collect();
+        assert_eq!(peer_tags, ["db.instance:i-1234"]);
+    }
+
+    fn transform_with_workload_provider(workload_provider: Option<TestWorkloadProvider>) -> ApmStats {
+        let now = now_nanos();
+        ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::from("none"),
+            agent_hostname: MetaString::default(),
+            workload_provider: workload_provider
+                .map(|provider| Arc::new(provider) as Arc<dyn WorkloadProvider + Send + Sync>),
+            splits: Counter::noop(),
+        }
+    }
+
+    fn string_attributes(pairs: &[(&str, &str)]) -> FastHashMap<MetaString, AttributeValue> {
+        pairs
+            .iter()
+            .map(|(k, v)| (MetaString::from(*k), AttributeValue::String(MetaString::from(*v))))
+            .collect()
+    }
+
+    const CONTAINER_VERSION: ContainerVersionData<'static> = ContainerVersionData {
+        git_commit_sha: "container-sha",
+        image_tag: "container-image",
+        app_version: "container-v",
+    };
+
+    #[test]
+    fn version_data_falls_back_to_container_tags() {
+        let transform = transform_with_workload_provider(None);
+        let trace = Trace::new(vec![make_test_span("svc", "op", "res")], TraceIngestInfo::Datadog);
+
+        let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
+        assert_eq!(key.version, "container-v");
+        assert_eq!(key.git_commit_sha, "container-sha");
+        assert_eq!(key.image_tag, "container-image");
+    }
+
+    #[test]
+    fn trace_version_data_wins_over_container_tags() {
+        let transform = transform_with_workload_provider(None);
+
+        // The payload version and the root span's image tag and commit SHA win over the container's tags.
+        let span = make_test_span("svc", "op", "res").with_attributes(string_attributes(&[
+            (TAG_GIT_COMMIT_SHA, "span-sha"),
+            ("_dd.image_tag", "span-image"),
+        ]));
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.payload.app_version = MetaString::from("payload-v");
+        let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
+        assert_eq!(key.version, "payload-v");
+        assert_eq!(key.git_commit_sha, "span-sha");
+        assert_eq!(key.image_tag, "span-image");
+
+        // The commit SHA set on the tracer payload wins over the root span's.
+        trace.attributes = Arc::new(string_attributes(&[(TAG_GIT_COMMIT_SHA, "payload-sha")]));
+        let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
+        assert_eq!(key.git_commit_sha, "payload-sha");
+
+        // Empty trace values don't hide the container's tags.
+        let span = make_test_span("svc", "op", "res").with_attributes(string_attributes(&[
+            ("version", ""),
+            (TAG_GIT_COMMIT_SHA, ""),
+            ("_dd.image_tag", ""),
+        ]));
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.attributes = Arc::new(string_attributes(&[(TAG_GIT_COMMIT_SHA, "")]));
+        let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
+        assert_eq!(key.version, "container-v");
+        assert_eq!(key.git_commit_sha, "container-sha");
+        assert_eq!(key.image_tag, "container-image");
+    }
+
+    #[test]
+    fn stats_carry_version_data_from_the_workload_provider() {
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("cid-1")),
+            &["git.commit.sha:abc123", "image_tag:1.2.3", "version:v4"],
+        );
+        let mut transform = transform_with_workload_provider(Some(provider));
+
+        let now = now_nanos();
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+        let span = Span::new("svc", "op", "res", "web", 1, 0, now, 100_000_000, 0).with_attributes(attrs);
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        transform.process_trace(&trace);
+
+        let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].version(), "v4");
+        assert_eq!(stats[0].git_commit_sha(), "abc123");
+        assert_eq!(stats[0].image_tag(), "1.2.3");
+    }
+
+    #[test]
+    fn stats_normalize_the_payload_env_like_the_trace_encoder() {
+        let transform = transform_with_workload_provider(None);
+        let key_for = |payload_env: &str| {
+            let mut trace = Trace::new(vec![make_test_span("svc", "op", "res")], TraceIngestInfo::Datadog);
+            trace.payload.env = MetaString::from(payload_env);
+            transform
+                .build_payload_key(&trace, "", ContainerVersionData::default())
+                .env
+                .to_string()
+        };
+
+        assert_eq!(key_for("Prod Env"), "prod_env");
+        assert_eq!(key_for("prod"), "prod");
+        // A payload env that normalizes to nothing falls back to the agent's.
+        assert_eq!(key_for("!!!"), "none");
+        assert_eq!(key_for(""), "none");
+    }
+
+    #[test]
+    fn hostname_prefers_payload_then_root_span_then_agent() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::from("agent-host"),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+        let trace_with = |payload_hostname: &str, root_hostname: Option<&str>| {
+            let mut attrs = FastHashMap::default();
+            if let Some(root_hostname) = root_hostname {
+                attrs.insert(
+                    MetaString::from("_dd.hostname"),
+                    AttributeValue::String(MetaString::from(root_hostname)),
+                );
+            }
+            let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
+            let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
+            trace.payload.hostname = MetaString::from(payload_hostname);
+            trace
+        };
+        let hostname = |trace: &Trace| {
+            transform
+                .build_payload_key(trace, "", ContainerVersionData::default())
+                .hostname
+                .to_string()
+        };
+
+        // The payload hostname beats the root span's `_dd.hostname`.
+        assert_eq!(hostname(&trace_with("payload-host", Some("root-host"))), "payload-host");
+        assert_eq!(hostname(&trace_with("", Some("root-host"))), "root-host");
+        assert_eq!(hostname(&trace_with("", None)), "agent-host");
+    }
+
+    #[test]
+    fn otlp_trace_without_a_hostname_is_attributed_to_the_configured_hostname() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::from("agent-host"),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+
+        // A serverless OTLP resource reports no hostname, so its stats use the configured one. The trace payload
+        // itself stays empty.
+        let span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0);
+        let trace = Trace::new(
+            vec![span],
+            TraceIngestInfo::Otlp {
+                receiver_sampling_rate: 1.0,
+            },
+        );
+        let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
+        assert_eq!(key.hostname.as_ref(), "agent-host");
     }
 
     proptest! {
@@ -1630,6 +2057,11 @@ mod tests {
             // Property 2: Total stats should be preserved
             let output_total: usize = result.iter().map(count_grouped_stats).sum();
             prop_assert_eq!(input_total, output_total, "Total stats count should be preserved");
+
+            // Property 3: Events are marked as split exactly when there is more than one of them
+            for trace_stats in &result {
+                prop_assert_eq!(trace_stats.is_split_payload(), result.len() > 1);
+            }
         }
     }
 }

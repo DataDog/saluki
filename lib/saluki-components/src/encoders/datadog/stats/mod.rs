@@ -2,13 +2,13 @@
 
 use std::time::Duration;
 
-use agent_data_plane_config::{defaults::DEFAULT_TRACE_ENV, domains, shared::SharedConfiguration};
 use async_trait::async_trait;
 use datadog_protos::traces::{
     ClientGroupedStats as ProtoClientGroupedStats, ClientStatsBucket as ProtoClientStatsBucket,
     ClientStatsPayload as ProtoClientStatsPayload, StatsPayload as ProtoStatsPayload, Trilean,
 };
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
+use metrics::Counter;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::runtime;
 use saluki_core::{
@@ -41,6 +41,7 @@ use crate::common::datadog::{
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
+use crate::config::AgentEnv;
 
 const MAX_STATS_PER_PAYLOAD: usize = 4000;
 static CONTENT_TYPE_MSGPACK: HeaderValue = HeaderValue::from_static("application/msgpack");
@@ -50,22 +51,21 @@ pub struct DatadogApmStatsEncoderConfiguration {
     flush_timeout: Duration,
     agent_hostname: Option<String>,
     agent_version: String,
-    env: String,
+    agent_env: AgentEnv,
 }
 
 impl DatadogApmStatsEncoderConfiguration {
-    /// Creates a new `DatadogApmStatsEncoderConfiguration` from the resolved configuration.
-    pub fn from_configuration(traces: &domains::traces::Domain, shared: &SharedConfiguration) -> Self {
+    /// Creates a new `DatadogApmStatsEncoderConfiguration`.
+    ///
+    /// The encoder waits up to `flush_timeout` before flushing a partially filled payload; a zero duration flushes
+    /// almost immediately. Each payload carries `agent_env` as its agent environment.
+    pub fn new(flush_timeout: Duration, agent_env: AgentEnv) -> Self {
         let app_details = saluki_metadata::get_app_details();
         Self {
-            flush_timeout: shared.metrics_encoding.flush_timeout,
+            flush_timeout,
             agent_hostname: None,
             agent_version: format!("agent-data-plane/{}", app_details.version().raw()),
-            env: if traces.env.is_empty() {
-                DEFAULT_TRACE_ENV.to_owned()
-            } else {
-                traces.env.clone()
-            },
+            agent_env,
         }
     }
 
@@ -78,6 +78,14 @@ impl DatadogApmStatsEncoderConfiguration {
         let hostname = host_provider.get_hostname().await?;
         self.agent_hostname = Some(hostname);
         Ok(self)
+    }
+
+    fn endpoint_encoder(&self) -> StatsEndpointEncoder {
+        StatsEndpointEncoder::new(
+            MetaString::from(self.agent_hostname.clone().unwrap_or_default()),
+            MetaString::from(self.agent_version.clone()),
+            self.agent_env.clone().into(),
+        )
     }
 }
 
@@ -94,18 +102,11 @@ impl EncoderBuilder for DatadogApmStatsEncoderConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let payload_telemetry = StatsPayloadTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::gzip_default();
 
-        let agent_hostname = MetaString::from(self.agent_hostname.clone().unwrap_or_default());
-        let agent_version = MetaString::from(self.agent_version.clone());
-        let agent_env = MetaString::from(self.env.clone());
-
-        let mut stats_rb = RequestBuilder::new(
-            StatsEndpointEncoder::new(agent_hostname, agent_version, agent_env),
-            compression_scheme,
-            RB_BUFFER_CHUNK_SIZE,
-        )
-        .await?;
+        let mut stats_rb =
+            RequestBuilder::new(self.endpoint_encoder(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         stats_rb.with_max_inputs_per_payload(MAX_STATS_PER_PAYLOAD);
 
         let flush_timeout = if self.flush_timeout.is_zero() {
@@ -119,6 +120,7 @@ impl EncoderBuilder for DatadogApmStatsEncoderConfiguration {
         Ok(Box::new(DatadogStats {
             stats_rb,
             telemetry,
+            payload_telemetry,
             flush_timeout,
         }))
     }
@@ -141,7 +143,60 @@ impl MemoryBounds for DatadogApmStatsEncoderConfiguration {
 pub struct DatadogStats {
     stats_rb: RequestBuilder<StatsEndpointEncoder>,
     telemetry: ComponentTelemetry,
+    payload_telemetry: StatsPayloadTelemetry,
     flush_timeout: Duration,
+}
+
+/// Telemetry for what the stats encoder writes into payloads.
+struct StatsPayloadTelemetry {
+    client_payloads: Counter,
+    buckets: Counter,
+    entries: Counter,
+    bytes_uncompressed: Counter,
+}
+
+impl StatsPayloadTelemetry {
+    fn from_builder(builder: &MetricsBuilder) -> Self {
+        Self {
+            client_payloads: builder.register_counter("component_stats_client_payloads_encoded_total"),
+            buckets: builder.register_counter("component_stats_buckets_encoded_total"),
+            entries: builder.register_counter("component_stats_entries_encoded_total"),
+            bytes_uncompressed: builder.register_counter("component_bytes_uncompressed_total"),
+        }
+    }
+
+    /// Tracks stats written into a payload.
+    fn track_stats(&self, counts: StatsCounts) {
+        self.client_payloads.increment(counts.client_payloads);
+        self.buckets.increment(counts.buckets);
+        self.entries.increment(counts.entries);
+    }
+
+    /// Tracks a flushed payload, given its size before compression.
+    fn track_payload(&self, uncompressed_len: usize) {
+        self.bytes_uncompressed.increment(uncompressed_len as u64);
+    }
+}
+
+/// Client payloads, buckets, and grouped entries that stats add to a payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct StatsCounts {
+    client_payloads: u64,
+    buckets: u64,
+    entries: u64,
+}
+
+impl StatsCounts {
+    /// Counts the client payloads, buckets, and grouped entries of stats.
+    fn from_trace_stats(stats: &TraceStats) -> Self {
+        let client_payloads = stats.stats();
+        let buckets = client_payloads.iter().flat_map(|client_payload| client_payload.stats());
+        Self {
+            client_payloads: client_payloads.len() as u64,
+            buckets: buckets.clone().count() as u64,
+            entries: buckets.map(|bucket| bucket.stats().len() as u64).sum(),
+        }
+    }
 }
 
 #[async_trait]
@@ -150,6 +205,7 @@ impl Encoder for DatadogStats {
         let Self {
             stats_rb,
             telemetry,
+            payload_telemetry,
             flush_timeout,
         } = *self;
 
@@ -162,7 +218,14 @@ impl Encoder for DatadogStats {
         //
         // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
         // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
-        let request_builder_fut = run_request_builder(stats_rb, telemetry, events_rx, payloads_tx, flush_timeout);
+        let request_builder_fut = run_request_builder(
+            stats_rb,
+            telemetry,
+            payload_telemetry,
+            events_rx,
+            payloads_tx,
+            flush_timeout,
+        );
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
             .needed()
@@ -211,7 +274,8 @@ impl Encoder for DatadogStats {
 
 async fn run_request_builder(
     mut stats_request_builder: RequestBuilder<StatsEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: Receiver<EventsBuffer>, payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
+    payload_telemetry: StatsPayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
+    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -220,16 +284,16 @@ async fn run_request_builder(
     loop {
         select! {
             Some(event_buffer) = events_rx.recv() => {
-                for event in event_buffer {
-                    let trace_stats = match event.try_into_trace_stats() {
-                        Some(stats) => stats,
-                        None => continue,
-                    };
+                for trace_stats in event_buffer.into_events::<TraceStats>() {
 
                     // Encode the stats. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the stats again.
+                    let stats_counts = StatsCounts::from_trace_stats(&trace_stats);
                     let stats_to_retry = match stats_request_builder.encode(trace_stats).await {
-                        Ok(None) => continue,
+                        Ok(None) => {
+                            payload_telemetry.track_stats(stats_counts);
+                            continue;
+                        }
                         Ok(Some(stats)) => stats,
                         Err(e) => {
                             error!(error = %e, "Failed to encode stats.");
@@ -245,7 +309,8 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, _data_points, request)) => {
+                            Ok((events, _data_points, uncompressed_len, request)) => {
+                                payload_telemetry.track_payload(uncompressed_len);
                                 let payload_meta = PayloadMetadata::from_event_count(events);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
@@ -261,9 +326,16 @@ async fn run_request_builder(
                         }
                     }
 
-                    if let Err(e) = stats_request_builder.encode(stats_to_retry).await {
-                        error!(error = %e, "Failed to encode stats.");
-                        telemetry.events_dropped_encoder().increment(1);
+                    match stats_request_builder.encode(stats_to_retry).await {
+                        Ok(None) => payload_telemetry.track_stats(stats_counts),
+                        Ok(Some(_)) => {
+                            error!("Stats did not fit in a request after flushing; dropping them.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to encode stats.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
                     }
                 }
 
@@ -283,7 +355,8 @@ async fn run_request_builder(
                 let maybe_stats_requests = stats_request_builder.flush().await;
                 for maybe_request in maybe_stats_requests {
                     match maybe_request {
-                        Ok((events, _data_points, request)) => {
+                        Ok((events, _data_points, uncompressed_len, request)) => {
+                            payload_telemetry.track_payload(uncompressed_len);
                             let payload_meta = PayloadMetadata::from_event_count(events);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
@@ -331,7 +404,7 @@ impl StatsEndpointEncoder {
         payload.set_agentEnv(self.agent_env.to_string());
         payload.set_agentVersion(self.agent_version.to_string());
         payload.set_clientComputed(false);
-        payload.set_splitPayload(false);
+        payload.set_splitPayload(stats.is_split_payload());
         payload.set_stats(stats.stats().iter().map(convert_client_stats_payload).collect());
 
         payload
@@ -444,5 +517,156 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_MSGPACK.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_core::data_model::event::Event;
+    use saluki_metrics::test::TestRecorder;
+
+    use super::*;
+
+    #[test]
+    fn stats_payload_agent_env_is_the_agent_env() {
+        // The encoder sends the resolved agent environment unchanged: one that normalizes to empty does not become
+        // `none`.
+        let cases = [
+            (AgentEnv::resolve(None, Some("Prod"), &[], &[]), "prod"),
+            (AgentEnv::resolve(Some("!!!"), None, &[], &[]), ""),
+        ];
+        for (agent_env, expected) in cases {
+            let config = DatadogApmStatsEncoderConfiguration::new(Duration::from_secs(2), agent_env);
+            let mut buf = Vec::new();
+            config
+                .endpoint_encoder()
+                .encode(&TraceStats::new(Vec::new()), &mut buf)
+                .expect("encode should succeed");
+
+            let payload: ProtoStatsPayload = rmp_serde::from_slice(&buf).expect("StatsPayload should decode");
+            assert_eq!(payload.agentEnv(), expected);
+        }
+    }
+
+    #[test]
+    fn stats_payload_split_flag_follows_trace_stats() {
+        for is_split in [false, true] {
+            let config = DatadogApmStatsEncoderConfiguration::new(
+                Duration::from_secs(2),
+                AgentEnv::resolve(None, Some("prod"), &[], &[]),
+            );
+            let mut buf = Vec::new();
+            config
+                .endpoint_encoder()
+                .encode(&TraceStats::new(Vec::new()).with_split_payload(is_split), &mut buf)
+                .expect("encode should succeed");
+
+            let payload: ProtoStatsPayload = rmp_serde::from_slice(&buf).expect("StatsPayload should decode");
+            assert_eq!(payload.splitPayload(), is_split);
+        }
+    }
+
+    fn make_client_payload(entries_per_bucket: &[usize]) -> ClientStatsPayload {
+        let buckets = entries_per_bucket
+            .iter()
+            .map(|&entries| {
+                let stats = (0..entries)
+                    .map(|i| ClientGroupedStats::new("svc", "op", format!("res-{i}")))
+                    .collect();
+                ClientStatsBucket::new(1000, 10_000_000_000, stats)
+            })
+            .collect();
+        ClientStatsPayload::new("host", "env", "1.0.0").with_stats(buckets)
+    }
+
+    #[test]
+    fn stats_counts_count_client_payloads_buckets_and_entries() {
+        let stats = TraceStats::new(vec![make_client_payload(&[2, 3]), make_client_payload(&[1])]);
+        assert_eq!(
+            StatsCounts::from_trace_stats(&stats),
+            StatsCounts {
+                client_payloads: 2,
+                buckets: 3,
+                entries: 6,
+            }
+        );
+        assert_eq!(
+            StatsCounts::from_trace_stats(&TraceStats::new(Vec::new())),
+            StatsCounts::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn request_builder_tracks_written_stats_and_uncompressed_bytes() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let config = DatadogApmStatsEncoderConfiguration::new(
+            Duration::from_secs(2),
+            AgentEnv::resolve(None, Some("prod"), &[], &[]),
+        );
+
+        let all_stats = vec![
+            TraceStats::new(vec![make_client_payload(&[2, 3]), make_client_payload(&[1])]),
+            TraceStats::new(vec![make_client_payload(&[4])]),
+        ];
+
+        // Without compression or framing, the payload before compression is all stats encoded back to back.
+        let expected_uncompressed_len = all_stats
+            .iter()
+            .map(|stats| {
+                let mut buf = Vec::new();
+                config
+                    .endpoint_encoder()
+                    .encode(stats, &mut buf)
+                    .expect("encode should succeed");
+                buf.len() as u64
+            })
+            .sum::<u64>();
+
+        let request_builder = RequestBuilder::new(
+            config.endpoint_encoder(),
+            CompressionScheme::noop(),
+            RB_BUFFER_CHUNK_SIZE,
+        )
+        .await
+        .expect("request builder should be created");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        for stats in all_stats {
+            assert!(events.try_push(Event::TraceStats(stats)).is_none());
+        }
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            StatsPayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        let mut payloads = 0;
+        while payloads_rx.recv().await.is_some() {
+            payloads += 1;
+        }
+        assert_eq!(payloads, 1);
+
+        assert_eq!(
+            recorder.counter("component_stats_client_payloads_encoded_total"),
+            Some(3)
+        );
+        assert_eq!(recorder.counter("component_stats_buckets_encoded_total"), Some(4));
+        assert_eq!(recorder.counter("component_stats_entries_encoded_total"), Some(10));
+        assert_eq!(
+            recorder.counter("component_bytes_uncompressed_total"),
+            Some(expected_uncompressed_len)
+        );
     }
 }

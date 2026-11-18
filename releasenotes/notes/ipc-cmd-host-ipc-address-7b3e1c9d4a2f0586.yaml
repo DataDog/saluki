@@ -1,0 +1,8 @@
+fixes:
+  - |
+    ADP now connects to the Datadog Agent's IPC server at the host set by
+    ``cmd_host`` (or the deprecated ``ipc_address``, which takes precedence when
+    set), instead of always using ``127.0.0.1``. Previously, if the Agent's IPC
+    server listened on another loopback address, such as ``::1`` on an IPv6-only
+    host or ``127.0.0.2``, ADP couldn't connect and exited after retrying. As in
+    the Agent, the host must be ``localhost`` or a loopback IP address.

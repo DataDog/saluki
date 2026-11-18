@@ -37,7 +37,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.84.3
+MACOS_TEST_AGENT_VERSION ?= 7.84.6
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -86,9 +86,12 @@ export WINDOWS_CROSS_TARGET ?= x86_64-pc-windows-msvc
 export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
 export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
-# Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.81.x
-export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
+# Version of source repositories (Git tag, branch, or full commit SHA) for vendored Protocol Buffers definitions.
+#
+# The Datadog Agent is pinned to a commit on `main` until a release branch includes DataDog/datadog-agent#58951 (the
+# optional `process_instance_id` in remote-agent registration). Move this to that release branch when it exists.
+export PROTOBUF_SRC_REPO_DD_AGENT ?= b13554d0c66277f2f30ee190c2540d1d872ce14a
+export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.215
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
 
@@ -155,7 +158,12 @@ build-adp-release-system-alloc: ## Builds the ADP binary in release mode with th
 build-schema-overlay: check-rust-build-tools
 build-schema-overlay: ## Builds the config schema overlay packages
 	@echo "[*] Building config schema overlay packages..."
-	@cargo build --profile devel --package datadog-agent-config --package datadog-agent-config-testing
+	@cargo build --profile devel --package datadog-agent-config --package datadog-agent-config-docs
+
+.PHONY: build-agent-config-corpus
+build-agent-config-corpus: ## Regenerates the Agent config corpus (needs Docker)
+	@echo "[*] Regenerating the Agent config corpus..."
+	@lib/datadog-agent/config-recorder/regenerate.sh
 
 .PHONY: build-adp-image-base
 build-adp-image-base:
@@ -567,7 +575,7 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 check-docs: check-lint-tools
 check-docs: ## Checks prose/code documentation against our style guide
 	@echo "[*] Checking prose/code documentation against our style guide..."
-	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,*datadog_configuration*}' docs lib bin
+	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,docs/development/plans/*,*datadog_configuration*}' docs lib bin
 
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools
@@ -581,6 +589,12 @@ test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
 	cargo nextest run --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
+
+.PHONY: test-container-daemon
+test-container-daemon: check-rust-build-tools cargo-install-cargo-nextest build-courier
+test-container-daemon: ## Runs the unit tests that need a Docker daemon
+	@echo "[*] Running unit tests against the Docker daemon..."
+	cargo nextest run -p airlock -p panoramic --run-ignored ignored-only
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
@@ -627,6 +641,18 @@ build-panoramic: check-rust-build-tools
 build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 	@echo "[*] Building panoramic..."
 	@cargo build --profile release --package panoramic
+
+# The courier runs inside images panoramic does not control, so it links statically against musl. rust-lld ships with
+# the toolchain and needs no musl C toolchain on the host.
+COURIER_TARGET ?= $(shell uname -m | sed s/arm64/aarch64/)-unknown-linux-musl
+
+.PHONY: build-courier
+build-courier: check-rust-build-tools
+build-courier: ## Builds the static courier binary that panoramic runs inside containers
+	@echo "[*] Building courier for $(COURIER_TARGET)..."
+	@rustup target add $(COURIER_TARGET)
+	@cargo build --profile release --package panoramic-courier --bin courier --target $(COURIER_TARGET) \
+		--config 'target.$(COURIER_TARGET).linker="rust-lld"' --config 'profile.release.strip="symbols"'
 
 .PHONY: test-integration
 test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
@@ -746,10 +772,10 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
 			DD_AUTH_TOKEN_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token \
 			DD_IPC_CERT_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem \
-			DD_CMD_PORT=55001 DD_GUI_PORT=-1 \
-			DD_EXPVAR_PORT=55000 DD_APM_RECEIVER_PORT=58126 \
-			DD_PROCESS_CONFIG_CMD_PORT=56062 DD_AGENT_IPC_PORT=55004 \
-			DD_DOGSTATSD_PORT=58125 \
+			DD_CMD_PORT=45001 DD_GUI_PORT=-1 \
+			DD_EXPVAR_PORT=45000 DD_APM_RECEIVER_PORT=48126 \
+			DD_PROCESS_CONFIG_CMD_PORT=46062 DD_AGENT_IPC_PORT=45004 \
+			DD_DOGSTATSD_PORT=48125 \
 			$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent run -c $(MACOS_TEST_AGENT_INSTALL_DIR)/etc >/tmp/saluki-agent-bootstrap.log 2>&1 & \
 		AGENT_PID=$$!; \
 		for i in $$(seq 1 30); do \
@@ -858,6 +884,12 @@ endif
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
+
+.PHONY: generate-correctness-fixtures
+generate-correctness-fixtures: check-rust-build-tools
+generate-correctness-fixtures: ## Regenerates the static payloads of the OTLP correctness cases
+	@echo "[*] Regenerating correctness case fixtures..."
+	@cargo run --profile devel --package otlp-fixtures
 
 SMP_GENERATOR := test/smp/regression/adp/generate_experiments.py
 
@@ -982,6 +1014,10 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	CONTAINERD_GIT_TAG=$(PROTOBUF_SRC_REPO_CONTAINERD) \
 	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
 	./ci/tooling/update-protos.sh
+
+.PHONY: update-apm-semantics
+update-apm-semantics: ## Refreshes the vendored APM semantic mappings from the Agent and commits them (REF=<ref>, default main)
+	@./ci/tooling/update-apm-semantics.sh "$(REF)"
 
 .PHONY: clean
 clean: check-rust-build-tools clean-test-logs

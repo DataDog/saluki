@@ -27,13 +27,18 @@ env:
   # so this test avoids normal intake DNS while /etc/resolv.conf is empty.
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
   DD_DATA_PLANE_OTLP_ENABLED: "true"
+  # The Core Agent in the test image predates datadog-agent#59825 and relocates its OTLP listener on this key.
+  # Remove it once `.datadog-agent-version` includes that change.
   DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "true"
 
 container:
   files:
     - "empty-resolv-conf.sh:/etc/cont-init.d/01-empty-resolv-conf.sh"
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
 
 procedure:
   - parallel:

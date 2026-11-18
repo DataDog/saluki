@@ -1,0 +1,5 @@
+fixes:
+  - |
+    A DogStatsD event or service check with an empty ``host:`` tag (and no ``h:``
+    field) is now sent with an empty hostname, as the Datadog Agent does.
+    Previously the agent's hostname was filled in instead.

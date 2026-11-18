@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use agent_data_plane_config::shared;
 use saluki_error::{generic_error, GenericError};
 
 use crate::common::datadog::routing::{RoutingTargetCatalog, RoutingTargetSet};
@@ -55,10 +54,10 @@ pub struct MetricsEndpointRoutingConfiguration {
 }
 
 impl MetricsEndpointRoutingConfiguration {
-    /// Resolves endpoint policies against the configured primary and additional endpoints.
+    /// Resolves endpoint policies against the primary endpoint and the configured additional endpoints.
     ///
     /// An empty policy map preserves ordinary endpoint routing. Every policy key must exactly match a key in
-    /// `additional_endpoints` or the effective primary endpoint; this prevents a typo from silently leaving an intended
+    /// `additional_endpoints` or `primary_endpoint`; this prevents a typo from silently leaving an intended
     /// capacity-saving destination on the unfiltered path. Equivalent allow lists are grouped so they can share one
     /// filtered encoder branch.
     ///
@@ -66,9 +65,9 @@ impl MetricsEndpointRoutingConfiguration {
     ///
     /// Returns an error if a policy names neither the primary endpoint nor an endpoint configured in
     /// `additional_endpoints`.
-    pub fn from_configuration(
+    pub fn new(
         metric_allowlists: &HashMap<String, Vec<String>>, metric_prefix_allowlists: &HashMap<String, Vec<String>>,
-        endpoints: &shared::Endpoints,
+        primary_endpoint: &str, additional_endpoints: &HashMap<String, Vec<String>>,
     ) -> Result<Self, GenericError> {
         let mut selected_endpoints = metric_allowlists
             .keys()
@@ -78,10 +77,8 @@ impl MetricsEndpointRoutingConfiguration {
         selected_endpoints.sort_unstable();
         selected_endpoints.dedup();
         let mut grouped_endpoints = BTreeMap::<(Vec<String>, Vec<String>), Vec<String>>::new();
-        let primary_endpoint = endpoints.primary_endpoint();
-
         for endpoint in &selected_endpoints {
-            if endpoint != &primary_endpoint && !endpoints.additional_endpoints.contains_key(endpoint) {
+            if endpoint != primary_endpoint && !additional_endpoints.contains_key(endpoint) {
                 return Err(generic_error!(
                     "Experimental metrics endpoint-routing policy endpoint '{}' does not match the configured primary \
                      endpoint and is not present in `additional_endpoints`; correct the endpoint, add it and its API \
@@ -156,31 +153,34 @@ impl MetricsEndpointRoutingConfiguration {
 mod tests {
     use std::collections::HashMap;
 
-    use agent_data_plane_config::ConfigValue;
-
     use super::*;
 
     const PRIMARY: &str = "https://primary.example.com";
 
-    fn endpoints() -> shared::Endpoints {
-        shared::Endpoints {
-            dd_url: ConfigValue::explicit(PRIMARY.to_string()),
-            additional_endpoints: HashMap::from([
-                ("https://secondary-a.example.com".to_string(), vec!["key-a".to_string()]),
-                ("https://secondary-b.example.com".to_string(), vec!["key-b".to_string()]),
-                ("https://secondary-c.example.com".to_string(), vec!["key-c".to_string()]),
-            ]),
-            ..Default::default()
-        }
+    fn additional_endpoints() -> HashMap<String, Vec<String>> {
+        HashMap::from([
+            ("https://secondary-a.example.com".to_string(), vec!["key-a".to_string()]),
+            ("https://secondary-b.example.com".to_string(), vec!["key-b".to_string()]),
+            ("https://secondary-c.example.com".to_string(), vec!["key-c".to_string()]),
+        ])
+    }
+
+    fn routing(
+        metric_allowlists: &HashMap<String, Vec<String>>, metric_prefix_allowlists: &HashMap<String, Vec<String>>,
+    ) -> Result<MetricsEndpointRoutingConfiguration, GenericError> {
+        MetricsEndpointRoutingConfiguration::new(
+            metric_allowlists,
+            metric_prefix_allowlists,
+            PRIMARY,
+            &additional_endpoints(),
+        )
     }
 
     #[test]
     fn empty_policy_map_preserves_the_ordinary_endpoint_path() {
         let allowlists = HashMap::new();
 
-        let config =
-            MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints())
-                .expect("empty routing should be valid");
+        let config = routing(&allowlists, &HashMap::new()).expect("empty routing should be valid");
         assert!(config.selected_endpoints().is_empty());
         assert!(config.policy_groups().is_empty());
     }
@@ -199,9 +199,7 @@ mod tests {
             ("https://secondary-c.example.com".to_string(), Vec::new()),
         ]);
 
-        let config =
-            MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints())
-                .expect("configured endpoints should resolve");
+        let config = routing(&allowlists, &HashMap::new()).expect("configured endpoints should resolve");
         assert_eq!(
             config.selected_endpoints(),
             [
@@ -224,28 +222,10 @@ mod tests {
     }
 
     #[test]
-    fn accepts_a_site_derived_primary_endpoint() {
-        let endpoints = shared::Endpoints {
-            site: ConfigValue::explicit("us5.datadoghq.com".to_string()),
-            dd_url: ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
-            ..Default::default()
-        };
-        let allowlists = HashMap::from([(
-            "https://app.us5.datadoghq.com".to_string(),
-            vec!["metric.a".to_string()],
-        )]);
-
-        let config = MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints)
-            .expect("site-derived primary endpoint should resolve");
-        assert_eq!(config.selected_endpoints(), ["https://app.us5.datadoghq.com"]);
-    }
-
-    #[test]
     fn rejects_a_policy_that_does_not_name_a_configured_endpoint() {
         let allowlists = HashMap::from([("https://typo.example.com".to_string(), vec!["metric.a".to_string()])]);
 
-        let error = MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints())
-            .expect_err("unknown endpoint should be rejected");
+        let error = routing(&allowlists, &HashMap::new()).expect_err("unknown endpoint should be rejected");
         let message = error.to_string();
         assert!(message.contains("https://typo.example.com"));
         assert!(message.contains("primary endpoint"));
@@ -278,7 +258,7 @@ mod tests {
             ("https://secondary-b.example.com".to_string(), vec!["a.".to_string()]),
             ("https://secondary-c.example.com".to_string(), vec![]),
         ]);
-        let config = MetricsEndpointRoutingConfiguration::from_configuration(&names, &prefixes, &endpoints()).unwrap();
+        let config = routing(&names, &prefixes).unwrap();
         assert_eq!(config.selected_endpoints().len(), 4);
         assert_eq!(config.policy_groups().len(), 2);
         let combined = config
@@ -305,15 +285,13 @@ mod tests {
             ("https://secondary-a.example.com".to_string(), vec!["exact".to_string()]),
         ]);
         let prefixes = HashMap::from([(PRIMARY.to_string(), vec!["a.".to_string()])]);
-        let config = MetricsEndpointRoutingConfiguration::from_configuration(&names, &prefixes, &endpoints()).unwrap();
+        let config = routing(&names, &prefixes).unwrap();
         assert_eq!(config.policy_groups().len(), 2);
     }
 
     #[test]
     fn policies_resolve_to_complementary_routing_targets() {
-        let endpoints = endpoints();
-        let catalog =
-            RoutingTargetCatalog::new(&endpoints.primary_endpoint(), &endpoints.additional_endpoints).unwrap();
+        let catalog = RoutingTargetCatalog::new(PRIMARY, &additional_endpoints()).unwrap();
         let allowlists = HashMap::from([
             (PRIMARY.to_string(), vec!["metric.a".to_string()]),
             (
@@ -322,8 +300,7 @@ mod tests {
             ),
             ("https://secondary-c.example.com".to_string(), vec![]),
         ]);
-        let config =
-            MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints).unwrap();
+        let config = routing(&allowlists, &HashMap::new()).unwrap();
 
         let configured = |targets: &RoutingTargetSet| {
             targets
@@ -349,9 +326,7 @@ mod tests {
     fn rejects_unknown_endpoints_in_prefix_map_including_empty_policies() {
         for list in [vec![], vec!["metric.".to_string()]] {
             let prefixes = HashMap::from([("https://typo.example.com".to_string(), list)]);
-            let error =
-                MetricsEndpointRoutingConfiguration::from_configuration(&HashMap::new(), &prefixes, &endpoints())
-                    .unwrap_err();
+            let error = routing(&HashMap::new(), &prefixes).unwrap_err();
             assert!(error.to_string().contains("metric_prefix_allowlist"));
         }
     }

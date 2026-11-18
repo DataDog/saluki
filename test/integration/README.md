@@ -180,6 +180,10 @@ procedure:
 
 Steps execute sequentially. If any assertion or action fails, subsequent steps are skipped. Within a parallel block, all assertions run to completion regardless of individual failures.
 
+### Step deadlines
+
+See [Step deadlines](../../docs/development/testing.md#step-deadlines) in the testing guide.
+
 ### Available actions
 
 #### `adp_cli`
@@ -198,7 +202,7 @@ The action fails if the command exits with a nonzero status or exceeds its timeo
 
 Captures traffic sent by `sender`, replays the completed capture through the tested ADP binary, and verifies that `expected_metrics` appear in a statistics collection that runs concurrently with the replay. This action invokes the tested ADP CLI with the test's configuration and environment, so it works on Linux, macOS, and Windows without exposing runtime-specific configuration paths to the sender command.
 
-`capture_duration` uses the [duration format](#duration-format). `stats_duration_secs` controls the bounded post-capture statistics collection. The sender must emit all capture traffic before `capture_duration` elapses. `timeout` applies to each target command and defaults to `30s`.
+`capture_duration` uses the [duration format](#duration-format). `stats_duration_secs` controls the bounded post-capture statistics collection. The sender must emit all capture traffic before `capture_duration` elapses. `timeout` applies to each target command and defaults to `30s`. The whole-action budget is `4 × timeout + capture_duration + 50ms`, covering the commands, capture wait, and final retry.
 
 ```yaml
 - action: dogstatsd_replay
@@ -224,14 +228,14 @@ Place a readiness step before this action: steps run in order, so the send canno
 
 ```yaml
 - assertion: log_contains
-  pattern: 'listen_addr:"udp://0.0.0.0:58125" | DogStatsD listener started.'
+  pattern: 'listen_addr:"udp://0.0.0.0:48125" | DogStatsD listener started.'
   timeout: 60s
 ```
 
 ```yaml
 - action: dogstatsd_send
   payload: "example.counter:3|c|#source:integration-test"
-  port: 58125
+  port: 48125
   timeout: 10s
 ```
 
@@ -306,7 +310,7 @@ Verifies a pattern does NOT appear in the logs for a duration.
 
 #### `http_check`
 
-Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS is supported with optional certificate verification skipping for self-signed certificates. The status matcher accepts either an "equal" or "not equal" variant; the latter is useful for asserting that a route is registered without having to know what status code the endpoint would return.
+Probes an HTTP or HTTPS endpoint and asserts on the response status code, and optionally on the response body. HTTPS is supported with optional certificate verification skipping for self-signed certificates. The status matcher accepts either an "equal" or "not equal" variant; the latter is useful for asserting that a route is registered without having to know what status code the endpoint would return. The optional body matcher accepts an "equal" variant, which requires the response body to match the value exactly, or a "contains" variant, which requires the response body to contain the value; when set, the check passes only once both the status and the body match.
 
 `insecure_skip_verify` disables only verification of the server certificate; it does not supply a client certificate. As a result, `http_check` cannot probe ADP privileged routes, which require an authenticated client identity. Direct authenticated CLI operations through [`adp_cli`](#adp_cli) are the supported integration path for privileged operations.
 
@@ -325,13 +329,31 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
     equal: 200
   insecure_skip_verify: true     # Optional: skip server verification (default: false)
   timeout: 30s
+
+# Assert the endpoint returns a specific status code and body.
+- assertion: http_check
+  endpoint: "http://localhost:8126/services"
+  status:
+    equal: 200
+  body:                          # Optional: compare the response body exactly
+    equal: "OK\n"
+  timeout: 30s
+
+# Assert the response body contains a value.
+- assertion: http_check
+  endpoint: "http://localhost:8126/info"
+  status:
+    equal: 200
+  body:
+    contains: "\"/v0.4/traces\""
+  timeout: 30s
 ```
 
 #### `adp_config_key_equals`
 
 Executes the authenticated `agent-data-plane config --json` command and polls its output until one key equals the expected value. The `endpoint` field selects the configuration view; the CLI still connects to the privileged endpoint in its own configuration. `/config` maps to the source configuration, while `/config/runtime` maps to the translated runtime configuration by adding `--runtime` to the command.
 
-The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101` with an exact `/config` or `/config/runtime` path. It rejects credentials, other hosts or ports, trailing path components, queries, and fragments.
+The assertion accepts only `https://localhost:45101` or `https://127.0.0.1:45101` with an exact `/config` or `/config/runtime` path. It rejects credentials, other hosts or ports, trailing path components, queries, and fragments.
 
 ```yaml
 # Check the source configuration through the default /config selector.
@@ -344,7 +366,7 @@ The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101
 - assertion: adp_config_key_equals
   key: log_level
   value: debug
-  endpoint: "https://localhost:55101/config/runtime"
+  endpoint: "https://localhost:45101/config/runtime"
   timeout: 30s
 ```
 
@@ -352,16 +374,35 @@ The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101
 
 Polls the Datadog intake sidecar until it holds a metric matching every criterion given, or until `timeout` elapses. Requires `intake.enabled: true` on the test case. Polling, rather than a single check, absorbs the target's aggregation and flush window without a fixed sleep.
 
-Only `name` is required, and it must match exactly. `metric_type` (`count`, `rate`, `gauge`, or `sketch`) and `value` must both hold for the same metric value. `tags` is a subset requirement: every listed tag must be present, and additional tags, such as the environment-derived ones the Agent adds, are allowed.
+Each poll normalizes the intake's metrics per context (name and tags) and type, the same way correctness analysis does: counts and rates are summed, a gauge takes its latest value, and sketches are merged. A counter flushed as one `0.6` rate point or as two `0.3` points over equal intervals therefore matches `value: 0.6`. Contexts are never combined: the assertion passes when one context meets every criterion by itself. Expect totals, since a partial sum can match an early poll before the rest arrives.
+
+Only `name` is required, and it must match exactly. The other criteria are:
+
+- `metric_type`: `count`, `rate`, `gauge`, or `sketch`.
+- `value`: compared with the normalized value, using the same approximate float equality as correctness analysis. A rate is compared at its own interval. `value` can't be combined with `metric_type: sketch`; the test fails with a configuration error.
+- `tags`: compared as `tags_match` directs. Both sides are sorted and deduplicated first.
+- `tags_match`: `subset` (the default) requires every listed tag and allows extras, such as the environment-derived ones the Agent adds. `exact` requires the context's tags to equal the list. The intake reports a metric's host as a `host:<value>` tag, so under `exact`, `tags: []` means no tags and no host.
+
+`exact` constrains the one matching context. It doesn't prove that no other contexts arrived.
 
 ```yaml
 - assertion: intake_has_metric
   name: "example.counter"
-  metric_type: count
-  value: 3
+  metric_type: rate
+  value: 0.6
   tags: ["source:integration-test"]
   timeout: 120s
+
+- assertion: intake_has_metric
+  name: "hosttag.metric"
+  metric_type: gauge
+  value: 4
+  tags: ["host:custom"]
+  tags_match: exact
+  timeout: 120s
 ```
+
+On failure, the message lists the contexts that share the expected name, with each one's type, normalized value, point count, and the first criterion it failed. When no context has that name, it lists other observed names instead.
 
 #### `file_contains`
 
@@ -380,6 +421,10 @@ Polls a file inside the container (via `docker exec cat`) until it exists and, o
   regex: false           # Optional: treat pattern as regex (default: false)
   timeout: 30s
 ```
+
+### Intake artifacts
+
+A test with an intake sidecar captures what the intake holds after its assertions finish, under `traffic/` in the test's log directory. `traffic/manifest.json` describes the capture. The decoded capture, `traffic/target-decoded.jsonl.zst`, is kept unless the test passed. It is diagnostic evidence collected after the assertions, not necessarily the snapshot an assertion decided on. If the capture could not be collected or written, `decoded_unavailable` in the manifest says why. A test that is cancelled or reaches its overall `timeout` skips or abandons the capture rather than spending cleanup time on it.
 
 ### Duration Format
 

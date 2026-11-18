@@ -1,0 +1,18 @@
+fixes:
+  - |
+    DogStatsD events and service checks now use a ``host:`` tag as their hostname
+    when there's no ``h:`` field, as the Datadog Agent does. Previously the tag was
+    removed and the hostname was lost.
+  - |
+    A sample rate of ``@0`` on a DogStatsD distribution, histogram or timer is now
+    treated as unsampled, as in the Datadog Agent. Previously it was raised to
+    ``dogstatsd_minimum_sample_rate``, so each point counted about 260 million times.
+  - |
+    A DogStatsD metric with a timestamp of ``T0`` is now rejected, as in the Datadog
+    Agent. Previously it was kept, but with its sample rate dropped.
+  - |
+    Timestamped DogStatsD histograms, distributions and sets are now discarded, as in
+    the Datadog Agent's no-aggregation pipeline, which only forwards gauges and
+    counts. Previously they were forwarded as-is. Discarded metrics are counted in
+    ``component_events_dropped_total`` with ``drop_reason:unsupported_type`` and
+    logged at most once a minute.

@@ -1,10 +1,12 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use super::{
     target_exec::{execute_target_command, CommandDiagnostics},
     Action,
 };
-use crate::assertions::{AssertionContext, AssertionResult, TargetCommand};
+use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus, TargetCommand};
 
 #[derive(Clone, Copy)]
 pub(super) enum TargetCli {
@@ -81,7 +83,7 @@ impl Action for TargetCliAction {
             {
                 AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: if output.trim().is_empty() {
                         format!(
                             "{} output did not contain the configured value.",
@@ -99,7 +101,7 @@ impl Action for TargetCliAction {
             }
             Ok(output) => AssertionResult {
                 name: self.name().to_string(),
-                passed: true,
+                status: AssertionStatus::Passed,
                 message: if output.trim().is_empty() {
                     self.description()
                 } else {
@@ -109,7 +111,7 @@ impl Action for TargetCliAction {
             },
             Err(e) => AssertionResult {
                 name: self.name().to_string(),
-                passed: false,
+                status: e.status(),
                 message: e.to_string(),
                 duration: started.elapsed(),
             },

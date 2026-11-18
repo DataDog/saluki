@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    Enable ``telemetry.dogstatsd_origin``, together with ``dogstatsd_origin_detection``, to report active
+    DogStatsD aggregation contexts through ``aggregator.dogstatsd_contexts_by_origin``. The breakdown is limited
+    to 199 origin groups plus one ``origin_overflow:true`` series. Contexts without resolved origin tags are
+    skipped; excess groups and groups exceeding 32 tags or 4096 bytes of encoded labels contribute to overflow.
+    Freed slots admit new contexts, while existing contexts keep their original assignment until expiry. The
+    breakdown is available in the Agent's telemetry endpoint and flares, but isn't sent to Datadog.

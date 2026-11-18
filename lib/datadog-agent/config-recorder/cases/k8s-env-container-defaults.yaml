@@ -1,0 +1,8 @@
+# Sets a Kubernetes detection environment variable and reads two container defaults.
+# Shows that detection can set those defaults true while still labeling them default.
+name: k8s-env-container-defaults
+group: behavior
+why: [k8s-container-defaults-source-default]
+env:
+  KUBERNETES_SERVICE_PORT: "443"
+keys: [apm_config.apm_non_local_traffic, jmx_use_container_support]

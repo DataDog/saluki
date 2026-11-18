@@ -15,6 +15,6 @@ pub fn get_serializer_remappings() -> Vec<RemapperRule> {
         .with_original_tags(["reason"])
         .with_help_text("Why payload was split"),
         RemapperRule::by_name("adp.serializer.v3_item_too_big", "sketch_series.sketch_too_big")
-            .with_help_text("Number of payloads dropped because they were too big for the stream compressor"),
+            .with_help_text("Number of V3 metric items dropped because they could not fit in a payload"),
     ]
 }

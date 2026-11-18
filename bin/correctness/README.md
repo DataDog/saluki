@@ -6,6 +6,8 @@ consists of the following components:
 
 - `airlock`: helper library for running containerized applications in "isolated" groups, to allow for spawning
   supporting applications alongside a system under test (SUT) without colliding with other concurrent tests
+- `courier`: a small static binary that `panoramic` runs inside containers to probe listeners, send bytes, make plain
+  HTTP requests and follow log files from where the software runs
 - `panoramic`: unified test runner for both correctness tests and integration tests. For correctness tests, it drives
   an identical, deterministic telemetry workload into a baseline and comparison target (for example, Datadog Agent vs
   ADP), and compares the outputs they forward to their configured intake, highlighting any discrepancies

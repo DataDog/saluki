@@ -15,7 +15,7 @@ use saluki_core::{
         BuildContext,
     },
     data_model::{
-        event::{Event, EventType},
+        event::{metric::Metric, EventType},
         tags::TagSet,
     },
 };
@@ -28,7 +28,10 @@ use tokio::{
     pin,
     sync::{Mutex, OwnedMutexGuard},
 };
-use tokio::{select, sync::mpsc, sync::oneshot};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot, watch},
+};
 
 type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
 
@@ -89,6 +92,7 @@ impl Serialize for FlattenedStats {
 pub struct DogStatsDStatisticsConfiguration {
     api_handler: DogStatsDStatsAPIHandler,
     rx: Arc<Mutex<StatsRequestReceiver>>,
+    collection_active: Arc<watch::Sender<bool>>,
 }
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
@@ -105,6 +109,7 @@ pub struct DogStatsDStatsAPIHandler {
 /// DogStatsD destination that collects metrics and processes statistics.
 pub struct DogStatsDStats {
     rx: OwnedMutexGuard<StatsRequestReceiver>,
+    collection_active: Arc<watch::Sender<bool>>,
 }
 
 #[async_trait::async_trait]
@@ -141,7 +146,9 @@ impl Destination for DogStatsDStats {
                         // We don't care if we can successfully send back a response or not.
                         let _ = response_tx.send(StatsResponse::AlreadyRunning { try_after });
                     } else {
-                        // Start collection.
+                        // Start collection. Signal that we want metrics before starting the collection window, so that
+                        // the window covers metrics sent to us once the signal is observed.
+                        self.collection_active.send_replace(true);
                         collection_active = true;
                         stats_collection_start_time = get_coarse_unix_timestamp();
                         stats_collection_end_time = stats_collection_start_time + collection_period_secs;
@@ -154,27 +161,24 @@ impl Destination for DogStatsDStats {
                     Some(events) => {
                         if let Some(stats) = current_stats.as_mut() {
                             // We're actively collecting, so process the metrics.
-                            for event in events {
-                                if let Event::Metric(metric) = event {
+                            for metric in events.into_events::<Metric>() {
+                                let context = metric.context();
+                                let new_context = ContextNoOrigin {
+                                    name: context.name().clone(),
+                                    tags: context.tags().clone(),
+                                };
 
-                                    let context = metric.context();
-                                    let new_context = ContextNoOrigin {
-                                        name: context.name().clone(),
-                                        tags: context.tags().clone(),
-                                    };
-
-                                    let timestamp = get_coarse_unix_timestamp();
-                                    let sample = stats.entry(new_context).or_default();
-                                    sample.count += 1;
-                                    sample.last_seen = timestamp;
-
+                                let timestamp = get_coarse_unix_timestamp();
+                                let sample = stats.entry(new_context).or_default();
+                                sample.count += 1;
+                                sample.last_seen = timestamp;
                             }
-                        }
                      }},
                      None => break,
                 },
                 _ = &mut collection_done, if collection_active => {
                     collection_active = false;
+                    self.collection_active.send_replace(false);
 
                     // Build the response.
                     let stats = match current_stats.take() {
@@ -283,12 +287,21 @@ impl DogStatsDStatisticsConfiguration {
         Self {
             api_handler: handler,
             rx: Arc::new(Mutex::new(rx)),
+            collection_active: Arc::new(watch::channel(false).0),
         }
     }
 
     /// Returns an API handler for DogStatsD API.
     pub fn api_handler(&self) -> DogStatsDStatsAPIHandler {
         self.api_handler.clone()
+    }
+
+    /// Returns a receiver that tracks whether a statistics collection is in progress.
+    ///
+    /// Metrics are only used while a collection is in progress, so this can be used to only send metrics to the
+    /// destination when they're needed.
+    pub fn collection_active(&self) -> watch::Receiver<bool> {
+        self.collection_active.subscribe()
     }
 }
 
@@ -300,7 +313,10 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let rx = self.rx.clone().try_lock_owned()?;
-        Ok(Box::new(DogStatsDStats { rx }))
+        Ok(Box::new(DogStatsDStats {
+            rx,
+            collection_active: Arc::clone(&self.collection_active),
+        }))
     }
 }
 
@@ -316,7 +332,7 @@ impl MemoryBounds for DogStatsDStatisticsConfiguration {
 mod tests {
     use std::collections::BTreeSet;
 
-    use saluki_core::data_model::tags::Tag;
+    use saluki_core::data_model::{event::Event, tags::Tag};
     use serde_json::json;
 
     use super::*;
@@ -388,7 +404,6 @@ mod tests {
     #[tokio::test]
     async fn collection_request_accumulates_metrics_then_responds_on_timeout() {
         use saluki_core::components::test_util::TestComponentDriver;
-        use saluki_core::data_model::event::metric::Metric;
         use tokio::time::timeout;
 
         // Grab the request sender the API handler would normally use, then build and run the destination.

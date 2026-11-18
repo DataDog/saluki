@@ -10,7 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use axum::{response::IntoResponse, Router};
+use axum::{extract::ConnectInfo, response::IntoResponse, Router};
 use http::Request;
 use hyper::rt::{Read, Write};
 use hyper_util::{
@@ -41,7 +41,8 @@ use tower::{util::Oneshot, Service, ServiceExt as _};
 use tracing::{debug, error, info, warn};
 
 use crate::net::{
-    listener::ConnectionOrientedListener, server::grpc::merge_grpc_routes, stream::Connection, ListenAddress,
+    listener::ConnectionOrientedListener, server::grpc::merge_grpc_routes, stream::Connection, ConnectionAddress,
+    ListenAddress,
 };
 
 /// Conventional gRPC keepalive interval: how long a connection sits idle before the server sends a PING.
@@ -59,13 +60,11 @@ const DEFAULT_SERVER_NAME: &str = "http_server";
 /// is built around.
 const DEFAULT_DRAIN_DEADLINE: Duration = Duration::from_secs(30);
 
-/// How much longer than the drain deadline the subtree's shutdown budget runs.
+/// How much longer than its drain deadline a connection's shutdown timeout runs.
 ///
-/// A connection bounds its own drain, so under normal circumstances it finishes and exits cleanly before the budget is
-/// anywhere near elapsing. The slack keeps the two from racing: without it a connection that took its full deadline
-/// could be force-aborted at the very moment it was about to return, which would be reported as an unclean shutdown
-/// all the way up the tree. The budget is the backstop for a connection that ignores its own deadline entirely.
-const SHUTDOWN_BUDGET_SLACK: Duration = Duration::from_secs(1);
+/// A connection bounds its own drain. The slack keeps one that takes its full deadline from being halted just as it
+/// returns, which would be reported as an unclean shutdown all the way up the tree.
+const SHUTDOWN_TIMEOUT_SLACK: Duration = Duration::from_secs(1);
 
 /// How long a TLS handshake is given to complete before the connection is abandoned.
 ///
@@ -185,6 +184,16 @@ impl Http2Config {
 /// A caller that has already built the exact router it wants can hand it over with [`with_routes`][Self::with_routes],
 /// which bypasses all of the above.
 ///
+/// # Peer address
+///
+/// Every request carries the address of the peer that sent it, which handlers read with the
+/// [`ConnectInfo<ConnectionAddress>`][ConnectInfo] extractor:
+///
+/// - Over TCP, with or without TLS, it's the peer's socket address.
+/// - Over a Unix domain socket, it's the identity of the peer process: its PID, UID, and GID. The identity is captured
+///   once, when the peer connects, so it's fixed for the life of the connection, and the PID may refer to a process that
+///   has since exited. When the platform doesn't provide the PID, or the lookup fails, it holds the reason instead.
+///
 /// # Supervision
 ///
 /// The server must be run under supervision, and can be converted to a [`Supervisor`] to do so. A number of child workers
@@ -199,9 +208,9 @@ impl Http2Config {
 ///
 /// # Shutdown
 ///
-/// The subtree carries its own shutdown budget, because a nested supervisor is deliberately exempt from its parent's.
-/// See [`with_graceful_shutdown_timeout`][Self::with_graceful_shutdown_timeout] for what sets it and what the default
-/// is.
+/// A nested supervisor has no shutdown timeout of its own, so each connection bounds its own drain, and is halted if it
+/// overruns that bound. See [`with_graceful_shutdown_timeout`][Self::with_graceful_shutdown_timeout] for what sets it
+/// and what the default is. The whole subtree is also halted if its owner's timeout expires.
 ///
 /// # Assertions
 ///
@@ -337,9 +346,9 @@ impl HttpServer {
     /// This bounds that: a connection that hasn't finished by then gives up and closes, logging a warning, so one
     /// wedged peer can't hold the subtree open.
     ///
-    /// It also sets the subtree's shutdown budget, to this value plus a small amount of slack. That matters because a
-    /// nested supervisor is exempt from its parent's budget, so without one of its own nothing would bound the subtree
-    /// at all. Connections bound themselves, so the budget only comes into play for one that ignores its own deadline.
+    /// It also sets each connection's shutdown timeout, to this value plus a small amount of slack, after which the
+    /// connection is halted. Connections bound themselves, so the timeout only comes into play for one that ignores its
+    /// own deadline.
     ///
     /// Defaults to 30 seconds, matching the default shutdown timeout a topology gives its components. Lower it for an
     /// endpoint that should be abandoned quickly; raise it for one serving long-running requests that are worth
@@ -388,9 +397,7 @@ impl HttpServer {
         let bound_address_id = self.get_server_id();
 
         let drain_deadline = self.graceful_shutdown_timeout.unwrap_or(DEFAULT_DRAIN_DEADLINE);
-        let mut supervisor = Supervisor::new(&*self.name)
-            .expect("server name is derived from a non-empty constant")
-            .with_shutdown_budget(drain_deadline.saturating_add(SHUTDOWN_BUDGET_SLACK));
+        let mut supervisor = Supervisor::new(&*self.name).expect("server name is derived from a non-empty constant");
 
         let acceptor = Acceptor {
             listen_address: self.listen_address,
@@ -508,13 +515,14 @@ struct ConnectionContext {
 
 impl ConnectionContext {
     /// Spawns the child that serves `io`.
-    fn spawn_connection<I>(&self, io: I)
+    fn spawn_connection<I>(&self, io: I, remote_addr: ConnectionAddress)
     where
         I: Read + Write + Unpin + Send + 'static,
     {
         let connection = HttpConnection {
             conn_builder: self.conn_builder.clone(),
             io: Mutex::new(Some(io)),
+            remote_addr,
             service: self.service.clone(),
             listen_addr: self.listen_addr.clone(),
             drain_deadline: self.drain_deadline,
@@ -522,23 +530,20 @@ impl ConnectionContext {
         };
 
         let builder = self.supervisor.supervisable(connection);
-        place_on_pool(builder, self.worker_pool.as_ref())
-            .with_budget_bounded_shutdown()
-            .spawn();
+        place_on_pool(builder, self.worker_pool.as_ref()).spawn();
     }
 
     /// Spawns the child that performs the TLS handshake for `stream`, and serves it once it completes.
-    fn spawn_handshake(&self, acceptor: TlsAcceptor, stream: Connection) {
+    fn spawn_handshake(&self, acceptor: TlsAcceptor, stream: Connection, remote_addr: ConnectionAddress) {
         let handshake = TlsHandshake {
             acceptor,
             stream: Mutex::new(Some(stream)),
+            remote_addr,
             context: self.clone(),
         };
 
         let builder = self.supervisor.supervisable(handshake);
-        place_on_pool(builder, self.worker_pool.as_ref())
-            .with_budget_bounded_shutdown()
-            .spawn();
+        place_on_pool(builder, self.worker_pool.as_ref()).spawn();
     }
 }
 
@@ -562,9 +567,14 @@ async fn run_accept_loop(
             result = listener.accept() => match result {
                 // Neither arm awaits anything: the handshake is a child of its own precisely so that a slow one
                 // can't hold up the connections queued behind it on the listener.
-                Ok(stream) => match &maybe_tls_acceptor {
-                    Some(acceptor) => context.spawn_handshake(acceptor.clone(), stream),
-                    None => context.spawn_connection(TokioIo::new(stream)),
+                Ok(stream) => {
+                    // Captured once per connection: for a Unix domain socket, the peer's credentials are fixed when it
+                    // connects.
+                    let remote_addr = stream.remote_addr();
+                    match &maybe_tls_acceptor {
+                        Some(acceptor) => context.spawn_handshake(acceptor.clone(), stream, remote_addr),
+                        None => context.spawn_connection(TokioIo::new(stream), remote_addr),
+                    }
                 },
                 Err(e) => break Err(GenericError::from(e)),
             },
@@ -589,6 +599,7 @@ async fn run_accept_loop(
 struct TlsHandshake {
     acceptor: TlsAcceptor,
     stream: Mutex<Option<Connection>>,
+    remote_addr: ConnectionAddress,
     context: ConnectionContext,
 }
 
@@ -605,6 +616,7 @@ impl Supervisable for TlsHandshake {
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let stream = take_once(&self.stream, "TLS handshake")?;
+        let remote_addr = self.remote_addr.clone();
         let acceptor = self.acceptor.clone();
         let context = self.context.clone();
 
@@ -613,7 +625,7 @@ impl Supervisable for TlsHandshake {
 
             select! {
                 result = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)) => match result {
-                    Ok(Ok(stream)) => context.spawn_connection(TokioIo::new(stream)),
+                    Ok(Ok(stream)) => context.spawn_connection(TokioIo::new(stream), remote_addr),
                     Ok(Err(e)) => error!(%listen_addr, error = %e, "Failed to complete TLS handshake."),
                     Err(_) => warn!(
                         %listen_addr,
@@ -638,6 +650,7 @@ impl Supervisable for TlsHandshake {
 struct HttpConnection<I> {
     conn_builder: ConnBuilder,
     io: Mutex<Option<I>>,
+    remote_addr: ConnectionAddress,
     service: Router,
     listen_addr: ListenAddress,
     drain_deadline: Duration,
@@ -654,9 +667,8 @@ where
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // Spawned with a budget-bounded shutdown, so this is only consulted if the subtree somehow has no budget. A
-        // connection bounds its own drain either way, so there is nothing shorter worth imposing here.
-        ShutdownStrategy::Graceful(Duration::MAX)
+        // Only a backstop: a connection bounds its own drain.
+        ShutdownStrategy::Graceful(self.drain_deadline.saturating_add(SHUTDOWN_TIMEOUT_SLACK))
     }
 
     fn can_restart(&self) -> bool {
@@ -666,6 +678,7 @@ where
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let io = take_once(&self.io, "HTTP connection")?;
+        let remote_addr = self.remote_addr.clone();
         let conn_builder = self.conn_builder.clone();
         let service = self.service.clone();
         let listen_addr = self.listen_addr.clone();
@@ -676,6 +689,7 @@ where
             drive_connection(
                 conn_builder,
                 io,
+                remote_addr,
                 service,
                 listen_addr,
                 process_shutdown,
@@ -703,11 +717,16 @@ fn take_once<T>(slot: &Mutex<Option<T>>, what: &str) -> Result<T, Initialization
 }
 
 async fn drive_connection<I>(
-    conn_builder: ConnBuilder, io: I, service: Router, listen_addr: ListenAddress, shutdown: ShutdownHandle,
-    drain_deadline: Duration, http2_config: Http2Config,
+    conn_builder: ConnBuilder, io: I, remote_addr: ConnectionAddress, service: Router, listen_addr: ListenAddress,
+    shutdown: ShutdownHandle, drain_deadline: Duration, http2_config: Http2Config,
 ) where
     I: Read + Write + Unpin + Send + 'static,
 {
+    // Every request carries the address of the peer that sent it, which handlers read with the `ConnectInfo` extractor.
+    let service = service.map_request(move |mut request: Request<hyper::body::Incoming>| {
+        request.extensions_mut().insert(ConnectInfo(remote_addr.clone()));
+        request
+    });
     let service = TowerToHyperService::new(service);
     let conn = conn_builder.serve_connection(io, service);
     let mut connection_age = ConnectionAge::new(&http2_config);
@@ -961,13 +980,12 @@ mod tests {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
+    use saluki_core::runtime::test_util::TestSupervisor;
     use saluki_core::runtime::SupervisorError;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpStream;
-    use tokio::sync::oneshot;
-    use tokio::task::JoinHandle;
     use tokio::time::{timeout, Instant};
     use tower::util::service_fn;
 
@@ -975,24 +993,19 @@ mod tests {
     use crate::net::addr::BoundListenAddress;
     #[cfg(unix)]
     use crate::net::server::test_util::connect_unix;
-    use crate::net::server::test_util::{connect_tcp, DataspaceCapture, ServerTestHarness};
+    use crate::net::server::test_util::{connect_tcp, ServerTestHarness};
 
     /// Bound on any server await in these tests, so a hang fails rather than stalling the suite.
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-    /// A running server subtree, together with the trigger that stops it.
+    /// A running server subtree, under a test supervisor of its own.
     struct RunningServer {
-        // Not resolved until `bound_tcp_address` is called: a server whose initialization is expected to fail (e.g.
-        // to hit an already-bound port) may tear down before the capture worker ever gets to send anything, and
-        // tests exercising that don't ask for the bound address at all.
-        dataspace_rx: Mutex<Option<oneshot::Receiver<DataspaceRegistry>>>,
+        supervisor: TestSupervisor,
         bound_address_id: Identifier,
-        shutdown_tx: Option<oneshot::Sender<()>>,
-        task: JoinHandle<Result<(), SupervisorError>>,
     }
 
     impl RunningServer {
-        /// Starts `server` on its own task.
+        /// Starts `server` under a test supervisor.
         ///
         /// A server can't be driven by hand any more: its connections are children of its supervisor, so there has to
         /// be one running for anything to be served at all.
@@ -1005,36 +1018,23 @@ mod tests {
             });
             let server = server.with_server_id(server_id.clone());
 
-            let (capture, dataspace_rx) = DataspaceCapture::new();
-            let mut supervisor = server.into_supervisor();
-            supervisor.add_worker(capture);
-
-            let (shutdown_tx, shutdown_rx) = oneshot::channel();
-            let task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+            let supervisor = TestSupervisor::start_with("running-server", |supervisor| {
+                supervisor.add_worker(server.into_supervisor());
+            })
+            .await;
 
             Self {
-                dataspace_rx: Mutex::new(Some(dataspace_rx)),
+                supervisor,
                 bound_address_id: get_bound_address_id(&server_id),
-                shutdown_tx: Some(shutdown_tx),
-                task,
             }
         }
 
         /// Looks up the address the server actually bound, once it has finished initializing.
         async fn bound_tcp_address(&self) -> SocketAddr {
-            let dataspace_rx = self
-                .dataspace_rx
-                .lock()
-                .expect("dataspace receiver lock should not be poisoned")
-                .take()
-                .expect("the bound address should only be looked up once");
-            let dataspace = timeout(TEST_TIMEOUT, dataspace_rx)
-                .await
-                .expect("should capture the supervisor dataspace")
-                .expect("dataspace capture worker should send the registry");
-
-            let mut subscription =
-                dataspace.subscribe::<BoundListenAddress>(IdentifierFilter::exact(self.bound_address_id.clone()));
+            let mut subscription = self
+                .supervisor
+                .dataspace()
+                .subscribe::<BoundListenAddress>(IdentifierFilter::exact(self.bound_address_id.clone()));
 
             match timeout(TEST_TIMEOUT, subscription.recv()).await {
                 Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(addr)))) => addr,
@@ -1047,15 +1047,14 @@ mod tests {
 
         /// Signals shutdown without waiting for the subtree to finish.
         fn signal_shutdown(&mut self) {
-            let _ = self.shutdown_tx.take().expect("should only shut down once").send(());
+            self.supervisor.signal_shutdown();
         }
 
         /// Awaits the subtree, returning whatever it reported.
         async fn join(self) -> Result<(), SupervisorError> {
-            timeout(TEST_TIMEOUT, self.task)
+            timeout(TEST_TIMEOUT, self.supervisor.wait())
                 .await
                 .expect("server should stop before timeout")
-                .expect("server task should not panic")
         }
 
         /// Signals shutdown and asserts the subtree drained cleanly.
@@ -1284,6 +1283,134 @@ mod tests {
         harness.shutdown().await;
     }
 
+    /// Builds a router that answers every request with the peer address the server attached to it.
+    fn peer_address_routes() -> Router {
+        Router::new().fallback(|ConnectInfo(addr): ConnectInfo<ConnectionAddress>| async move {
+            match addr {
+                ConnectionAddress::SocketLike(addr) => addr.to_string(),
+                ConnectionAddress::ProcessLike(identity) => match identity.credentials() {
+                    Some(creds) => creds.pid.to_string(),
+                    None => format!("no credentials: {}", ConnectionAddress::ProcessLike(identity)),
+                },
+            }
+        })
+    }
+
+    /// Sends a `GET /` request over `stream`, returning the response body.
+    async fn get_response_body<S>(mut stream: S) -> String
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("should write request");
+        let mut response = String::new();
+        timeout(TEST_TIMEOUT, stream.read_to_string(&mut response))
+            .await
+            .expect("response should arrive in time")
+            .expect("should read response");
+
+        match response.split_once("\r\n\r\n") {
+            Some((_, body)) => body.to_string(),
+            None => panic!("response should have a body: {response:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn requests_over_tcp_carry_the_peer_socket_address() {
+        let harness = ServerTestHarness::start("http-tcp-peer-address", |supervisor, server_id| {
+            let server = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
+                .add_routes(peer_address_routes())
+                .with_server_id(server_id);
+            supervisor.add_worker(server.into_supervisor());
+        })
+        .await;
+        let address = match harness.bound_address().await {
+            BoundListenAddress::Tcp(addr) => addr,
+            other_addr => panic!("expected TCP address, got {:?}", other_addr),
+        };
+
+        let stream = connect_tcp(address).await;
+        let client_address = stream.local_addr().expect("should have a local address");
+
+        assert_eq!(get_response_body(stream).await, client_address.to_string());
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn requests_over_tls_carry_the_peer_socket_address() {
+        // The address is captured before the TLS handshake, which runs on a child of its own, so it has to be carried
+        // over to the connection.
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        let cert = SelfSignedCert::localhost();
+        let cert_chain = cert.cert_chain();
+        let tls_config = server_tls_config(&cert);
+
+        let harness = ServerTestHarness::start("http-tls-peer-address", move |supervisor, server_id| {
+            let server = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
+                .add_routes(peer_address_routes())
+                .with_tls_config(tls_config)
+                .with_server_id(server_id);
+            supervisor.add_worker(server.into_supervisor());
+        })
+        .await;
+        let address = match harness.bound_address().await {
+            BoundListenAddress::Tcp(addr) => addr,
+            other_addr => panic!("expected TCP address, got {:?}", other_addr),
+        };
+
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in cert_chain {
+            roots.add(cert).expect("should trust the self-signed cert");
+        }
+        let mut client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+        let stream = connect_tcp(address).await;
+        let client_address = stream.local_addr().expect("should have a local address");
+        let server_name = rustls::pki_types::ServerName::try_from("localhost").expect("should be a valid server name");
+        let tls_stream = timeout(
+            TEST_TIMEOUT,
+            tokio_rustls::TlsConnector::from(Arc::new(client_config)).connect(server_name, stream),
+        )
+        .await
+        .expect("handshake should complete in time")
+        .expect("handshake should succeed");
+
+        assert_eq!(get_response_body(tls_stream).await, client_address.to_string());
+
+        harness.shutdown().await;
+    }
+
+    // Only on platforms where the peer PID of a Unix domain socket is available: elsewhere, the identity holds the
+    // `UnsupportedPlatform` reason instead.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn requests_over_unix_socket_carry_the_peer_process_credentials() {
+        let tempdir = tempfile::tempdir().expect("should create temp dir");
+        let socket_path = tempdir.path().join("http.sock");
+        let listen_address = ListenAddress::Unix(socket_path.clone());
+
+        let harness = ServerTestHarness::start("http-unix-peer-credentials", move |supervisor, server_id| {
+            let server = HttpServer::from_listen_address(listen_address)
+                .add_routes(peer_address_routes())
+                .with_server_id(server_id);
+            supervisor.add_worker(server.into_supervisor());
+        })
+        .await;
+        harness.bound_address().await;
+
+        // This process is the one that connected.
+        let stream = connect_unix(&socket_path).await;
+        assert_eq!(get_response_body(stream).await, std::process::id().to_string());
+
+        harness.shutdown().await;
+    }
+
     /// Builds a TLS config for a server presenting `cert`.
     fn server_tls_config(cert: &SelfSignedCert) -> ServerConfig {
         ServerConfig::builder()
@@ -1415,8 +1542,8 @@ mod tests {
             .expect("handshake should succeed");
         assert_eq!(negotiated, Some(b"h2".to_vec()));
 
-        // Shutting down cleanly is the other half: the stalled handshake is abandoned rather than held onto until the
-        // subtree's budget elapses, which would take far longer than the harness allows.
+        // Shutting down cleanly is the other half: the stalled handshake is abandoned rather than held onto until it
+        // is halted at its shutdown timeout, which would take far longer than the harness allows.
         harness.shutdown().await;
     }
 
@@ -1669,10 +1796,10 @@ mod tests {
         // A peer that writes a partial request head and stalls keeps its connection permanently non-idle, so
         // `graceful_shutdown` alone never closes it. Before the connection builder had a timer and the drain had a
         // deadline, one such socket stalled shutdown indefinitely -- for the OTLP receivers that meant every ADP
-        // shutdown hanging until the component budget forced an abort.
+        // shutdown hanging until the component was halted at its shutdown timeout.
         //
         // A clean result is the assertion that matters: the connection bounds its own drain and exits, rather than
-        // being force-aborted by the subtree's budget, which would surface as `ShutdownTimedOut` all the way up.
+        // being halted at its shutdown timeout, which would surface as `ShutdownTimedOut` all the way up.
         let server = RunningServer::start(
             server_with(ListenAddress::tcp_loopback(0), ok_response)
                 .with_graceful_shutdown_timeout(Duration::from_secs(1)),
@@ -1727,8 +1854,9 @@ mod tests {
 
         // The handler is still working, so the subtree must not be finished yet. This ordering is the actual assertion:
         // without the drain the subtree returns here and the response is abandoned.
+        tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
-            timeout(Duration::from_millis(50), &mut server.task).await.is_err(),
+            !server.supervisor.is_finished(),
             "subtree should not finish while a request is still being served"
         );
 
@@ -1779,7 +1907,7 @@ mod tests {
         // `hyper` hands us one future per HTTP/2 stream -- so one per request -- and our executor turns each into a
         // dynamic child rather than a detached task. That is what puts per-request work in the process tree, and the
         // per-task poll metrics are where it becomes observable. The tag is the child's fully qualified process name,
-        // scoped under the subtree's own supervisor ID.
+        // scoped under the test supervisor and then the subtree's own supervisor ID.
         let recorder = TestRecorder::default();
         let _guard = metrics::set_default_local_recorder(&recorder);
 
@@ -1804,7 +1932,10 @@ mod tests {
 
         let polls = recorder.counter((
             "runtime_task_poll_count",
-            &[("task_name", "http_server_supervised_stream.http_conn_task")],
+            &[(
+                "task_name",
+                "running_server.http_server_supervised_stream.http_conn_task",
+            )],
         ));
         assert!(
             polls.is_some_and(|polls| polls > 0),

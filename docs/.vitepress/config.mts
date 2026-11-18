@@ -37,11 +37,15 @@ export default defineConfig({
             {
                 text: "Developer Guide",
                 items: [
+                    { text: "Agent Guide", link: "/development/agents" },
                     { text: "Common Language", link: "/development/common-language" },
-                    { text: "Contributing", link: "/development/contributing" },
                     { text: "Style Guide", link: "/development/style-guide" },
+                    { text: "Conventions", link: "/development/conventions" },
+                    { text: "Contributing", link: "/development/contributing" },
+                    { text: "Code Review", link: "/development/code-review" },
                     { text: "Testing", link: "/development/testing" },
                     { text: "Testing Patterns", link: "/development/testing-patterns" },
+                    { text: "Configuration System", link: "/development/configuration-system" },
                 ],
             },
             {
@@ -77,7 +81,7 @@ export default defineConfig({
         socialLinks: [{ icon: "github", link: "https://github.com/DataDog/saluki" }],
     },
 
-    srcExclude: ["reference/adr/_template.md", "reference/proposals/_template.md"],
+    srcExclude: ["reference/adrs/_template.md", "reference/proposals/_template.md", "development/plans/**"],
 
     vite: {
         server: {

@@ -1,10 +1,16 @@
+use std::collections::HashSet;
+
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::MetricValue;
 use tracing::{error, info, warn};
 
-mod types;
-use self::types::{NormalizedMetric, NormalizedMetrics};
-use crate::correctness::analysis::collected::CollectedData;
+use crate::intake::metrics::{
+    get_formatted_metric_value, MetricType, NormalizedMetric, NormalizedMetricContext, NormalizedMetrics,
+};
+use crate::intake::CollectedData;
+
+/// A metric context and type pair, used for comparing metrics between different sets.
+type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
 
 /// Analyzes metrics for correctness.
 pub struct MetricsAnalyzer {
@@ -63,6 +69,37 @@ impl MetricsAnalyzer {
 
 const SAMPLE_MISMATCH_LIMIT: usize = 5;
 
+/// Returns the differences, if any, between two sets of normalized metrics.
+///
+/// Compares both context and type, so metrics with the same name but different types
+/// (for example, Count vs Rate) are treated as different metrics.
+///
+/// Returns two vectors, the first containing (context, type) pairs that are only present in the left set,
+/// and the second containing (context, type) pairs that are only present in the right set. Both vectors are
+/// sorted by context, and then type, in ascending order.
+/// If there are no differences, both vectors will be empty.
+fn context_differences<'a>(
+    left: &'a NormalizedMetrics, right: &'a NormalizedMetrics,
+) -> (Vec<ContextTypePair<'a>>, Vec<ContextTypePair<'a>>) {
+    let left_pairs = left
+        .metrics()
+        .iter()
+        .map(|m| (m.context(), m.value_type()))
+        .collect::<HashSet<_>>();
+    let right_pairs = right
+        .metrics()
+        .iter()
+        .map(|m| (m.context(), m.value_type()))
+        .collect::<HashSet<_>>();
+
+    let mut left_only = left_pairs.difference(&right_pairs).copied().collect::<Vec<_>>();
+    let mut right_only = right_pairs.difference(&left_pairs).copied().collect::<Vec<_>>();
+    left_only.sort_unstable();
+    right_only.sort_unstable();
+
+    (left_only, right_only)
+}
+
 /// Compares the unique set of (context, type) pairs emitted by the baseline and comparison targets.
 ///
 /// # Errors
@@ -72,8 +109,7 @@ const SAMPLE_MISMATCH_LIMIT: usize = 5;
 fn compare_metric_contexts(
     baseline_metrics: &NormalizedMetrics, comparison_metrics: &NormalizedMetrics,
 ) -> Result<(), (GenericError, Vec<String>)> {
-    let (baseline_only_pairs, comparison_only_pairs) =
-        NormalizedMetrics::context_differences(baseline_metrics, comparison_metrics);
+    let (baseline_only_pairs, comparison_only_pairs) = context_differences(baseline_metrics, comparison_metrics);
 
     if baseline_only_pairs.is_empty() && comparison_only_pairs.is_empty() {
         return Ok(());
@@ -208,29 +244,13 @@ fn get_formatted_metric_values(metric: &NormalizedMetric, value: &MetricValue) -
     format!("{} (raw: {})", collapsed_value, raw_values.join(", "))
 }
 
-fn get_formatted_metric_value(value: &MetricValue) -> String {
-    match value {
-        MetricValue::Count { value } => format!("count({})", value),
-        MetricValue::Rate { interval, value } => format!("rate({} over {}s)", value, interval),
-        MetricValue::Gauge { value } => format!("gauge({})", value),
-        MetricValue::Sketch { sketch } => format!(
-            "sketch(min={} max={} avg={} sum={} cnt={} bins_n={})",
-            sketch.min().unwrap_or(0.0),
-            sketch.max().unwrap_or(0.0),
-            sketch.avg().unwrap_or(0.0),
-            sketch.sum().unwrap_or(0.0),
-            sketch.count(),
-            sketch.bin_count(),
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
     use stele::Metric;
 
-    use super::{compare_metric_contexts, NormalizedMetrics};
+    use super::compare_metric_contexts;
+    use crate::intake::metrics::NormalizedMetrics;
 
     fn metrics(entries: &[(&str, &[&str], &str)]) -> NormalizedMetrics {
         let metrics = entries

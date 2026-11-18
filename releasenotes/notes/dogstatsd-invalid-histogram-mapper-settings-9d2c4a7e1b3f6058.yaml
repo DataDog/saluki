@@ -1,0 +1,10 @@
+fixes:
+  - |
+    An invalid ``histogram_aggregates`` or ``histogram_percentiles`` entry no longer
+    stops DogStatsD from starting. As in the Datadog Agent, each invalid entry is
+    logged and skipped, and the remaining entries still apply.
+  - |
+    An invalid ``dogstatsd_mapper_profiles`` profile or mapping, such as a wildcard
+    pattern with consecutive ``*``, no longer stops DogStatsD from starting. As in the
+    Datadog Agent, ADP logs ``Could not create metric mapper`` and runs without metric
+    mapping, so metrics pass through unmapped.

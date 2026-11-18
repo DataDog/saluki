@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 #[cfg(unix)]
 use std::fs;
+#[cfg(any(unix, test))]
 use std::fs::File;
 #[cfg(unix)]
 use std::io;
@@ -34,7 +35,7 @@ impl Serialize for AgentContextSnapshotRecord<'_> {
         let mut record = serializer.serialize_struct("AgentContextRecord", 7)?;
         record.serialize_field("Name", name)?;
         record.serialize_field("Host", context.host().unwrap_or_default())?;
-        record.serialize_field("Type", agent_metric_type(entry))?;
+        record.serialize_field("Type", agent_metric_type(entry.metric_type()))?;
         record.serialize_field("TaggerTags", &BorrowedTags(context.origin_tags()))?;
         record.serialize_field("MetricTags", &BorrowedTags(context.tags()))?;
         record.serialize_field("NoIndex", &false)?;
@@ -55,14 +56,14 @@ impl Serialize for BorrowedTags<'_> {
 }
 
 // These spellings match `MetricType.String()` in the Agent's pkg/metrics/metric_sample.go.
-fn agent_metric_type(entry: &AggregateContextSnapshotEntry) -> &'static str {
-    match entry.metric_type() {
+// The Agent enriches DogStatsD timers (`ms`) as `HistogramType` regardless of unit.
+fn agent_metric_type(metric_type: AggregateMetricType) -> &'static str {
+    match metric_type {
         AggregateMetricType::Counter => "Counter",
         AggregateMetricType::Rate => "Rate",
         AggregateMetricType::Gauge => "Gauge",
         AggregateMetricType::Set => "Set",
         AggregateMetricType::Distribution => "Distribution",
-        AggregateMetricType::Histogram if entry.unit() == Some("millisecond") => "Historate",
         AggregateMetricType::Histogram => "Histogram",
     }
 }
@@ -301,9 +302,19 @@ impl Error for ArtifactError {
     }
 }
 
-pub(crate) fn for_each_record(path: &Path, mut consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
+#[cfg(test)]
+pub(crate) fn for_each_record(path: &Path, consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
     let file = File::open(path).map_err(|error| ArtifactError::new(path, "open", 0, error))?;
-    let mut compressed_input = BufReader::new(file);
+    for_each_record_from_reader(path, file, consume)
+}
+
+/// Decodes each record from an already-open artifact, such as a file descriptor.
+///
+/// `path` is used only in error messages.
+pub(crate) fn for_each_record_from_reader(
+    path: &Path, reader: impl Read, mut consume: impl FnMut(AgentContextRecord),
+) -> Result<(), ArtifactError> {
+    let mut compressed_input = BufReader::new(reader);
     let is_compressed = compressed_input
         .fill_buf()
         .map_err(|error| ArtifactError::new(path, "inspect compression magic for", 0, error))?

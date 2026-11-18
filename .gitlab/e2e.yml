@@ -55,7 +55,7 @@ build-bundled-agent-adp-image:
       --push
       .
 
-# Compile panoramic once. The dynamically generated child pipeline below
+# Compile panoramic and the static courier once. The dynamically generated child pipeline below
 # pulls this artifact instead of rebuilding per test.
 build-panoramic-binary:
   extends: .build-common-variables
@@ -67,9 +67,10 @@ build-panoramic-binary:
   image: "${SALUKI_BUILD_CI_IMAGE}"
   artifacts:
     expire_in: 1 day
-    paths: [target/release/panoramic]
+    paths: [target/release/panoramic, target/x86_64-unknown-linux-musl/release/courier]
   script:
     - make build-panoramic
+    - make build-courier COURIER_TARGET=x86_64-unknown-linux-musl
 
 # Scan test/correctness/cases/ and emit a child-pipeline YAML with one job per test
 # directory. Each emitted job extends mixins from .gitlab/correctness-mixins.yml.
@@ -161,7 +162,7 @@ test-integration:
     #   - our own Core Agent sandbox under /tmp/saluki-dda (trace-agent / process-agent
     #     children that survived a non-graceful job termination still hold our shifted ports)
     #   - any stranded agent-data-plane process from a prior pipeline (built into
-    #     $CI_PROJECT_DIR/target/<profile>/, holds UDP 58125 / TCP 5100–5102 etc. across runs).
+    #     $CI_PROJECT_DIR/target/<profile>/, holds UDP 48125 / TCP 45100–45102 etc. across runs).
     #     Both profiles are swept because BUILD_PROFILE flows from .gitlab-ci.yml workflow
     #     rules: `release` on dev pipelines, `optimized-release` on tagged release pipelines.
     #   - stale Datadog Agent DMG mounts from interrupted installs; these runners persist across jobs.

@@ -1,0 +1,5 @@
+---
+enhancements:
+  - |
+    When a component fails to start, the error log now includes the underlying cause. For example, a listener that
+    can't bind its port now logs the operating system error, such as ``Address already in use``.

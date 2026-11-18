@@ -1,6 +1,8 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use tokio::time::Instant;
+
+use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus};
 
 /// Assertion that checks the container process remains stable for a specified duration.
 pub struct ProcessStableForAssertion {
@@ -31,7 +33,7 @@ impl Assertion for ProcessStableForAssertion {
             _ = tokio::time::sleep(self.duration) => {
                 AssertionResult {
                     name: self.name().to_string(),
-                    passed: true,
+                    status: AssertionStatus::Passed,
                     message: format!("Process remained stable for {:?}.", self.duration),
                     duration: started.elapsed(),
                 }
@@ -41,7 +43,7 @@ impl Assertion for ProcessStableForAssertion {
             _ = ctx.container_exit_token.cancelled() => {
                 AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: format!(
                         "Process exited unexpectedly after {:?} (expected to remain stable for {:?}).",
                         started.elapsed(),

@@ -15,7 +15,7 @@ env:
 
 container:
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
 
 procedure:
   - assertion: log_contains

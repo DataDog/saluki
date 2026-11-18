@@ -10,15 +10,11 @@ mod sql;
 mod sql_filters;
 mod sql_tokenizer;
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
-    data_model::event::{
-        trace::{AttributeValue, Span},
-        Event,
-    },
+    data_model::event::trace::{AttributeValue, Span, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
@@ -32,13 +28,6 @@ const TEXT_NON_PARSABLE_SQL: &str = "Non-parsable SQL query";
 pub struct TraceObfuscationConfiguration {
     /// Obfuscator configuration.
     pub config: ObfuscationConfig,
-}
-
-impl TraceObfuscationConfiguration {
-    /// Creates a new `TraceObfuscationConfiguration` from the resolved trace configuration.
-    pub fn from_configuration(config: &domains::traces::Obfuscation) -> Self {
-        Self { config: config.into() }
-    }
 }
 
 #[async_trait]
@@ -273,11 +262,9 @@ impl TraceObfuscation {
 
 impl SynchronousTransform for TraceObfuscation {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
-        for event in buffer {
-            if let Event::Trace(ref mut trace) = event {
-                for span in trace.spans_mut() {
-                    self.obfuscate_span(span);
-                }
+        for trace in buffer.events_mut::<Trace>() {
+            for span in trace.spans_mut() {
+                self.obfuscate_span(span);
             }
         }
     }

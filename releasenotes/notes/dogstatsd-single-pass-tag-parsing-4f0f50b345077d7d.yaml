@@ -1,0 +1,6 @@
+---
+enhancements:
+  - |
+    Reduce the CPU cost of decoding DogStatsD metrics, events, and service checks
+    by parsing each payload's tags once instead of twice. The savings grow with
+    the number of tags per payload.

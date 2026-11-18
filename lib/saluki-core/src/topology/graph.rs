@@ -141,7 +141,7 @@ struct Edge {
 /// `Graph` holds both the nodes (components) that represent the topology, as well as the edges (connections) between
 /// them. It ensures that the resulting graph is minimally valid: valid component IDs, valid component connections, and
 /// so on.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Graph {
     nodes: HashMap<ComponentId, Node>,
     edges: Vec<Edge>,
@@ -382,6 +382,57 @@ impl Graph {
             to: component_id,
         });
         Ok(())
+    }
+
+    /// Removes an edge from the graph, if it exists.
+    pub fn remove_edge(&mut self, from: &ComponentOutputId, to: &ComponentId) {
+        if let Some(pos) = self.edges.iter().position(|edge| &edge.from == from && &edge.to == to) {
+            self.edges.remove(pos);
+        }
+    }
+
+    /// Removes components that have no inbound edges, starting from the given candidates.
+    ///
+    /// A candidate is removed if it has no inbound edges and isn't a source or relay, since those never have inbound
+    /// edges. Removing a component also removes its outbound edges, so any downstream component left without inbound
+    /// edges is removed as well, and so on.
+    ///
+    /// Only candidates, and components downstream of removed components, are considered. Other components without
+    /// inbound edges are left in place, so that `validate` still reports them as disconnected.
+    ///
+    /// Returns the removed components, along with their component types.
+    pub fn prune_components_without_inputs<I>(&mut self, candidates: I) -> Vec<(ComponentId, ComponentType)>
+    where
+        I: IntoIterator<Item = ComponentId>,
+    {
+        let mut removed = Vec::new();
+        let mut pending: Vec<ComponentId> = candidates.into_iter().collect();
+
+        while let Some(id) = pending.pop() {
+            let Some(component_type) = self.get_component_type(&id) else {
+                continue;
+            };
+            if matches!(component_type, ComponentType::Source | ComponentType::Relay) {
+                continue;
+            }
+            if self.edges.iter().any(|edge| edge.to == id) {
+                continue;
+            }
+
+            // Remove the component and its outbound edges, and revisit everything it was connected to.
+            self.nodes.remove(&id);
+            self.edges.retain(|edge| {
+                if edge.from.component_id() == id {
+                    pending.push(edge.to.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            removed.push((id, component_type));
+        }
+
+        removed
     }
 
     fn get_input_type(&self, id: &ComponentId) -> DataType {
@@ -804,6 +855,81 @@ mod tests {
 
     fn into_component_ids(ids: &[&str]) -> Vec<ComponentId> {
         ids.iter().map(|s| ComponentId::try_from(*s).unwrap()).collect()
+    }
+
+    fn id(s: &str) -> ComponentId {
+        ComponentId::try_from(s).unwrap()
+    }
+
+    fn output_id(s: &str) -> ComponentOutputId {
+        ComponentOutputId::try_from(s).unwrap()
+    }
+
+    fn pruned_ids(pruned: Vec<(ComponentId, ComponentType)>) -> HashSet<String> {
+        pruned.into_iter().map(|(id, _)| id.to_string()).collect()
+    }
+
+    #[test]
+    fn pruning_removes_components_only_reachable_through_a_removed_edge() {
+        // Removing the only edge into a branch removes the whole branch, but leaves the rest of the graph intact.
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric)
+            .with_destination("primary", EventType::Metric)
+            .with_transform("gateway", EventType::Metric, EventType::Metric)
+            .with_encoder("encode", EventType::Metric, PayloadType::Raw)
+            .with_forwarder("forward", PayloadType::Raw)
+            .with_edge("in", "primary")
+            .with_edge("in", "gateway")
+            .with_edge("gateway", "encode")
+            .with_edge("encode", "forward");
+
+        graph.remove_edge(&output_id("in"), &id("gateway"));
+        let pruned = graph.prune_components_without_inputs([id("gateway")]);
+
+        assert_eq!(
+            pruned_ids(pruned),
+            HashSet::from(["gateway".into(), "encode".into(), "forward".into()])
+        );
+        assert!(graph.validate().is_ok());
+        assert_eq!(graph.nodes.len(), 2);
+    }
+
+    #[test]
+    fn pruning_keeps_components_with_remaining_inputs() {
+        // A candidate that still has another inbound edge isn't removed.
+        let mut graph = Graph::default();
+        graph
+            .with_source("in1", EventType::Metric)
+            .with_source("in2", EventType::Metric)
+            .with_destination("out", EventType::Metric)
+            .with_edge("in1", "out")
+            .with_edge("in2", "out");
+
+        graph.remove_edge(&output_id("in1"), &id("out"));
+        let pruned = graph.prune_components_without_inputs([id("out")]);
+
+        assert!(pruned.is_empty());
+        assert!(graph.nodes.contains_key(&id("out")));
+    }
+
+    #[test]
+    fn pruning_ignores_unrelated_disconnected_components() {
+        // Components that were never connected aren't pruned, so validation still reports them.
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric)
+            .with_destination("out", EventType::Metric)
+            .with_destination("forgotten", EventType::Metric)
+            .with_destination("folded", EventType::Metric)
+            .with_edge("in", "out")
+            .with_edge("in", "folded");
+
+        graph.remove_edge(&output_id("in"), &id("folded"));
+        let pruned = graph.prune_components_without_inputs([id("folded")]);
+
+        assert_eq!(pruned_ids(pruned), HashSet::from(["folded".into()]));
+        assert!(graph.validate().is_err());
     }
 
     #[test]

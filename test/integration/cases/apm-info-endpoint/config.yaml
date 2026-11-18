@@ -1,0 +1,67 @@
+type: integration
+name: "apm-info-endpoint"
+description: "Verifies the APM relay serves the trace-agent's /info discovery payload itself"
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-info"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
+  DD_APM_ENABLED: "false"
+  DD_APM_NON_LOCAL_TRAFFIC: "true"
+  DD_APM_ENV: "info-test"
+  DD_APM_FILTER_TAGS_REQUIRE: "team:apm"
+  DD_APM_IGNORE_RESOURCES: 'GET /ping,"(GET|POST) /a,b"'
+
+container:
+  exposed_ports:
+    - "48126/tcp"
+
+procedure:
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      # The trace-agent is disabled, so a payload can only come from the relay.
+      - assertion: http_check
+        endpoint: "http://localhost:48126/info"
+        status:
+          equal: 200
+        body:
+          contains: '"/v0.4/traces"'
+        timeout: 60s
+      # The version comes from the core Agent, once the relay has fetched it.
+      - assertion: http_check
+        endpoint: "http://localhost:48126/info"
+        status:
+          equal: 200
+        body:
+          contains: '"version": "7.'
+        timeout: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:48126/info"
+        status:
+          equal: 200
+        body:
+          contains: '"default_env": "info-test"'
+        timeout: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:48126/info"
+        status:
+          equal: 200
+        body:
+          contains: '"team:apm"'
+        timeout: 60s
+      # `DD_APM_IGNORE_RESOURCES` is a CSV record, so the quoted pattern keeps its comma.
+      - assertion: http_check
+        endpoint: "http://localhost:48126/info"
+        status:
+          equal: 200
+        body:
+          contains: '"(GET|POST) /a,b"'
+        timeout: 60s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

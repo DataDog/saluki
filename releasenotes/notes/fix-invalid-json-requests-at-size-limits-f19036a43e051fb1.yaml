@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Fix requests for service checks, logs, and V1 series metrics (``use_v2_series_api: false``) being sent as invalid
+    JSON when they filled up to their size limit. The Datadog intake drops such a request, so every service check,
+    log, or metric in it was lost. V1 series requests could also become invalid after Agent Data Plane dropped a single
+    metric that was too large to send. Requests that stayed under their size limits weren't affected.

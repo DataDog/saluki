@@ -1,6 +1,5 @@
 //! Translation of OTLP exponential histogram data points.
 
-use agent_data_plane_config::domains::otlp::HistogramMode;
 use otlp_protos::opentelemetry::proto::metrics::v1::ExponentialHistogramDataPoint as OtlpExponentialHistogramDataPoint;
 use saluki_core::data_model::event::Event;
 use tracing::debug;
@@ -8,6 +7,7 @@ use tracing::debug;
 use super::histogram::HistogramInfo;
 use super::sketch::{convert_ddsketch_into_sketch, exponential_histogram_to_ddsketch};
 use super::{infer_delta_interval, is_skippable, DataType, Dimensions, OtlpMetricsTranslator, TranslationContext};
+use crate::sources::otlp::metrics::config::HistogramMode;
 
 impl OtlpMetricsTranslator {
     pub(super) fn map_exponential_histogram_metrics(

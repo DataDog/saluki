@@ -1,0 +1,10 @@
+# Sets a byte-size setting with a unit suffix and leaves another at its default.
+# Shows which unit base size-in-bytes reads use for `KB` and `MB` suffixes.
+name: size-in-bytes-units
+group: behavior
+why: [getter-size-in-bytes-units]
+yaml: |
+  log_file_max_size: "10MB"
+keys:
+  - {key: log_file_max_size, getters: [GetString, GetSizeInBytes]}
+  - {key: dogstatsd_log_file_max_size, getters: [GetString, GetSizeInBytes]}

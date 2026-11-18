@@ -4,8 +4,8 @@ use std::time::Duration;
 use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
 use datadog_agent_config::classifier::Pipeline;
-use datadog_agent_runtime::env::WorkloadSettings;
-use saluki_error::{generic_error, GenericError};
+use datadog_agent_runtime::env::{HostSettings, WorkloadSettings};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 
 /// General data plane configuration.
@@ -23,7 +23,16 @@ pub(crate) fn remote_agent_client_configuration(
 ) -> Result<RemoteAgentClientConfiguration, GenericError> {
     let ipc = &config.control.ipc;
     let auth = DataPlaneConfiguration::from_configuration(config).ipc_auth_configuration();
-    RemoteAgentClientConfiguration::from_parts(ipc.cmd_port, auth, ipc.grpc_max_message_size, &ipc.vsock_addr)
+    RemoteAgentClientConfiguration::from_parts(
+        &ipc.cmd_host,
+        ipc.cmd_port,
+        auth,
+        ipc.grpc_max_message_size,
+        &ipc.vsock_addr,
+    )
+    .error_context(
+        "Invalid Datadog Agent IPC configuration. Check `cmd_host` (or the deprecated `ipc_address`) and `vsock_addr`.",
+    )
 }
 
 /// Translates the typed workload settings into the workload provider's settings.
@@ -41,9 +50,13 @@ pub(crate) fn workload_settings(config: &SalukiConfiguration) -> WorkloadSetting
     settings
 }
 
-/// Returns the hostname to report in standalone mode, if one was set explicitly.
-pub(crate) fn standalone_hostname(config: &SalukiConfiguration) -> Option<String> {
-    explicit(&config.shared.environment.hostname)
+/// Translates the typed hostname into the host provider's settings.
+///
+/// The hostname is only carried over when it was set explicitly.
+pub(crate) fn host_settings(config: &SalukiConfiguration) -> HostSettings {
+    let mut settings = HostSettings::default();
+    settings.hostname = explicit(&config.shared.environment.hostname);
+    settings
 }
 
 fn explicit<T: Clone>(value: &ConfigValue<T>) -> Option<T> {
@@ -77,16 +90,10 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns the topology shutdown timeout.
     ///
     /// Uses `data_plane.stop_timeout` when configured. Otherwise, it sums `aggregator_stop_timeout`
-    /// and `forwarder_stop_timeout`, returning `Duration::MAX` if the sum overflows.
+    /// and `forwarder_stop_timeout`, returning `Duration::MAX` if the sum overflows. See
+    /// [`SalukiConfiguration::stop_timeout`].
     pub fn stop_timeout(&self) -> Duration {
-        match self.config.control.stop_timeout {
-            Some(timeout) => timeout,
-            None => self
-                .config
-                .control
-                .aggregator_stop_timeout
-                .saturating_add(self.config.shared.endpoints.forwarder.stop_timeout),
-        }
+        self.config.stop_timeout()
     }
 
     /// Resolves the API listen address.
@@ -128,13 +135,30 @@ impl<'a> DataPlaneConfiguration<'a> {
     }
 
     /// Returns `true` if the OTLP pipeline is enabled.
+    ///
+    /// The pipeline needs at least one OTLP signal. Like the Agent, ADP treats OTLP as disabled when none is enabled,
+    /// instead of failing startup.
     pub const fn otlp_enabled(&self) -> bool {
-        self.config.control.otlp
+        self.config.control.otlp && self.otlp_signals_enabled()
+    }
+
+    /// Returns `true` if the OTLP pipeline is enabled but every OTLP signal (metrics, logs, and traces) is disabled.
+    pub const fn otlp_enabled_without_signals(&self) -> bool {
+        self.config.control.otlp && !self.otlp_signals_enabled()
+    }
+
+    /// Returns `true` if at least one OTLP signal (metrics, logs, or traces) is enabled.
+    const fn otlp_signals_enabled(&self) -> bool {
+        let otlp = &self.config.domains.otlp;
+        otlp.receiver.metrics_enabled || otlp.receiver.logs_enabled || otlp.traces.enabled
     }
 
     /// Returns `true` if the OTLP proxy is enabled.
+    ///
+    /// The proxy is enabled when any signal is proxied. In proxy mode, ADP forwards both logs and metrics to the Core
+    /// Agent, whatever their individual settings, because it has no native path for them while the relay runs.
     pub const fn otlp_proxy_enabled(&self) -> bool {
-        self.config.domains.otlp.proxy.enabled
+        self.config.domains.otlp.proxy.enabled()
     }
 
     /// Returns `true` if OTLP traces should be proxied to the Core Agent.
@@ -142,9 +166,14 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.config.domains.otlp.proxy.traces_enabled
     }
 
+    /// Returns `true` if the APM pipeline is enabled.
+    pub const fn apm_enabled(&self) -> bool {
+        self.config.control.apm
+    }
+
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
-        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled()
+        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled() || self.apm_enabled()
     }
 
     /// Returns `true` if the metrics pipeline is required.
@@ -220,14 +249,50 @@ impl<'a> DataPlaneConfiguration<'a> {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::domains::otlp::Proxy;
     use datadog_agent_commons::platform::PlatformSettings;
 
     use super::*;
 
+    /// Returns a default configuration with the IPC host the Datadog witness writes by default.
+    fn ipc_configuration() -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.control.ipc.cmd_host = "localhost".to_string();
+        config
+    }
+
+    #[test]
+    fn remote_agent_client_configuration_uses_the_ipc_host() {
+        let cases = [
+            // Like the Datadog Agent's IPC clients, `localhost` is kept as a name and resolved when connecting.
+            ("localhost", "https://localhost:5001/"),
+            ("::1", "https://[::1]:5001/"),
+            ("127.0.0.2", "https://127.0.0.2:5001/"),
+        ];
+        for (cmd_host, expected) in cases {
+            let mut config = ipc_configuration();
+            config.control.ipc.cmd_port = 5001;
+            config.control.ipc.cmd_host = cmd_host.to_string();
+
+            let client_config = remote_agent_client_configuration(&config).expect("valid IPC configuration");
+            assert_eq!(
+                client_config.endpoint().to_string(),
+                expected,
+                "for cmd_host {cmd_host:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_agent_client_configuration_rejects_non_loopback_hosts() {
+        let mut config = ipc_configuration();
+        config.control.ipc.cmd_host = "10.0.0.1".to_string();
+        assert!(remote_agent_client_configuration(&config).is_err());
+    }
+
     #[test]
     fn remote_agent_client_configuration_resolves_default_auth_paths() {
-        let client_config =
-            remote_agent_client_configuration(&SalukiConfiguration::default()).expect("valid IPC configuration");
+        let client_config = remote_agent_client_configuration(&ipc_configuration()).expect("valid IPC configuration");
 
         assert_eq!(
             client_config.auth.auth_token_file_path(),
@@ -240,8 +305,39 @@ mod tests {
     }
 
     #[test]
+    fn otlp_needs_at_least_one_signal() {
+        let otlp_enabled = |metrics, logs, traces| {
+            let mut config = SalukiConfiguration::default();
+            config.control.otlp = true;
+            config.domains.otlp.receiver.metrics_enabled = metrics;
+            config.domains.otlp.receiver.logs_enabled = logs;
+            config.domains.otlp.traces.enabled = traces;
+            let dp = DataPlaneConfiguration::from_configuration(&config);
+            (dp.otlp_enabled(), dp.otlp_enabled_without_signals())
+        };
+
+        assert_eq!(otlp_enabled(false, false, false), (false, true));
+        assert_eq!(otlp_enabled(true, false, false), (true, false));
+        assert_eq!(otlp_enabled(false, true, false), (true, false));
+        assert_eq!(otlp_enabled(false, false, true), (true, false));
+    }
+
+    #[test]
+    fn otlp_without_signals_activates_no_otlp_pipelines() {
+        let mut config = pipeline_configuration(false, false, true, Proxy::default());
+        config.domains.otlp.receiver.metrics_enabled = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.data_pipelines_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+        assert!(dp.active_pipelines().is_empty());
+    }
+
+    #[test]
     fn remote_agent_client_configuration_uses_typed_auth_paths() {
-        let mut config = SalukiConfiguration::default();
+        let mut config = ipc_configuration();
         config.control.ipc.auth_token_file_path = "/secret/auth_token".into();
         config.control.ipc.ipc_cert_file_path = "/secret/ipc_cert.pem".into();
 
@@ -265,7 +361,7 @@ mod tests {
             ("hypervisor", Some(0)),
             ("local", Some(3)),
         ] {
-            let mut config = SalukiConfiguration::default();
+            let mut config = ipc_configuration();
             config.control.ipc.cmd_port = 5001;
             config.control.ipc.grpc_max_message_size = 4 * 1024 * 1024;
             config.control.ipc.vsock_addr = value.to_string();
@@ -280,7 +376,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn remote_agent_client_configuration_rejects_invalid_vsock_addresses() {
-        let mut config = SalukiConfiguration::default();
+        let mut config = ipc_configuration();
         config.control.ipc.vsock_addr = "invalid".to_string();
 
         assert!(remote_agent_client_configuration(&config).is_err());
@@ -306,25 +402,35 @@ mod tests {
     }
 
     #[test]
-    fn standalone_hostname_requires_an_explicit_value() {
+    fn host_settings_require_an_explicit_hostname() {
         let mut config = SalukiConfiguration::default();
         config.shared.environment.hostname = ConfigValue::defaulted("defaulted-host".to_string());
-        assert_eq!(standalone_hostname(&config), None);
+        assert_eq!(host_settings(&config).hostname, None);
 
         config.shared.environment.hostname = ConfigValue::explicit("explicit-host".to_string());
-        assert_eq!(standalone_hostname(&config).as_deref(), Some("explicit-host"));
+        assert_eq!(host_settings(&config).hostname.as_deref(), Some("explicit-host"));
+    }
+
+    /// Returns OTLP proxy settings that proxy the given signals.
+    fn proxy(logs: bool, metrics: bool, traces: bool) -> Proxy {
+        Proxy {
+            logs_enabled: logs,
+            metrics_enabled: metrics,
+            traces_enabled: traces,
+            ..Proxy::default()
+        }
     }
 
     fn pipeline_configuration(
-        checks_enabled: bool, dogstatsd_enabled: bool, otlp_enabled: bool, otlp_proxy_enabled: bool,
-        otlp_proxy_traces_enabled: bool,
+        checks_enabled: bool, dogstatsd_enabled: bool, otlp_enabled: bool, otlp_proxy: Proxy,
     ) -> SalukiConfiguration {
         let mut config = SalukiConfiguration::default();
         config.control.checks = checks_enabled;
         config.control.dogstatsd = dogstatsd_enabled;
         config.control.otlp = otlp_enabled;
-        config.domains.otlp.proxy.enabled = otlp_proxy_enabled;
-        config.domains.otlp.proxy.traces_enabled = otlp_proxy_traces_enabled;
+        // The OTLP pipeline needs at least one signal, and the Agent enables metrics by default.
+        config.domains.otlp.receiver.metrics_enabled = true;
+        config.domains.otlp.proxy = otlp_proxy;
         config
     }
 
@@ -334,7 +440,7 @@ mod tests {
 
     #[test]
     fn dogstatsd_only_requires_metrics_events_and_service_checks_pipelines() {
-        let config = pipeline_configuration(false, true, false, false, false);
+        let config = pipeline_configuration(false, true, false, Proxy::default());
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -347,7 +453,7 @@ mod tests {
 
     #[test]
     fn checks_enabled_requires_every_pipeline_except_traces() {
-        let config = pipeline_configuration(true, false, false, false, false);
+        let config = pipeline_configuration(true, false, false, Proxy::default());
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -360,7 +466,7 @@ mod tests {
 
     #[test]
     fn otlp_without_proxy_requires_metrics_logs_and_traces_pipelines() {
-        let config = pipeline_configuration(false, false, true, false, false);
+        let config = pipeline_configuration(false, false, true, Proxy::default());
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -374,7 +480,7 @@ mod tests {
     #[test]
     fn standalone_otlp_proxy_mode_does_not_require_liveness_baseline_pipelines() {
         // Standalone OTLP proxy mode must only construct the local proxy path, which avoids resolving output endpoints.
-        let mut config = pipeline_configuration(false, false, true, true, true);
+        let mut config = pipeline_configuration(false, false, true, proxy(true, true, true));
         config.control.standalone_mode = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
@@ -390,7 +496,7 @@ mod tests {
     fn connected_otlp_proxy_mode_requires_liveness_baseline_pipelines() {
         // Connected mode still forwards the liveness metric and service check, so those baselines stay required even
         // when every OTLP signal is proxied.
-        let config = pipeline_configuration(false, false, true, true, true);
+        let config = pipeline_configuration(false, false, true, proxy(true, true, true));
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -405,7 +511,7 @@ mod tests {
     fn otlp_proxy_mode_with_local_traces_requires_liveness_and_traces_pipelines() {
         // Proxy mode is enabled but trace proxying is turned off, so ADP must handle traces locally. The liveness
         // metric and service-check baselines remain required regardless of the OTLP routing.
-        let config = pipeline_configuration(false, false, true, true, false);
+        let config = pipeline_configuration(false, false, true, proxy(true, true, false));
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -417,10 +523,49 @@ mod tests {
     }
 
     #[test]
+    fn otlp_proxy_is_disabled_when_no_signal_is_proxied() {
+        let config = pipeline_configuration(false, false, true, proxy(false, false, false));
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.otlp_proxy_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(dp.logs_pipeline_required());
+        assert!(dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn otlp_proxy_traces_only_proxies_every_signal() {
+        // Proxy mode forwards logs and metrics whatever their own settings, so no native OTLP pipeline is needed.
+        let mut config = pipeline_configuration(false, false, true, proxy(false, false, true));
+        config.control.standalone_mode = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.otlp_proxy_enabled());
+        assert!(dp.otlp_proxy_traces_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn otlp_proxy_metrics_only_decodes_traces_natively() {
+        let mut config = pipeline_configuration(false, false, true, proxy(false, true, false));
+        config.control.standalone_mode = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.otlp_proxy_enabled());
+        assert!(!dp.otlp_proxy_traces_enabled());
+        assert!(!dp.logs_pipeline_required());
+        assert!(dp.traces_pipeline_required());
+        // The trace sampler's telemetry needs the metrics pipeline; OTLP metrics themselves are proxied.
+        assert!(dp.metrics_pipeline_required());
+    }
+
+    #[test]
     fn standalone_local_traces_requires_metrics_pipeline_for_sampler_telemetry() {
         // The sampler reports its telemetry as metric events, so a running traces pipeline requires
         // the metrics pipeline even in standalone mode.
-        let mut config = pipeline_configuration(false, false, true, true, false);
+        let mut config = pipeline_configuration(false, false, true, proxy(true, true, false));
         config.control.standalone_mode = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
@@ -429,8 +574,40 @@ mod tests {
     }
 
     #[test]
+    fn connected_apm_only_requires_liveness_baseline_pipelines() {
+        // The APM relay forwards to the trace-agent what it does not handle itself, so it needs no baseline pipeline of
+        // its own, but connected mode still forwards the liveness metric and service check.
+        let mut config = pipeline_configuration(false, false, false, Proxy::default());
+        config.control.apm = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn standalone_apm_only_requires_no_baseline_pipelines() {
+        // The traces pipeline would have no events source to feed it, so the relay connects to the forwarder alone.
+        let mut config = pipeline_configuration(false, false, false, Proxy::default());
+        config.control.apm = true;
+        config.control.standalone_mode = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[test]
     fn no_pipelines_enabled_requires_no_baseline_pipelines() {
-        let config = pipeline_configuration(false, false, false, false, false);
+        let config = pipeline_configuration(false, false, false, Proxy::default());
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(!dp.data_pipelines_enabled());
@@ -442,33 +619,12 @@ mod tests {
     }
 
     #[test]
-    fn stop_timeout_uses_saluki_override() {
-        let mut config = SalukiConfiguration::default();
-        config.control.stop_timeout = Some(Duration::from_secs(11));
-        config.control.aggregator_stop_timeout = Duration::from_secs(3);
-        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(7);
-        let dp = DataPlaneConfiguration::from_configuration(&config);
-
-        assert_eq!(dp.stop_timeout(), Duration::from_secs(11));
-    }
-
-    #[test]
-    fn stop_timeout_sums_component_timeouts() {
+    fn stop_timeout_is_the_configuration_stop_timeout() {
         let mut config = SalukiConfiguration::default();
         config.control.aggregator_stop_timeout = Duration::from_secs(3);
         config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(7);
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert_eq!(dp.stop_timeout(), Duration::from_secs(10));
-    }
-
-    #[test]
-    fn stop_timeout_saturates_when_sum_overflows() {
-        let mut config = SalukiConfiguration::default();
-        config.control.aggregator_stop_timeout = Duration::MAX;
-        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(1);
-        let dp = DataPlaneConfiguration::from_configuration(&config);
-
-        assert_eq!(dp.stop_timeout(), Duration::MAX);
     }
 }

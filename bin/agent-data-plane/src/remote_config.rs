@@ -1,26 +1,19 @@
 //! Connects the trace pipeline to the core Agent's Remote Configuration service.
 //!
 //! The Agent supplies trace sampling settings (`APM_SAMPLING`) and mappings from trace concepts such
-//! as HTTP status to attribute names (`APM_SEMANTIC_CORE_DD`). In connected mode with a local trace
-//! pipeline, ADP subscribes to enabled products and runs a worker that polls for updates. Without a
-//! subscription, components use configured sampling settings and the mappings embedded in ADP.
-
-use std::time::Duration;
+//! as HTTP status to attribute names (`APM_SEMANTIC_CORE_DD`). ADP subscribes to enabled products
+//! through the remote agent runtime's Remote Configuration client, which is only available in
+//! connected mode with Remote Configuration enabled: sampling settings with a local trace pipeline,
+//! and mappings with a local trace pipeline or the APM relay, whose `/info` reports peer tags
+//! derived from them. Without a subscription, components use configured sampling settings and the
+//! mappings embedded in ADP.
 
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
-use datadog_agent_commons::ipc::{
-    client::{client_name, RemoteAgentClient},
-    config::RemoteAgentClientConfiguration,
-};
-use datadog_agent_remote_config::{AgentIdentity, ClientKind, RcClientConfiguration, RemoteConfigurationClient};
-use saluki_core::runtime::{
-    nested_supervisor, ChildSpecification, RestartStrategy, Supervisable, Supervisor, SupervisorError, SupervisorSpec,
-};
-use saluki_error::{ErrorContext as _, GenericError};
-use saluki_metadata::AppDetails;
+use datadog_agent_runtime::facade::{Initialized, RemoteAgent};
+use saluki_error::GenericError;
 
-use crate::config::DataPlaneConfiguration;
+use crate::{config::DataPlaneConfiguration, internal::AgentDataPlane};
 
 /// The trace products ADP requests from the Agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,7 +21,7 @@ pub(crate) struct RcProducts {
     /// Whether to request trace sampling settings.
     pub sampling: bool,
 
-    /// Whether to request OTLP trace attribute mappings.
+    /// Whether to request trace attribute mappings.
     pub semantics: bool,
 }
 
@@ -47,30 +40,21 @@ impl RcProducts {
 
 /// Chooses which trace products to subscribe to from `config`.
 ///
-/// Subscriptions require connected mode, a local trace pipeline, the global Remote Configuration switch, and the
-/// corresponding product switch.
+/// Each subscription requires the corresponding product switch. Sampling settings also require a local trace pipeline,
+/// and attribute mappings a local trace pipeline or the APM relay, as the peer tags on `/info` follow them like the
+/// trace-agent's do. Connected mode and the global Remote Configuration switch are checked by the remote agent runtime.
 pub(crate) fn enabled_products(config: &SalukiConfiguration) -> RcProducts {
     let dp = DataPlaneConfiguration::from_configuration(config);
-    let rc = &config.domains.remote_configuration;
-    // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/comp/trace/config/impl/setup.go#L114-L116
-    if dp.standalone_mode() || !rc.enabled || !dp.traces_pipeline_required() {
+    let traces_pipeline = dp.traces_pipeline_required();
+    if !traces_pipeline && !dp.apm_enabled() {
         return RcProducts::NONE;
     }
 
+    let rc = &config.domains.remote_configuration;
     RcProducts {
-        sampling: rc.apm_sampling_enabled,
+        sampling: traces_pipeline && rc.apm_sampling_enabled,
         semantics: rc.apm_semantics_enabled,
     }
-}
-
-/// Creates the identity ADP sends when polling the Agent for Remote Configuration.
-///
-/// Uses the same application name as ADP's separate configuration-update stream, plus this build's version.
-pub(crate) fn rc_identity(app_details: &AppDetails) -> ClientKind {
-    ClientKind::Agent(AgentIdentity::new(
-        client_name(app_details),
-        app_details.version().raw(),
-    ))
 }
 
 /// Handles passed to trace components for Remote Configuration updates.
@@ -87,29 +71,26 @@ pub(crate) struct RemoteConfigSubscriptions {
 }
 
 impl RemoteConfigSubscriptions {
-    /// Connects to the Agent and subscribes to the selected `products`.
+    /// Subscribes to the selected `products` through the remote agent's Remote Configuration client.
     ///
-    /// With no products or no Agent connection settings, returns default handles and no worker without connecting.
-    /// Otherwise, returns a child supervisor for the polling worker. The subscriptions keep its shared state alive.
+    /// With no products, returns default handles without asking for the client, so no connection is made. Default
+    /// handles are also returned when the client isn't available, in standalone mode or with Remote Configuration
+    /// turned off.
     ///
     /// # Errors
     ///
-    /// Returns an error if the Agent connection, client setup, subscription, or supervisor creation fails.
+    /// Returns an error if the client can't connect to the Agent, or a subscription fails.
     pub(crate) async fn subscribe(
-        products: RcProducts, remote_agent: Option<&RemoteAgentClientConfiguration>,
-    ) -> Result<(Self, Option<ChildSpecification<SupervisorSpec>>), GenericError> {
-        let (true, Some(remote_agent)) = (products.any(), remote_agent) else {
-            return Ok((Self::default(), None));
+        products: RcProducts, agent: &mut RemoteAgent<AgentDataPlane, Initialized>,
+    ) -> Result<Self, GenericError> {
+        let mut subscriptions = Self::default();
+        if !products.any() {
+            return Ok(subscriptions);
+        }
+        let Some(client) = agent.remote_config_client().await? else {
+            return Ok(subscriptions);
         };
 
-        // Remote Configuration has its own Agent connection, separate from other ADP services.
-        let agent = RemoteAgentClient::connect(remote_agent)
-            .await
-            .error_context("Failed to connect to the Datadog Agent for Remote Configuration.")?;
-        let config = RcClientConfiguration::new(rc_identity(saluki_metadata::get_app_details()));
-        let (client, worker) = RemoteConfigurationClient::new(agent, config)?;
-
-        let mut subscriptions = Self::default();
         if products.sampling {
             subscriptions.trace_sampling = Some(TraceSamplingSubscription::new(&client)?);
         }
@@ -117,177 +98,22 @@ impl RemoteConfigSubscriptions {
             subscriptions.semantic_registry = SemanticRegistryProvider::subscribe(&client)?;
         }
 
-        Ok((subscriptions, Some(remote_config_child(worker)?)))
+        Ok(subscriptions)
     }
-}
-
-/// Runs the Remote Configuration polling worker under its own supervisor.
-///
-/// The worker can restart five times within 60 seconds. If it keeps failing, polling stops but the rest of ADP keeps
-/// running with the last accepted settings. The worker's `initialize` must not fail: initialization errors stop ADP
-/// rather than triggering a restart.
-fn remote_config_child(
-    worker: impl Supervisable + 'static,
-) -> Result<ChildSpecification<SupervisorSpec>, SupervisorError> {
-    let mut supervisor = Supervisor::new("remote-config")?
-        .with_restart_strategy(RestartStrategy::one_to_one().with_intensity_and_period(5, Duration::from_secs(60)));
-    supervisor.add_worker(worker);
-    // `hosted()` would propagate this subtree's restart exhaustion to the root, which would stop ADP. `temporary()`
-    // keeps the finite RC-only restart budget isolated.
-    #[allow(deprecated)]
-    let child = nested_supervisor(supervisor).temporary().build();
-    Ok(child)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::PathBuf,
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        },
-    };
-
-    use async_trait::async_trait;
-    use datadog_agent_commons::ipc::config::IpcAuthConfiguration;
-    use saluki_common::sync::shutdown::ShutdownHandle;
-    use saluki_core::runtime::{InitializationError, RestartMode, SupervisorFuture};
-    use tokio::sync::oneshot;
-
     use super::*;
-
-    fn unreachable_remote_agent() -> RemoteAgentClientConfiguration {
-        RemoteAgentClientConfiguration {
-            cmd_port: 1,
-            auth: IpcAuthConfiguration::new(
-                PathBuf::from("/nonexistent/auth_token"),
-                PathBuf::from("/nonexistent/ipc_cert.pem"),
-            ),
-            grpc_max_message_size: 1024,
-            #[cfg(target_os = "linux")]
-            vsock_cid: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn subscribe_makes_nothing_when_no_product_is_enabled_or_there_is_no_agent() {
-        let remote_agent = unreachable_remote_agent();
-
-        // The unreachable endpoint makes an unexpected connection fail this test.
-        let (subscriptions, child) = RemoteConfigSubscriptions::subscribe(RcProducts::NONE, Some(&remote_agent))
-            .await
-            .expect("subscribing to nothing should not connect");
-        assert!(subscriptions.trace_sampling.is_none());
-        assert!(child.is_none());
-
-        let all = RcProducts {
-            sampling: true,
-            semantics: true,
-        };
-        let (subscriptions, child) = RemoteConfigSubscriptions::subscribe(all, None)
-            .await
-            .expect("standalone mode should not fail");
-        assert!(subscriptions.trace_sampling.is_none());
-        assert!(child.is_none());
-    }
-
-    /// Counts starts and runs until shutdown.
-    struct LongRunning {
-        starts: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl Supervisable for LongRunning {
-        fn name(&self) -> &str {
-            "long-running"
-        }
-
-        async fn initialize(&self, shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-            self.starts.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::pin(async move {
-                shutdown.await;
-                Ok(())
-            }))
-        }
-    }
-
-    /// Counts starts and panics on every run.
-    struct AlwaysPanics {
-        starts: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl Supervisable for AlwaysPanics {
-        fn name(&self) -> &str {
-            "always-panics"
-        }
-
-        async fn initialize(&self, _shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-            self.starts.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::pin(async move { panic!("worker bug") }))
-        }
-    }
-
-    async fn wait_until(what: &str, condition: impl Fn() -> bool) {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while !condition() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting until {what}"));
-    }
-
-    #[tokio::test]
-    async fn exhausted_remote_config_child_stops_without_stopping_root() {
-        let sibling_starts = Arc::new(AtomicUsize::new(0));
-        let worker_starts = Arc::new(AtomicUsize::new(0));
-
-        // Match the production root's no-restart strategy; the sibling stands in for the topology.
-        let mut root = Supervisor::new("root")
-            .unwrap()
-            .with_restart_strategy(RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)));
-        root.add_worker(LongRunning {
-            starts: Arc::clone(&sibling_starts),
-        });
-        root.add_worker(
-            remote_config_child(AlwaysPanics {
-                starts: Arc::clone(&worker_starts),
-            })
-            .unwrap(),
-        );
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let run = tokio::spawn(async move { root.run_with_shutdown(shutdown_rx).await });
-
-        // The first run and five restarts, then the sixth failure stops the child without stopping root.
-        wait_until("the worker has started six times", || {
-            worker_starts.load(Ordering::SeqCst) >= 6
-        })
-        .await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert_eq!(worker_starts.load(Ordering::SeqCst), 6);
-        assert_eq!(sibling_starts.load(Ordering::SeqCst), 1);
-        assert!(!run.is_finished(), "root stopped with the remote-config child");
-
-        shutdown_tx.send(()).unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(5), run)
-            .await
-            .expect("root should shut down promptly")
-            .expect("root task should not panic");
-        assert!(result.is_ok(), "root shut down with {result:?}");
-    }
 
     struct Case {
         name: &'static str,
-        rc: bool,
         sampling: bool,
         semantics: bool,
-        standalone: bool,
         otlp: bool,
-        otlp_proxy: bool,
+        otlp_proxy_metrics: bool,
         otlp_proxy_traces: bool,
+        apm: bool,
         expected: RcProducts,
     }
 
@@ -307,18 +133,17 @@ mod tests {
     // Baseline with both products and a local trace pipeline enabled.
     const ON: Case = Case {
         name: "",
-        rc: true,
         sampling: true,
         semantics: true,
-        standalone: false,
         otlp: true,
-        otlp_proxy: false,
+        otlp_proxy_metrics: false,
         otlp_proxy_traces: false,
+        apm: false,
         expected: BOTH,
     };
 
     #[test]
-    fn enabled_products_requires_rc_a_product_key_and_the_traces_pipeline() {
+    fn enabled_products_requires_a_product_key_and_a_consumer() {
         let cases = [
             Case { name: "all on", ..ON },
             Case {
@@ -341,25 +166,6 @@ mod tests {
                 ..ON
             },
             Case {
-                name: "rc off",
-                rc: false,
-                expected: RcProducts::NONE,
-                ..ON
-            },
-            Case {
-                name: "rc off, sampling only",
-                rc: false,
-                semantics: false,
-                expected: RcProducts::NONE,
-                ..ON
-            },
-            Case {
-                name: "standalone",
-                standalone: true,
-                expected: RcProducts::NONE,
-                ..ON
-            },
-            Case {
                 name: "otlp off: no traces pipeline",
                 otlp: false,
                 expected: RcProducts::NONE,
@@ -367,27 +173,53 @@ mod tests {
             },
             Case {
                 name: "otlp traces proxied: no traces pipeline",
-                otlp_proxy: true,
                 otlp_proxy_traces: true,
                 expected: RcProducts::NONE,
                 ..ON
             },
             Case {
                 name: "otlp proxy with traces kept: traces pipeline",
-                otlp_proxy: true,
-                otlp_proxy_traces: false,
+                otlp_proxy_metrics: true,
+                ..ON
+            },
+            Case {
+                name: "apm relay without traces pipeline: semantics only",
+                otlp: false,
+                apm: true,
+                expected: SEMANTICS,
+                ..ON
+            },
+            Case {
+                name: "apm relay with otlp traces proxied: semantics only",
+                otlp_proxy_traces: true,
+                apm: true,
+                expected: SEMANTICS,
+                ..ON
+            },
+            Case {
+                name: "apm relay with semantics key off",
+                otlp: false,
+                apm: true,
+                semantics: false,
+                expected: RcProducts::NONE,
+                ..ON
+            },
+            Case {
+                name: "apm relay with traces pipeline",
+                apm: true,
                 ..ON
             },
         ];
 
         for case in cases {
             let mut config = SalukiConfiguration::default();
-            config.domains.remote_configuration.enabled = case.rc;
             config.domains.remote_configuration.apm_sampling_enabled = case.sampling;
             config.domains.remote_configuration.apm_semantics_enabled = case.semantics;
-            config.control.standalone_mode = case.standalone;
             config.control.otlp = case.otlp;
-            config.domains.otlp.proxy.enabled = case.otlp_proxy;
+            config.control.apm = case.apm;
+            // OTLP needs at least one signal to run.
+            config.domains.otlp.receiver.metrics_enabled = true;
+            config.domains.otlp.proxy.metrics_enabled = case.otlp_proxy_metrics;
             config.domains.otlp.proxy.traces_enabled = case.otlp_proxy_traces;
 
             let products = enabled_products(&config);
@@ -399,15 +231,5 @@ mod tests {
                 case.name
             );
         }
-    }
-
-    #[test]
-    fn rc_identity_uses_the_config_stream_name_and_app_version() {
-        let ClientKind::Agent(agent) = rc_identity(&crate::APP_DETAILS) else {
-            panic!("expected an agent identity");
-        };
-        assert_eq!(agent.name, client_name(&crate::APP_DETAILS));
-        assert_eq!(agent.name, "agent-data-plane");
-        assert_eq!(agent.version, crate::APP_DETAILS.version().raw());
     }
 }

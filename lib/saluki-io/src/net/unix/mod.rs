@@ -8,7 +8,7 @@ use std::{
 
 use bytes::BufMut;
 use tokio::net::{UnixDatagram, UnixStream};
-use tracing::trace;
+use tracing::{debug, trace};
 
 #[cfg(target_os = "linux")]
 mod ancillary;
@@ -26,7 +26,7 @@ mod non_linux;
 use self::non_linux::uds_recvmsg;
 #[cfg(not(target_os = "linux"))]
 pub use self::non_linux::{enable_uds_socket_credentials, socket_reuseport_supported};
-use super::addr::ConnectionAddress;
+use super::addr::{ConnectionAddress, ProcessCredentialsError, ProcessIdentity};
 
 /// Ensures that the given path is read for use as a UNIX socket.
 ///
@@ -79,6 +79,23 @@ pub async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Result<()> 
 /// If the underlying system call fails, an error is returned.
 pub async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::Result<()> {
     tokio::fs::set_permissions(path, Permissions::from_mode(0o722)).await
+}
+
+/// Returns the identity of the process on the other end of a connected Unix domain socket.
+///
+/// The kernel captures the peer's credentials when it connects (`SO_PEERCRED` on Linux), so they're fixed for the life of
+/// the connection.
+pub(crate) fn unix_peer_identity(socket: &UnixStream) -> ProcessIdentity {
+    match socket.peer_cred() {
+        Ok(creds) => match creds.pid() {
+            Some(pid) => ProcessIdentity::new(pid, creds.uid(), creds.gid()),
+            None => ProcessIdentity::Error(ProcessCredentialsError::UnsupportedPlatform),
+        },
+        Err(e) => {
+            debug!(error = %e, "Failed to look up peer credentials for Unix domain socket connection.");
+            ProcessIdentity::Error(ProcessCredentialsError::PeerLookupFailed)
+        }
+    }
 }
 
 /// Receives data from the Unix domain socket.

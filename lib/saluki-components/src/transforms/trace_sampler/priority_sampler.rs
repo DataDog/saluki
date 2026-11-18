@@ -132,7 +132,7 @@ mod tests {
     // logic for these tests are taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/prioritysampler_test.go
     use std::time::{Duration, SystemTime};
 
-    use saluki_core::data_model::event::trace::{Span, Trace};
+    use saluki_core::data_model::event::trace::{Span, Trace, TraceIngestInfo};
     use stringtheory::MetaString;
 
     use super::*;
@@ -170,7 +170,7 @@ mod tests {
             0,      // error
         );
 
-        let mut trace = Trace::new(vec![root, child]);
+        let mut trace = Trace::new(vec![root, child], TraceIngestInfo::Datadog);
         trace.trace_id_low = trace_id;
         (trace, 0)
     }

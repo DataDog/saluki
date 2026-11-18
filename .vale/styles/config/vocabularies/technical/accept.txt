@@ -99,7 +99,8 @@ callsite
 enqueue(s|d|ing)?
 hostname
 backpressure
-misconfiguration
+[Bb]ackport(s|ed|ing)?
+misconfiguration(s?)
 connectionless
 alphanumeric(s?)
 monomorphization
@@ -163,6 +164,7 @@ truthy
 formatters
 globals
 implementor(s?)
+jemalloc
 jittered
 losslessly
 lossy
@@ -217,6 +219,7 @@ dataspace
 filterlist
 filterprocessor
 panoramic
+stele
 transformprocessor
 schema
 integrator
@@ -263,7 +266,7 @@ systemd
 rollout(s?)
 subprocess(es)?
 (non-?)?interruptible
-PR
+PR(s?)
 uninterrupible
 keepalive
 SDK(s?)
@@ -291,3 +294,18 @@ subresource(s?)
 multiset
 target_traces_per_second
 [Mm]atcher('s|s)?
+PING(s?)
+GAT(s?)
+declarative(ly)?
+LLM(s?)
+README(s?)
+rebas(e|ed|es|ing)
+restack(s|ed|ing)?
+cutover(s?)
+composable
+unmodeled
+vendoring
+agentic
+getter(s?)
+protojson
+unprefixed

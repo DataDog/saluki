@@ -1,0 +1,237 @@
+name: Update APM Semantic Mappings
+
+# ADP embeds a copy of the Agent's APM semantic mappings and falls back to it when Remote Configuration has not supplied
+# a registry. When the Agent changes the mappings, that fallback silently falls behind.
+#
+# This workflow runs `ci/tooling/update-apm-semantics.sh` weekly and opens a pull request for an unreported snapshot
+# from the Agent's `main` branch. The script checks the document's shape; PR CI checks that ADP can load the mappings
+# and that required entries remain present. Unknown concepts are ignored, so compatible additions need no code change.
+# Fix incompatibilities on the update branch; a human reviews and merges each pull request.
+#
+# Subscribe to workflow-failure notifications through Slack's GitHub integration so failed update checks are noticed.
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Two runs at once could both see the change as unreported and race to create the same branch.
+    concurrency:
+      group: update-apm-semantics
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MAPPINGS: lib/datadog-agent/apm/src/semantics/mappings.json
+      VERSION_FILE: lib/datadog-agent/apm/src/semantics/_version.txt
+    steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@c85802a58e202b7e764b5441e4378c76043c8108 # v1.0.5
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.update-apm-semantics.create-pr
+
+      # Keep the write token out of git's configuration; remote writes use the GitHub API.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure Git
+        run: |
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # The script gets the workflow's read-only token, never the write token. Its commit is replayed as a signed one
+      # further down.
+      - name: Refresh the mappings
+        id: update
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: |
+          base_sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+          ci/tooling/update-apm-semantics.sh
+
+          update_sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+          if [ "$update_sha" = "$base_sha" ]; then
+            echo "The mappings are current."
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A content-derived branch name lets later runs find PRs for the same snapshot, even if the upstream commit
+          # changes.
+          {
+            echo "needs_update=true"
+            echo "base_sha=$base_sha"
+            echo "update_sha=$update_sha"
+            echo "branch_name=ci/update-apm-semantics-$(sha256sum "$MAPPINGS" | cut -c1-12)"
+            echo "title=$(git -C "$GITHUB_WORKSPACE" log -1 --format=%s)"
+            echo "source=$(cat "$VERSION_FILE")"
+            echo "previous=$(git -C "$GITHUB_WORKSPACE" show "$base_sha:$VERSION_FILE")"
+          } >> "$GITHUB_OUTPUT"
+
+          # Pass upstream concept names through a file, not interpolated script source, to prevent script injection.
+          git -C "$GITHUB_WORKSPACE" log -1 --format=%b > "$RUNNER_TEMP/commit-body.txt"
+
+      - name: Check whether this change was already reported
+        id: reported
+        if: steps.update.outputs.needs_update == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BRANCH_NAME: "${{ steps.update.outputs.branch_name }}"
+        with:
+          github-token: "${{ steps.octo-sts.outputs.token }}"
+          script: |
+            const branchName = process.env.BRANCH_NAME;
+
+            // Treat open and closed-unmerged PRs as reported, so pending, declined, or superseded snapshots are not
+            // proposed again.
+            const { data: pullRequests } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branchName}`,
+              state: 'all',
+            });
+
+            // Ignore merged PRs: upstream can return to previously merged content after another update lands. The
+            // content-derived branch name is reused, but the diff from main still needs review.
+            const reportedBy = pullRequests.find(pullRequest => !pullRequest.merged_at);
+
+            if (reportedBy) {
+              console.log(`Already reported by ${reportedBy.html_url} (${reportedBy.state}); nothing to do.`);
+              core.setOutput('already_reported', 'true');
+              return;
+            }
+
+            core.setOutput('already_reported', 'false');
+
+            // With no open or closed-unmerged PR for this content, a remaining branch may be from a failed run or a
+            // merged PR. Delete it so commit-headless can recreate it from this run's base commit.
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`,
+              });
+              console.log(`Deleted orphaned branch ${branchName} left by an earlier run.`);
+            } catch (error) {
+              if (error.status !== 404 && error.status !== 422) {
+                throw error;
+              }
+            }
+
+      # The branch is created at the commit the run began from, and the script's unsigned commit is replayed on top as
+      # a signed one.
+      - name: Sign commit
+        if: steps.update.outputs.needs_update == 'true' && steps.reported.outputs.already_reported == 'false'
+        uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
+        with:
+          token: "${{ steps.octo-sts.outputs.token }}"
+          branch: ${{ steps.update.outputs.branch_name }}
+          head-sha: ${{ steps.update.outputs.base_sha }}
+          create-branch: true
+          command: push
+          commits: "${{ steps.update.outputs.update_sha }}"
+
+      - name: Create pull request
+        if: steps.update.outputs.needs_update == 'true' && steps.reported.outputs.already_reported == 'false'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BRANCH_NAME: "${{ steps.update.outputs.branch_name }}"
+          PR_TITLE: "${{ steps.update.outputs.title }}"
+          PREVIOUS: "${{ steps.update.outputs.previous }}"
+          SOURCE: "${{ steps.update.outputs.source }}"
+        with:
+          github-token: "${{ steps.octo-sts.outputs.token }}"
+          script: |
+            const fs = require('fs');
+
+            const branchName = process.env.BRANCH_NAME;
+            const previous = process.env.PREVIOUS;
+            const source = process.env.SOURCE;
+            const commitBody = fs.readFileSync(`${process.env.RUNNER_TEMP}/commit-body.txt`, 'utf8').trim();
+            const prLabel = 'ci/update-apm-semantics';
+            const prBody = `## Summary
+
+            This updates the vendored APM semantic mappings to a newer version of the Datadog Agent's
+            \`pkg/trace/semantics/mappings.json\`.
+
+            ${commitBody}
+
+            Changes since the previous snapshot: [\`${previous.slice(0, 12)}...${source.slice(0, 12)}\`](https://github.com/DataDog/datadog-agent/compare/${previous}...${source})
+
+            **This changes the fallback used when no registry has come from Remote Configuration.** Review the changed
+            concepts as a behavior change.
+
+            New concepts and supported fallbacks need no code change. The embedded registry ignores concepts that ADP
+            does not model yet, so add a \`Concept\` variant in \`lib/datadog-agent/apm/src/semantics/mod.rs\` as a
+            follow-up if ADP should use one.
+
+            CI checks that ADP can load the snapshot and that required entries remain present. Push a fix to this branch if:
+
+            - a fallback for a known concept has a provider or value type that ADP does not support, so the registry
+              cannot load it, or
+            - an update removes a concept that ADP models, so \`every_concept_variant_is_registered\` fails.
+
+            Do not edit \`mappings.json\` by hand: the next refresh overwrites it. If a changed fallback alters behavior
+            that users can see, add a release note to this branch.
+
+            _This PR was automatically generated by the [Update APM Semantic Mappings](https://github.com/DataDog/saluki/blob/main/.github/workflows/update-apm-semantics.yml) workflow._
+
+            ## Change Type
+
+            - [ ] Bug fix
+            - [ ] New feature
+            - [x] Non-functional (chore, refactoring, docs)
+            - [ ] Performance`;
+
+            const updatePR = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: process.env.PR_TITLE,
+              head: branchName,
+              base: 'main',
+              body: prBody,
+            });
+            console.log(`Pull request created: ${updatePR.data.html_url}`);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: updatePR.data.number,
+              labels: [prLabel, 'automated']
+            });
+
+            // After publishing a new snapshot, close older open update PRs. Any fixes on those branches must be ported
+            // manually.
+            const { data: labeledPRData } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open label:"${prLabel}"`
+            });
+
+            for (const obsoleteUpdatePR of labeledPRData.items) {
+              if (obsoleteUpdatePR.number == updatePR.data.number) {
+                continue;
+              }
+
+              console.log(`Closing existing PR: ${obsoleteUpdatePR.html_url}`);
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: obsoleteUpdatePR.number,
+                state: 'closed'
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: obsoleteUpdatePR.number,
+                body: `Closing this pull request in favor of a newer mappings update: [update PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${updatePR.data.number}). If a fix was pushed to this branch, cherry-pick it onto the new one.`
+              });
+            }

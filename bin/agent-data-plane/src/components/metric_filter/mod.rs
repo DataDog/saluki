@@ -2,9 +2,9 @@
 
 use std::collections::HashSet;
 
-use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
+use saluki_common::sync::live::Live;
 use saluki_components::config::metrics_endpoint_routing::compact_metric_prefixes;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -12,7 +12,7 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{Event, EventType},
+    data_model::event::{metric::Metric, EventType},
     observability::ComponentMetricsExt as _,
     topology::{EventsBuffer, OutputDefinition},
 };
@@ -25,6 +25,19 @@ use super::metric_name::{is_normalized, normalize_into, NameBuf};
 
 const ALLOWLIST_METRICS_FILTERED_METRIC: &str = "metrics_endpoint_allowlist_metrics_filtered_total";
 const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";
+
+/// Multi-Region Failover metric mirroring settings, delivered as a [`Live`] value.
+///
+/// Activation and the allowlist arrive together, so each update rebuilds the filter from one configuration version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricMirroring {
+    /// Whether metrics are mirrored to the failover region.
+    pub enabled: bool,
+
+    /// Metric names permitted to be mirrored, matched exactly. While mirroring is enabled, an empty list mirrors every
+    /// metric.
+    pub allowlist: Vec<String>,
+}
 
 /// Configuration for a metric filter between enrichment and encoding.
 ///
@@ -130,10 +143,7 @@ impl Filter {
         }
     }
 
-    fn should_forward(&self, event: &Event) -> bool {
-        let Event::Metric(metric) = event else {
-            return false;
-        };
+    fn should_forward(&self, metric: &Metric) -> bool {
         match self {
             Self::DropAll => false,
             Self::All => true,
@@ -164,7 +174,7 @@ impl Filter {
 
     fn filter_events(&self, events: &mut EventsBuffer, telemetry: &Telemetry) -> usize {
         let input_count = events.len();
-        events.remove_if(|event| !self.should_forward(event));
+        events.retain_events::<Metric, _>(|metric| self.should_forward(metric));
         let dropped_count = input_count.saturating_sub(events.len());
         telemetry.record_metrics_filtered(dropped_count);
         dropped_count
@@ -304,72 +314,59 @@ impl Transform for MetricFilter {
 
 #[cfg(test)]
 mod tests {
-    use std::{mem::size_of, sync::Arc, time::Duration};
+    use std::{mem::size_of, time::Duration};
 
-    use agent_data_plane_config::SalukiConfiguration;
-    use arc_swap::ArcSwap;
     use metrics::{set_default_local_recorder, Key};
+    use saluki_common::sync::live::{self, LivePublisher, LiveSource};
     use saluki_core::{
-        accounting::ComponentRegistry,
-        components::ComponentContext,
-        data_model::event::{metric::Metric, Event},
+        accounting::ComponentRegistry, components::ComponentContext, data_model::event::Event,
         support::SubsystemIdentifier,
     };
     use saluki_metrics::test::TestRecorder;
-    use tokio::sync::watch;
 
     use super::*;
 
-    /// A configuration the tests can replace, plus the live view projected out of it.
+    /// Mirroring settings the tests can replace, plus the live view of them.
     ///
-    /// This stands in for the configuration system: replacing the configuration and ticking the notification is what
-    /// the system does once it has translated an update.
-    struct LiveSource {
-        cell: Arc<ArcSwap<SalukiConfiguration>>,
-        tick: watch::Sender<()>,
+    /// This stands in for the configuration system: publishing the settings is what the system does once it has
+    /// translated an update.
+    struct LiveConfiguration {
+        publisher: LivePublisher<MetricMirroring>,
+        source: LiveSource<MetricMirroring>,
     }
 
-    impl LiveSource {
+    impl LiveConfiguration {
         fn new(failover_metrics: bool, metric_allowlist: &[&str]) -> Self {
-            let (tick, _) = watch::channel(());
-
-            Self {
-                cell: Arc::new(ArcSwap::from_pointee(configuration(failover_metrics, metric_allowlist))),
-                tick,
-            }
+            let (publisher, source) = live::channel(configuration(failover_metrics, metric_allowlist));
+            Self { publisher, source }
         }
 
         fn metric_mirroring(&self) -> Live<MetricMirroring> {
-            Live::new_dynamic(Arc::clone(&self.cell), self.tick.subscribe(), |config| {
-                &config.domains.multi_region_failover.metric_mirroring
-            })
+            self.source.live(|mirroring| mirroring)
         }
 
-        fn publish(&self, failover_metrics: bool, metric_allowlist: &[&str]) {
-            self.cell
-                .store(Arc::new(configuration(failover_metrics, metric_allowlist)));
-            self.tick.send(()).expect("a view still holds the receiver");
+        fn publish(&mut self, failover_metrics: bool, metric_allowlist: &[&str]) {
+            self.publisher
+                .publish(configuration(failover_metrics, metric_allowlist));
         }
     }
 
-    fn configuration(failover_metrics: bool, metric_allowlist: &[&str]) -> SalukiConfiguration {
-        let mut config = SalukiConfiguration::default();
-        let mirroring = &mut config.domains.multi_region_failover.metric_mirroring;
-        mirroring.enabled = failover_metrics;
-        mirroring.allowlist = metric_allowlist.iter().map(|name| (*name).to_string()).collect();
-
-        config
+    fn configuration(failover_metrics: bool, metric_allowlist: &[&str]) -> MetricMirroring {
+        MetricMirroring {
+            enabled: failover_metrics,
+            allowlist: metric_allowlist.iter().map(|name| (*name).to_string()).collect(),
+        }
     }
 
     /// Builds the routing state the transform starts from, the way `run` does.
-    fn routing(enabled: bool, source: &LiveSource) -> Filter {
+    fn routing(enabled: bool, source: &LiveConfiguration) -> Filter {
         MetricFilterConfiguration::for_mrf(enabled, source.metric_mirroring())
             .source
             .filter()
     }
 
-    fn counter(name: &'static str) -> Event {
-        Event::Metric(Metric::counter(name, 1.0))
+    fn counter(name: &'static str) -> Metric {
+        Metric::counter(name, 1.0)
     }
 
     #[test]
@@ -390,24 +387,24 @@ mod tests {
         }
     }
 
-    fn gauge(name: &'static str) -> Event {
-        Event::Metric(Metric::gauge(name, 1.0))
+    fn gauge(name: &'static str) -> Metric {
+        Metric::gauge(name, 1.0)
     }
 
-    fn rate(name: &'static str) -> Event {
-        Event::Metric(Metric::rate(name, 1.0, Duration::from_secs(10)))
+    fn rate(name: &'static str) -> Metric {
+        Metric::rate(name, 1.0, Duration::from_secs(10))
     }
 
-    fn set(name: &'static str) -> Event {
-        Event::Metric(Metric::set(name, "value".to_string()))
+    fn set(name: &'static str) -> Metric {
+        Metric::set(name, "value".to_string())
     }
 
-    fn histogram(name: &'static str) -> Event {
-        Event::Metric(Metric::histogram(name, 1.0))
+    fn histogram(name: &'static str) -> Metric {
+        Metric::histogram(name, 1.0)
     }
 
-    fn distribution(name: &'static str) -> Event {
-        Event::Metric(Metric::distribution(name, 1.0))
+    fn distribution(name: &'static str) -> Metric {
+        Metric::distribution(name, 1.0)
     }
 
     #[test]
@@ -445,7 +442,7 @@ mod tests {
                 let mut events = EventsBuffer::default();
                 for make_metric in [counter, distribution] {
                     for name in ["allowed", "blocked"] {
-                        assert!(events.try_push(make_metric(name)).is_none());
+                        assert!(events.try_push(Event::Metric(make_metric(name))).is_none());
                     }
                 }
                 assert_eq!(filter.filter_events(&mut events, &telemetry), expected);
@@ -476,7 +473,7 @@ mod tests {
     #[test]
     fn memory_bounds_include_all_allowlist_copies() {
         let allowlist = ["allowed.metric", "also.allowed"];
-        let source = LiveSource::new(true, &allowlist);
+        let source = LiveConfiguration::new(true, &allowlist);
         let config = MetricFilterConfiguration::for_mrf(true, source.metric_mirroring());
 
         let registry = ComponentRegistry::default();
@@ -498,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_static_branch_gate_that_is_off_drops_everything() {
-        let source = LiveSource::new(true, &[]);
+        let source = LiveConfiguration::new(true, &[]);
         let routing = routing(false, &source);
 
         assert!(!routing.should_forward(&counter("any.metric")));
@@ -506,7 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn mirroring_that_is_off_drops_everything() {
-        let source = LiveSource::new(false, &[]);
+        let source = LiveConfiguration::new(false, &[]);
         let routing = routing(true, &source);
 
         assert!(!routing.should_forward(&counter("any.metric")));
@@ -514,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_allowlist_forwards_everything() {
-        let source = LiveSource::new(true, &[]);
+        let source = LiveConfiguration::new(true, &[]);
         let routing = routing(true, &source);
 
         assert!(routing.should_forward(&counter("any.metric")));
@@ -528,7 +525,7 @@ mod tests {
             ("my-service.requests", "my_service.requests"),
             ("my_service.requests", "my-service.requests"),
         ] {
-            let source = LiveSource::new(true, &[allowed]);
+            let source = LiveConfiguration::new(true, &[allowed]);
             let routing = routing(true, &source);
             assert!(routing.should_forward(&counter(allowed)));
             assert!(!routing.should_forward(&counter(blocked)));
@@ -635,11 +632,8 @@ mod tests {
                 ("redis.checkpointing.count", false),
                 ("literal-name", false),
             ] {
-                let event = make_metric(name);
-                assert_eq!(filter.should_forward(&event), expected, "{name}");
-                let Event::Metric(metric) = event else {
-                    panic!("expected a metric")
-                };
+                let metric = make_metric(name);
+                assert_eq!(filter.should_forward(&metric), expected, "{name}");
                 assert_eq!(metric.context().name().as_ref(), name);
             }
         }
@@ -647,7 +641,7 @@ mod tests {
 
     #[test]
     fn all_metrics_scope_preserves_mrf_sketch_forwarding() {
-        let source = LiveSource::new(true, &["allowed.histogram", "allowed.distribution"]);
+        let source = LiveConfiguration::new(true, &["allowed.histogram", "allowed.distribution"]);
         let routing = routing(true, &source);
 
         assert!(routing.should_forward(&histogram("allowed.histogram")));
@@ -656,7 +650,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_mirroring_update_toggles_forwarding() {
-        let source = LiveSource::new(false, &[]);
+        let mut source = LiveConfiguration::new(false, &[]);
         let mut routing = routing(true, &source);
         let mut filter_source = MetricFilterConfiguration::for_mrf(true, source.metric_mirroring()).source;
 
@@ -673,7 +667,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_allowlist_update_changes_filtering() {
-        let source = LiveSource::new(true, &[]);
+        let mut source = LiveConfiguration::new(true, &[]);
         let mut routing = routing(true, &source);
         let mut filter_source = MetricFilterConfiguration::for_mrf(true, source.metric_mirroring()).source;
 

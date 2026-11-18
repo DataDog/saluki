@@ -86,12 +86,7 @@ where
         }
 
         match credentials {
-            Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
-            Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
-                pid: creds.pid,
-                uid: creds.uid,
-                gid: creds.gid,
-            }),
+            Some(creds) => ProcessIdentity::new(creds.pid, creds.uid, creds.gid),
             None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
         }
     } else {

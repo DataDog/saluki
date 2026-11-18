@@ -16,7 +16,6 @@ use saluki_components::transforms::{
 };
 use saluki_core::data_model::event::metric::context::Context;
 use saluki_error::{generic_error, GenericError};
-use stringtheory::MetaString;
 use tower::ServiceExt as _;
 
 use super::{
@@ -408,11 +407,7 @@ async fn response_body(response: Response) -> String {
 }
 
 fn snapshot_entry(name: &'static str) -> AggregateContextSnapshotEntry {
-    AggregateContextSnapshotEntry::for_test(
-        Context::from_static_name(name),
-        AggregateMetricType::Gauge,
-        MetaString::empty(),
-    )
+    AggregateContextSnapshotEntry::for_test(Context::from_static_name(name), AggregateMetricType::Gauge)
 }
 
 fn directory_entries(path: &Path) -> Vec<String> {

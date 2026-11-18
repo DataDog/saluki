@@ -90,9 +90,6 @@ pub struct Listeners {
     /// Whether the UDP listener accepts traffic from non-local addresses.
     pub non_local_traffic: bool,
 
-    /// Host the UDP listener binds to.
-    pub bind_host: Option<String>,
-
     /// Size, in bytes, requested for the socket receive buffer.
     pub so_rcvbuf: usize,
 
@@ -126,15 +123,30 @@ pub struct Listeners {
     /// Whether to log stream messages that exceed the buffer size.
     pub stream_log_too_big: bool,
 
+    /// Whether startup requires at least one active DogStatsD listener.
+    ///
+    /// Defaults to `false`. A listener that can't be created is logged and skipped either way. When `true`, startup
+    /// fails if no configured listener can be created. When `false`, the source keeps running without listeners.
+    ///
+    /// Enable this when a process supervisor should detect and restart a process that can't receive DogStatsD
+    /// traffic.
+    pub require_listener: bool,
+
     /// Whether to relax decoder strictness on malformed packets. (not in Datadog Agent config
     /// schema)
     pub permissive_decoding: bool,
+
+    /// Whether timing (`ms`) metrics carry the `millisecond` unit.
+    pub set_timing_unit: bool,
 
     /// Host that received metrics are additionally forwarded to.
     pub forward_host: Option<String>,
 
     /// Port that received metrics are additionally forwarded to.
     pub forward_port: u16,
+
+    /// Size of the Agent's DogStatsD packet queue, from which the forwarding queue is sized.
+    pub queue_size: usize,
 }
 
 impl Default for Listeners {
@@ -153,7 +165,6 @@ impl Default for Listeners {
             pipe_name: None,
             windows_pipe_security_descriptor: String::new(),
             non_local_traffic: false,
-            bind_host: None,
             so_rcvbuf: 0,
             buffer_size: 0,
             workers_count: 0,
@@ -161,8 +172,11 @@ impl Default for Listeners {
             capture_depth: 0,
             eol_required: Vec::new(),
             stream_log_too_big: false,
+            require_listener: false,
+            set_timing_unit: false,
             forward_host: None,
             forward_port: 0,
+            queue_size: 0,
         }
     }
 }
@@ -217,10 +231,11 @@ impl FromStr for OriginTagCardinality {
     }
 }
 
-/// Telemetry emitted by the DogStatsD source.
+/// Telemetry emitted by the DogStatsD pipeline.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Telemetry {
-    /// Whether processed-metric telemetry is broken down by detected origin.
+    /// Whether the source's processed-metric telemetry and the aggregator's active context counts are broken down by
+    /// detected origin. Has no effect unless origin detection is enabled.
     pub origin_breakdown: bool,
 }
 
@@ -390,6 +405,25 @@ pub struct EnablePayloads {
     pub sketches: bool,
 }
 
+/// One `metric_filterlist_prefix` rule.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct MetricPrefixRule {
+    /// Prefix of metric names to drop.
+    ///
+    /// The empty string matches every stored metric name.
+    pub prefix: String,
+
+    /// Prefix exceptions that are kept.
+    ///
+    /// Exceptions apply across all prefix rules.
+    pub except_prefix: Vec<String>,
+
+    /// Exact-name exceptions that are kept.
+    ///
+    /// Exceptions apply across all prefix rules.
+    pub except_exact: Vec<String>,
+}
+
 /// Metric-name filtering (dynamic-capable).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct MetricFilter {
@@ -402,6 +436,11 @@ pub struct MetricFilter {
     ///
     /// Defaults to `false`, which requires exact matches.
     pub match_prefix: bool,
+
+    /// Additional per-entry prefix rules with optional exceptions.
+    ///
+    /// Defaults to an empty list.
+    pub prefix_rules: Vec<MetricPrefixRule>,
 }
 
 /// Metric namespace prefixing.
@@ -597,7 +636,7 @@ pub struct DebugLog {
 
     /// Maximum size, in bytes, of the active debug log file before rotation.
     ///
-    /// Defaults to `10,000,000` bytes. A value of `0` is accepted as the rotation threshold.
+    /// Defaults to `10,485,760` bytes (`10Mb`). A value of `0` is accepted as the rotation threshold.
     /// Set this based on the diagnostic data and disk space to retain.
     pub log_file_max_size: u64,
 
@@ -610,4 +649,63 @@ pub struct DebugLog {
     ///
     /// Defaults to `false`. Enable this to reduce error-level log volume from malformed packets.
     pub disable_verbose_logs: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value_allowlist(metric_prefix: &str, tag_name: &str) -> MetricTagValueAllowlistEntry {
+        MetricTagValueAllowlistEntry {
+            metric_prefix: metric_prefix.to_string(),
+            tag_name: tag_name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn validation_error(entries: &[MetricTagValueAllowlistEntry]) -> String {
+        validate_metric_tag_value_allowlists(entries)
+            .expect_err("the allow-list should be rejected")
+            .to_string()
+    }
+
+    #[test]
+    fn value_allowlists_may_share_a_prefix_for_different_tags() {
+        let entries = [
+            value_allowlist("my.", "customer_id"),
+            value_allowlist("my.", "region"),
+            value_allowlist("other.", "customer_id"),
+        ];
+
+        assert_eq!(Ok(()), validate_metric_tag_value_allowlists(&entries));
+    }
+
+    #[test]
+    fn empty_value_allowlist_prefixes_and_tag_names_are_rejected() {
+        assert!(validation_error(&[value_allowlist("", "customer_id")]).contains("empty `metric_prefix`"));
+        assert!(validation_error(&[value_allowlist("my.", "")]).contains("empty `tag_name`"));
+    }
+
+    #[test]
+    fn value_allowlist_rejects_tag_names_containing_a_colon() {
+        assert!(
+            validation_error(&[value_allowlist("my.", "customer:id")]).contains("tag name 'customer:id' contains ':'")
+        );
+    }
+
+    #[test]
+    fn overlapping_value_allowlist_prefixes_are_rejected_across_tags() {
+        let error = validation_error(&[
+            value_allowlist("my.", "customer_id"),
+            value_allowlist("my.metric", "region"),
+        ]);
+        assert!(error.contains("overlapping metric prefixes 'my.' and 'my.metric' are configured"));
+
+        let error = validation_error(&[
+            value_allowlist("my.", "customer_id"),
+            value_allowlist("my.", "region"),
+            value_allowlist("my.", "customer_id"),
+        ]);
+        assert!(error.contains("metric prefix 'my.' is configured more than once for tag 'customer_id'"));
+    }
 }

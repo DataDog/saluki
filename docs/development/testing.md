@@ -11,6 +11,9 @@ The Saluki testing strategy consists of four main pillars:
 3. Integration Tests (panoramic)
 4. Performance Tests (SMP)
 
+Alongside these, we use fuzzing, Loom and Miri for concurrency and memory-model correctness, and Antithesis for
+fault-injected equivalence testing.
+
 ## Unit tests
 
 These are found throughout the Rust codebase as you would expect. You can run them with `cargo test` or you can use
@@ -19,6 +22,27 @@ skipped or compiled-out for platforms they're incompatible with. For conventions
 shared fixtures, and assertion density, see [Testing patterns](./testing-patterns.md).
 
 CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
+
+### Tests that need a Docker daemon
+
+Unit tests that create containers are ignored by default, so `make test` doesn't need Docker. Run them with
+`make test-container-daemon`, which needs a reachable Docker daemon and builds the courier the tests copy into their
+containers. Their image comes from the internal registry. CI doesn't run them, so run them by hand when you change the
+container mechanisms, the container backend or the lifecycle.
+
+### Architecture tests
+
+The `architecture-tests` crate in `test/architecture/` protects architectural invariants as part of the unit-test
+suite. Dependency guards check crate relationships; symbol guards restrict names used within selected source
+directories. Add tests here for other architectural invariants, documenting each beside its test. The crate's API
+documentation explains the guards and their limits.
+
+```shell
+cargo nextest run -p architecture-tests
+```
+
+Failures report a dependency route or source location. Inspect symbol matches before changing code: unrelated names
+can produce false positives.
 
 ## Correctness tests (panoramic)
 
@@ -41,8 +65,10 @@ All binaries live under `bin/correctness/`:
 |--------------------|------------------------------------------------------------------------------------------|
 | **panoramic**      | Unified test runner for both correctness and integration tests.                          |
 | **millstone**      | Deterministic load generator.                                                            |
+| **`otlp-fixtures`** | Builds the static OTLP payloads of some correctness cases.                              |
 | **datadog-intake** | Mock Datadog API: receives test output                                                   |
 | **airlock**        | Library for running containers in isolated groups.                                       |
+| **courier**        | Static probe, send, HTTP and file-follow tool that panoramic runs inside containers.     |
 
 Test case configs live in `test/correctness/cases/` (for example, `test/correctness/cases/dsd-plain/config.yaml`).
 
@@ -66,9 +92,16 @@ make test-correctness
 make test-correctness-case CASE=dsd-plain
 ```
 
-The `test-correctness` target handles building all of the necessary prerequisites -- `millstone, `datadog-intake`, `panoramic`, the bundled Agent/ADP image, and so on -- before running the test cases.
+The `test-correctness` target handles building all of the necessary prerequisites -- `millstone`, `datadog-intake`, `panoramic`, the bundled Agent/ADP image, and so on -- before running the test cases.
 
 Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
+
+### Static fixtures
+
+Some cases send a fixed request through a `static_base64` payload in their `millstone.yaml`.
+`bin/correctness/otlp-fixtures` builds that request, with a module for each OTLP signal that has static payloads: edit
+the fixture there, then run `make generate-correctness-fixtures` to rewrite the payloads. Don't edit the payloads by
+hand. The `check-correctness-fixtures` CI job runs the same target and fails if it changes any committed payload.
 
 ## Integration tests (panoramic)
 
@@ -93,7 +126,25 @@ Test cases live in `test/integration/cases/` as `config.yaml` files. The runner 
 Each test defines a container and a list of high-level assertions. Assertions run sequentially by default but can also
 be configured to run in `parallel`.
 
+Panoramic moves every port the Core Agent and ADP bind off its default value, so tests don't collide with an Agent
+already running on the host. The defaults live in `bin/correctness/panoramic/src/test_env.rs`. A port that a test binds
+**MUST** be below 49152. On macOS, tests run as host processes, and ports from 49152 up are handed out as source ports
+for outbound connections. macOS refuses to bind a port that another user's process holds, so a listener in that range
+fails intermittently.
+
 CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
+
+### Step deadlines
+
+Each step uses its `timeout`, `duration`, or `during` as its budget. The `dogstatsd_replay` action uses a whole-action
+budget of `4 × timeout + capture_duration + 50ms`. The driver allows 10 seconds beyond that budget for the step to
+report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
+member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
+
+Each polling attempt (an HTTP request, Docker exec, or intake poll) is limited to the shorter of 10 seconds or the
+step's remaining time. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures
+(such as Docker API or intake sidecar errors) prevent evaluation, or its configuration is invalid. An unmet expectation
+remains `failed` after any product observation, even if later probes encounter harness errors.
 
 ## Panoramic CLI and environment
 
@@ -103,7 +154,77 @@ Both suites run through the same `panoramic` binary.
 cargo run --release --bin panoramic -- --help
 ```
 
-`.agents/skills/panoramic/SKILL.md` documents panoramic usage for LLM agents.
+`panoramic plan <case directory> --subject-os <os>` reads a case written in the participant case schema, the one
+without a top-level `type:` key, and prints what it does on that OS as JSON, without starting anything: each
+participant's realization, image, command, environment and files with their contents, each endpoint and connection
+with its address, and the order participants are created and started in, with what each one waits for. `--text` prints
+the same plan in a format for people. It plans the case for every OS in its `subject_os`, so a field that can't be
+honored on any of them is an error on any host. The rejected case files under
+`bin/correctness/panoramic/testdata/bad/` show a few of these errors.
+
+The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
+
+### Reading panoramic results
+
+The Make targets write artifacts beneath `target/test-output/panoramic/` by default. Set `SALUKI_TEST_OUTPUT_DIR` to
+relocate the shared test-output root, or `PANORAMIC_LOG_DIR` to override the location for panoramic only. Each run
+creates a timestamped `panoramic-*` directory beneath the base, and stdout and `run.json` identify the directory for a
+run. `make clean-test-logs` deletes the panoramic directory, and `make clean` includes that target.
+
+Exit codes distinguish the run-level result:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Every test passed; run completed |
+| 1 | Assertion failure, unless code 2 applies |
+| 2 | Harness error, `timed_out` test, or interrupted run |
+| 3 | Empty selection or unmatched test name |
+
+An `errored` step couldn't be evaluated. Inspect test `error`, `timeout`, `cause`, and step `message` fields.
+
+Check `run.json` first: it's updated during execution, so passing entries don't prove the run finished. Inspect
+completeness before individual results, and treat unknown states, outcomes, or statuses as non-passing:
+
+```bash
+jq '{state, interrupted_reason, running, not_run}' run.json
+jq -r '.tests[] | select(.outcome != "passed" or (.issues | length) > 0) | "\(.name) \(.outcome) \(.log_dir)"' run.json
+```
+
+Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the test result and `assertions[].status` for
+each step. Check `issues` even on passes; they don't change `outcome`. Open reported artifact paths and
+`diagnostic_lines` sources for context and uncapped details.
+
+Follow report types in `bin/correctness/panoramic/src/machine_output.rs` for semantics. For precedence rules, see
+`TestResult::from_steps` in `reporter.rs` and `exit_code` in `collector.rs`. Check `schema_version` and `run.json`'s
+`build_revision` against the working tree.
+
+On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.
+
+### Resource cleanup
+
+After every test, the runner attempts cleanup and records each resource as `reclaimed`, `leaked`, or `unsettled` under
+`reclaim` in `result.json`. Docker containers, their shared volume, and network share one isolation-group entry; host
+processes and the state directory have separate entries. Correctness tests have one isolation-group entry per container
+group, or one `namespace:` entry per kind namespace, and the runner stops their background tasks first. Failed or
+skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the
+test outcome unchanged.
+
+The runner saves host-process `stdout.log` and `stderr.log` after reclaim drains the log pumps, including shutdown
+output. Setup failures and cancelled cases also retain these logs.
+
+### Reading traffic artifacts
+
+Traffic captures live under `<log_dir>/traffic/`. Start with `traffic/manifest.json`: it lists each capture, whether its
+file is still on disk, and why any capture is missing. Take file names from the manifest rather than guessing them.
+Captures are zstd-compressed JSON Lines:
+
+```bash
+jq -r '(.input // empty), .decoded[] | select(.file.present) | .file.name' traffic/manifest.json
+zstd -dc traffic/<file-name> | head -5
+```
+
+The module docs in `bin/correctness/panoramic/src/traffic.rs` explain each artifact, its retention, and record ordering.
+For intake sidecar captures, see "Intake artifacts" in `test/integration/README.md`.
 
 ## Benchmark tests: Single Machine Performance (SMP)
 
@@ -132,16 +253,26 @@ development, lean on CI.
 
 ## Fuzzing
 
-A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
+We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
 operates at the function-level. More fuzzing coverage will likely come in the future.
 
 ## Loom and Miri testing
 
-A sixth type of testing targets concurrency and memory-model correctness rather than business logic. **Loom**
+Loom and Miri target concurrency and memory-model correctness rather than business logic. **Loom**
 exhaustively explores how concurrent operations can interleave, to catch ordering bugs that are hard to hit through
 normal test runs. Run it with `make test-loom`. **Miri** runs tests under an interpreter that catches undefined
 behavior—data races, use-after-free, invalid memory access—that a normal test run wouldn't detect. Run it with `make
 test-miri`.
+
+## Antithesis
+
+[Antithesis](https://antithesis.com/) runs ADP under deterministic simulation with injected faults. Our focus is on
+establishing that ADP and the Datadog Agent's DogStatsD behave equivalently: if ADP replaces the Agent's DogStatsD
+server, users shouldn't notice shifts in their telemetry. Better operational behavior is an acceptable deviation.
+
+This is separate from the panoramic correctness tests, which compare outputs for fixed workloads without fault
+injection. The harness and scenarios live under `test/antithesis/`, and `test/antithesis/AGENTS.md` describes how
+agents drive runs there.
 
 ## Directory index
 
@@ -156,13 +287,16 @@ test-miri`.
 bin/correctness/
 ├── panoramic/             : unified test runner (correctness + integration)
 ├── millstone/             : load generator
+├── otlp-fixtures/         : static OTLP payload builder
 ├── datadog-intake/        : mock Datadog API
 ├── airlock/               : container isolation lib
+├── courier/               : in-container probe and send tool
 └── stele/                 : telemetry data types
 
 # actual test cases
 test/
 ├── correctness/           : correctness test configs
+├── antithesis/            : antithesis harness and scenarios
 ├── integration/           : integration test configs
 └── smp/                   : smp experiments
 ```

@@ -17,7 +17,8 @@ use tokio::{
 
 use super::*;
 use crate::runtime::{
-    self, NodeSnapshot, NodeState, RuntimeConfiguration, SupervisionTreeHandle, Supervisor, SupervisorError,
+    self, NodeSnapshot, NodeState, RuntimeConfiguration, ShutdownStrategy, SupervisionTreeHandle, Supervisor,
+    SupervisorError,
 };
 use crate::test_support::wait_until;
 
@@ -81,26 +82,6 @@ struct DropFlag(Arc<AtomicBool>);
 impl Drop for DropFlag {
     fn drop(&mut self) {
         self.0.store(true, Ordering::SeqCst);
-    }
-}
-
-/// A supervisable worker that ignores the signal to stop, and reports `timeout` as its own shutdown timeout.
-struct StubbornWorker {
-    timeout: Duration,
-}
-
-#[async_trait]
-impl Supervisable for StubbornWorker {
-    fn name(&self) -> &str {
-        "stubborn"
-    }
-
-    fn shutdown_strategy(&self) -> ShutdownStrategy {
-        ShutdownStrategy::Graceful(self.timeout)
-    }
-
-    async fn initialize(&self, _process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        Ok(Box::pin(pending::<Result<(), GenericError>>()))
     }
 }
 
@@ -301,6 +282,58 @@ impl Supervisable for ReturningGrandparent {
             .spawn();
             Ok(())
         }))
+    }
+}
+
+/// The number of items that a [`Feeder`] sends before it is told to stop.
+const FEED_HEAD: usize = 4;
+
+/// The number of items that a [`Feeder`] sends after it is told to stop. More than the channel holds, so that the
+/// feeder can only finish while its consumer drains.
+const FEED_TAIL: usize = 16;
+
+/// A supervisable worker that sends [`FEED_HEAD`] items, and [`FEED_TAIL`] more once it is told to stop.
+///
+/// Its specification holds the sender, as the request handler of a server does. Thus, the channel closes only once the
+/// supervisor that runs the feeder exits and its owner drops that specification.
+struct Feeder {
+    tx: mpsc::Sender<usize>,
+}
+
+impl Feeder {
+    /// Returns a supervisor that runs a feeder for `tx`.
+    fn supervisor(tx: mpsc::Sender<usize>) -> Supervisor {
+        let mut sup = Supervisor::new("feeder_sup").unwrap();
+        sup.add_worker(Self { tx });
+        sup
+    }
+}
+
+#[async_trait]
+impl Supervisable for Feeder {
+    fn name(&self) -> &str {
+        "feeder"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let tx = self.tx.clone();
+        Ok(Box::pin(async move {
+            for item in 0..FEED_HEAD {
+                tx.send(item).await.map_err(|_| generic_error!("consumer closed"))?;
+            }
+            process_shutdown.await;
+            for item in FEED_HEAD..FEED_HEAD + FEED_TAIL {
+                tx.send(item).await.map_err(|_| generic_error!("consumer closed"))?;
+            }
+            Ok(())
+        }))
+    }
+}
+
+/// Counts every item that arrives on `rx` until the channel closes.
+async fn drain_into(mut rx: mpsc::Receiver<usize>, received: Arc<AtomicUsize>) {
+    while rx.recv().await.is_some() {
+        received.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -821,6 +854,53 @@ async fn owner_panicking_stops_its_children_before_it_goes() {
 }
 
 #[tokio::test]
+async fn children_ignoring_shutdown_are_halted_with_their_owner_and_counted() {
+    let mut sup = Supervisor::new("sup").unwrap();
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", |shutdown| async move {
+            runtime::worker("stubborn", pending::<()>()).spawn();
+            shutdown.await;
+        })
+        .with_shutdown_timeout(Duration::from_millis(300))
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    tx.send(()).unwrap();
+
+    // The owner's timeout expires before the child's own five seconds, so the child is halted with it. The owner's body
+    // already returned, so only the child is counted.
+    let result = join(run).await;
+    assert!(
+        matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+        "expected exactly the stubborn child to be counted, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn owner_ignoring_shutdown_is_halted_with_its_children_and_all_counted() {
+    let mut sup = Supervisor::new("sup").unwrap();
+    sup.add_worker(
+        runtime::worker("owner", async {
+            runtime::worker("stubborn", pending::<()>()).spawn();
+            pending::<()>().await;
+        })
+        .with_shutdown_timeout(Duration::from_millis(300))
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    tx.send(()).unwrap();
+
+    // Both the owner and its child are halted, and both are counted.
+    let result = join(run).await;
+    assert!(
+        matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
+        "expected both the owner and its child to be counted, got {result:?}"
+    );
+}
+
+#[tokio::test]
 async fn children_are_held_to_their_own_shutdown_strategy() {
     let mut sup = Supervisor::new("sup").unwrap();
     sup.add_worker(
@@ -838,7 +918,7 @@ async fn children_are_held_to_their_own_shutdown_strategy() {
     tx.send(()).unwrap();
 
     // When the owner returns, the scope tells both children to stop. The prompt child stops. The stubborn child ignores
-    // the signal, so the scope aborts it after its own timeout, and reports the abort.
+    // the signal, so the scope halts it after its own timeout, and reports the halt.
     let result = join(run).await;
     assert!(
         matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
@@ -847,73 +927,101 @@ async fn children_are_held_to_their_own_shutdown_strategy() {
 }
 
 #[tokio::test]
-async fn a_supervisor_budget_does_not_reach_into_a_scope() {
-    let mut sup = Supervisor::new("sup")
-        .unwrap()
-        .with_shutdown_budget(Duration::from_secs(10));
+async fn a_childs_own_timeout_halts_it_ahead_of_its_owner() {
+    let mut sup = Supervisor::new("sup").unwrap();
     sup.add_worker(
         runtime::worker_with_shutdown("owner", |shutdown| async move {
-            // The child asks to be bounded by a budget. A scope has no budget, so the child keeps its own timeout.
-            runtime::supervisable(StubbornWorker {
-                timeout: Duration::from_millis(100),
-            })
-            .with_budget_bounded_shutdown()
-            .spawn();
+            runtime::worker("stubborn", pending::<()>())
+                .with_shutdown_timeout(Duration::from_millis(100))
+                .spawn();
             shutdown.await;
         })
+        .with_shutdown_timeout(Duration::from_secs(30))
         .build(),
     );
 
     let (tx, run) = run_with_trigger(sup).await;
-    let stopping = Instant::now();
+    let started = Instant::now();
     tx.send(()).unwrap();
 
     let result = join(run).await;
     assert!(
         matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
-        "expected the stubborn child to be counted, got {result:?}"
+        "expected the child to be halted at its own timeout, and counted, got {result:?}"
     );
     assert!(
-        stopping.elapsed() < Duration::from_secs(5),
-        "the child must be held to its own timeout rather than to the budget, took {:?}",
-        stopping.elapsed()
+        started.elapsed() < Duration::from_secs(5),
+        "the child's 100ms timeout should have halted it, rather than the owner's 30s one"
     );
 }
 
 #[tokio::test]
-async fn an_owner_aborted_by_its_supervisor_takes_its_children_with_it() {
-    let dropped = flag();
+async fn a_nested_supervisor_is_halted_with_the_worker_that_owns_it() {
+    let mut sup = Supervisor::new("sup").unwrap();
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", |shutdown| async move {
+            // The nested supervisor's child has a much longer timeout than the owner.
+            let mut nested = Supervisor::new("nested").unwrap();
+            nested.add_worker(
+                runtime::worker("stubborn", pending::<()>())
+                    .with_shutdown_timeout(Duration::from_secs(30))
+                    .build(),
+            );
+            runtime::spawn(nested);
+            shutdown.await;
+        })
+        .with_shutdown_timeout(Duration::from_millis(200))
+        .build(),
+    );
 
-    let mut sup = Supervisor::new("sup")
-        .unwrap()
-        .with_shutdown_budget(Duration::from_millis(300));
-    let child_dropped = Arc::clone(&dropped);
+    let (tx, run) = run_with_trigger(sup).await;
+    let started = Instant::now();
+    tx.send(()).unwrap();
+
+    // The owner's timeout halts the nested supervisor, which halts its child. Only the child is counted.
+    let result = join(run).await;
+    assert!(
+        matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+        "expected the nested supervisor's child to be halted and counted, got {result:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the owner's 200ms timeout should have bounded the nested supervisor's drain"
+    );
+}
+
+#[tokio::test]
+async fn a_brutal_owner_takes_its_children_with_it_uncounted() {
+    let child_stopped = flag();
+    let guard = DropFlag(Arc::clone(&child_stopped));
+
+    let mut sup = Supervisor::new("sup").unwrap();
     sup.add_worker(
         runtime::worker("owner", async move {
-            let guard = DropFlag(child_dropped);
-            runtime::worker("child", async move {
+            runtime::worker("stubborn", async move {
                 let _guard = guard;
                 pending::<()>().await;
             })
-            .with_shutdown_timeout(Duration::from_secs(30))
             .spawn();
             pending::<()>().await;
         })
+        .with_shutdown_strategy(ShutdownStrategy::Brutal)
         .build(),
     );
 
     let (tx, run) = run_with_trigger(sup).await;
     tx.send(()).unwrap();
 
-    // The owner never stops, so its supervisor aborts it when the budget elapses. The scope of the owner never closes,
-    // so its child is never told to stop. The child is aborted with the owner, whatever its own timeout is, and only the
-    // owner is counted.
+    // Halting a brutal owner isn't unclean, but its children are still halted before it's gone.
     let result = join(run).await;
     assert!(
-        matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
-        "expected only the owner to be counted, got {result:?}"
+        result.is_ok(),
+        "a brutal owner's children are not counted, got {result:?}"
     );
-    wait_until("the child is aborted with its owner", || dropped.load(Ordering::SeqCst)).await;
+    assert!(
+        child_stopped.load(Ordering::SeqCst),
+        "the child should have been stopped along with its owner"
+    );
 }
 
 #[tokio::test]
@@ -964,9 +1072,7 @@ async fn nested_scope_closes_when_its_guard_is_dropped() {
 async fn nested_scope_closed_while_its_owner_stops_counts_the_children_that_it_aborts() {
     let running = flag();
 
-    let mut sup = Supervisor::new("sup")
-        .unwrap()
-        .with_shutdown_budget(Duration::from_secs(1));
+    let mut sup = Supervisor::new("sup").unwrap();
     let driver_running = Arc::clone(&running);
     sup.add_worker(
         runtime::worker_with_shutdown("owner", move |shutdown| async move {
@@ -974,7 +1080,7 @@ async fn nested_scope_closed_while_its_owner_stops_counts_the_children_that_it_a
             let mut guard = nested("cache");
             guard.spawn(
                 runtime::worker("driver", async move {
-                    // The driver ignores the signal to stop. The sender is dropped when the driver is aborted.
+                    // The driver ignores the signal to stop. The sender is dropped when the driver is halted.
                     let _gone = gone_tx;
                     driver_running.store(true, Ordering::SeqCst);
                     pending::<()>().await;
@@ -985,13 +1091,14 @@ async fn nested_scope_closed_while_its_owner_stops_counts_the_children_that_it_a
 
             shutdown.await;
 
-            // The owner drops the guard while it stops, so the host of the nested scope aborts the driver after the
-            // driver's own timeout. The owner continues to run after the host exits. Thus, the host reports the abort
-            // while the scope of the owner is still open, and the abort must still be counted.
+            // The owner drops the guard while it stops, so the host of the nested scope halts the driver at the timeout
+            // of the driver. The owner continues to run after the host exits. Thus, the host reports the halt while the
+            // scope of the owner is still open, and the halt must still be counted.
             drop(guard);
             let _ = gone_rx.await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         })
+        .with_shutdown_timeout(Duration::from_secs(30))
         .build(),
     );
 
@@ -1002,7 +1109,7 @@ async fn nested_scope_closed_while_its_owner_stops_counts_the_children_that_it_a
     let result = join(run).await;
     assert!(
         matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
-        "expected the aborted driver to be counted, got {result:?}"
+        "expected the halted driver to be counted, got {result:?}"
     );
 }
 
@@ -1338,16 +1445,19 @@ fn unadopted_scope_drops_queued_children_that_hold_the_scope() {
 }
 
 #[tokio::test]
-async fn a_nested_supervisor_in_a_scope_bounds_its_own_workers() {
+async fn a_nested_supervisor_in_a_scope_holds_its_workers_to_their_own_timeouts() {
     let mut sup = Supervisor::new("sup").unwrap();
     let tree = sup.tree_handle();
     sup.add_worker(
         runtime::worker_with_shutdown("owner", |shutdown| async move {
-            let mut inner = Supervisor::new("inner")
-                .unwrap()
-                .with_shutdown_budget(Duration::from_millis(100));
-            inner.add_worker(runtime::worker("stubborn_1", pending::<()>()).build());
-            inner.add_worker(runtime::worker("stubborn_2", pending::<()>()).build());
+            let mut inner = Supervisor::new("inner").unwrap();
+            for name in ["stubborn_1", "stubborn_2"] {
+                inner.add_worker(
+                    runtime::worker(name, pending::<()>())
+                        .with_shutdown_timeout(Duration::from_millis(100))
+                        .build(),
+                );
+            }
             current().expect("a supervised worker has a scope").spawn(inner);
             shutdown.await;
         })
@@ -1363,7 +1473,7 @@ async fn a_nested_supervisor_in_a_scope_bounds_its_own_workers() {
     tx.send(()).unwrap();
 
     // The scope stops the nested supervisor according to the supervisor's own strategy, which waits for it. The nested
-    // supervisor aborts its workers when its own budget elapses, and the count of those aborts reaches the root.
+    // supervisor halts its workers when their own timeouts expire, and the count of those halts reaches the root.
     let result = join(run).await;
     assert!(
         matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
@@ -1372,13 +1482,11 @@ async fn a_nested_supervisor_in_a_scope_bounds_its_own_workers() {
 }
 
 #[tokio::test]
-async fn a_dedicated_supervisor_is_torn_down_when_its_owner_is_aborted() {
+async fn a_dedicated_supervisor_is_halted_with_the_worker_that_owns_it() {
     let started = flag();
     let dropped = flag();
 
-    let mut sup = Supervisor::new("sup")
-        .unwrap()
-        .with_shutdown_budget(Duration::from_millis(200));
+    let mut sup = Supervisor::new("sup").unwrap();
     let (worker_started, worker_dropped) = (Arc::clone(&started), Arc::clone(&dropped));
     sup.add_worker(
         runtime::worker("owner", async move {
@@ -1398,6 +1506,7 @@ async fn a_dedicated_supervisor_is_torn_down_when_its_owner_is_aborted() {
             current().expect("a supervised worker has a scope").spawn(inner);
             pending::<()>().await;
         })
+        .with_shutdown_timeout(Duration::from_millis(200))
         .build(),
     );
 
@@ -1406,18 +1515,321 @@ async fn a_dedicated_supervisor_is_torn_down_when_its_owner_is_aborted() {
         started.load(Ordering::SeqCst)
     })
     .await;
+    let stopping = Instant::now();
     tx.send(()).unwrap();
 
-    // The owner never stops, so its supervisor aborts it. The nested supervisor runs on a thread of its own, which an
-    // abort cannot cancel. Its subtree must still be torn down, rather than drain by its own timeouts with nothing
-    // waiting for it.
+    // The owner never stops, so it's halted. The halt reaches the nested supervisor on its own thread, which halts its
+    // worker despite the worker's longer timeout.
     let result = join(run).await;
     assert!(
-        matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
-        "expected only the owner to be counted, got {result:?}"
+        matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
+        "expected the owner and the worker of the dedicated supervisor to be counted, got {result:?}"
     );
+    assert!(
+        stopping.elapsed() < Duration::from_secs(5),
+        "the owner's 200ms timeout should have bounded the dedicated supervisor's drain"
+    );
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "the worker of the dedicated supervisor must be dropped"
+    );
+}
+
+#[tokio::test]
+async fn a_dedicated_supervisor_is_torn_down_when_the_tree_above_it_is_dropped() {
+    let started = flag();
+    let dropped = flag();
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let (worker_started, worker_dropped) = (Arc::clone(&started), Arc::clone(&dropped));
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", move |shutdown| async move {
+            let guard = DropFlag(worker_dropped);
+            let mut inner = Supervisor::new("inner")
+                .unwrap()
+                .with_dedicated_runtime(RuntimeConfiguration::single_threaded());
+            inner.add_worker(
+                runtime::worker("stubborn", async move {
+                    let _guard = guard;
+                    worker_started.store(true, Ordering::SeqCst);
+                    pending::<()>().await;
+                })
+                .with_shutdown_timeout(Duration::from_secs(30))
+                .build(),
+            );
+            current().expect("a supervised worker has a scope").spawn(inner);
+            shutdown.await;
+        })
+        .build(),
+    );
+
+    let (_tx, run) = run_with_trigger(sup).await;
+    wait_until("the worker of the dedicated supervisor runs", || {
+        started.load(Ordering::SeqCst)
+    })
+    .await;
+
+    // Aborting the root aborts every task in the tree without halting anything. An abort can't cancel the nested
+    // supervisor's own thread, but its subtree must still be torn down.
+    run.abort();
     wait_until("the worker of the dedicated supervisor is dropped", || {
         dropped.load(Ordering::SeqCst)
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_nested_supervisor_that_stops_with_its_owner_is_told_to_stop_with_it() {
+    let (early_started, early_stopped) = (flag(), flag());
+    let (late_started, late_stopped) = (flag(), flag());
+    let (release_tx, release_rx) = oneshot::channel::<()>();
+
+    let mut early = Supervisor::new("early").unwrap();
+    early.add_worker(until_stopped("early_child", &early_started, &early_stopped));
+    let mut late = Supervisor::new("late").unwrap();
+    late.add_worker(until_stopped("late_child", &late_started, &late_stopped));
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let tree = sup.tree_handle();
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", move |shutdown| async move {
+            runtime::nested_supervisor(early).stops_with_owner().spawn();
+            runtime::spawn(late);
+            shutdown.await;
+            let _ = release_rx.await;
+        })
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("both nested supervisors run", || {
+        early_started.load(Ordering::SeqCst) && late_started.load(Ordering::SeqCst)
+    })
+    .await;
+
+    tx.send(()).unwrap();
+    wait_until("the flagged supervisor is told to stop with its owner", || {
+        early_stopped.load(Ordering::SeqCst)
+    })
+    .await;
+    assert!(
+        !late_stopped.load(Ordering::SeqCst),
+        "an unflagged supervisor is told to stop only when the scope closes"
+    );
+    assert_eq!(node_state(&tree, "owner"), Some(NodeState::Running));
+
+    release_tx.send(()).unwrap();
+    assert!(join(run).await.is_ok());
+    assert!(late_stopped.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn a_body_drains_a_supervisor_that_stops_with_it_until_the_channel_closes() {
+    let received = counter();
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let body_received = Arc::clone(&received);
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", move |_shutdown| async move {
+            let (tx, rx) = mpsc::channel(1);
+            runtime::nested_supervisor(Feeder::supervisor(tx))
+                .needed()
+                .stops_with_owner()
+                .spawn();
+            drain_into(rx, body_received).await;
+        })
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the head arrives", || received.load(Ordering::SeqCst) == FEED_HEAD).await;
+
+    tx.send(()).unwrap();
+    let result = join(run).await;
+    assert!(result.is_ok(), "the owner should have stopped cleanly, got {result:?}");
+    assert_eq!(received.load(Ordering::SeqCst), FEED_HEAD + FEED_TAIL);
+}
+
+#[tokio::test]
+async fn a_sibling_drains_a_supervisor_that_exits_as_the_scope_closes() {
+    // The body returns on its signal, so the scope closes while the feeder sends its tail. The drain sees the channel
+    // close only if the scope drops the feeder's specification as soon as the feeder's supervisor exits.
+    let received = counter();
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let drain_received = Arc::clone(&received);
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", move |shutdown| async move {
+            let (tx, rx) = mpsc::channel(1);
+            runtime::nested_supervisor(Feeder::supervisor(tx))
+                .needed()
+                .stops_with_owner()
+                .spawn();
+            runtime::worker("drain", drain_into(rx, drain_received))
+                .with_shutdown_timeout(Duration::MAX)
+                .spawn();
+            shutdown.await;
+        })
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the head arrives", || received.load(Ordering::SeqCst) == FEED_HEAD).await;
+
+    tx.send(()).unwrap();
+    let result = join(run).await;
+    assert!(result.is_ok(), "the owner should have stopped cleanly, got {result:?}");
+    assert_eq!(received.load(Ordering::SeqCst), FEED_HEAD + FEED_TAIL);
+}
+
+#[tokio::test]
+async fn stopping_with_an_owner_that_takes_no_signal_has_no_effect() {
+    let (started, stopped) = (flag(), flag());
+    let (witness_started, witness_stopped) = (flag(), flag());
+    let (release_tx, release_rx) = oneshot::channel::<()>();
+
+    let mut nested = Supervisor::new("nested").unwrap();
+    nested.add_worker(until_stopped("child", &started, &stopped));
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    sup.add_worker(
+        runtime::worker("owner", async move {
+            runtime::nested_supervisor(nested).stops_with_owner().spawn();
+            let _ = release_rx.await;
+        })
+        .build(),
+    );
+    // Told to stop at the same time as the owner, so that the test knows when the owner was.
+    sup.add_worker(until_stopped("witness", &witness_started, &witness_stopped));
+
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the nested supervisor runs", || started.load(Ordering::SeqCst)).await;
+
+    tx.send(()).unwrap();
+    wait_until("the owner is told to stop", || witness_stopped.load(Ordering::SeqCst)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !stopped.load(Ordering::SeqCst),
+        "an owner that takes no signal stops its children only when its scope closes"
+    );
+
+    release_tx.send(()).unwrap();
+    assert!(join(run).await.is_ok());
+    assert!(stopped.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn a_supervisor_that_stops_with_its_owner_and_is_spawned_late_stops_at_once() {
+    let (started, stopped) = (flag(), flag());
+    let (release_tx, release_rx) = oneshot::channel::<()>();
+
+    let mut nested = Supervisor::new("nested").unwrap();
+    nested.add_worker(until_stopped("child", &started, &stopped));
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let tree = sup.tree_handle();
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", move |shutdown| async move {
+            shutdown.await;
+            runtime::nested_supervisor(nested).stops_with_owner().spawn();
+            let _ = release_rx.await;
+        })
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    tx.send(()).unwrap();
+    wait_until("the late supervisor runs and is told to stop", || {
+        started.load(Ordering::SeqCst) && stopped.load(Ordering::SeqCst)
+    })
+    .await;
+    assert_eq!(node_state(&tree, "owner"), Some(NodeState::Running));
+
+    release_tx.send(()).unwrap();
+    assert!(join(run).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_needed_supervisor_that_stops_with_its_owner_is_neither_restarted_nor_fails_it() {
+    let starts = counter();
+    let drained = flag();
+
+    let mut nested = Supervisor::new("nested").unwrap();
+    nested.add_worker(CountingWorker {
+        name: "worker",
+        starts: Arc::clone(&starts),
+        exit: Exit::OnShutdown,
+    });
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let tree = sup.tree_handle();
+    let (owner_tree, owner_drained) = (tree.clone(), Arc::clone(&drained));
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", move |shutdown| async move {
+            runtime::nested_supervisor(nested).needed().stops_with_owner().spawn();
+            shutdown.await;
+
+            // The scope is still open, so it handles the exit as it would any other.
+            wait_until("the nested supervisor is reaped", || {
+                node_state(&owner_tree, "nested").is_none()
+            })
+            .await;
+            owner_drained.store(true, Ordering::SeqCst);
+        })
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the nested supervisor runs", || {
+        node_state(&tree, "worker") == Some(NodeState::Running)
+    })
+    .await;
+
+    tx.send(()).unwrap();
+    let result = join(run).await;
+    assert!(result.is_ok(), "the owner should have stopped cleanly, got {result:?}");
+    assert!(drained.load(Ordering::SeqCst), "the owner must finish its drain");
+    assert_eq!(starts.load(Ordering::SeqCst), 1, "a requested exit is never restarted");
+}
+
+#[tokio::test]
+async fn an_owner_timeout_halts_a_supervisor_that_stopped_with_it() {
+    let mut nested = Supervisor::new("nested").unwrap();
+    nested.add_worker(
+        runtime::worker("stubborn", pending::<()>())
+            .with_shutdown_timeout(Duration::from_secs(30))
+            .build(),
+    );
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let tree = sup.tree_handle();
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", move |shutdown| async move {
+            runtime::nested_supervisor(nested).stops_with_owner().spawn();
+            shutdown.await;
+            pending::<()>().await;
+        })
+        .with_shutdown_timeout(Duration::from_millis(200))
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the stubborn worker runs", || {
+        node_state(&tree, "stubborn") == Some(NodeState::Running)
+    })
+    .await;
+    let stopping = Instant::now();
+    tx.send(()).unwrap();
+
+    // The nested supervisor was already told to stop, and has no timeout of its own. The owner's timeout still halts
+    // it along with the owner, and both the owner and the stubborn worker are counted.
+    let result = join(run).await;
+    assert!(
+        matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
+        "expected the owner and the stubborn worker to be counted, got {result:?}"
+    );
+    assert!(
+        stopping.elapsed() < Duration::from_secs(5),
+        "the owner's 200ms timeout should have bounded the nested supervisor's drain"
+    );
 }

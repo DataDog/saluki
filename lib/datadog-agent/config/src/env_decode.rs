@@ -9,7 +9,7 @@
 //! Supported splitting and delimiter behavior matches the Agent bug-for-bug (see the per-function
 //! notes, which cite the Agent source). Error handling deliberately diverges: the Agent logs a malformed
 //! value and substitutes an empty result, while this module propagates a hard error so the caller
-//! can reject the value instead of silently losing it.
+//! can reject the value instead of silently losing it. [`crate::cast_de`] notes the one exception.
 //!
 //! The scalar type fallbacks are the string half of [`crate::cast_de`], which every configuration
 //! source shares, so an environment variable and a file accept the same spellings for a leaf.
@@ -25,8 +25,10 @@ use crate::cast_de;
 
 /// How to decode a raw environment string into a JSON value for one leaf.
 ///
-/// The named-parser variants mirror the schema's `env_parser`; the rest are the type-based fallback
-/// the Agent applies when no `env_parser` is declared, keyed by the leaf's declared type.
+/// The named-parser variants mirror the schema's `env_parser`, and the type fallbacks are the casts
+/// the Agent applies when no `env_parser` is declared, keyed by the leaf's declared type. The
+/// remaining variants are for Saluki-only keys, which have no Agent cast to match; the Datadog table
+/// never uses them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnvDecode {
     /// `env_parser: json`: parse the string as a JSON document.
@@ -37,6 +39,8 @@ pub enum EnvDecode {
     CommaAndSpaceSeparated,
     /// `env_parser: comma_then_space_separated`: split on `,` if present else space, trimmed.
     CommaThenSpaceSeparated,
+    /// `env_parser: csv_comma_separated`: the first CSV record, with leading spaces trimmed and lazy quotes.
+    CsvCommaSeparated,
     /// `env_parser: json_list_or_comma_separated`: a `[...]` JSON list, else split on `,`.
     JsonListOrCommaSeparated,
     /// `env_parser: json_list_or_space_separated`: a `[...]` JSON list, else split on space.
@@ -47,16 +51,25 @@ pub enum EnvDecode {
     RawString,
     /// Type fallback: a boolean, parsed with Go's `strconv.ParseBool` grammar.
     Bool,
-    /// Type fallback: a signed integer.
+    /// Type fallback: a signed integer, in Go's `strconv.ParseInt` base-0 grammar (the Agent's `int`
+    /// cast): optional sign, `0x`/`0o`/`0b` prefixes, a leading `0` as octal, and `_` separators.
     Integer,
-    /// Type fallback: a floating-point number.
+    /// Type fallback: a finite floating-point number, in Go's `strconv.ParseFloat` grammar.
     Float,
-    /// Type fallback: a string list, split on whitespace (the Agent's `[]string` cast).
+    /// Type fallback: a string list (the Agent's `[]string` cast). A JSON array of strings or `null`
+    /// is decoded as JSON; anything else is split on whitespace.
     StringList,
     /// Type fallback: a duration, carried through as a string for `crate::duration_de`.
     DurationString,
     /// Type fallback: a map/object (or any non-scalar), parsed as a JSON document.
     JsonValue,
+    /// Saluki-only: a signed decimal integer, optionally followed by an all-zero fraction. A leading
+    /// `0` is decimal.
+    DecimalInteger,
+    /// Saluki-only: a decimal floating-point number, with no `_` separators or hexadecimal form.
+    DecimalFloat,
+    /// Saluki-only: a string list split on whitespace, with no JSON form.
+    WhitespaceList,
 }
 
 /// Decodes `raw` into the JSON value `how` prescribes.
@@ -72,16 +85,18 @@ pub fn decode(raw: &str, how: EnvDecode) -> Result<Value, String> {
         EnvDecode::CommaSeparated => Ok(comma_separated(raw)),
         EnvDecode::CommaAndSpaceSeparated => Ok(comma_and_space_separated(raw)),
         EnvDecode::CommaThenSpaceSeparated => Ok(comma_then_space_separated(raw)),
+        EnvDecode::CsvCommaSeparated => Ok(string_array(csv_comma_separated(raw))),
         EnvDecode::JsonListOrCommaSeparated => json_list_or_split(raw, ','),
         EnvDecode::JsonListOrSpaceSeparated => json_list_or_split(raw, ' '),
         EnvDecode::TracesSpan => traces_span(raw),
         EnvDecode::RawString | EnvDecode::DurationString => Ok(Value::String(raw.to_string())),
         EnvDecode::Bool => cast_de::parse_bool(raw).map(Value::Bool),
         EnvDecode::Integer => cast_de::parse_i64(raw).map(|n| Value::Number(n.into())),
-        EnvDecode::Float => cast_de::parse_f64(raw)
-            // `parse_f64` rejects the non-finite values, which are the only ones JSON cannot hold.
-            .map(|parsed| Value::Number(Number::from_f64(parsed).expect("a finite float is a JSON number"))),
-        EnvDecode::StringList => Ok(whitespace_list(raw)),
+        EnvDecode::Float => cast_de::parse_f64(raw).map(finite_number),
+        EnvDecode::StringList => Ok(string_array(cast_de::parse_string_list(raw))),
+        EnvDecode::DecimalInteger => cast_de::parse_decimal_i64(raw).map(|n| Value::Number(n.into())),
+        EnvDecode::DecimalFloat => cast_de::parse_decimal_f64(raw).map(finite_number),
+        EnvDecode::WhitespaceList => Ok(string_array(raw.split_whitespace())),
     }
 }
 
@@ -122,16 +137,93 @@ fn comma_then_space_separated(raw: &str) -> Value {
     string_array(raw.split(sep).map(str::trim))
 }
 
+/// `env_parser: csv_comma_separated` (`ParseEnvCSVSplit`, `helper/env.go:69`).
+///
+/// The first record of `encoding/csv` with `TrimLeadingSpace` and `LazyQuotes` set, ported from
+/// `Reader.readRecord`:
+///
+/// - Lines end at `\n`, and `\r\n` reads as `\n`. Empty lines before the record are skipped, and an
+///   input with no record yields an empty list (the Agent logs `EOF` and yields an empty list).
+/// - Leading whitespace is trimmed from every field. An unquoted field runs to the next `,` or the
+///   end of the line, and keeps any `"` it contains.
+/// - A field starting with `"` is quoted: `""` reads as `"`, the field ends at a `"` followed by
+///   `,` or the end of the line, any other `"` is kept, and the field may span lines. A quoted field
+///   that never closes runs to the end of the input.
+///
+/// With lazy quotes, `encoding/csv` has no other error for a first record, so this can't fail.
+fn csv_comma_separated(raw: &str) -> Vec<String> {
+    // `readLine` reads `\r\n` as `\n`, and drops a `\r` that ends the input.
+    let normalized = raw.replace("\r\n", "\n");
+    let mut lines = normalized
+        .strip_suffix('\r')
+        .unwrap_or(&normalized)
+        .split_inclusive('\n');
+
+    // Skip the empty lines before the record.
+    let Some(mut line) = lines.find(|line| *line != "\n") else {
+        return Vec::new();
+    };
+
+    let mut fields = Vec::new();
+    loop {
+        line = line.trim_start();
+        if !line.starts_with('"') {
+            match line.split_once(',') {
+                Some((field, rest)) => {
+                    fields.push(field.to_string());
+                    line = rest;
+                    continue;
+                }
+                None => {
+                    fields.push(line.strip_suffix('\n').unwrap_or(line).to_string());
+                    return fields;
+                }
+            }
+        }
+
+        // A quoted field.
+        line = &line[1..];
+        let mut field = String::new();
+        loop {
+            if let Some((before, after)) = line.split_once('"') {
+                field.push_str(before);
+                line = after;
+                if let Some(rest) = line.strip_prefix('"') {
+                    field.push('"');
+                    line = rest;
+                } else if let Some(rest) = line.strip_prefix(',') {
+                    fields.push(field);
+                    line = rest;
+                    break;
+                } else if line.is_empty() || line == "\n" {
+                    fields.push(field);
+                    return fields;
+                } else {
+                    field.push('"');
+                }
+            } else if !line.is_empty() {
+                field.push_str(line);
+                line = lines.next().unwrap_or("");
+            } else {
+                fields.push(field);
+                return fields;
+            }
+        }
+    }
+}
+
 /// `env_parser: json_list_or_{comma,space}_separated` (`jsonOrSplitBy`, `helper/env.go:120`).
 ///
-/// A value delimited by `[` and `]` is parsed as a JSON string list; anything else is split on
-/// `sep`. The input is trimmed before the `[...]` test. A JSON list that fails to parse propagates
-/// an error (the Agent logs and yields nil).
+/// A value delimited by `[` and `]` is parsed as a JSON string list, where a `null` element is an
+/// empty string as in Go's `json.Unmarshal`; anything else is split on `sep`. The input is trimmed
+/// before the `[...]` test. A JSON list that fails to parse propagates an error (the Agent logs and
+/// yields nil).
 fn json_list_or_split(raw: &str, sep: char) -> Result<Value, String> {
     let trimmed = raw.trim();
     if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        let list: Vec<String> = serde_json::from_str(trimmed).map_err(|e| format!("invalid JSON string list: {e}"))?;
-        return Ok(string_array(list));
+        let list: Vec<Option<String>> =
+            serde_json::from_str(trimmed).map_err(|e| format!("invalid JSON string list: {e}"))?;
+        return Ok(string_array(list.into_iter().map(Option::unwrap_or_default)));
     }
     Ok(string_array(trimmed.split(sep)))
 }
@@ -149,16 +241,19 @@ fn traces_span(raw: &str) -> Result<Value, String> {
         let (name, rate) = token
             .split_once('=')
             .ok_or_else(|| format!("bad traces_span token `{token}`: expected name=rate"))?;
-        let rate: f64 = rate.parse().map_err(|_| format!("bad traces_span rate in `{token}`"))?;
-        let rate = Number::from_f64(rate).ok_or_else(|| format!("non-finite traces_span rate in `{token}`"))?;
-        map.insert(name.to_string(), Value::Number(rate));
+        // Unlike `parse_f64`, the Agent's `strconv.ParseFloat` here does not trim whitespace.
+        let rate = Some(rate)
+            .filter(|rate| rate.trim() == *rate)
+            .and_then(|rate| cast_de::parse_f64(rate).ok())
+            .ok_or_else(|| format!("bad traces_span rate in `{token}`"))?;
+        map.insert(name.to_string(), finite_number(rate));
     }
     Ok(Value::Object(map))
 }
 
-/// The `[]string` type fallback (`cast.ToStringSliceE`): split on whitespace, dropping empties.
-fn whitespace_list(raw: &str) -> Value {
-    string_array(raw.split_whitespace())
+/// A JSON number for a float the `cast_de` parsers accepted, which they guarantee is finite.
+fn finite_number(parsed: f64) -> Value {
+    Value::Number(Number::from_f64(parsed).expect("a finite float is a JSON number"))
 }
 
 /// Collects strings into a JSON array of strings.
@@ -218,6 +313,43 @@ mod tests {
     }
 
     #[test]
+    fn csv_comma_separated_reads_the_first_record_like_encoding_csv() {
+        // Expected values are the output of Go's `encoding/csv` with the Agent's reader settings.
+        let cases: &[(&str, &[&str])] = &[
+            ("", &[]),
+            ("\n\n", &[]),
+            ("a", &["a"]),
+            ("a, b ,  c", &["a", "b ", "c"]),
+            (
+                "(GET|POST) /healthcheck,GET /ping",
+                &["(GET|POST) /healthcheck", "GET /ping"],
+            ),
+            (r#""a,b",c"#, &["a,b", "c"]),
+            (r#""a""b",c"#, &["a\"b", "c"]),
+            (r#"a"b,c"#, &["a\"b", "c"]),
+            (r#""a"b,c"#, &["a\"b,c"]),
+            (r#""a" ,b"#, &["a\" ,b"]),
+            (r#""unterminated,x"#, &["unterminated,x"]),
+            ("a\nb", &["a"]),
+            ("\n\na,b\nc", &["a", "b"]),
+            ("\"a\nb\",c", &["a\nb", "c"]),
+            ("a,b\r\n", &["a", "b"]),
+            ("a,b\r", &["a", "b"]),
+            ("a,\n", &["a", ""]),
+            (r#""a","#, &["a", ""]),
+            ("  ", &[""]),
+            ("\u{a0}a,\tb", &["a", "b"]),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                decode(raw, EnvDecode::CsvCommaSeparated).unwrap(),
+                arr(expected),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
     fn json_list_or_comma_takes_either_branch() {
         assert_eq!(
             decode(r#"  ["a","b"] "#, EnvDecode::JsonListOrCommaSeparated).unwrap(),
@@ -230,6 +362,14 @@ mod tests {
         assert!(decode("[bad", EnvDecode::JsonListOrCommaSeparated).is_ok()); // no closing ], so split
         assert!(decode(r#"["unterminated"#, EnvDecode::JsonListOrCommaSeparated).is_ok());
         assert!(decode("[1,2]", EnvDecode::JsonListOrCommaSeparated).is_err()); // JSON list of non-strings
+    }
+
+    #[test]
+    fn json_list_reads_a_null_element_as_an_empty_string() {
+        assert_eq!(
+            decode(r#"["a",null]"#, EnvDecode::JsonListOrSpaceSeparated).unwrap(),
+            arr(&["a", ""])
+        );
     }
 
     #[test]
@@ -246,9 +386,14 @@ mod tests {
             decode("svc|op=0.5,other|op2=1", EnvDecode::TracesSpan).unwrap(),
             json!({ "svc|op": 0.5, "other|op2": 1.0 })
         );
+        assert_eq!(
+            decode("svc|op=0x1p-1,other|op2=1_0", EnvDecode::TracesSpan).unwrap(),
+            json!({ "svc|op": 0.5, "other|op2": 10.0 })
+        );
         assert_eq!(decode("", EnvDecode::TracesSpan).unwrap(), json!({}));
         assert!(decode("svc|op", EnvDecode::TracesSpan).is_err());
         assert!(decode("svc|op=notnum", EnvDecode::TracesSpan).is_err());
+        assert!(decode("svc|op= 0.5", EnvDecode::TracesSpan).is_err());
     }
 
     #[test]
@@ -264,12 +409,65 @@ mod tests {
     }
 
     #[test]
-    fn string_list_splits_on_whitespace() {
+    fn string_list_follows_the_go_slice_cast() {
+        for (raw, expected) in cast_de::STRING_LIST_CASES {
+            assert_eq!(decode(raw, EnvDecode::StringList).unwrap(), arr(expected), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn integer_reads_the_go_base_prefixes() {
+        for (raw, expected) in [
+            ("0x10", 16),
+            ("010", 8),
+            ("0b11", 3),
+            ("0o17", 15),
+            ("1_000", 1000),
+            ("-0x10", -16),
+        ] {
+            assert_eq!(decode(raw, EnvDecode::Integer).unwrap(), json!(expected), "{raw}");
+        }
+        // An invalid octal digit reads as 0, as with the Agent's integer getter.
+        assert_eq!(decode("08", EnvDecode::Integer).unwrap(), json!(0));
+        assert!(decode("08.", EnvDecode::Integer).is_err());
+    }
+
+    #[test]
+    fn float_reads_go_literals() {
+        assert_eq!(decode("0x1p4", EnvDecode::Float).unwrap(), json!(16.0));
+        assert_eq!(decode("1_000.5", EnvDecode::Float).unwrap(), json!(1000.5));
+        assert!(decode("0x10", EnvDecode::Float).is_err());
+        assert!(decode("inf", EnvDecode::Float).is_err());
+    }
+
+    #[test]
+    fn decimal_integer_keeps_a_leading_zero_decimal() {
+        assert_eq!(decode("010", EnvDecode::DecimalInteger).unwrap(), json!(10));
+        assert_eq!(decode("9125.0", EnvDecode::DecimalInteger).unwrap(), json!(9125));
+        for rejected in ["0x10", "0b11", "1_000", "9125.5"] {
+            assert!(decode(rejected, EnvDecode::DecimalInteger).is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn decimal_float_has_no_go_only_spellings() {
+        assert_eq!(decode("1.5e1", EnvDecode::DecimalFloat).unwrap(), json!(15.0));
+        for rejected in ["0x1p4", "1_000.5", "inf"] {
+            assert!(decode(rejected, EnvDecode::DecimalFloat).is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn whitespace_list_never_reads_json() {
         assert_eq!(
-            decode("env:prod  team:core", EnvDecode::StringList).unwrap(),
+            decode("env:prod  team:core", EnvDecode::WhitespaceList).unwrap(),
             arr(&["env:prod", "team:core"])
         );
-        assert_eq!(decode("   ", EnvDecode::StringList).unwrap(), Value::Array(vec![]));
+        assert_eq!(
+            decode(r#"["a","b"]"#, EnvDecode::WhitespaceList).unwrap(),
+            arr(&[r#"["a","b"]"#])
+        );
+        assert_eq!(decode("   ", EnvDecode::WhitespaceList).unwrap(), Value::Array(vec![]));
     }
 
     #[test]

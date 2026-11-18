@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    Agent Data Plane now reads ``log_file_max_size`` and ``dogstatsd_log_file_max_size`` the way the
+    Datadog Agent does. Units are binary, so ``10MB`` is 10,485,760 bytes rather than 10,000,000, and
+    numbers may use a ``0x``, ``0o``, or ``0b`` base prefix, or a leading ``0`` for octal. As a result,
+    the DogStatsD debug log now rotates at 10 MiB by default instead of 10,000,000 bytes. Values the
+    Datadog Agent cannot parse, such as ``10MiB`` or ``1.5MB``, are read as before.

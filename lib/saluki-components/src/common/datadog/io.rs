@@ -4,20 +4,29 @@
 //!
 //! Every task here is a supervised child of the process that spawns the forwarder. In practice, that process is the
 //! forwarder component. The tasks make a subtree below the component. The main I/O loop and the background refreshers
-//! are children of the component. Each endpoint has one I/O loop, which is a child of the main I/O loop.
+//! are children of the component. Each endpoint has an I/O loop below the main I/O loop. When sketch shadowing is
+//! enabled, a separate endpoint loop owns shadow concurrency, backoff, and a bounded, memory-only retry queue. Shadow
+//! dispatch never waits for queue capacity, so validation failures cannot block authoritative traffic.
 //!
-//! A scope does not pass the deadline of its owner to its children, and a closure-based child has a default timeout of
-//! five seconds. A drain can take longer than that: each endpoint loop waits for its in-flight requests, which the
-//! request timeout bounds, and then flushes its retry queue. Thus, the main I/O loop and the endpoint loops have no
-//! timeout of their own. The shutdown budget of the component bounds them, and they stop with the component if that
-//! budget elapses.
+//! A drain can outlast the five-second default timeout of a closure-based task: each endpoint loop either waits for or
+//! cancels its in-flight requests, which the request timeout bounds, and then flushes its retry queue. Thus, the main
+//! I/O loop and the endpoint loops have no timeout of their own, and the component's shutdown timeout bounds them instead.
 //!
 //! Shutdown needs no explicit handshake between them, because the tasks are connected by channels and each stops at
 //! its own terminal condition. Dropping [`Handle`] closes the transaction channel, so the main I/O loop finishes and
-//! drops its per-endpoint senders, so each endpoint loop completes its in-flight requests and flushes its retry queue.
+//! drops its per-endpoint senders, so each endpoint loop settles its in-flight requests and flushes its retry queue.
 //! Each owner waits for its children. Thus, the drain occurs in order, but no task needs to know the order. The
 //! refreshers have no terminal condition at all and are therefore
 //! [`Brutal`][saluki_core::runtime::ShutdownStrategy::Brutal].
+//!
+//! How an endpoint loop settles its in-flight requests depends on
+//! [`stop_wait_for_inflight`][ForwarderConfiguration::stop_wait_for_inflight]. When it is `true`, the loop waits for
+//! them to complete, which can take up to the request timeout. If the component's shutdown timeout elapses first, the
+//! loop is halted before it flushes, and nothing pending is persisted. When it is `false`, the loop aborts them and
+//! requeues their transactions, so the flush happens immediately and covers them too. The cost is that a request the
+//! remote endpoint had already received may be sent again after a restart. The abort is carried out by the retry
+//! circuit breaker in the endpoint's service stack, which already holds a copy of each in-flight request in case it
+//! must be retried, and hands that copy back so that it can be requeued.
 //!
 //! In-flight requests remain an ordinary [`JoinSet`] owned by their endpoint loop rather than supervised children,
 //! because the loop consumes each result to decide whether the transaction is done or needs re-enqueuing. Their
@@ -37,21 +46,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent_data_plane_config::shared::Secrets;
-use agent_data_plane_config::Live;
 use bytes::Buf;
 use futures::FutureExt as _;
 use http::{Request, StatusCode, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
-use saluki_common::{collections::FastHashMap, hash::hash_single_stable, time::get_unix_timestamp};
+use saluki_common::{collections::FastHashMap, hash::hash_single_stable, sync::live::Live, time::get_unix_timestamp};
 use saluki_core::components::ComponentContext;
 use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
 use saluki_core::runtime::{self, get_sanitized_name};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{
-    client::http::{into_client_body, HttpClient, HttpClientBuilder},
+    client::http::{into_client_body, HttpClient, HttpClientBuilder, TlsMinimumVersion},
     util::{
         middleware::{HttpInspectionLayer, RetryCircuitBreakerError, RetryCircuitBreakerLayer},
         retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryCauseTelemetry, RetryQueue, Retryable},
@@ -61,9 +68,10 @@ use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
     select,
-    sync::mpsc,
+    sync::mpsc::{self, error::SendError},
     task::{JoinError, JoinSet},
 };
+use tokio_util::sync::CancellationToken;
 use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error, warn};
 use url::Url;
@@ -84,6 +92,9 @@ use super::{
     validation::ApiKeyValidator,
     METRICS_SERIES_V3_PATH, METRIC_INTAKE_PATHS,
 };
+
+/// Maximum number of transactions waiting for an endpoint worker.
+pub(crate) const ENDPOINT_CHANNEL_CAPACITY: usize = 8;
 
 type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 
@@ -137,6 +148,21 @@ where
     Ok(push_result)
 }
 
+async fn requeue_or_log<B>(
+    status: &str, metadata: Metadata, request: Request<TransactionBody<B>>,
+    pending_txns: &mut PendingTransactions<Transaction<B>>, requeued_counters: Option<&TransactionRetryCounters>,
+    telemetry: &ComponentTelemetry, endpoint_url: &str, endpoint_domain: &str,
+) where
+    B: Buf + Clone,
+{
+    match requeue_transaction(metadata, request, pending_txns, requeued_counters).await {
+        Ok(push_result) => track_queue_drops(telemetry, endpoint_domain, push_result),
+        Err(e) => {
+            error!(endpoint_url, error = %e, "Failed to re-enqueue {} transaction. Events may be permanently lost.", status)
+        }
+    }
+}
+
 async fn handle_in_flight_transaction_result<B>(
     task_result: InFlightTaskResult<B>, pending_txns: &mut PendingTransactions<Transaction<B>>,
     telemetry: &ComponentTelemetry, endpoint_url: &str, endpoint_domain: &str,
@@ -156,8 +182,8 @@ async fn handle_in_flight_transaction_result<B>(
         }
     };
 
-    // Any low-priority transaction that reached the inner service counts as a retry on success, final Service error,
-    // or Retry; Open means no dispatch.
+    // Any low-priority transaction that reached the inner service counts as a retry on success,
+    // final Service error, Cancelled, or Retry; Open means no dispatch.
     let reached_inner_service = !matches!(&result, Err(RetryCircuitBreakerError::Open(_)));
     if reached_inner_service {
         if let Some(counters) = retry_counters.as_ref() {
@@ -190,22 +216,48 @@ async fn handle_in_flight_transaction_result<B>(
 
         // The request completed and needs to be retried, so re-enqueue it to the low-priority queue.
         Err(RetryCircuitBreakerError::Retry(req)) => {
-            match requeue_transaction(metadata, req, pending_txns, None).await {
-                Ok(push_result) => track_queue_drops(telemetry, endpoint_domain, push_result),
-                Err(e) => {
-                    error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost.")
-                }
-            }
+            requeue_or_log(
+                "failed",
+                metadata,
+                req,
+                pending_txns,
+                None,
+                telemetry,
+                endpoint_url,
+                endpoint_domain,
+            )
+            .await;
         }
 
         // The request was rejected before inward dispatch, so re-enqueue it without counting another retry.
         Err(RetryCircuitBreakerError::Open(req)) => {
-            match requeue_transaction(metadata, req, pending_txns, retry_counters.as_ref()).await {
-                Ok(push_result) => track_queue_drops(telemetry, endpoint_domain, push_result),
-                Err(e) => {
-                    error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost.")
-                }
-            }
+            requeue_or_log(
+                "failed",
+                metadata,
+                req,
+                pending_txns,
+                retry_counters.as_ref(),
+                telemetry,
+                endpoint_url,
+                endpoint_domain,
+            )
+            .await;
+        }
+
+        // The request was aborted by shutdown before it completed. The remote endpoint may already have
+        // received it, but we can't know, so requeue it to have it persisted with the rest.
+        Err(RetryCircuitBreakerError::Cancelled(req)) => {
+            requeue_or_log(
+                "aborted",
+                metadata,
+                req,
+                pending_txns,
+                retry_counters.as_ref(),
+                telemetry,
+                endpoint_url,
+                endpoint_domain,
+            )
+            .await;
         }
     }
 }
@@ -242,10 +294,11 @@ where
     /// Triggers the forwarder to shut down.
     ///
     /// Dropping the transaction channel is what starts the drain: the main I/O loop finishes, its per-endpoint senders
-    /// drop, and each endpoint loop completes its in-flight requests and flushes its retry queue. This doesn't wait for
-    /// any of that. The tasks of the forwarder are children of the process that spawned them. That process does not
-    /// finish until the tasks finish. Thus, that process waits for the tasks, and the caller does not. The deadline of
-    /// that process bounds this wait.
+    /// drop, and each endpoint loop either completes or aborts its in-flight requests, depending on
+    /// [`stop_wait_for_inflight`][ForwarderConfiguration::stop_wait_for_inflight], and flushes its retry queue. This
+    /// doesn't wait for any of that. The tasks of the forwarder are children of the process that spawned them. That
+    /// process does not finish until the tasks finish. Thus, that process waits for the tasks, and the caller does not.
+    /// The shutdown timeout of that process bounds this wait.
     pub fn shutdown(self) {
         drop(self.transactions_tx);
     }
@@ -267,8 +320,9 @@ pub(crate) struct LiveForwarderConfiguration {
     /// The views the endpoints refresh their API keys from.
     pub(crate) api_keys: LiveApiKeys,
 
-    /// The view the retry policy's gate reads to decide whether a rejected API key is worth retrying.
-    pub(crate) secrets: Live<Secrets>,
+    /// Whether secret resolution might replace a rejected API key, which the retry policy's gate reads to decide
+    /// whether the key is worth retrying.
+    pub(crate) secrets_in_use: Live<bool>,
 }
 
 impl Default for LiveForwarderConfiguration {
@@ -276,7 +330,7 @@ impl Default for LiveForwarderConfiguration {
     fn default() -> Self {
         Self {
             api_keys: LiveApiKeys::default(),
-            secrets: Live::new_fixed(Secrets::default()),
+            secrets_in_use: Live::new_fixed(false),
         }
     }
 }
@@ -285,6 +339,9 @@ impl Default for LiveForwarderConfiguration {
 pub struct TransactionForwarder<B> {
     context: ComponentContext,
     config: ForwarderConfiguration,
+    min_tls_version: TlsMinimumVersion,
+    retry_storage_path: PathBuf,
+    api_key_validation_interval: Duration,
     live: LiveForwarderConfiguration,
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
@@ -318,7 +375,7 @@ enum TlsCertificateValidation {
 
 impl TlsCertificateValidation {
     const fn from_forwarder_config(config: &ForwarderConfiguration) -> Self {
-        if config.skip_ssl_validation() {
+        if config.skip_ssl_validation {
             Self::Disabled
         } else {
             Self::Enabled
@@ -344,6 +401,75 @@ impl TlsCertificateValidation {
             }
         }
     }
+}
+
+/// Value of the `purpose` tag on telemetry emitted by the API key validation client.
+///
+/// Validation requests are not forwarding transactions, so consumers of the HTTP client's telemetry use this tag to
+/// tell the two apart.
+pub(crate) const API_KEY_VALIDATION_PURPOSE: &str = "api_key_validation";
+
+/// The `purpose` tag on API key validation telemetry, in `key:value` form.
+///
+/// Consumers of the HTTP client's telemetry reject this tag to exclude validation requests. It is the same tag that
+/// `API_KEY_VALIDATION_PURPOSE` is applied as, so the two must stay in sync.
+pub const API_KEY_VALIDATION_PURPOSE_TAG: &str = "purpose:api_key_validation";
+
+/// Returns an HTTP client builder for Datadog intake traffic, emitting telemetry through `metrics_builder`.
+fn http_client_builder(
+    config: &ForwarderConfiguration, min_tls_version: TlsMinimumVersion, metrics_builder: MetricsBuilder,
+    endpoint_name: Arc<EndpointNameFn>,
+) -> Result<HttpClientBuilder, GenericError> {
+    Ok(intake_http_client_builder(config, min_tls_version)?
+        .with_max_idle_conns_per_host(config.endpoint_concurrency_multiplier)
+        .with_endpoint_telemetry(metrics_builder, Some(move |uri: &Uri| endpoint_name(uri))))
+}
+
+/// Returns an HTTP client builder for Datadog intake traffic, applying the forwarder's HTTP client settings.
+///
+/// These are the request timeout, the TLS settings (handshake timeout, key log file, and certificate validation), the
+/// proxy, the HTTP protocol, and the connection reset interval.
+///
+/// Unlike the forwarders' own clients, it emits no endpoint telemetry, so it suits components that send the odd request
+/// to the intake outside of a forwarder.
+///
+/// # Errors
+///
+/// If the proxy settings are invalid, an error is returned.
+pub(crate) fn intake_http_client_builder(
+    config: &ForwarderConfiguration, min_tls_version: TlsMinimumVersion,
+) -> Result<HttpClientBuilder, GenericError> {
+    let mut client_builder = HttpClient::builder()
+        .with_request_timeout(config.request_timeout())
+        .with_min_tls_version(min_tls_version)
+        .with_tls_handshake_timeout(config.tls_handshake_timeout)
+        .with_http_protocol(config.http_protocol.into());
+    if let Some(path) = config.ssl_key_log_file_path() {
+        client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
+    }
+    client_builder = client_builder.with_proxies(config.proxy.build()?);
+
+    if config.connection_reset_interval() > Duration::ZERO {
+        client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
+    }
+
+    Ok(TlsCertificateValidation::from_forwarder_config(config).apply_to(client_builder))
+}
+
+/// Returns an HTTP client builder for API key validation.
+///
+/// Like the Core Agent, validation uses its own client so that its requests are never counted as forwarding
+/// transactions. Its telemetry is still emitted, tagged with `purpose` so that consumers can tell the two apart.
+fn validation_http_client_builder(
+    config: &ForwarderConfiguration, min_tls_version: TlsMinimumVersion, metrics_builder: MetricsBuilder,
+    endpoint_name: Arc<EndpointNameFn>,
+) -> Result<HttpClientBuilder, GenericError> {
+    http_client_builder(
+        config,
+        min_tls_version,
+        metrics_builder.add_default_tag(("purpose", API_KEY_VALIDATION_PURPOSE)),
+        endpoint_name,
+    )
 }
 
 impl<B> TransactionForwarder<B>
@@ -389,31 +515,20 @@ where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
         let endpoints = config.build_routable_endpoints()?;
+        // Resolve settings that may log once per build, rather than once per endpoint or use.
+        let min_tls_version = config.effective_min_tls_version();
+        let retry_storage_path = config.retry.resolved_storage_path();
+        let api_key_validation_interval = config.effective_api_key_validation_interval();
         let api_key_refresher = ApiKeyRefresher::new(&endpoints, &live.api_keys);
         let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
-        let endpoint_name_for_client = Arc::clone(&endpoint_name);
-        let mut client_builder = HttpClient::builder()
-            .with_request_timeout(config.request_timeout())
-            .with_max_idle_conns_per_host(config.max_idle_connections_per_host())
-            .with_min_tls_version(config.min_tls_version())
-            .with_tls_handshake_timeout(config.tls_handshake_timeout())
-            .with_http_protocol(config.http_protocol())
-            .with_endpoint_telemetry(
-                metrics_builder.clone(),
-                Some(move |uri: &Uri| endpoint_name_for_client(uri)),
-            );
-        if let Some(path) = config.ssl_key_log_file_path() {
-            client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
-        }
-        client_builder = client_builder.with_proxies(config.proxy().build()?);
 
-        if config.connection_reset_interval() > Duration::ZERO {
-            client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
-        }
-
-        client_builder = TlsCertificateValidation::from_forwarder_config(&config).apply_to(client_builder);
-
-        let client = client_builder.build()?;
+        let client = http_client_builder(
+            &config,
+            min_tls_version,
+            metrics_builder.clone(),
+            Arc::clone(&endpoint_name),
+        )?
+        .build()?;
 
         let emitter = DiagnosticsEmitter::from_current(context.identity())
             .error_context("Failed to create diagnostics emitter for transaction forwarder.")?;
@@ -421,6 +536,9 @@ where
         Ok(Self {
             context,
             config,
+            min_tls_version,
+            retry_storage_path,
+            api_key_validation_interval,
             live,
             telemetry,
             metrics_builder,
@@ -453,6 +571,9 @@ where
         let Self {
             context,
             config,
+            min_tls_version: _,
+            retry_storage_path,
+            api_key_validation_interval: _,
             live,
             telemetry,
             metrics_builder,
@@ -472,7 +593,7 @@ where
         }
 
         // The retry classifiers cannot await, so a task carries secrets changes into the gate they read.
-        let secrets_refresher = SecretsGateRefresher::new(live.secrets);
+        let secrets_refresher = SecretsGateRefresher::new(live.secrets_in_use);
         let secrets = secrets_refresher.gate.clone();
         secrets_refresher.spawn();
 
@@ -482,6 +603,7 @@ where
                 transactions_rx,
                 context,
                 config,
+                retry_storage_path,
                 secrets,
                 client,
                 telemetry,
@@ -504,22 +626,35 @@ where
     /// The forwarder's diagnostics emitter (see [`with_diagnostics_emitter`][Self::with_diagnostics_emitter]) is used to
     /// surface a diagnostic event when validation determines that every configured API key is invalid, allowing
     /// interested subscribers to react to the credentials being rejected.
-    pub(crate) fn api_key_validator(&self) -> ApiKeyValidator {
-        ApiKeyValidator::new(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the validation HTTP client cannot be built.
+    pub(crate) fn api_key_validator(&self) -> Result<ApiKeyValidator, GenericError> {
+        // Built here rather than up front, since not every forwarder validates its API keys.
+        let client = validation_http_client_builder(
+            &self.config,
+            self.min_tls_version,
+            self.metrics_builder.clone(),
+            Arc::clone(&self.endpoint_name),
+        )?
+        .build()?;
+
+        Ok(ApiKeyValidator::new(
             self.endpoints.clone(),
-            self.client.clone(),
+            client,
             self.api_key_refresher.as_ref().map(ApiKeyRefresher::changes),
-            self.config.api_key_validation_interval(),
+            self.api_key_validation_interval,
             self.emitter.clone(),
-        )
+        ))
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, context: ComponentContext, config: ForwarderConfiguration,
-    secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-    endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
+    retry_storage_path: PathBuf, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
+    metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
@@ -532,54 +667,91 @@ async fn run_io_loop<B>(
         .iter()
         .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
     let shared_txnq_telemetry = SharedTransactionQueueTelemetry::from_builder(&metrics_builder);
+    let mut shadow_setup = None;
 
     for routable_endpoint in resolved_endpoints {
+        let shadow_enabled = config.endpoint_supports_sketch_shadow(&routable_endpoint, has_metrics_primary);
         let (route, resolved_endpoint, target) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
+        let task_name = endpoint_io_loop_task_name(&resolved_endpoint);
 
-        let txnq_telemetry =
-            TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
-        let retry_telemetry = TransactionRetryTelemetry::from_builder(&metrics_builder, &endpoint_domain);
-        let retry_cause_telemetry = RetryCauseTelemetry::from_builder(&metrics_builder, &endpoint_domain);
+        let spawn_endpoint_worker = |worker_config: &ForwarderConfiguration,
+                                     worker_metrics: &MetricsBuilder,
+                                     queue_telemetry: &SharedTransactionQueueTelemetry,
+                                     task_name: String| {
+            let txnq_telemetry =
+                TransactionQueueTelemetry::from_builder(worker_metrics, &endpoint_url, queue_telemetry.clone());
+            let retry_telemetry = TransactionRetryTelemetry::from_builder(worker_metrics, &endpoint_domain);
+            let retry_cause_telemetry = RetryCauseTelemetry::from_builder(worker_metrics, &endpoint_domain);
+            let (endpoint_tx, endpoint_rx) = mpsc::channel(ENDPOINT_CHANNEL_CAPACITY);
 
-        let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
+            runtime::worker(
+                task_name,
+                run_endpoint_io_loop(
+                    endpoint_rx,
+                    context.clone(),
+                    worker_config.clone(),
+                    retry_storage_path.clone(),
+                    secrets.clone(),
+                    service.clone(),
+                    telemetry.clone(),
+                    txnq_telemetry,
+                    retry_telemetry,
+                    retry_cause_telemetry,
+                    Arc::clone(&endpoint_name),
+                    route,
+                    resolved_endpoint.clone(),
+                    endpoint_request_mapper_factory.clone(),
+                    emitter.clone(),
+                ),
+            )
+            // The drain of an endpoint can take longer than the default timeout. See the module documentation.
+            .with_shutdown_timeout(Duration::MAX)
+            .spawn();
+            endpoint_tx
+        };
 
-        runtime::worker(
-            endpoint_io_loop_task_name(&resolved_endpoint),
-            run_endpoint_io_loop(
-                endpoint_rx,
-                context.clone(),
-                config.clone(),
-                secrets.clone(),
-                service.clone(),
-                telemetry.clone(),
-                txnq_telemetry,
-                retry_telemetry,
-                retry_cause_telemetry,
-                Arc::clone(&endpoint_name),
-                route,
-                resolved_endpoint,
-                endpoint_request_mapper_factory.clone(),
-                emitter.clone(),
-            ),
-        )
-        // The drain of an endpoint can take longer than the default timeout. See the module documentation.
-        .with_shutdown_timeout(Duration::MAX)
-        .spawn();
-
+        let tx = spawn_endpoint_worker(&config, &metrics_builder, &shared_txnq_telemetry, task_name.clone());
+        let shadow_tx = if shadow_enabled {
+            let (shadow_config, shadow_metrics, shadow_queue_telemetry) = shadow_setup.get_or_insert_with(|| {
+                let mut shadow_config = config.clone();
+                // Validation must not consume authoritative disk capacity or delay shutdown for in-flight shadows.
+                shadow_config.retry.storage_max_size_bytes = 0;
+                shadow_config.stop_wait_for_inflight = false;
+                let shadow_metrics = metrics_builder.clone().add_default_tag("traffic:sketch_shadow");
+                let shadow_queue_telemetry = SharedTransactionQueueTelemetry::from_builder(&shadow_metrics);
+                (shadow_config, shadow_metrics, shadow_queue_telemetry)
+            });
+            Some(spawn_endpoint_worker(
+                shadow_config,
+                shadow_metrics,
+                shadow_queue_telemetry,
+                format!("{task_name}_sketch_shadow"),
+            ))
+        } else {
+            None
+        };
         endpoint_txs.push(EndpointSender {
+            configured_endpoint: resolved_endpoint.configured_endpoint().to_string(),
             endpoint_url,
             endpoint_domain,
             target,
             route,
-            tx: endpoint_tx,
+            tx,
+            shadow_tx,
         });
     }
 
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        let is_metrics_request = is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
+        let is_metrics_request = transaction.metadata().payload_info.is_some()
+            || is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
+        let is_shadow = transaction
+            .metadata()
+            .sketch_shadow
+            .as_ref()
+            .is_some_and(|shadow| shadow.is_shadow);
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -588,12 +760,15 @@ async fn run_io_loop<B>(
                 continue;
             }
 
-            if endpoint_sender.tx.send(transaction.clone()).await.is_err() {
+            if endpoint_sender.send(transaction.clone()).await.is_err() {
                 telemetry.track_permanently_failed_transaction(
                     transaction.metadata(),
                     None,
                     &endpoint_sender.endpoint_domain,
                 );
+                if is_shadow {
+                    continue;
+                }
                 error!(
                     endpoint = %endpoint_sender.endpoint_url,
                     "Failed to send request to endpoint I/O task: receiver dropped."
@@ -614,11 +789,36 @@ struct EndpointSender<B>
 where
     B: Buf + Clone,
 {
+    configured_endpoint: String,
     endpoint_url: String,
     endpoint_domain: String,
     target: Option<RoutingTargetId>,
     route: EndpointRoute,
     tx: mpsc::Sender<Transaction<B>>,
+    shadow_tx: Option<mpsc::Sender<Transaction<B>>>,
+}
+
+impl<B: Buf + Clone> EndpointSender<B> {
+    async fn send(&self, transaction: Transaction<B>) -> Result<(), SendError<Transaction<B>>> {
+        if let Some(shadow) = transaction
+            .metadata()
+            .sketch_shadow
+            .as_ref()
+            .filter(|shadow| shadow.is_shadow)
+        {
+            if shadow.batch_id(&self.configured_endpoint).is_none() {
+                return Ok(());
+            }
+            let Some(shadow_tx) = &self.shadow_tx else {
+                return Ok(());
+            };
+            shadow_tx
+                .try_send(transaction)
+                .map_err(|error| SendError(error.into_inner()))
+        } else {
+            self.tx.send(transaction).await
+        }
+    }
 }
 
 fn is_metrics_request_uri(uri: &Uri, v3_beta_series_route: &str) -> bool {
@@ -663,6 +863,34 @@ fn matches_metrics_routing_targets(target: Option<RoutingTargetId>, metadata: &M
     }
 }
 
+// Expand batch metadata before queueing so retries persist the original correlation headers.
+fn prepare_metrics_transaction<B: Buf + Clone>(
+    txn: Transaction<B>, configured_endpoint: &str, settings: &EndpointV3Settings, disables_v3: bool,
+) -> Option<Transaction<B>> {
+    let (mut metadata, mut request) = txn.into_parts();
+    let shadow = metadata.sketch_shadow.take();
+    let is_shadow = shadow.as_ref().is_some_and(|shadow| shadow.is_shadow);
+    if let Some(shadow) = shadow {
+        let batch_id = shadow.batch_id(configured_endpoint);
+        if is_shadow && (batch_id.is_none() || settings.use_v3_sketches || disables_v3) {
+            return None;
+        }
+        if let Some(batch_id) = batch_id {
+            request.headers_mut().insert("X-Metrics-Request-ID", batch_id.clone());
+            request
+                .headers_mut()
+                .insert("X-Metrics-Request-Seq", shadow.request_index.into());
+            request
+                .headers_mut()
+                .insert("X-Metrics-Request-Len", shadow.request_count.into());
+        }
+    }
+    if !is_shadow && !settings.should_receive_payload(metadata.payload_info) {
+        return None;
+    }
+    Some(Transaction::reassemble(metadata, request))
+}
+
 /// Returns the process name for the endpoint I/O loop serving `endpoint`.
 ///
 /// Two things shape the name beyond the endpoint itself.
@@ -690,7 +918,7 @@ fn endpoint_io_loop_task_name(endpoint: &ResolvedEndpoint) -> String {
 #[allow(clippy::too_many_arguments)]
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, context: ComponentContext, config: ForwarderConfiguration,
-    secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
+    retry_storage_path: PathBuf, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
     txnq_telemetry: TransactionQueueTelemetry, mut retry_telemetry: TransactionRetryTelemetry,
     retry_cause_telemetry: RetryCauseTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
     endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
@@ -706,7 +934,7 @@ async fn run_endpoint_io_loop<B>(
     let endpoint_domain = endpoint.endpoint().origin().ascii_serialization();
 
     // Match against the endpoint string from configuration, not the version-prefixed URL used for requests.
-    let v3_api = config.v3_api();
+    let v3_api = &config.v3_api;
     let metrics_primary_v3_override = (route == EndpointRoute::MetricsPrimary)
         .then(|| config.opw_metrics_v3_series_override())
         .flatten();
@@ -715,14 +943,14 @@ async fn run_endpoint_io_loop<B>(
     } else {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: &configured_endpoint,
-            series_config: config.use_v3_api_series(),
+            series_config: &config.use_v3_api.series,
             metrics_primary_v3_override,
             serializer_v3_sketches_endpoints: &v3_api.sketches.endpoints,
         })
     };
     debug!(
         endpoint_url,
-        endpoint_concurrency = config.endpoint_concurrency(),
+        endpoint_concurrency = config.effective_endpoint_concurrency(),
         configured_endpoint,
         ?endpoint_v3_settings,
         "Starting endpoint I/O task."
@@ -735,13 +963,25 @@ async fn run_endpoint_io_loop<B>(
     // of the URI, adding the API key as a header, and so on.
     //
     // The body type conversion from `TransactionBody<B>` to `ClientBody` happens as the innermost layer,
-    // after the retry circuit breaker. This ensures that retry and open errors return the original
+    // after the retry circuit breaker. This ensures that retry, open, and cancelled errors return the original
     // `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
+    //
+    // Unless in-flight requests are to be waited for on shutdown, the retry circuit breaker abandons them as soon as
+    // `in_flight_shutdown` is cancelled. See the module documentation.
     //
     // The invalid API key inspection layer sits *below* the retry circuit breaker so that it observes the raw response
     // from the client. When secrets management is enabled, a 403 is classified as retriable and the circuit breaker
     // converts it into a `RetryCircuitBreakerError::Retry` error that only re-enqueues the transaction — it never
     // surfaces the response to the loop below — so this layer is the only place that reliably sees the rejection.
+    let in_flight_shutdown = CancellationToken::new();
+    let mut retry_circuit_breaker = RetryCircuitBreakerLayer::new(
+        config
+            .retry
+            .to_default_http_retry_policy(secrets, retry_cause_telemetry),
+    );
+    if !config.stop_wait_for_inflight {
+        retry_circuit_breaker = retry_circuit_breaker.with_cancellation(in_flight_shutdown.clone());
+    }
     let mut service = ServiceBuilder::new()
         // Set the request's URI and endpoint-specific headers.
         .map_request({
@@ -754,50 +994,48 @@ async fn run_endpoint_io_loop<B>(
             }
         })
         // Signal backend support for arbitrary tag values when configured.
-        .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags()))
+        .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info())
-        .concurrency_limit(config.endpoint_concurrency())
-        .layer(RetryCircuitBreakerLayer::new(
-            config
-                .retry()
-                .to_default_http_retry_policy(secrets, retry_cause_telemetry),
-        ))
+        .concurrency_limit(config.effective_endpoint_concurrency())
+        .layer(retry_circuit_breaker)
         .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
 
-    let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes())
-        .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio());
+    let retry = &config.retry;
+    let mut retry_queue = RetryQueue::new(queue_id.clone(), retry.queue_max_size_bytes)
+        .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio);
 
     // If the storage size is set, enable disk persistence for the retry queue.
-    if config.retry().storage_max_size_bytes() > 0 {
+    if retry.storage_max_size_bytes > 0 {
         retry_queue = retry_queue
             .with_disk_persistence(PersistedQueueArgs {
-                root_path: PathBuf::from(config.retry().storage_path()),
-                max_on_disk_bytes: config.retry().storage_max_size_bytes(),
-                storage_max_disk_ratio: config.retry().storage_max_disk_ratio(),
-                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(PathBuf::from(
-                    config.retry().storage_path(),
-                ))),
-                max_age_days: config.retry().outdated_file_in_days(),
+                root_path: retry_storage_path.clone(),
+                max_on_disk_bytes: retry.storage_max_size_bytes,
+                storage_max_disk_ratio: retry.storage_max_disk_ratio,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(retry_storage_path)),
+                max_age_days: retry.outdated_file_in_days,
             })
             .await
             .unwrap_or_else(|e| {
                 error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
-                RetryQueue::new(queue_id, config.retry().queue_max_size_bytes())
-                    .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio())
+                RetryQueue::new(queue_id, retry.queue_max_size_bytes)
+                    .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio)
             });
     }
+    let queue_domain = MetaString::from(endpoint_domain.as_str());
+    let in_flight_telemetry = txnq_telemetry.clone();
     let mut pending_txns = PendingTransactions::new(
-        config.endpoint_buffer_size(),
+        config.endpoint_buffer_size,
         retry_queue,
         txnq_telemetry,
-        MetaString::from(endpoint_domain.as_str()),
-        config.retry().capacity_time_interval_secs(),
+        queue_domain.clone(),
+        retry.effective_capacity_time_interval_secs(),
     );
 
     let mut in_flight = JoinSet::new();
+    in_flight_telemetry.record_in_flight_requests(&queue_domain, 0);
     let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
     let mut done = false;
 
@@ -807,15 +1045,8 @@ async fn run_endpoint_io_loop<B>(
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => {
                     // Endpoint targeting was checked before dispatch to this task. Filter by protocol before queuing.
-                    let payload_info = txn.metadata().payload_info;
-                    if !endpoint_v3_settings.should_receive_payload(payload_info) {
-                        debug!(
-                            endpoint_url,
-                            ?payload_info,
-                            "Filtering out transaction based on endpoint V3 settings."
-                        );
-                        continue;
-                    }
+                    let Some(txn) = prepare_metrics_transaction(txn, &configured_endpoint, &endpoint_v3_settings,
+                        config.compressor_disables_metrics_v3()) else { continue; };
                     let transaction_size = txn.size_bytes();
                     let resolved = endpoint_name(txn.request_uri());
                     let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
@@ -834,30 +1065,50 @@ async fn run_endpoint_io_loop<B>(
                 },
                 None => {
                     // Our transactions channel has been closed, so mark ourselves as done which will stop any further
-                    // transactions from being sent, but will allow in-flight transactions to complete.
+                    // transactions from being sent. In-flight transactions are either allowed to complete, or aborted
+                    // by the retry circuit breaker and then requeued as their tasks are joined below.
                     done = true;
-                    debug!(endpoint_url, "Requests channel for endpoint I/O task complete. Completing any in-flight requests...");
+                    debug!(endpoint_url, "Requests channel for endpoint I/O task complete. Settling any in-flight requests...");
+                    in_flight_shutdown.cancel();
                 }
             },
 
             // While we're not done and there are pending transactions, wait for the service to become ready and then
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
-                Ok(svc) => if let Some(pending_txn) = pending_txns.pop().await {
-                    let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
-                        pending_txn,
-                        &mut retry_telemetry,
-                        endpoint_name.as_ref(),
-                    );
-                    let body_size = request.body().remaining() as u64;
-                    in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
-                        metadata,
-                        body_size,
-                        retry_counters,
-                        result,
-                    }));
+                Ok(svc) => {
+                    // Dequeuing can read from disk, and requests can finish while it does, so dequeue first.
+                    let pending_txn = pending_txns.pop().await;
 
-                    debug!(endpoint_url, "Request sent.");
+                    // A finished request releases its concurrency permit before its task is joined, so collect
+                    // finished tasks before dispatching, or the in-flight count would include them.
+                    while let Some(task_result) = in_flight.try_join_next() {
+                        handle_in_flight_transaction_result(
+                            task_result,
+                            &mut pending_txns,
+                            &telemetry,
+                            &endpoint_url,
+                            &endpoint_domain,
+                        ).await;
+                    }
+
+                    if let Some(pending_txn) = pending_txn {
+                        let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
+                            pending_txn,
+                            &mut retry_telemetry,
+                            endpoint_name.as_ref(),
+                        );
+                        let body_size = request.body().remaining() as u64;
+                        in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
+                            metadata,
+                            body_size,
+                            retry_counters,
+                            result,
+                        }));
+
+                        debug!(endpoint_url, "Request sent.");
+                    }
+                    in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
                 },
                 Err(e) => match e {
                     RetryCircuitBreakerError::Service(e) => {
@@ -865,8 +1116,10 @@ async fn run_endpoint_io_loop<B>(
                         error!(endpoint_url, error = %e, error_source = ?e.source(), "Unexpected error when querying service for readiness.");
                         break;
                     },
-                    RetryCircuitBreakerError::Retry(_) | RetryCircuitBreakerError::Open(_) => {
-                        unreachable!("should not get retry or open error when querying service for readiness")
+                    RetryCircuitBreakerError::Retry(_)
+                    | RetryCircuitBreakerError::Open(_)
+                    | RetryCircuitBreakerError::Cancelled(_) => {
+                        unreachable!("should not get retry, open, or cancelled error when querying service for readiness")
                     },
                 }
             },
@@ -874,6 +1127,7 @@ async fn run_endpoint_io_loop<B>(
             // Drive any in-flight transactions to completion.
             maybe_result = in_flight.join_next(), if !in_flight.is_empty() => {
                 let task_result = maybe_result.expect("in_flight marked as not being empty");
+                in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
                 handle_in_flight_transaction_result(
                     task_result,
                     &mut pending_txns,
@@ -903,6 +1157,9 @@ async fn run_endpoint_io_loop<B>(
             error!(endpoint_url, error = %e, "Failed to flush pending transactions. Events may be permanently lost.")
         }
     }
+
+    // Any request still in flight here is aborted when the set is dropped, so none remain once this task stops.
+    in_flight_telemetry.record_in_flight_requests(&queue_domain, 0);
 
     debug!(endpoint_url, "Endpoint I/O task stopped.");
 }
@@ -945,6 +1202,7 @@ fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: 
     telemetry.track_dropped_items(push_result.items_dropped);
     telemetry.track_dropped_events(push_result.events_dropped);
     telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
+    telemetry.track_dropped_bytes(domain, push_result.bytes_dropped);
 }
 
 /// Processes an HTTP response to a forwarded intake request, updating telemetry and logging as appropriate.
@@ -1046,7 +1304,7 @@ impl<T: Retryable> PendingTransactions<T> {
         max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry, domain: MetaString,
         capacity_history_duration_secs: u64,
     ) -> Self {
-        Self {
+        let pending = Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
             low_priority: retry_queue,
             telemetry,
@@ -1055,7 +1313,15 @@ impl<T: Retryable> PendingTransactions<T> {
                 capacity_history_duration_secs,
                 RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS,
             ),
-        }
+        };
+
+        // Admission to the high-priority queue is bounded by the capacity actually allocated, so report that.
+        pending
+            .telemetry
+            .record_high_prio_queue_capacity(&pending.domain, pending.high_priority.capacity());
+        pending.record_high_prio_queue_size();
+
+        pending
     }
 
     /// Returns `true` if there are no pending transactions.
@@ -1074,6 +1340,7 @@ impl<T: Retryable> PendingTransactions<T> {
         if self.high_priority.len() < self.high_priority.capacity() {
             self.high_priority.push_back(transaction);
             self.telemetry.high_prio_queue_insertions().increment(1);
+            self.record_high_prio_queue_size();
 
             debug!(
                 high_prio_queue_len = self.high_priority.len(),
@@ -1119,6 +1386,7 @@ impl<T: Retryable> PendingTransactions<T> {
         loop {
             if let Some(transaction) = self.high_priority.pop_front() {
                 self.telemetry.high_prio_queue_removals().increment(1);
+                self.record_high_prio_queue_size();
 
                 debug!(
                     high_prio_queue_len = self.high_priority.len(),
@@ -1177,6 +1445,7 @@ impl<T: Retryable> PendingTransactions<T> {
         // Push all high-priority transactions into the low-priority queue.
         while let Some(transaction) = self.high_priority.pop_front() {
             self.telemetry.high_prio_queue_removals().increment(1);
+            self.record_high_prio_queue_size();
 
             let subpush_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
@@ -1195,6 +1464,11 @@ impl<T: Retryable> PendingTransactions<T> {
     fn record_retry_queue_size(&self) {
         self.telemetry
             .record_retry_queue_size(&self.domain, self.low_priority.len());
+    }
+
+    fn record_high_prio_queue_size(&self) {
+        self.telemetry
+            .record_high_prio_queue_size(&self.domain, self.high_priority.len());
     }
 
     async fn record_incoming_transaction_size(&mut self, bytes: u64) {
@@ -1234,18 +1508,18 @@ mod tests {
         },
     };
 
-    use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue, SalukiConfiguration};
     use bytes::Bytes;
     use http::StatusCode;
     use http_body_util::Empty;
     use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
     use saluki_core::{
-        components::test_util::TestComponentSupervisor,
         observability::ComponentMetricsExt as _,
-        runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
+        runtime::{
+            state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
+            test_util::TestSupervisor,
+        },
     };
-    use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
     use tokio::{
@@ -1260,9 +1534,12 @@ mod tests {
     use super::*;
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
     use crate::common::datadog::{
-        endpoints::resolve_additional_endpoints,
+        config::OpwMetricsSettings,
+        endpoints::{resolve_additional_endpoints, EndpointConfiguration},
+        protocol::MetricsPayloadInfo,
         routing::{MetricsRoutingTargets, RoutingTargetCatalog, RoutingTargetKind, RoutingTargetSet},
-        test_util::{shared_configuration, LiveConfiguration, TEST_API_KEY},
+        sketch_shadow::{SketchShadowDestination, SketchShadowMetadata},
+        test_util::{forwarder_configuration, LiveConfiguration, LiveRoot, DEFAULT_PRIMARY_ENDPOINT, TEST_API_KEY},
     };
     use crate::common::datadog::{
         METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
@@ -1281,27 +1558,21 @@ mod tests {
     fn alternate_metrics_intakes_inherit_the_primary_target_for_dispatch() {
         const ALTERNATE: &str = "https://alternate.example.com";
         for use_vector in [false, true] {
-            let mut shared = shared_configuration();
-            let alternate = agent_data_plane_config::shared::AltMetricsIntake {
+            // An additional endpoint at the same URL must still be its own target.
+            let additional_endpoints = HashMap::from([(ALTERNATE.to_string(), vec!["key".to_string()])]);
+            let catalog = Arc::new(RoutingTargetCatalog::new(DEFAULT_PRIMARY_ENDPOINT, &additional_endpoints).unwrap());
+            let mut config = forwarder_config_with_additional(additional_endpoints);
+            let alternate = OpwMetricsSettings {
                 enabled: true,
                 url: ALTERNATE.to_string(),
                 use_v3_series: false,
             };
             if use_vector {
-                shared.endpoints.vector_intake = alternate;
+                config.opw_metrics.vector = alternate;
             } else {
-                shared.endpoints.opw_intake = alternate;
+                config.opw_metrics.observability_pipelines_worker = alternate;
             }
-            // An additional endpoint at the same URL must still be its own target.
-            shared.endpoints.additional_endpoints = HashMap::from([(ALTERNATE.to_string(), vec!["key".to_string()])]);
-            let catalog = Arc::new(
-                RoutingTargetCatalog::new(
-                    &shared.endpoints.primary_endpoint(),
-                    &shared.endpoints.additional_endpoints,
-                )
-                .unwrap(),
-            );
-            let config = ForwarderConfiguration::from_configuration(&shared).with_routing_targets(Arc::clone(&catalog));
+            config.routing_targets = Some(Arc::clone(&catalog));
             let endpoints = config.build_routable_endpoints().unwrap();
             assert!(endpoints
                 .iter()
@@ -1339,8 +1610,7 @@ mod tests {
 
     #[test]
     fn routing_targets_select_whole_payloads_before_dispatch() {
-        let shared = shared_configuration();
-        let catalog = RoutingTargetCatalog::new(&shared.endpoints.primary_endpoint(), &HashMap::new()).unwrap();
+        let catalog = RoutingTargetCatalog::new(DEFAULT_PRIMARY_ENDPOINT, &HashMap::new()).unwrap();
         let primary = Some(catalog.primary());
 
         let untargeted = TxnMetadata::from_event_and_data_point_count(2, 2);
@@ -1359,29 +1629,20 @@ mod tests {
 
     #[test]
     fn endpoints_are_labeled_with_targets_only_when_a_catalog_is_set() {
-        let mut shared = shared_configuration();
-        shared.endpoints.additional_endpoints = HashMap::from([(
+        let additional_endpoints = HashMap::from([(
             "https://additional.example.com".to_string(),
             vec!["key-a".to_string(), "key-b".to_string()],
         )]);
-        let config = ForwarderConfiguration::from_configuration(&shared);
+        let mut config = forwarder_config_with_additional(additional_endpoints.clone());
         assert!(config
             .build_routable_endpoints()
             .unwrap()
             .iter()
             .all(|endpoint| endpoint.target().is_none()));
 
-        let catalog = Arc::new(
-            RoutingTargetCatalog::new(
-                &shared.endpoints.primary_endpoint(),
-                &shared.endpoints.additional_endpoints,
-            )
-            .unwrap(),
-        );
-        let endpoints = config
-            .with_routing_targets(Arc::clone(&catalog))
-            .build_routable_endpoints()
-            .unwrap();
+        let catalog = Arc::new(RoutingTargetCatalog::new(DEFAULT_PRIMARY_ENDPOINT, &additional_endpoints).unwrap());
+        config.routing_targets = Some(Arc::clone(&catalog));
+        let endpoints = config.build_routable_endpoints().unwrap();
         // Each endpoint must serve the target for its own URL and key position, not merely some target: two keys on
         // one URL swapping targets would otherwise go unnoticed.
         for endpoint in &endpoints {
@@ -1409,8 +1670,16 @@ mod tests {
         is_metrics_request_uri(&uri(path), METRICS_SERIES_V3_BETA_PATH)
     }
 
-    async fn forwarder_config_from(shared: SharedConfiguration) -> ForwarderConfiguration {
-        ForwarderConfiguration::from_configuration(&shared)
+    /// Returns a forwarder configuration that also ships to `additional_endpoints`.
+    fn forwarder_config_with_additional(additional_endpoints: HashMap<String, Vec<String>>) -> ForwarderConfiguration {
+        ForwarderConfiguration {
+            endpoint: EndpointConfiguration::new(
+                TEST_API_KEY.to_string(),
+                DEFAULT_PRIMARY_ENDPOINT.to_string(),
+                additional_endpoints,
+            ),
+            ..forwarder_configuration()
+        }
     }
 
     #[test]
@@ -1961,8 +2230,10 @@ mod tests {
         );
     }
 
-    async fn persisted_retry_queue(root_path: &std::path::Path, max_on_disk_bytes: u64) -> RetryQueue<String> {
-        RetryQueue::new("test".to_string(), 1024)
+    async fn persisted_retry_queue<T: Retryable>(
+        root_path: &std::path::Path, queue_id: &str, max_on_disk_bytes: u64,
+    ) -> RetryQueue<T> {
+        RetryQueue::new(queue_id.to_string(), 1024)
             .with_disk_persistence(PersistedQueueArgs {
                 root_path: root_path.to_path_buf(),
                 max_on_disk_bytes,
@@ -1999,6 +2270,76 @@ mod tests {
         assert!(push_result.had_drops());
         assert_eq!(push_result.items_dropped, 2);
         assert_eq!(push_result.events_dropped, 2);
+        assert_eq!(push_result.bytes_dropped, ("high".len() + "low".len()) as u64);
+    }
+
+    #[test]
+    fn track_queue_drops_counts_dropped_bytes_by_domain() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+
+        let push_result = PushResult {
+            items_dropped: 2,
+            events_dropped: 3,
+            data_points_dropped: 0,
+            bytes_dropped: 42,
+        };
+        track_queue_drops(&telemetry, "https://example.com", push_result);
+
+        assert_eq!(recorder.counter("component_items_dropped_total"), Some(2));
+        assert_eq!(
+            recorder.counter(("component_bytes_dropped_total", &[("domain", "https://example.com")])),
+            Some(42)
+        );
+    }
+
+    #[tokio::test]
+    async fn high_prio_queue_fill_tracks_pushes_pops_and_flush() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(2, retry_queue, telemetry, domain, 900);
+        let capacity = pending_txns.high_priority.capacity() as f64;
+        let size = |recorder: &TestRecorder| {
+            let total = recorder.gauge("network_http_high_prio_queue_size");
+            let by_domain = recorder.gauge((
+                "network_http_high_prio_queue_size",
+                &[("domain", "https://example.com")],
+            ));
+            assert_eq!(total, by_domain);
+            total
+        };
+
+        assert_eq!(recorder.gauge("network_http_high_prio_queue_capacity"), Some(capacity));
+        assert_eq!(
+            recorder.gauge((
+                "network_http_high_prio_queue_capacity",
+                &[("domain", "https://example.com")],
+            )),
+            Some(capacity)
+        );
+        assert_eq!(size(&recorder), Some(0.0));
+
+        for txn in ["first", "second", "third"] {
+            let _ = pending_txns
+                .push_high_priority(txn.to_string())
+                .await
+                .expect("push should succeed");
+        }
+        // The third transaction overflows into the retry queue, so the high-priority queue stays full.
+        assert_eq!(size(&recorder), Some(2.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
+
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::HighPriority(txn)) if txn == "first"
+        ));
+        assert_eq!(size(&recorder), Some(1.0));
+
+        let _ = pending_txns.flush().await.expect("flush should succeed");
+        assert_eq!(size(&recorder), Some(0.0));
     }
 
     #[tokio::test]
@@ -2011,7 +2352,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
         let root_path = temp_dir.path().to_path_buf();
-        let retry_queue = persisted_retry_queue(&root_path, 4096).await;
+        let retry_queue = persisted_retry_queue(&root_path, "test", 4096).await;
         let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
 
         let _ = pending_txns
@@ -2030,15 +2371,7 @@ mod tests {
             "disk persistence should retain transactions on flush, not drop them"
         );
 
-        let mut retry_queue = persisted_retry_queue(&root_path, 4096).await;
-        let mut persisted = Vec::new();
-        while let Some(transaction) = retry_queue
-            .pop()
-            .await
-            .expect("persisted transaction should be readable")
-        {
-            persisted.push(transaction);
-        }
+        let mut persisted: Vec<String> = read_persisted_transactions(&root_path, "test", 4096).await;
         persisted.sort();
 
         assert_eq!(persisted, ["high", "low"]);
@@ -2074,7 +2407,7 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let (telemetry, domain) = transaction_queue_telemetry();
         let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
-        let retry_queue = persisted_retry_queue(temp_dir.path(), 1).await;
+        let retry_queue = persisted_retry_queue(temp_dir.path(), "test", 1).await;
         let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
 
         let _ = pending_txns
@@ -2093,9 +2426,150 @@ mod tests {
         );
     }
 
+    /// Starts a plain HTTP server that answers every request with a 500.
+    async fn start_http_server_returning_500() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener should bind");
+        let port = listener.local_addr().expect("listener should have an address").port();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        port
+    }
+
+    fn validation_request(port: u16) -> Request<Empty<Bytes>> {
+        Request::builder()
+            .method("GET")
+            .uri(format!("http://127.0.0.1:{port}/api/v1/validate"))
+            .body(Empty::<Bytes>::new())
+            .expect("request should build")
+    }
+
+    fn error_counter(recorder: &TestRecorder, tags: &[(&'static str, &'static str)]) -> Option<u64> {
+        recorder.counter(("network_http_requests_errors_total", tags))
+    }
+
+    #[tokio::test]
+    async fn validation_client_errors_are_tagged_and_kept_out_of_forwarder_counters() {
+        init_tls_crypto_provider();
+
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let config = forwarder_configuration();
+        let endpoint_name: Arc<EndpointNameFn> = Arc::new(|_: &Uri| None);
+
+        // The tests don't use TLS, so skip loading the process-wide root certificate store.
+        let build = |builder: Result<HttpClientBuilder, GenericError>| {
+            builder
+                .expect("client builder")
+                .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()))
+                .build()
+                .expect("client should build")
+        };
+        let min_tls_version = config.effective_min_tls_version();
+        let _forwarder_client = build(http_client_builder(
+            &config,
+            min_tls_version,
+            MetricsBuilder::default(),
+            Arc::clone(&endpoint_name),
+        ));
+        let mut validation_client = build(validation_http_client_builder(
+            &config,
+            min_tls_version,
+            MetricsBuilder::default(),
+            Arc::clone(&endpoint_name),
+        ));
+
+        // An HTTP 500 from the validation endpoint.
+        let port = start_http_server_returning_500().await;
+        let response = validation_client
+            .send(validation_request(port))
+            .await
+            .expect("validation request should get a response");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // A connection failure: nothing is listening on this port anymore.
+        let closed_port = {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener should bind");
+            listener.local_addr().expect("listener should have an address").port()
+        };
+        validation_client
+            .send(validation_request(closed_port))
+            .await
+            .expect_err("connecting to a closed port should fail");
+
+        let validation = |error_type: &'static str, scope: &'static str| {
+            error_counter(
+                &recorder,
+                &[
+                    ("purpose", API_KEY_VALIDATION_PURPOSE),
+                    ("error_type", error_type),
+                    ("error_scope", scope),
+                ],
+            )
+        };
+        let forwarding = |error_type: &'static str, scope: &'static str| {
+            error_counter(&recorder, &[("error_type", error_type), ("error_scope", scope)])
+        };
+
+        // Transaction-scoped and phase-scoped errors from validation land on the tagged series...
+        assert_eq!(validation("gt_400", "transaction"), Some(1));
+        assert_eq!(validation("cant_send", "transaction"), Some(1));
+        assert_eq!(validation("connection_error", "phase"), Some(1));
+
+        // ...and the forwarder's own series, registered by its own client, never see them.
+        assert_eq!(forwarding("gt_400", "transaction"), Some(0));
+        assert_eq!(forwarding("cant_send", "transaction"), Some(0));
+        assert_eq!(forwarding("connection_error", "phase"), Some(0));
+    }
+
+    #[tokio::test]
+    async fn invalid_min_tls_version_warns_once_when_building_both_clients() {
+        // Building the validation client used to parse min_tls_version again and repeat its warning.
+        let logs = tempfile::NamedTempFile::new().expect("log file should be created");
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.reopen().expect("log file should reopen"))
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+        let (_dataspace, forwarder) = build_test_forwarder_configured(
+            DEFAULT_PRIMARY_ENDPOINT,
+            LiveForwarderConfiguration::default(),
+            |config| config.min_tls_version = "invalid".to_string(),
+        )
+        .await;
+        let warning_count = || {
+            std::fs::read_to_string(logs.path())
+                .expect("logs should be readable")
+                .matches("Invalid configured TLS minimum version; using tlsv1.2.")
+                .count()
+        };
+        assert_eq!(warning_count(), 1);
+
+        forwarder.api_key_validator().expect("API key validator should build");
+        assert_eq!(warning_count(), 1);
+    }
+
     #[tokio::test]
     async fn tls_certificate_validation_enabled_by_default() {
-        let config = forwarder_config_from(shared_configuration()).await;
+        let config = forwarder_configuration();
 
         assert_eq!(
             TlsCertificateValidation::from_forwarder_config(&config),
@@ -2105,9 +2579,10 @@ mod tests {
 
     #[tokio::test]
     async fn tls_certificate_validation_disabled_when_skip_ssl_validation_enabled() {
-        let mut shared = shared_configuration();
-        shared.endpoints.tls.skip_ssl_validation = true;
-        let config = forwarder_config_from(shared).await;
+        let config = ForwarderConfiguration {
+            skip_ssl_validation: true,
+            ..forwarder_configuration()
+        };
 
         assert_eq!(
             TlsCertificateValidation::from_forwarder_config(&config),
@@ -2313,10 +2788,10 @@ mod tests {
     }
 
     async fn build_test_forwarder(
-        forwarder_url: &str, secrets: Live<Secrets>,
+        forwarder_url: &str, secrets_in_use: Live<bool>,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         let live = LiveForwarderConfiguration {
-            secrets,
+            secrets_in_use,
             ..Default::default()
         };
 
@@ -2336,25 +2811,37 @@ mod tests {
     async fn build_test_forwarder_with_request_timeout(
         forwarder_url: &str, live: LiveForwarderConfiguration, request_timeout_secs: u64,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
+        build_test_forwarder_configured(forwarder_url, live, |config| {
+            config.request_timeout_secs = request_timeout_secs;
+        })
+        .await
+    }
+
+    /// Builds a forwarder pointed at `forwarder_url` that follows `live`, after `configure` has adjusted the test
+    /// configuration.
+    async fn build_test_forwarder_configured(
+        forwarder_url: &str, live: LiveForwarderConfiguration, configure: impl FnOnce(&mut ForwarderConfiguration),
+    ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
         init_tls_crypto_provider();
 
         // Small backoffs keep the test short even with retries.
-        let mut shared = shared_configuration();
-        shared.endpoints.dd_url = ConfigValue::explicit(forwarder_url.to_string());
-        shared.endpoints.forwarder.timeout = request_timeout_secs;
-        shared.endpoints.forwarder.max_concurrent_requests = 1;
-        shared.endpoints.forwarder.high_prio_buffer_size = 4;
-        shared.endpoints.forwarder.backoff_base = 0.001;
-        shared.endpoints.forwarder.backoff_max = 0.01;
-        shared.endpoints.forwarder.backoff_factor = 2.0;
-        shared.endpoints.forwarder.recovery_interval = 1;
-        shared.endpoints.forwarder.recovery_reset = false;
+        let mut forwarder_config = forwarder_configuration();
+        forwarder_config.endpoint =
+            EndpointConfiguration::new(TEST_API_KEY.to_string(), forwarder_url.to_string(), HashMap::new());
+        forwarder_config.request_timeout_secs = 1;
+        forwarder_config.endpoint_concurrency = 1;
+        forwarder_config.endpoint_buffer_size = 4;
+        forwarder_config.retry.backoff_base = 0.001;
+        forwarder_config.retry.backoff_max = 0.01;
+        forwarder_config.retry.backoff_factor = 2.0;
+        forwarder_config.retry.recovery_error_decrease_factor = 1;
+        forwarder_config.retry.recovery_reset = false;
         // The HTTP client builder otherwise requires the process-wide default root certificate store to be
         // populated. We are talking to a plain HTTP endpoint anyway, so disable validation to skip that path.
-        shared.endpoints.tls.skip_ssl_validation = true;
-        let forwarder_config = forwarder_config_from(shared).await;
+        forwarder_config.skip_ssl_validation = true;
+        configure(&mut forwarder_config);
         let context = test_component_context();
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
@@ -2381,7 +2868,7 @@ mod tests {
     /// The forwarder spawns on the ambient supervisor, so it has to be started inside the supervisor's scope; outside
     /// one it would panic for want of an ambient supervisor.
     async fn spawn_test_forwarder(
-        supervisor: &TestComponentSupervisor, forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
+        supervisor: &TestSupervisor, forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     ) -> Handle<FrozenChunkedBytesBuffer> {
         supervisor.scope(async move { forwarder.spawn() }).await
     }
@@ -2390,7 +2877,7 @@ mod tests {
     ///
     /// `ShutdownTimedOut` would mean a task ignored shutdown and had to be aborted, which for the endpoint loops would
     /// mean the retry queue never finished flushing.
-    async fn drain_test_forwarder(supervisor: TestComponentSupervisor, handle: Handle<FrozenChunkedBytesBuffer>) {
+    async fn drain_test_forwarder(supervisor: TestSupervisor, handle: Handle<FrozenChunkedBytesBuffer>) {
         handle.shutdown();
 
         let result = supervisor.shutdown().await;
@@ -2413,20 +2900,39 @@ mod tests {
         Transaction::from_original(TxnMetadata::from_event_and_data_point_count(1, 0), request)
     }
 
-    /// Returns a live view of a configuration in which secret resolution can replace a rejected API key.
-    fn secrets_in_use() -> Live<Secrets> {
-        let mut config = SalukiConfiguration::default();
-        config.shared.secrets.backend_command = Some("/bin/true".to_string());
-
-        LiveConfiguration::new(config).live(|config| &config.shared.secrets)
+    fn build_test_shadow_transaction(endpoint: &str) -> Transaction<FrozenChunkedBytesBuffer> {
+        let (mut metadata, mut request) = build_test_transaction().into_parts();
+        metadata.payload_info = Some(MetricsPayloadInfo::v3_sketches());
+        metadata.sketch_shadow = Some(SketchShadowMetadata {
+            sampled_destinations: vec![SketchShadowDestination {
+                configured_endpoint: Arc::from(endpoint),
+                batch_id: "test-batch".parse().unwrap(),
+            }]
+            .into(),
+            request_index: 0,
+            request_count: 1,
+            is_shadow: true,
+        });
+        *request.uri_mut() = uri("/api/intake/metrics/v3beta/sketches");
+        Transaction::reassemble(metadata, request)
     }
 
-    /// Returns a configuration whose primary API key is `api_key`.
-    fn config_with_api_key(api_key: &str) -> SalukiConfiguration {
-        let mut config = SalukiConfiguration::default();
-        config.shared.endpoints.api_key = api_key.to_string();
+    /// Returns a live view reporting that secret resolution can replace a rejected API key.
+    fn secrets_in_use() -> Live<bool> {
+        LiveConfiguration::new(LiveRoot {
+            secrets_in_use: true,
+            ..LiveRoot::default()
+        })
+        .source
+        .live(|root| &root.secrets_in_use)
+    }
 
-        config
+    /// Returns live values whose primary API key is `api_key`.
+    fn config_with_api_key(api_key: &str) -> LiveRoot {
+        LiveRoot {
+            api_key: api_key.to_string(),
+            ..LiveRoot::default()
+        }
     }
 
     /// Returns the API key a recorded request presented.
@@ -2457,13 +2963,12 @@ mod tests {
         // spread one task across levels of the process tree -- `..._io_loop_app`, `datadoghq`, `com` -- rather than
         // naming it. And the host must be the configured one: the resolved URL is version-prefixed, so naming the task
         // from it would rename the task on every release.
-        let mut shared = shared_configuration();
-        shared.endpoints.dd_url = ConfigValue::explicit("https://app.datadoghq.com".to_string());
-        shared.endpoints.additional_endpoints =
-            HashMap::from([("app.datadoghq.eu".to_string(), vec!["extra-key".to_string()])]);
-        let endpoints = ForwarderConfiguration::from_configuration(&shared)
-            .build_routable_endpoints()
-            .expect("endpoints should resolve");
+        let endpoints = forwarder_config_with_additional(HashMap::from([(
+            "app.datadoghq.eu".to_string(),
+            vec!["extra-key".to_string()],
+        )]))
+        .build_routable_endpoints()
+        .expect("endpoints should resolve");
 
         let mut task_names = endpoints
             .iter()
@@ -2494,9 +2999,9 @@ mod tests {
         // The main I/O loop, the per-endpoint I/O loop, and the secrets gate refresher are supervised children rather
         // than detached tasks, so all of them are accounted for while the forwarder runs.
         let (server_url, _counter) = start_recording_http_server(vec![StatusCode::OK]).await;
-        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
+        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(false)).await;
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
 
         // The running descendants are one main I/O loop, one endpoint I/O loop for the single configured endpoint, and
@@ -2518,22 +3023,24 @@ mod tests {
 
     #[tokio::test]
     async fn forwarder_drain_inside_a_component_outlasts_the_default_child_timeout() {
-        // In a topology, the forwarder runs inside a component, and its tasks run in scopes below the component. A
-        // scope does not pass the deadline of its owner to its children, and a closure-based child has a timeout of
-        // five seconds by default. Here the endpoint answers six seconds after it receives the request, and the
-        // component has a budget of thirty seconds. The drain must wait for the answer, and must not be aborted.
+        // The endpoint answers after six seconds: past the five-second default timeout of a closure-based task, but
+        // within the component's thirty. The drain must wait for the answer, and nothing must be halted.
         const RESPONSE_DELAY: Duration = Duration::from_secs(6);
 
         let (server_url, _counter, mut requests) =
             start_recording_http_server_with_delay(vec![StatusCode::OK], RESPONSE_DELAY).await;
         let live = LiveForwarderConfiguration {
-            secrets: Live::new_fixed(Secrets::default()),
+            secrets_in_use: Live::new_fixed(false),
             ..Default::default()
         };
-        let (_, forwarder) = build_test_forwarder_with_request_timeout(&server_url, live, 30).await;
+        let (_, forwarder) = build_test_forwarder_configured(&server_url, live, |config| {
+            config.request_timeout_secs = 30;
+            config.stop_wait_for_inflight = true;
+        })
+        .await;
 
-        let supervisor = TestComponentSupervisor::start_with_budget("test_forwarder", Duration::from_secs(30)).await;
-        supervisor.spawn_component("forwarder", move |shutdown| async move {
+        let supervisor = TestSupervisor::start_with_worker_timeout("test_forwarder", Duration::from_secs(30)).await;
+        supervisor.spawn_worker("forwarder", move |shutdown| async move {
             let handle = forwarder.spawn();
             handle
                 .send_transaction(build_test_transaction())
@@ -2547,7 +3054,7 @@ mod tests {
         requests.recv().await.expect("the endpoint should receive the request");
 
         // The request is in flight, and nothing remains to do but wait for timers. From here, time moves only when
-        // every task waits, and it moves to the next timer. Thus, a five-second abort deadline would expire before the
+        // every task waits, and it moves to the next timer. Thus, a five-second shutdown timeout would expire before the
         // answer arrives, without this test waiting six seconds.
         tokio::time::pause();
         let result = supervisor.shutdown().await;
@@ -2555,6 +3062,133 @@ mod tests {
             result.is_ok(),
             "the drain should have waited for the in-flight request: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn forwarder_shutdown_aborts_and_persists_in_flight_requests_when_not_waiting() {
+        // With `stop_wait_for_inflight` disabled, shutdown must not wait for the endpoint to answer. The in-flight
+        // request is aborted and its transaction requeued, so the flush that follows persists it to disk.
+        let outcome = timeout(
+            Duration::from_secs(10),
+            shut_down_with_request_in_flight(false, Duration::from_secs(60)),
+        )
+        .await
+        .expect("shutdown should not wait for the in-flight request");
+
+        assert!(
+            outcome.result.is_ok(),
+            "the forwarder's tasks should have drained on their own: {:?}",
+            outcome.result
+        );
+        assert_eq!(outcome.answered, 0, "the endpoint should not have answered the request");
+        let [persisted] = outcome.persisted.as_slice() else {
+            panic!(
+                "exactly the aborted transaction should have been persisted, but {} were",
+                outcome.persisted.len()
+            );
+        };
+        // The persisted request is the circuit breaker's copy, which the endpoint's request mapper has already
+        // pointed at the endpoint, as for any request that is retried.
+        let original = build_test_transaction();
+        assert_eq!(persisted.request_uri().path(), original.request_uri().path());
+        let (_, request) = persisted.clone().into_parts();
+        let mut body = request.into_body();
+        assert_eq!(body.copy_to_bytes(body.remaining()), "test-payload");
+    }
+
+    #[tokio::test]
+    async fn forwarder_shutdown_waits_for_in_flight_requests_when_waiting() {
+        // With `stop_wait_for_inflight` enabled, shutdown must wait for the endpoint to answer the in-flight request.
+        // The request then completes successfully, so there is nothing left to persist.
+        let outcome = shut_down_with_request_in_flight(true, Duration::from_secs(2)).await;
+
+        assert!(
+            outcome.result.is_ok(),
+            "the forwarder's tasks should have drained on their own: {:?}",
+            outcome.result
+        );
+        assert_eq!(outcome.answered, 1, "the endpoint should have answered the request");
+        assert!(
+            outcome.persisted.is_empty(),
+            "the completed transaction should not have been persisted"
+        );
+    }
+
+    struct InFlightShutdownOutcome {
+        result: Result<(), runtime::SupervisorError>,
+        answered: usize,
+        persisted: Vec<Transaction<FrozenChunkedBytesBuffer>>,
+    }
+
+    /// Shuts down a forwarder, with disk persistence enabled, while one request is in flight to an endpoint that
+    /// answers `response_delay` after receiving it.
+    async fn shut_down_with_request_in_flight(
+        stop_wait_for_inflight: bool, response_delay: Duration,
+    ) -> InFlightShutdownOutcome {
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let storage_path = temp_dir.path().to_path_buf();
+        let (server_url, counter, mut requests) =
+            start_recording_http_server_with_delay(vec![StatusCode::OK], response_delay).await;
+        let live = LiveForwarderConfiguration {
+            secrets_in_use: Live::new_fixed(false),
+            ..Default::default()
+        };
+        let (_, forwarder) = build_test_forwarder_configured(&server_url, live, |config| {
+            config.request_timeout_secs = 30;
+            config.stop_wait_for_inflight = stop_wait_for_inflight;
+            config.retry.storage_path = storage_path.clone();
+            config.retry.storage_max_size_bytes = 10 * 1024 * 1024;
+            config.retry.storage_max_disk_ratio = 1.0;
+        })
+        .await;
+        let [endpoint] = forwarder.endpoints.as_slice() else {
+            panic!("the forwarder should have a single endpoint");
+        };
+        let queue_id = generate_retry_queue_id(forwarder.context.clone(), endpoint.endpoint());
+
+        let supervisor = TestSupervisor::start_with_worker_timeout("test_forwarder", Duration::from_secs(30)).await;
+        supervisor.spawn_worker("forwarder", move |shutdown| async move {
+            let handle = forwarder.spawn();
+            handle
+                .send_transaction(build_test_transaction())
+                .await
+                .expect("send should succeed");
+
+            shutdown.await;
+            handle.shutdown();
+        });
+        requests.recv().await.expect("the endpoint should receive the request");
+
+        // When waiting, the request is in flight and nothing remains to do but wait for timers. From here, time moves
+        // only when every task waits, and it moves to the next timer, so the drain doesn't wait for the response delay
+        // in real time. When not waiting, time must keep running: moving it past the response delay would have the
+        // endpoint answer the request before it's aborted.
+        if stop_wait_for_inflight {
+            tokio::time::pause();
+        }
+        let result = supervisor.shutdown().await;
+
+        InFlightShutdownOutcome {
+            result,
+            answered: counter.load(Ordering::SeqCst),
+            persisted: read_persisted_transactions(&storage_path, &queue_id, 10 * 1024 * 1024).await,
+        }
+    }
+
+    async fn read_persisted_transactions<T: Retryable>(
+        storage_path: &std::path::Path, queue_id: &str, max_on_disk_bytes: u64,
+    ) -> Vec<T> {
+        let mut retry_queue = persisted_retry_queue(storage_path, queue_id, max_on_disk_bytes).await;
+
+        let mut persisted = Vec::new();
+        while let Some(txn) = retry_queue
+            .pop()
+            .await
+            .expect("persisted transaction should be readable")
+        {
+            persisted.push(txn);
+        }
+        persisted
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2567,9 +3201,9 @@ mod tests {
             StatusCode::OK,
         ])
         .await;
-        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
+        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(false)).await;
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2626,11 +3260,52 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn forwarder_reports_in_flight_requests() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (server_url, _, mut requests) =
+            start_recording_http_server_with_delay(vec![StatusCode::OK], Duration::from_millis(200)).await;
+        let live = LiveForwarderConfiguration {
+            secrets_in_use: Live::new_fixed(false),
+            ..Default::default()
+        };
+        let (_, forwarder) = build_test_forwarder_configured(&server_url, live, |config| {
+            config.request_timeout_secs = 10;
+            config.stop_wait_for_inflight = true;
+        })
+        .await;
+        let in_flight_key = || {
+            metrics::Key::from_parts(
+                "network_http_in_flight_requests",
+                vec![
+                    metrics::Label::new("component_id", "test_forwarder"),
+                    metrics::Label::new("component_type", "forwarder"),
+                    metrics::Label::new("domain", server_url.trim_end_matches('/').to_string()),
+                ],
+            )
+        };
+
+        let supervisor = TestSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+
+        // The endpoint holds its answer back, so the request is still in flight once the endpoint has received it.
+        requests.recv().await.expect("the endpoint should receive the request");
+        assert_eq!(recorder.gauge(in_flight_key()), Some(1.0));
+
+        drain_test_forwarder(supervisor, handle).await;
+        assert_eq!(recorder.gauge(in_flight_key()), Some(0.0));
+    }
+
     #[tokio::test]
     async fn a_rotated_api_key_reaches_the_requests_a_spawned_forwarder_sends() {
         let (server_url, _counter, mut requests) =
             start_recording_http_server_with_requests(vec![StatusCode::OK]).await;
-        let live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
+        let mut live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
         let following = LiveForwarderConfiguration {
             api_keys: live.api_keys(),
             ..Default::default()
@@ -2638,7 +3313,7 @@ mod tests {
         let (_, forwarder) = build_test_forwarder_following(&server_url, following).await;
 
         // Spawning the forwarder is what starts key refreshing in production.
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2650,7 +3325,7 @@ mod tests {
             .expect("the server should be running");
         assert_eq!(Some(TEST_API_KEY), recorded_api_key(&request));
 
-        live.store(config_with_api_key("rotated-api-key"));
+        live.publisher.publish(config_with_api_key("rotated-api-key"));
 
         // A key is installed by a task of its own, so keep sending until a request carries the new one.
         let rotated = timeout(Duration::from_secs(3), async {
@@ -2672,13 +3347,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sketch_shadow_backoff_does_not_delay_authoritative_requests() {
+        const ENDPOINT: &str = "http://app.datadoghq.com";
+        for status in [StatusCode::SERVICE_UNAVAILABLE, StatusCode::TOO_MANY_REQUESTS] {
+            let recorder = TestRecorder::default();
+            let _guard = metrics::set_default_local_recorder(&recorder);
+            let (server_url, _, mut requests) =
+                start_recording_http_server_with_requests(vec![status, StatusCode::OK]).await;
+            let (_, forwarder) = build_test_forwarder_configured(ENDPOINT, Default::default(), |config| {
+                config.proxy.http = server_url;
+                config.v3_api.sketches.shadow_sample_rate = 1.0;
+                config.retry.backoff_base = 60.0;
+                config.retry.backoff_max = 60.0;
+            })
+            .await;
+            let supervisor = TestSupervisor::start("test_forwarder").await;
+            let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+            handle
+                .send_transaction(build_test_shadow_transaction(ENDPOINT))
+                .await
+                .unwrap();
+
+            // Wait until the failed shadow is queued for retry, so its circuit breaker is already open.
+            timeout(Duration::from_secs(3), async {
+                let shadow = requests.recv().await.unwrap();
+                assert!(shadow
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .contains("/api/intake/metrics/v3beta/sketches "));
+                while recorder.gauge((
+                    "network_http_retry_queue_size",
+                    &[
+                        ("component_id", "test_forwarder"),
+                        ("component_type", "forwarder"),
+                        ("traffic", "sketch_shadow"),
+                    ],
+                )) != Some(1.0)
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("shadow should enter its retry queue");
+
+            let (mut metadata, mut request) = build_test_transaction().into_parts();
+            metadata.payload_info = Some(MetricsPayloadInfo::v2_sketches());
+            *request.uri_mut() = uri(METRICS_SKETCHES_PATH);
+            handle
+                .send_transaction(Transaction::reassemble(metadata, request))
+                .await
+                .unwrap();
+            let baseline = timeout(Duration::from_secs(3), requests.recv())
+                .await
+                .expect("authoritative delivery must not wait for shadow backoff")
+                .unwrap();
+            assert!(baseline.lines().next().unwrap().contains("/api/beta/sketches "));
+            drain_test_forwarder(supervisor, handle).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_shadow_channel_does_not_block_authoritative_dispatch() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let (shadow_tx, _shadow_rx) = mpsc::channel(1);
+        let mut sender = EndpointSender {
+            configured_endpoint: "sampled".to_string(),
+            endpoint_url: String::new(),
+            endpoint_domain: String::new(),
+            target: None,
+            route: EndpointRoute::Primary,
+            tx,
+            shadow_tx: Some(shadow_tx),
+        };
+        // Unrelated shadows used to fill this channel and drop samples intended for this destination.
+        sender.send(build_test_shadow_transaction("other")).await.unwrap();
+        sender.send(build_test_shadow_transaction("sampled")).await.unwrap();
+        sender.send(build_test_shadow_transaction("other")).await.unwrap();
+        assert!(sender
+            .send(build_test_shadow_transaction("sampled"))
+            .now_or_never()
+            .unwrap()
+            .is_err());
+        assert!(sender.send(build_test_transaction()).now_or_never().unwrap().is_ok());
+        assert!(sender.send(build_test_transaction()).now_or_never().is_none());
+        rx.recv().await.unwrap();
+        sender.shadow_tx = None;
+        sender.send(build_test_shadow_transaction("sampled")).await.unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "disabled shadows must not use the authoritative channel"
+        );
+    }
+
+    #[tokio::test]
     async fn forwarder_retries_403_when_secrets_in_use() {
         // The server returns 403 to the first request and 200 to every subsequent request; the forwarder must drive
         // at least one retry to observe the second request.
         let (server_url, counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN, StatusCode::OK]).await;
         let (_, forwarder) = build_test_forwarder(&server_url, secrets_in_use()).await;
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2702,10 +3471,10 @@ mod tests {
         let (server_url, _counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN]).await;
 
         // Build a forwarder and then subscribe to diagnostic events from the dataspace it's attached to.
-        let (dataspace, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
+        let (dataspace, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(false)).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2736,7 +3505,7 @@ mod tests {
         let (dataspace, forwarder) = build_test_forwarder(&server_url, secrets).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2751,5 +3520,77 @@ mod tests {
         }
 
         drain_test_forwarder(supervisor, handle).await;
+    }
+
+    #[test]
+    fn api_key_validation_tag_matches_the_purpose_the_client_applies() {
+        assert_eq!(
+            API_KEY_VALIDATION_PURPOSE_TAG,
+            format!("purpose:{API_KEY_VALIDATION_PURPOSE}")
+        );
+    }
+}
+
+#[cfg(test)]
+mod sketch_shadow_tests {
+    use bytes::Bytes;
+    use http::HeaderValue;
+
+    use super::*;
+    use crate::common::datadog::{
+        protocol::MetricsPayloadInfo,
+        sketch_shadow::{SketchShadowDestination, SketchShadowMetadata},
+    };
+
+    #[test]
+    fn sketch_shadow_headers_are_destination_specific_and_persist_on_retry() {
+        const SAMPLED: &str = "https://app.datadoghq.com";
+        const UNSAMPLED: &str = "https://app.us3.datadoghq.com";
+        const BATCH_ID: &str = "019a0000-0000-7000-8000-000000000001";
+        let sampled_destinations = Arc::from([SketchShadowDestination {
+            configured_endpoint: Arc::from(SAMPLED),
+            batch_id: HeaderValue::from_static(BATCH_ID),
+        }]);
+        let make_transaction = |is_shadow| {
+            let mut metadata = Metadata::from_event_and_data_point_count(1, 1);
+            metadata.payload_info = Some(if is_shadow {
+                MetricsPayloadInfo::v3_sketches()
+            } else {
+                MetricsPayloadInfo::v2_sketches()
+            });
+            metadata.sketch_shadow = Some(SketchShadowMetadata {
+                sampled_destinations: Arc::clone(&sampled_destinations),
+                request_index: 1,
+                request_count: 3,
+                is_shadow,
+            });
+            Transaction::from_original(
+                metadata,
+                Request::builder()
+                    .uri("/custom/sketches")
+                    .body(Bytes::from_static(b"payload"))
+                    .unwrap(),
+            )
+        };
+        let settings = EndpointV3Settings::disabled();
+        for is_shadow in [false, true] {
+            let txn = prepare_metrics_transaction(make_transaction(is_shadow), SAMPLED, &settings, false).unwrap();
+            assert!(txn.metadata().sketch_shadow.is_none());
+            let serialized = serde_json::to_vec(&txn).unwrap();
+            let restored: Transaction<Bytes> = serde_json::from_slice(&serialized).unwrap();
+            let (_, request) = restored.into_parts();
+            assert_eq!(request.headers()["X-Metrics-Request-ID"], BATCH_ID);
+            assert_eq!(request.headers()["X-Metrics-Request-Seq"], "1");
+            assert_eq!(request.headers()["X-Metrics-Request-Len"], "3");
+        }
+        assert!(prepare_metrics_transaction(make_transaction(true), UNSAMPLED, &settings, false).is_none());
+        assert!(prepare_metrics_transaction(make_transaction(true), SAMPLED, &settings, true).is_none());
+        let authoritative = EndpointV3Settings {
+            use_v3_sketches: true,
+            ..settings.clone()
+        };
+        assert!(prepare_metrics_transaction(make_transaction(true), SAMPLED, &authoritative, false).is_none());
+        let baseline = prepare_metrics_transaction(make_transaction(false), UNSAMPLED, &settings, false).unwrap();
+        assert!(!baseline.into_parts().1.headers().contains_key("X-Metrics-Request-ID"));
     }
 }

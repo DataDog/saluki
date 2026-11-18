@@ -1,0 +1,17 @@
+# Sets metric_filterlist and metric_filterlist_match_prefix by environment variable under both
+# their current names and their deprecated names (DD_STATSD_METRIC_BLOCKLIST*).
+# Shows that the deprecated variable is read first and wins when both are non-empty, and that
+# only the current names stream.
+name: renamed-key-env-both-names
+group: behavior
+why: [env-deprecated-name-bound-first, deprecated-name-not-streamed]
+env:
+  DD_METRIC_FILTERLIST: "new.metric"
+  DD_METRIC_FILTERLIST_MATCH_PREFIX: "false"
+  DD_STATSD_METRIC_BLOCKLIST: "old.metric"
+  DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX: "true"
+keys:
+  - {key: metric_filterlist, getters: [GetStringSlice, Get]}
+  - {key: metric_filterlist_match_prefix, getters: [GetBool, Get]}
+  - {key: statsd_metric_blocklist, getters: [GetStringSlice, Get]}
+  - {key: statsd_metric_blocklist_match_prefix, getters: [GetBool, Get]}

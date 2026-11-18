@@ -1,0 +1,22 @@
+description: A web server and a client that fetches a page from it, neither with a participant type.
+timeout: 2m
+subject_os: [linux]
+participants:
+  web:
+    subject: true
+    image: python:3.12-slim
+    command: [python3, -m, http.server, "{{ self.endpoints.api.port }}", --directory, /srv/site]
+    files:
+      /srv/site/: site/
+    endpoints:
+      api: {http: 8080}
+    ready:
+      api: {http: /index.html}
+  client:
+    image: curlimages/curl:8.11.1
+    command: [sh, /usr/local/bin/fetch.sh]
+    files:
+      /usr/local/bin/fetch.sh: {from: fetch.sh, mode: "0755"}
+      /etc/fetch/url: {from: url.txt, template: true}
+    connect: {web: web.api}
+procedure: []

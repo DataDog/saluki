@@ -405,23 +405,17 @@ fn apply_fallback(router: Router) -> Router {
 mod tests {
     use std::{net::SocketAddr, time::Duration};
 
-    use async_trait::async_trait;
     use axum::Router;
     use http_body_util::{BodyExt as _, Empty};
     use hyper::{body::Bytes, StatusCode};
     use hyper_util::{client::legacy::Client, rt::TokioExecutor};
     use saluki_api::{APIHandler, DynamicRoute, EndpointType};
     use saluki_core::runtime::{
-        state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter},
-        InitializationError, Supervisable, Supervisor, SupervisorFuture,
+        state::{DataspaceUpdate, Identifier, IdentifierFilter},
+        test_util::TestSupervisor,
     };
     use saluki_io::net::BoundListenAddress;
-    use tokio::{
-        pin, select,
-        sync::{mpsc, oneshot},
-        task::JoinHandle,
-        time::{sleep, timeout, Instant},
-    };
+    use tokio::time::{sleep, timeout, Instant};
     use tonic::service::Routes;
 
     use super::*;
@@ -468,107 +462,18 @@ mod tests {
         }
     }
 
-    enum RouteCommand {
-        Assert { id: Identifier, route: DynamicRoute },
-        Retract { id: Identifier },
-    }
-
-    struct RouteAsserter {
-        commands_rx: std::sync::Mutex<Option<mpsc::Receiver<RouteCommand>>>,
-        addr_tx: std::sync::Mutex<Option<oneshot::Sender<SocketAddr>>>,
-        endpoint_type: EndpointType,
-    }
-
-    #[async_trait]
-    impl Supervisable for RouteAsserter {
-        fn name(&self) -> &str {
-            "route-asserter"
-        }
-
-        async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-            let mut commands_rx =
-                self.commands_rx
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .ok_or_else(|| InitializationError::Failed {
-                        source: generic_error!("RouteAsserter can only be initialized once"),
-                    })?;
-            let addr_tx = self.addr_tx.lock().unwrap().take();
-            let endpoint_type = self.endpoint_type;
-
-            Ok(Box::pin(async move {
-                let dataspace =
-                    DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
-
-                // Wait for the API server to assert its bound address.
-                let bound_addr_name = match endpoint_type {
-                    EndpointType::Unprivileged => "http-server-unprivileged-api",
-                    EndpointType::Privileged => "http-server-privileged-api",
-                };
-                let mut addr_sub = dataspace
-                    .subscribe::<BoundListenAddress>(IdentifierFilter::exact(Identifier::named(bound_addr_name)));
-
-                let addr = match addr_sub.recv().await {
-                    Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(mut addr))) => {
-                        // Convert 0.0.0.0 to 127.0.0.1 so the test client can connect.
-                        if addr.ip().is_unspecified() {
-                            addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
-                        }
-                        addr
-                    }
-                    other => return Err(generic_error!("unexpected bound address update: {:?}", other)),
-                };
-
-                if let Some(tx) = addr_tx {
-                    let _ = tx.send(addr);
-                }
-
-                // Process route commands until shutdown.
-                pin!(process_shutdown);
-
-                loop {
-                    select! {
-                        _ = &mut process_shutdown => break,
-                        cmd = commands_rx.recv() => {
-                            let Some(cmd) = cmd else { break };
-                            match cmd {
-                                RouteCommand::Assert { id, route } => {
-                                    dataspace.assert(route, id);
-                                }
-                                RouteCommand::Retract { id } => {
-                                    dataspace.retract::<DynamicRoute>(id);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Ok(())
-            }))
-        }
-    }
-
     struct TestHarness {
         addr: SocketAddr,
-        commands: mpsc::Sender<RouteCommand>,
-        _shutdown: oneshot::Sender<()>,
-        _handle: JoinHandle<()>,
+        supervisor: TestSupervisor,
     }
 
     impl TestHarness {
-        async fn assert_route(&self, id: impl Into<Identifier>, route: DynamicRoute) {
-            self.commands
-                .send(RouteCommand::Assert { id: id.into(), route })
-                .await
-                .unwrap();
+        fn assert_route(&self, id: impl Into<Identifier>, route: DynamicRoute) {
+            self.supervisor.dataspace().assert(route, id);
         }
 
-        async fn retract_route(&self, id: impl Into<Identifier>) {
-            self.commands
-                .send(RouteCommand::Retract { id: id.into() })
-                .await
-                .unwrap();
+        fn retract_route(&self, id: impl Into<Identifier>) {
+            self.supervisor.dataspace().retract::<DynamicRoute>(id);
         }
     }
 
@@ -580,36 +485,32 @@ mod tests {
     where
         F: FnOnce(APIBuilder) -> APIBuilder,
     {
-        let (commands_tx, commands_rx) = mpsc::channel(16);
-        let (addr_tx, addr_rx) = oneshot::channel();
-
         let api_builder = configure(APIBuilder::new(endpoint_type, ListenAddress::tcp_any(0)));
-        let route_asserter = RouteAsserter {
-            commands_rx: std::sync::Mutex::new(Some(commands_rx)),
-            addr_tx: std::sync::Mutex::new(Some(addr_tx)),
-            endpoint_type,
+        let supervisor = TestSupervisor::start_with("test-dynamic-api", |supervisor| {
+            supervisor.add_worker(api_builder.into_supervisor());
+        })
+        .await;
+
+        // Wait for the API server to assert its bound address.
+        let bound_addr_name = match endpoint_type {
+            EndpointType::Unprivileged => "http-server-unprivileged-api",
+            EndpointType::Privileged => "http-server-privileged-api",
+        };
+        let mut addr_sub = supervisor
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact(Identifier::named(bound_addr_name)));
+        let addr = match timeout(Duration::from_secs(5), addr_sub.recv()).await {
+            Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(mut addr)))) => {
+                // Convert 0.0.0.0 to 127.0.0.1 so the test client can connect.
+                if addr.ip().is_unspecified() {
+                    addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+                }
+                addr
+            }
+            other => panic!("expected a bound TCP address, got {other:?}"),
         };
 
-        let mut sup = Supervisor::new("test-dynamic-api").unwrap();
-        sup.add_worker(api_builder.into_supervisor());
-        sup.add_worker(route_asserter);
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let handle = tokio::spawn(async move {
-            let _ = sup.run_with_shutdown(shutdown_rx).await;
-        });
-
-        let addr = timeout(Duration::from_secs(5), addr_rx)
-            .await
-            .expect("timed out waiting for bound address")
-            .expect("addr channel closed");
-
-        TestHarness {
-            addr,
-            commands: commands_tx,
-            _shutdown: shutdown_tx,
-            _handle: handle,
-        }
+        TestHarness { addr, supervisor }
     }
 
     async fn http_get(addr: SocketAddr, path: &str) -> (StatusCode, String) {
@@ -680,7 +581,7 @@ mod tests {
                 body: "ok",
             },
         );
-        harness.assert_route("health", route).await;
+        harness.assert_route("health", route);
 
         let body = assert_status_eventually(harness.addr, "/health", StatusCode::OK).await;
         assert_eq!(body, "ok");
@@ -704,10 +605,10 @@ mod tests {
                 body: "temporary",
             },
         );
-        harness.assert_route("temp", route).await;
+        harness.assert_route("temp", route);
         assert_status_eventually(harness.addr, "/temp", StatusCode::OK).await;
 
-        harness.retract_route("temp").await;
+        harness.retract_route("temp");
         assert_status_eventually(harness.addr, "/temp", StatusCode::NOT_FOUND).await;
     }
 
@@ -729,14 +630,14 @@ mod tests {
                 body: "bravo",
             },
         );
-        harness.assert_route("a", route_a).await;
-        harness.assert_route("b", route_b).await;
+        harness.assert_route("a", route_a);
+        harness.assert_route("b", route_b);
 
         assert_status_eventually(harness.addr, "/a", StatusCode::OK).await;
         assert_status_eventually(harness.addr, "/b", StatusCode::OK).await;
 
         // Retract only /a -- /b should remain.
-        harness.retract_route("a").await;
+        harness.retract_route("a");
         assert_status_eventually(harness.addr, "/a", StatusCode::NOT_FOUND).await;
 
         let body = assert_status_eventually(harness.addr, "/b", StatusCode::OK).await;
@@ -755,7 +656,7 @@ mod tests {
                 body: "secret",
             },
         );
-        harness.assert_route("secret", wrong_route).await;
+        harness.assert_route("secret", wrong_route);
 
         let (status, _) = http_get(harness.addr, "/secret").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -768,7 +669,7 @@ mod tests {
                 body: "not secret",
             },
         );
-        harness.assert_route("secret-unpriv", right_route).await;
+        harness.assert_route("secret-unpriv", right_route);
 
         let body = assert_status_eventually(harness.addr, "/secret", StatusCode::OK).await;
         assert_eq!(body, "not secret");
@@ -786,7 +687,7 @@ mod tests {
                 body: "health-1",
             },
         );
-        harness.assert_route("health-1", route_1).await;
+        harness.assert_route("health-1", route_1);
         let body = assert_status_eventually(harness.addr, "/health", StatusCode::OK).await;
         assert_eq!(body, "health-1");
 
@@ -799,7 +700,7 @@ mod tests {
                 body: "health-2",
             },
         );
-        harness.assert_route("health-2", route_2).await;
+        harness.assert_route("health-2", route_2);
 
         // Give the event loop time to process and rebuild.
         sleep(Duration::from_millis(200)).await;
@@ -817,13 +718,13 @@ mod tests {
                 body: "info",
             },
         );
-        harness.assert_route("info", route_info).await;
+        harness.assert_route("info", route_info);
         let body = assert_status_eventually(harness.addr, "/info", StatusCode::OK).await;
         assert_eq!(body, "info");
 
         // Retract the first /health handler -- the previously skipped second handler should now
         // become active since the conflict no longer exists.
-        harness.retract_route("health-1").await;
+        harness.retract_route("health-1");
         let body = assert_status_eventually(harness.addr, "/health", StatusCode::OK).await;
         assert_eq!(body, "health-2");
     }
@@ -847,16 +748,16 @@ mod tests {
                 body: "b",
             },
         );
-        harness.assert_route("ov-a", route_a).await;
-        harness.assert_route("ov-b", route_b).await;
+        harness.assert_route("ov-a", route_a);
+        harness.assert_route("ov-b", route_b);
 
         // Server alive; first writer wins.
         let body = assert_status_eventually(harness.addr, "/overlap", StatusCode::OK).await;
         assert_eq!(body, "a");
 
         // Retract both.
-        harness.retract_route("ov-a").await;
-        harness.retract_route("ov-b").await;
+        harness.retract_route("ov-a");
+        harness.retract_route("ov-b");
         assert_status_eventually(harness.addr, "/overlap", StatusCode::NOT_FOUND).await;
 
         // Re-assert a single handler -- should work cleanly.
@@ -867,7 +768,7 @@ mod tests {
                 body: "c",
             },
         );
-        harness.assert_route("ov-c", route_c).await;
+        harness.assert_route("ov-c", route_c);
         let body = assert_status_eventually(harness.addr, "/overlap", StatusCode::OK).await;
         assert_eq!(body, "c");
     }
@@ -908,7 +809,7 @@ mod tests {
                 body: "dynamic",
             },
         );
-        harness.assert_route("dyn", dynamic_route).await;
+        harness.assert_route("dyn", dynamic_route);
 
         let body = assert_status_eventually(harness.addr, "/dynamic", StatusCode::OK).await;
         assert_eq!(body, "dynamic");
@@ -918,7 +819,7 @@ mod tests {
         assert_eq!(body, "static");
 
         // Retracting the dynamic route leaves the static route untouched.
-        harness.retract_route("dyn").await;
+        harness.retract_route("dyn");
         assert_status_eventually(harness.addr, "/dynamic", StatusCode::NOT_FOUND).await;
 
         let (status, body) = http_get(harness.addr, "/static").await;
@@ -942,15 +843,13 @@ mod tests {
         let harness = setup_test_harness(EndpointType::Unprivileged).await;
 
         // gRPC errors are reported with HTTP 200 plus a `grpc-status` header: OK is code 0, UNIMPLEMENTED is code 12.
-        harness
-            .assert_route(
-                "ok",
-                DynamicRoute::grpc(EndpointType::Unprivileged, Routes::new(OkService)),
-            )
-            .await;
+        harness.assert_route(
+            "ok",
+            DynamicRoute::grpc(EndpointType::Unprivileged, Routes::new(OkService)),
+        );
         assert_grpc_status_eventually(harness.addr, "/test.Ok/Call", "0").await;
 
-        harness.retract_route("ok").await;
+        harness.retract_route("ok");
         assert_grpc_status_eventually(harness.addr, "/test.Ok/Call", "12").await;
     }
 
@@ -976,7 +875,7 @@ mod tests {
                 body: "dynamic",
             },
         );
-        harness.assert_route("dyn-overlap", dynamic_route).await;
+        harness.assert_route("dyn-overlap", dynamic_route);
 
         sleep(Duration::from_millis(200)).await;
 

@@ -1,0 +1,16 @@
+# Sets metric_filterlist at runtime under its deprecated name statsd_metric_blocklist, with a
+# CLI override of statsd_metric_blocklist_match_prefix at startup.
+# Shows that runtime writes and CLI overrides do not follow the rename: the deprecated name is an
+# unknown key, so both are dropped and the current names keep their defaults.
+name: renamed-key-set-old-name-dropped
+group: behavior
+why: [set-on-inner-node-or-unknown-key-dropped, deprecated-name-rename-load-only]
+cli:
+  - {key: statsd_metric_blocklist_match_prefix, value: true}
+updates:
+  - {key: statsd_metric_blocklist, value: [old.metric], source: agent-runtime}
+keys:
+  - {key: metric_filterlist, getters: [GetStringSlice, Get]}
+  - {key: metric_filterlist_match_prefix, getters: [GetBool, Get]}
+  - {key: statsd_metric_blocklist, getters: [GetStringSlice, Get]}
+  - {key: statsd_metric_blocklist_match_prefix, getters: [GetBool, Get]}

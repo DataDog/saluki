@@ -1,11 +1,12 @@
 use saluki_error::GenericError;
 use serde::Deserialize;
 
-mod collected;
-pub use self::collected::CollectedData;
+pub use self::logs::LogsAnalysisOptions;
+use crate::intake::CollectedData;
 
 mod dogstatsd_forwarding;
 mod events;
+mod logs;
 mod metrics;
 mod service_checks;
 mod traces;
@@ -16,6 +17,9 @@ mod traces;
 pub enum AnalysisMode {
     /// Compares events between the baseline and comparison targets.
     Events,
+
+    /// Compares logs between the baseline and comparison targets.
+    Logs,
 
     /// Compares metrics between the baseline and comparison targets.
     Metrics,
@@ -42,6 +46,7 @@ pub struct AnalysisRunner {
     baseline_data: CollectedData,
     comparison_data: CollectedData,
     traces_options: Option<TracesAnalysisOptions>,
+    logs_options: LogsAnalysisOptions,
     require_dogstatsd_forwarded_packets: bool,
 }
 
@@ -58,8 +63,15 @@ impl AnalysisRunner {
             baseline_data,
             comparison_data,
             traces_options,
+            logs_options: LogsAnalysisOptions::default(),
             require_dogstatsd_forwarded_packets: false,
         }
+    }
+
+    /// Sets the options used when mode is `Logs`.
+    pub fn with_logs_options(mut self, options: LogsAnalysisOptions) -> Self {
+        self.logs_options = options;
+        self
     }
 
     /// Sets whether forwarded DogStatsD packets are required for this analysis run.
@@ -78,6 +90,10 @@ impl AnalysisRunner {
         match self.mode {
             AnalysisMode::Events => {
                 let analyzer = events::EventsAnalyzer::new(&self.baseline_data, &self.comparison_data);
+                analyzer.run_analysis()
+            }
+            AnalysisMode::Logs => {
+                let analyzer = logs::LogsAnalyzer::new(&self.baseline_data, &self.comparison_data, self.logs_options);
                 analyzer.run_analysis()
             }
             AnalysisMode::Metrics => {

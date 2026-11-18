@@ -4,11 +4,9 @@
 //! process owns it instead of a supervisor. The children that a worker spawns into its scope belong to that worker.
 //! Each child runs as a separate task, but the worker does not finish until all of its children finish.
 //!
-//! When the worker stops, the scope tells its children to stop too. The worker stops for one of these reasons:
-//!
-//! - Its body returned.
-//! - It failed.
-//! - It was told to stop.
+//! When the body of the worker finishes, the scope closes and tells its children to stop. The body finishes when it
+//! returns, panics, or is cut short because a child that it needs failed. If the worker is halted, the scope halts its
+//! children instead. A request for the worker to stop does not close the scope by itself.
 //!
 //! Every supervised worker has a scope. The runtime creates the scope at the first spawn into it, so a worker that
 //! never spawns a child uses no resources for a scope. The supervision tree shows the children of a worker below that
@@ -16,13 +14,9 @@
 //!
 //! # How a scope closes
 //!
-//! A scope closes when the body of its owner finishes. When the scope closes, it stops each child according to the
-//! child's own shutdown strategy, the same as a supervisor stops its children. It tells each graceful child to stop,
-//! waits for the child up to the child's own timeout, and then aborts the child if it still runs. It aborts each
-//! brutal child at once. The scope adds no deadline of its own, and it does not pass the deadline of its owner to its
-//! children. A supervisor's [shutdown budget][crate::runtime::Supervisor::with_shutdown_budget] does not reach into a
-//! scope either. Thus, a closure-based child keeps the default strategy of a closure: it is graceful, with a timeout of
-//! five seconds.
+//! A scope closes when the body of its owner finishes. It then stops each child according to the child's own shutdown
+//! strategy, the same as a supervisor does: a graceful child is told to stop and halted if it outlives its timeout, and
+//! a brutal child is halted at once. A closure-based child defaults to graceful, with a timeout of five seconds.
 //!
 //! The body can spawn children right before it returns, before they start. If the body returns normally, these
 //! children still start, and then they are told to stop. If the body fails, they never start.
@@ -31,14 +25,43 @@
 //! its scope closes only when its body returns. Thus, the owner can stop its children in the order that it chooses. For
 //! example, it can refuse new connections first, and then close the connections that it has. The signal that the
 //! children get when the scope closes is the last step of that order. A child that already stopped, for example
-//! because its input closed, has nothing left to do then.
+//! because its input closed, has nothing left to do then. The one exception is a nested supervisor that
+//! [stops with its owner](#nested-supervisors-that-stop-with-their-owner), which is told to stop together with the
+//! owner.
 //!
-//! The timeouts of the children start only when the scope closes, after the body of the owner returns. Thus, the
-//! shutdown strategy of the owner must cover the time for its own body to stop and the time for its children to stop.
-//! If the owner does not stop in time, whatever supervises the owner aborts it. Its children are then aborted with it,
-//! without a signal and without being counted, and the runtime logs their names. Along any path in the supervision
-//! tree, the outermost finite timeout is the actual limit, and a child timeout that is longer than the timeout of its
-//! owner has no effect.
+//! The timeout of a child starts only when the child is told to stop, which is when the scope closes, after the body
+//! of the owner returns. Thus, the shutdown strategy of the owner must cover the time for its own body to stop and the
+//! time for its children to stop. If the owner's timeout expires, the owner and everything still running in its scope,
+//! nested scopes included, are halted, logged, and counted, whether or not they were already told to stop. A child
+//! timeout can't extend past its owner's.
+//!
+//! # Nested supervisors that stop with their owner
+//!
+//! Some owners consume what their children produce. For example, the body of a relay drains a channel that an HTTP
+//! server in its scope feeds, and dispatches each request downstream. The server is a nested supervisor. The body can
+//! finish its drain only once the server stops, but the server would stop only once the body returns.
+//!
+//! [`NestedSupervisorBuilder::stops_with_owner`][stops] resolves this. When the owner is told to stop, the scope tells
+//! the server to stop at once, while the body still runs. The server stops accepting connections and completes the
+//! requests that it accepted. When it exits, the scope drops its specification, and with it the handler that holds the
+//! last sender of the channel. The body sees the channel close, and returns once it dispatched what remains.
+//!
+//! - The setting takes effect only if the owner takes the shutdown signal (see
+//!   [`Supervisable::wants_shutdown_signal`]). Otherwise, the nested supervisor stops when the scope closes.
+//! - A nested supervisor with the setting that is spawned after its owner was told to stop is told to stop at once.
+//! - Its exit is a requested exit, because its owner was told to stop. Thus, the scope never restarts it, and it never
+//!   fails the owner, even if it is needed.
+//!
+//! The body of the owner **MUST NOT** hold a sender of a channel that it drains. Otherwise, the channel never closes,
+//! and the owner is halted when its timeout expires.
+//!
+//! Other kinds of ingress need no setting:
+//!
+//! - A closure child can stop on the owner's own shutdown handle, which the body moves into it.
+//! - The consumer can be a child too, which takes no signal and has no timeout of its own. The body then returns on
+//!   the signal. As the scope closes, the ingress stops, and the consumer drains its channel until it closes.
+//!
+//! [stops]: crate::runtime::NestedSupervisorBuilder::stops_with_owner
 //!
 //! # Requested exits and other exits
 //!
@@ -313,7 +336,6 @@ impl UnadoptedScope {
     pub fn into_host(self) -> ChildSpecification<WorkerSpec> {
         let name = self.scope.name().to_string();
         ChildSpecification::worker(ScopeHost::new(name, None))
-            .with_budget_bounded_shutdown()
             .forwarding_failures()
             .adopting(self)
     }
@@ -528,7 +550,6 @@ fn nested_under(owner: &Scope, name: String) -> ScopeGuard {
     // because the scope of the owner closed first, the specification is dropped. The nested scope then closes, and it
     // drops the children that wait in it and each child that is spawned into it later.
     let host = ChildSpecification::worker(ScopeHost::new(name, Some(close_signal)))
-        .with_budget_bounded_shutdown()
         .forwarding_failures()
         .adopting(unadopted);
     owner.spawn(host);

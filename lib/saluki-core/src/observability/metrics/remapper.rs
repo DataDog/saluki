@@ -1,7 +1,7 @@
 //! Remapper rules for translating source metrics into a different name and tag shape.
 //!
 //! A [`RemapperRule`] declares how to match a source metric (by name, optionally with a required
-//! tag set and required tag keys) and how the matched metric should be rewritten: a new name, a set
+//! tag set, required tag keys, and rejected tags) and how the matched metric should be rewritten: a new name, a set
 //! of tags copied and/or renamed from the source, and an optional set of additional fixed tags.
 //! Rules also carry optional help text that the renderer emits in the Prometheus `# HELP` header.
 
@@ -20,9 +20,11 @@ pub struct RemapperRule {
     existing_name: &'static str,
     existing_tags: &'static [&'static str],
     required_tag_keys: Vec<&'static str>,
+    rejected_tags: Vec<&'static str>,
     new_name: &'static str,
     remapped_tags: Vec<(&'static str, &'static str)>,
     additional_tags: Vec<MetaString>,
+    all_original_tags_except: Option<Vec<&'static str>>,
     continue_matching: bool,
     help_text: Option<&'static str>,
 }
@@ -34,9 +36,11 @@ impl RemapperRule {
             existing_name,
             existing_tags: &[],
             required_tag_keys: Vec::new(),
+            rejected_tags: Vec::new(),
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
+            all_original_tags_except: None,
             continue_matching: false,
             help_text: None,
         }
@@ -50,9 +54,11 @@ impl RemapperRule {
             existing_name,
             existing_tags,
             required_tag_keys: Vec::new(),
+            rejected_tags: Vec::new(),
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
+            all_original_tags_except: None,
             continue_matching: false,
             help_text: None,
         }
@@ -69,6 +75,27 @@ impl RemapperRule {
         I: IntoIterator<Item = &'static str>,
     {
         self.required_tag_keys.extend(required_tag_keys);
+        self
+    }
+
+    /// Adds a set of tags that make this rule reject a source metric that carries any of them.
+    ///
+    /// Tags are matched exactly, in the same `key:value` (or bare) form as the tags given to
+    /// [`by_name_and_tags`][Self::by_name_and_tags]. This is useful when a metric is emitted by components for
+    /// different purposes and only some of them should be remapped.
+    ///
+    /// Unlike [`with_all_original_tags_except`][Self::with_all_original_tags_except], which controls which tags are
+    /// copied onto the remapped metric, this decides whether the metric is remapped at all.
+    ///
+    /// A metric this rule rejects is still offered to the rules that follow it, so excluding a metric from a set of
+    /// rules requires rejecting it on every rule that could match it.
+    ///
+    /// This method is additive, so it can be called multiple times to add more rejected tags.
+    pub fn rejecting_tags<I>(mut self, rejected_tags: I) -> Self
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
+        self.rejected_tags.extend(rejected_tags);
         self
     }
 
@@ -119,6 +146,26 @@ impl RemapperRule {
         self
     }
 
+    /// Copies all source tags except tags whose names are in `excluded_tags`.
+    ///
+    /// This is useful when a metric carries a dynamic set of labels alongside component-specific tags.
+    /// Explicit copies and renames configured with `with_original_tags` or `with_remapped_tags` take precedence:
+    /// their source names are not copied again, even if also listed in `excluded_tags`. Exclusions apply only
+    /// to this catch-all copy, not to explicit mappings. Output order is explicit mappings in rule order,
+    /// remaining source tags in source order, then `with_additional_tags`.
+    ///
+    /// To keep output tag names unique, source tags that share a name with a renamed or additional tag are not
+    /// copied, and only the first value of a repeated source tag name is copied.
+    ///
+    /// Calling this method again replaces the previous exclusion list.
+    pub fn with_all_original_tags_except<I>(mut self, excluded_tags: I) -> Self
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
+        self.all_original_tags_except = Some(excluded_tags.into_iter().collect());
+        self
+    }
+
     /// Allows later rules to also match the same source metric.
     pub fn with_continued_matching(mut self) -> Self {
         self.continue_matching = true;
@@ -166,6 +213,14 @@ impl RemapperRule {
         }
 
         if self
+            .rejected_tags
+            .iter()
+            .any(|rejected_tag| metric_tags.has_tag(rejected_tag))
+        {
+            return None;
+        }
+
+        if self
             .required_tag_keys
             .iter()
             .any(|required_tag_key| metric_tags.get_single_tag(required_tag_key).is_none())
@@ -200,6 +255,28 @@ impl RemapperRule {
                         }
                     }
                 }
+            }
+        }
+
+        if let Some(excluded_tags) = &self.all_original_tags_except {
+            let mut copied_names = Vec::new();
+            for tag in metric_tags {
+                let name = tag.name();
+                if excluded_tags.contains(&name)
+                    || copied_names.contains(&name)
+                    || self
+                        .remapped_tags
+                        .iter()
+                        .any(|(source, destination)| *source == name || *destination == name)
+                    || self
+                        .additional_tags
+                        .iter()
+                        .any(|additional| additional.split_once(':').map_or(&**additional, |(n, _)| n) == name)
+                {
+                    continue;
+                }
+                copied_names.push(name);
+                new_tags.push(tag.clone().into_inner());
             }
         }
 
@@ -277,6 +354,32 @@ mod tests {
                 context: Context::from_static_parts("src.metric", &["component_id:forwarder"]),
                 expected_name: None,
             },
+            MatchCase {
+                description: "rejecting_tags rejects a metric that carries a rejected tag",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").rejecting_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["domain:example.com", "purpose:validation"]),
+                expected_name: None,
+            },
+            MatchCase {
+                description: "rejecting_tags matches when the rejected tag is absent",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").rejecting_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["domain:example.com"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "rejecting_tags only rejects the exact rejected tag value",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").rejecting_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["purpose:other"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "rejecting_tags rejects when any of several rejected tags is present",
+                rule: RemapperRule::by_name("src.metric", "dst.metric")
+                    .rejecting_tags(["purpose:validation"])
+                    .rejecting_tags(["purpose:probe"]),
+                context: Context::from_static_parts("src.metric", &["purpose:probe"]),
+                expected_name: None,
+            },
         ];
 
         for case in cases {
@@ -307,6 +410,40 @@ mod tests {
         let context = Context::from_static_parts("src.metric", &["region:us-east-1", "host:web01"]);
 
         assert_eq!(remapped_tags(&rule, &context), ["region:us-east-1", "hostname:web01"]);
+    }
+
+    #[test]
+    fn copies_dynamic_original_tags_excluding_component_tags() {
+        let rule = RemapperRule::by_name_and_tags("src.metric", &["component_id:dsd_agg"], "dst.metric")
+            .with_all_original_tags_except(["component_id"]);
+        let context = Context::from_static_parts(
+            "src.metric",
+            &["component_id:dsd_agg", "pod_name:pod-1", "kube_namespace:default"],
+        );
+
+        let tags = remapped_tags(&rule, &context);
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&"pod_name:pod-1".to_string()));
+        assert!(tags.contains(&"kube_namespace:default".to_string()));
+    }
+
+    #[test]
+    fn copied_dynamic_tags_never_duplicate_output_tag_names() {
+        let rule = RemapperRule::by_name("src.metric", "dst.metric")
+            .with_remapped_tags([("source", "renamed")])
+            .with_additional_tags(["fixed:value"])
+            .with_all_original_tags_except(["component_id"]);
+        let context = Context::from_static_parts(
+            "src.metric",
+            &["source:a", "renamed:b", "fixed:c", "multi:x", "multi:y", "kept:z"],
+        );
+
+        let tags = remapped_tags(&rule, &context);
+        let mut names: Vec<_> = tags.iter().map(|tag| tag.split_once(':').unwrap().0).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["fixed", "kept", "multi", "renamed"]);
+        assert!(tags.contains(&"renamed:a".to_string()));
+        assert!(tags.contains(&"fixed:value".to_string()));
     }
 
     #[test]

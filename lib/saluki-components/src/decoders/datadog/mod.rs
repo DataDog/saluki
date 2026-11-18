@@ -16,7 +16,9 @@
 use std::sync::Arc;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, PayloadFields, Span, SpanEvent, SpanLink, Trace};
+use saluki_core::data_model::event::trace::{
+    AttributeValue, PayloadFields, Span, SpanEvent, SpanLink, Trace, TraceIngestInfo,
+};
 use stringtheory::MetaString;
 
 mod error;
@@ -71,7 +73,7 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
         let mut attributes = payload.attributes.clone();
         attributes.extend(chunk.attributes);
 
-        let mut trace = Trace::new(chunk.spans);
+        let mut trace = Trace::new(chunk.spans, TraceIngestInfo::Datadog);
         trace.trace_id_high = chunk.trace_id_high;
         trace.trace_id_low = chunk.trace_id_low;
         trace.origin = chunk.origin;

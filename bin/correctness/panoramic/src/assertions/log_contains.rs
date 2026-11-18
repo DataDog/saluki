@@ -1,9 +1,10 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use tokio::time::Instant;
 use tracing::trace;
 
 use crate::{
-    assertions::{Assertion, AssertionContext, AssertionResult},
+    assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus},
     config::LogStream,
 };
 
@@ -46,7 +47,7 @@ impl Assertion for LogContainsAssertion {
             if let Err(e) = regex::Regex::new(&self.pattern) {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Errored,
                     message: format!("Invalid regex pattern '{}': {}.", self.pattern, e),
                     duration: started.elapsed(),
                 };
@@ -57,7 +58,7 @@ impl Assertion for LogContainsAssertion {
             if Instant::now() > deadline {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: format!("Pattern '{}' not found in logs after {:?}.", self.pattern, self.timeout),
                     duration: started.elapsed(),
                 };
@@ -70,7 +71,7 @@ impl Assertion for LogContainsAssertion {
             if ctx.cancel_token.is_cancelled() {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: "Assertion cancelled.".to_string(),
                     duration: started.elapsed(),
                 };
@@ -82,7 +83,7 @@ impl Assertion for LogContainsAssertion {
                 if buffer.contains_match(&self.pattern, self.is_regex, &self.stream) {
                     return AssertionResult {
                         name: self.name().to_string(),
-                        passed: true,
+                        status: AssertionStatus::Passed,
                         message: format!("Found pattern '{}' in logs.", self.pattern),
                         duration: started.elapsed(),
                     };
@@ -101,7 +102,7 @@ impl Assertion for LogContainsAssertion {
             if exited {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: format!("Pattern '{}' not found in logs before process exited.", self.pattern),
                     duration: started.elapsed(),
                 };
@@ -154,7 +155,7 @@ impl Assertion for LogNotContainsAssertion {
             if let Err(e) = regex::Regex::new(&self.pattern) {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Errored,
                     message: format!("Invalid regex pattern '{}': {}.", self.pattern, e),
                     duration: started.elapsed(),
                 };
@@ -166,7 +167,7 @@ impl Assertion for LogNotContainsAssertion {
                 // Success - pattern was not found during the entire period.
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: true,
+                    status: AssertionStatus::Passed,
                     message: format!("Pattern '{}' not found in logs during {:?}.", self.pattern, self.during),
                     duration: started.elapsed(),
                 };
@@ -179,7 +180,7 @@ impl Assertion for LogNotContainsAssertion {
             if ctx.cancel_token.is_cancelled() {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: "Assertion cancelled.".to_string(),
                     duration: started.elapsed(),
                 };
@@ -198,7 +199,7 @@ impl Assertion for LogNotContainsAssertion {
 
                     return AssertionResult {
                         name: self.name().to_string(),
-                        passed: false,
+                        status: AssertionStatus::Failed,
                         message: format!("Found unwanted pattern '{}' in logs: {}", self.pattern, display_line),
                         duration: started.elapsed(),
                     };
@@ -210,7 +211,7 @@ impl Assertion for LogNotContainsAssertion {
             if exited {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: true,
+                    status: AssertionStatus::Passed,
                     message: format!("Pattern '{}' not found in logs; process exited cleanly.", self.pattern),
                     duration: started.elapsed(),
                 };

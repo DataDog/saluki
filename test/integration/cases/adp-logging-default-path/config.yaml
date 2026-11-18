@@ -13,7 +13,7 @@ env:
 
 container:
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
 
 procedure:
   # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.

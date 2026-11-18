@@ -1,7 +1,4 @@
-//! Main benchmarking binary.
-//!
-//! This binary emulates the standalone DogStatsD binary, listening for DogStatsD over UDS, aggregating metrics over a
-//! 10 second window, and shipping those metrics to the Datadog Platform.
+//! Agent Data Plane binary.
 
 #![deny(warnings)]
 #![deny(missing_docs)]
@@ -29,6 +26,7 @@ use crate::internal::logging::get_translated_logging_config;
 mod cli;
 use self::cli::*;
 
+mod component_inputs;
 mod components;
 mod config;
 mod dogstatsd_contexts;
@@ -37,12 +35,12 @@ mod remote_config;
 
 pub(crate) mod state;
 
-#[cfg(all(target_os = "linux", not(system_allocator)))]
+#[cfg(all(any(target_os = "linux", target_os = "aix"), not(system_allocator)))]
 #[global_allocator]
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<tikv_jemallocator::Jemalloc> =
     saluki_common::resource_tracking::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
 
-#[cfg(any(not(target_os = "linux"), system_allocator))]
+#[cfg(any(not(any(target_os = "linux", target_os = "aix")), system_allocator))]
 #[global_allocator]
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<std::alloc::System> =
     saluki_common::resource_tracking::TrackingAllocator::new(std::alloc::System);
@@ -109,6 +107,7 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
     let bootstrapper = AppBootstrapper::new()
         .with_metrics_prefix("adp")
         .with_metrics_default_level(metrics_default_level)
+        .with_metrics_minimum_level(MINIMUM_METRICS_LEVEL)
         .with_logging_configuration(bootstrap_logging_config);
     let Bootstrap {
         supervisor: bootstrap_supervisor,
@@ -117,6 +116,16 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
         .bootstrap()
         .await
         .error_context("Failed to complete bootstrap phase.")?;
+
+    if let Some(error) = &local_config.yaml_fallback_error {
+        warn!(
+            error = %error,
+            path = %bootstrap_config_path.display(),
+            "Datadog-style YAML key resolution failed; reading every key as written for the entire file. \
+             Dotted and differently cased Datadog settings may be ignored. Use nested lowercase setting names."
+        );
+    }
+    local_config.warn_deprecated_names();
 
     // Bootstrap-integration probe: proves the Antithesis SDK is linked, cataloging works, and the
     // instrumentation path is wired.
@@ -191,6 +200,14 @@ async fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<LoadedCon
 fn parse_metrics_level(level: &str) -> Result<Level, GenericError> {
     Level::try_from(level).map_err(|e| generic_error!("Failed to parse `metrics_level`: {}", e))
 }
+
+/// The least verbose metrics level that ADP runs with.
+///
+/// ADP's status sections, such as `DogStatsD` and `Forwarder`, are built from internal metrics emitted at `info`. A
+/// less verbose level would filter those metrics out and leave the status page showing zeros, so the bootstrapper
+/// raises a less verbose `metrics_level` to this, and rejects runtime overrides through `/metrics/override` that are
+/// less verbose than this.
+const MINIMUM_METRICS_LEVEL: Level = Level::INFO;
 
 async fn run_inner(
     action: Action, started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,

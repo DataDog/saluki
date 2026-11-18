@@ -1,0 +1,8 @@
+# Sets logs_enabled to the quoted YAML string "yes" instead of a boolean.
+# Shows that a failed YAML cast keeps the string and the boolean getter rejects it.
+name: logs-enabled-yes-yaml
+group: behavior
+why: [getter-bool-string-strict-parsebool, yaml-type-mismatch-scalar-leaf-keeps-raw]
+yaml: |
+  logs_enabled: "yes"
+keys: [logs_enabled]

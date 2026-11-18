@@ -1,0 +1,11 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  first:
+    subject: true
+    image: alpine:3.20
+    command: [echo, "{{ second.container_id }}"]
+  second:
+    image: alpine:3.20
+    command: [echo, "{{ first.container_id }}"]
+procedure: []

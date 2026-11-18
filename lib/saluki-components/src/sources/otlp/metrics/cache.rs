@@ -187,6 +187,7 @@ impl PointsCache {
     }
 
     /// Creates a new `PointsCache` for tests.
+    #[cfg(test)]
     pub fn for_tests() -> Self {
         Self {
             number_points: CacheBuilder::for_tests().build(),
