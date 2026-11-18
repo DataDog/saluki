@@ -377,7 +377,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     } else {
         info!("Starting test run with parallelism of {}...", cmd.parallelism);
-        info!("Container logs will be written to '{}'.", log_dir.display());
+        info!("Logs will be written to '{}'.", log_dir.display());
         if cmd.fail_fast {
             info!("Fail-fast mode enabled; will stop on first failure.");
         }
