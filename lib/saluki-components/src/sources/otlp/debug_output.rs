@@ -17,6 +17,7 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{metric::Data as MetricData,
 use otlp_protos::opentelemetry::proto::trace::v1::Span;
 use tracing::{enabled, info, Level};
 
+use super::logs::transform::derive_status;
 use crate::common::otlp::traces::transform::{bytes_to_hex_lowercase, otlp_value_to_string};
 
 /// How much detail is logged for each received batch of OTLP data.
@@ -229,11 +230,9 @@ fn normal_logs(request: &ExportLogsServiceRequest) -> String {
 }
 
 fn normal_log_line(record: &LogRecord) -> String {
-    let severity = if record.severity_text.is_empty() {
-        "UNSPECIFIED"
-    } else {
-        &record.severity_text
-    };
+    // Falls back from the severity text to the name of the severity number's range, as the logs pipeline does.
+    let status = derive_status(None, &record.severity_text, record.severity_number);
+    let severity = if status.is_empty() { "UNSPECIFIED" } else { &*status };
     let body = record.body.as_ref().map(format_value).unwrap_or_default();
 
     join_fields([
@@ -702,5 +701,29 @@ mod tests {
             Cow::Borrowed(_)
         ));
         assert!(matches!(escape_control_chars("line\nbreak"), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn normal_logs_name_the_severity_range_when_there_is_no_severity_text() {
+        let record = |severity_number: i32| LogRecord {
+            severity_number,
+            ..Default::default()
+        };
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![record(9), record(17), record(21), record(0)],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let rendered = output(OtlpDebugVerbosity::Normal).render_logs(&request).unwrap();
+
+        assert_eq!(
+            rendered,
+            "Logs: resource logs: 1, log records: 4\ninfo\nerror\nfatal\nUNSPECIFIED"
+        );
     }
 }
