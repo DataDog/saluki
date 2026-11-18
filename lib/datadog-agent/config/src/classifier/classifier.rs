@@ -33,6 +33,11 @@ impl ConfigClassifier {
         Self { lookup }
     }
 
+    /// Returns `true` if `key` has a compatibility-warning entry.
+    pub fn contains(&self, key: &str) -> bool {
+        self.lookup.contains_key(key)
+    }
+
     /// Classifies a key/value pair, returning `None` if the key has no compatibility-warning entry.
     pub fn classify(&self, key: &str, value: &Value) -> Option<Classification> {
         let entry = self.lookup.get(key)?;
