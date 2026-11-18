@@ -180,11 +180,11 @@ impl Backend for PodBackend {
         archive.add_dir(&archive_path(&case.dir), OTHER_DIR_MODE)?;
         archive.add_dir(&archive_path(&case.node_path(POD_ROOT)), OTHER_DIR_MODE)?;
         archive.add_file(&archive_path(&case.courier()), &self.courier, COURIER_MODE)?;
-        request(
+        case.place(
+            format!("place the directory '{}' on the node", case.dir),
+            archive,
             cx.cancel,
             cx.deadline,
-            format!("place the directory '{}' on the node", case.dir),
-            case.node.place("/", archive, cx.deadline),
         )
         .await?;
 
@@ -251,6 +251,22 @@ impl CasePods {
     fn pods(&self) -> Api<Pod> {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
+
+    /// Places `archive` at the root of the node, for `what`. A placement cut short leaves the case's directory
+    /// unsettled, as Docker may go on writing into it.
+    async fn place(
+        &self, what: String, archive: Archive, cancel: &CancellationToken, deadline: Instant,
+    ) -> Result<(), GenericError> {
+        self.ledger
+            .create_by(&self.dir, cancel, deadline, async {
+                self.node
+                    .place("/", archive, deadline)
+                    .await
+                    .map_err(|e| generic_error!("Failed to {}: {:#}", what, e))
+            })
+            .await
+            .ok_or_else(|| generic_error!("Cancelled while trying to {}.", what))?
+    }
 }
 
 #[async_trait]
@@ -288,11 +304,11 @@ impl Scope for CasePods {
         if !late.is_empty() {
             archive.add_dir(&archive_path(&self.late_dir(name)), OTHER_DIR_MODE)?;
         }
-        request(
+        self.place(
+            format!("place the files of participant '{}' on the node", name),
+            archive,
             cancel,
             deadline,
-            format!("place the files of participant '{}' on the node", name),
-            self.node.place("/", archive, deadline),
         )
         .await?;
 
@@ -658,13 +674,7 @@ impl Created for CreatedPod {
                 files.add_file(&archive_path(&path), contents.as_bytes(), file.mode)?;
             }
             let place_files = format!("place the late files of participant '{}' on the node", name);
-            request(
-                cancel,
-                deadline,
-                place_files.clone(),
-                case.node.place("/", files, deadline),
-            )
-            .await?;
+            case.place(place_files.clone(), files, cancel, deadline).await?;
             // The command waits for this file, so it is placed once every other file is there.
             let mut ready = Archive::new();
             ready.add_file(
@@ -672,7 +682,7 @@ impl Created for CreatedPod {
                 b"",
                 DEFAULT_FILE_MODE,
             )?;
-            request(cancel, deadline, place_files, case.node.place("/", ready, deadline)).await?;
+            case.place(place_files, ready, cancel, deadline).await?;
         }
 
         let mut host_ports = BTreeMap::new();

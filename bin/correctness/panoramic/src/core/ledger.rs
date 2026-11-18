@@ -272,7 +272,8 @@ impl ResourceLedger {
                 Resource::IsolationGroup(id) => id == name,
                 Resource::CaseScope(scope) => scope.resource_name() == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
-                Resource::Process(_) | Resource::Directory(_) | Resource::NodeDirectory { .. } => false,
+                Resource::NodeDirectory { path, .. } => path == name,
+                Resource::Process(_) | Resource::Directory(_) => false,
             };
             if named {
                 entry.unsettled = true;
@@ -280,8 +281,9 @@ impl ResourceLedger {
         }
     }
 
-    /// Runs a creation request for the registered isolation group, case scope or namespace `name`. A case scope's name
-    /// is its resource name.
+    /// Runs a creation request for the registered isolation group, case scope, namespace or node directory `name`. A
+    /// case scope's name is its resource name, and a node directory's is its path. A write into a node directory counts
+    /// as creating it.
     ///
     /// If cancellation drops the request, returns `None` and marks the resource unsettled.
     pub(crate) async fn create<F>(&self, name: &str, cancel: &CancellationToken, request: F) -> Option<F::Output>
