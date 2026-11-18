@@ -704,10 +704,20 @@ fn diff_chunk(out: &mut Mismatches, path: &str, e: &Chunk, a: &Chunk) {
         }
     }
 
+    // Spans are sorted by their full content, so spans sharing an ID are paired in order: each expected copy is
+    // compared against a distinct actual copy.
     for es in &e.spans {
         let sp = format!("{}.span[{}]", path, es.span_id);
-        let Some(s) = a.spans.iter().find(|s| s.span_id == es.span_id) else {
-            out.push(sp, "span present", "span missing");
+        let nth = e
+            .spans
+            .iter()
+            .take_while(|x| !std::ptr::eq(*x, es))
+            .filter(|x| x.span_id == es.span_id)
+            .count();
+        let Some(s) = a.spans.iter().filter(|s| s.span_id == es.span_id).nth(nth) else {
+            if a.spans.iter().all(|s| s.span_id != es.span_id) {
+                out.push(sp, "span present", "span missing");
+            }
             continue;
         };
         out.check(format!("{}.parent_id", sp), &es.parent_id, &s.parent_id);
@@ -978,6 +988,21 @@ pub(crate) mod tests {
         let dup = spans[0].clone();
         spans.push(dup);
         expect_mismatch(compare_default(p), ".count: expected 1, got 2");
+    }
+
+    #[test]
+    fn differing_duplicate_spans_are_reported() {
+        let mut expected = default_agent_payload();
+        let dup = expected.idxTracerPayloads[0].chunks[0].spans[0].clone();
+        expected.idxTracerPayloads[0].chunks[0].spans.push(dup.clone());
+        let mut actual = default_agent_payload();
+        let mut longer = dup;
+        longer.duration += 1;
+        actual.idxTracerPayloads[0].chunks[0].spans.push(longer);
+        let opts = CompareOptions::default();
+        let e = TraceSummary::from_payloads(&[expected], EPOCH, &opts).unwrap();
+        let a = TraceSummary::from_payloads(&[actual], EPOCH, &opts).unwrap();
+        expect_mismatch(compare_traces(&e, &a, &opts), ".duration");
     }
 
     #[test]
