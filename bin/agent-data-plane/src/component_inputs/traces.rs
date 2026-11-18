@@ -41,8 +41,7 @@ pub(crate) fn trace_configuration(
 
 /// Builds the trace sampler settings.
 pub(crate) fn trace_sampler_configuration(
-    traces: &traces::Domain, otlp_traces: &otlp::Traces, agent_env: AgentEnv,
-    remote_sampling: TraceSamplingSubscription,
+    traces: &traces::Domain, agent_env: AgentEnv, remote_sampling: TraceSamplingSubscription,
 ) -> TraceSamplerConfiguration {
     TraceSamplerConfiguration {
         probabilistic_sampler_enabled: traces.probabilistic_sampler.enabled,
@@ -62,7 +61,6 @@ pub(crate) fn trace_sampler_configuration(
         rare_sampler_tps: traces.rare_sampler.tps,
         rare_sampler_cooldown_secs: traces.rare_sampler.cooldown,
         rare_sampler_cardinality: traces.rare_sampler.cardinality,
-        compute_top_level_by_span_kind: otlp_traces.enable_compute_top_level_by_span_kind,
         analyzed_spans_by_service: traces.analyzed_spans_by_service.clone(),
         analyzed_rate_by_service: traces.analyzed_rate_by_service.clone(),
         max_events_per_second: traces.max_events_per_second,
@@ -250,12 +248,7 @@ mod tests {
 
     #[test]
     fn trace_sampler_configuration_comes_from_resolved_configuration() {
-        let config = trace_sampler_configuration(
-            &distinct_traces(),
-            &distinct_otlp_traces(),
-            agent_env(),
-            TraceSamplingSubscription::default(),
-        );
+        let config = trace_sampler_configuration(&distinct_traces(), agent_env(), TraceSamplingSubscription::default());
 
         assert!(config.probabilistic_sampler_enabled);
         assert_eq!(13, config.probabilistic_hash_seed);
@@ -272,7 +265,6 @@ mod tests {
         assert_eq!(6.5, config.rare_sampler_tps);
         assert_eq!(5.5, config.rare_sampler_cooldown_secs);
         assert_eq!(12, config.rare_sampler_cardinality);
-        assert!(!config.compute_top_level_by_span_kind);
         assert_eq!(
             HashMap::from([(
                 "span-service".to_string(),
@@ -294,12 +286,7 @@ mod tests {
             features: vec![traces::ApmFeature::Other("table_names".to_owned())],
             ..Default::default()
         };
-        let config = trace_sampler_configuration(
-            &traces,
-            &otlp::Traces::default(),
-            agent_env(),
-            TraceSamplingSubscription::default(),
-        );
+        let config = trace_sampler_configuration(&traces, agent_env(), TraceSamplingSubscription::default());
 
         assert!(!config.probabilistic_full_trace_id);
     }

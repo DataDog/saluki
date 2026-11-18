@@ -596,7 +596,6 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     dd_traces_config.workload_provider = Some(workload_provider.clone());
     let trace_sampler_config = trace_sampler_configuration(
         &config.domains.traces,
-        &config.domains.otlp.traces,
         agent_env.clone(),
         trace_sampling.unwrap_or_default(),
     );

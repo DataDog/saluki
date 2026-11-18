@@ -233,8 +233,9 @@ fn check_case(case: &Case) {
     let bytes = general_purpose::STANDARD
         .decode(payload_base64)
         .unwrap_or_else(|e| panic!("case {name}: payload_base64 is not valid base64: {e}"));
-    let traces =
+    let decoded =
         decode_v1_payload(&bytes).unwrap_or_else(|e| panic!("case {name} ({description}): failed to decode: {e}"));
+    let traces = decoded.traces;
 
     check!(name, traces.len(), expected.chunks.len());
 
@@ -257,7 +258,11 @@ fn check_case(case: &Case) {
         );
     }
 
-    let payload_attributes = expected_attributes(&expected.attributes);
+    check!(
+        name,
+        decoded.payload_attributes,
+        expected_attributes(&expected.attributes)
+    );
 
     for (index, (trace, chunk)) in traces.iter().zip(expected.chunks.iter()).enumerate() {
         let ctx = format!("case {name}, chunk {index}");
@@ -272,10 +277,8 @@ fn check_case(case: &Case) {
         check!(ctx, trace.trace_id_high, want_high);
         check!(ctx, trace.trace_id_low, want_low);
 
-        // Payload-level attributes form the base; chunk-level attributes override on key conflict.
-        let mut want_attributes = payload_attributes.clone();
-        want_attributes.extend(expected_attributes(&chunk.attributes));
-        check!(ctx, *trace.attributes, want_attributes);
+        // Traces carry their chunk's attributes only; payload attributes are returned separately.
+        check!(ctx, *trace.attributes, expected_attributes(&chunk.attributes));
 
         check!(ctx, trace.spans().len(), chunk.spans.len());
         for (index, (span, want)) in trace.spans().iter().zip(chunk.spans.iter()).enumerate() {
@@ -539,7 +542,9 @@ fn unknown_fields_at_every_level_are_harvested() {
     encode::write_uint(&mut buf, 2).unwrap(); // name
     encode::write_uint(&mut buf, 5).unwrap(); // -> "evt"
 
-    let traces = decode_v1_payload(&buf).expect("payload with unknown fields should decode");
+    let traces = decode_v1_payload(&buf)
+        .expect("payload with unknown fields should decode")
+        .traces;
     assert_eq!(traces.len(), 1);
     let t = &traces[0];
     assert_eq!(t.payload.env.as_ref(), "svc");
@@ -681,7 +686,9 @@ fn overlong_trace_id_in_chunk_uses_final_16_bytes() {
     encode::write_uint(&mut buf, 5).unwrap(); // droppedTrace; keeps the chunk above its plausible minimum
     encode::write_bool(&mut buf, true).unwrap();
 
-    let traces = decode_v1_payload(&buf).expect("payload with overlong trace ID should decode");
+    let traces = decode_v1_payload(&buf)
+        .expect("payload with overlong trace ID should decode")
+        .traces;
     assert_eq!(traces.len(), 1);
     let (expected_high, expected_low) = split_trace_id(&id[1..]);
     assert_eq!(traces[0].trace_id_high, expected_high);
@@ -764,6 +771,47 @@ fn process_tags_resolve_payload_then_first_span_then_header() {
     // A present but empty attribute still wins over the header, as in the reference.
     let empty = attrs("_dd.tags.process", "");
     assert_eq!(resolve_process_tags(&empty, Some(&span), Some("from-header")), "");
+}
+
+/// Writes a one-entry attributes map whose key and string value are both literals.
+fn write_string_attribute(buf: &mut Vec<u8>, key: &str, value: &str) {
+    encode::write_array_len(buf, 3).unwrap();
+    encode::write_str(buf, key).unwrap();
+    encode::write_uint(buf, 1).unwrap(); // AnyValue string
+    encode::write_str(buf, value).unwrap();
+}
+
+#[test]
+fn decoded_payload_attributes_stay_apart_from_chunk_attributes() {
+    let mut buf = Vec::new();
+    // Tracer payload: attributes (field 10), then one chunk (field 11).
+    encode::write_map_len(&mut buf, 2).unwrap();
+    encode::write_uint(&mut buf, 10).unwrap();
+    write_string_attribute(&mut buf, "_dd.tags.process", "from-payload");
+    encode::write_uint(&mut buf, 11).unwrap();
+    encode::write_array_len(&mut buf, 1).unwrap();
+    // Trace chunk: attributes (field 3), then one span (field 4).
+    encode::write_map_len(&mut buf, 2).unwrap();
+    encode::write_uint(&mut buf, 3).unwrap();
+    write_string_attribute(&mut buf, "_dd.tags.process", "from-chunk");
+    encode::write_uint(&mut buf, 4).unwrap();
+    encode::write_array_len(&mut buf, 1).unwrap();
+    // Span: service (field 1), then attributes (field 9).
+    encode::write_map_len(&mut buf, 2).unwrap();
+    encode::write_uint(&mut buf, 1).unwrap();
+    encode::write_str(&mut buf, "svc").unwrap();
+    encode::write_uint(&mut buf, 9).unwrap();
+    write_string_attribute(&mut buf, "_dd.tags.process", "from-span");
+
+    let decoded = decode_v1_payload(&buf).expect("payload should decode");
+
+    assert_eq!(decoded.payload_attributes, attrs("_dd.tags.process", "from-payload"));
+    assert_eq!(*decoded.traces[0].attributes, attrs("_dd.tags.process", "from-chunk"));
+    // The chunk-level value must not win over the payload-level one.
+    assert_eq!(
+        resolve_process_tags(&decoded.payload_attributes, first_span(&decoded.traces), None),
+        "from-payload"
+    );
 }
 
 #[test]
