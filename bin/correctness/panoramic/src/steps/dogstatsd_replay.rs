@@ -123,10 +123,11 @@ impl Step for DogstatsdReplay {
         ]
     }
 
-    /// Four rounds of the timeout, because each of the four commands may take that long, and the capture and the pause
-    /// between rounds.
+    /// One timeout for the capture, one for each payload's send, and two for the replay and statistics rounds, because
+    /// the last round can start just before the deadline. Then the capture's duration and the pause between rounds.
     fn budget(&self) -> Duration {
-        self.timeout.duration * 4 + self.capture_duration.duration + Duration::from_millis(50)
+        let sends = u32::try_from(self.payloads.len()).unwrap_or(u32::MAX);
+        self.timeout.duration.saturating_mul(sends.saturating_add(3)) + self.capture_duration.duration + ROUND_PAUSE
     }
 
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
