@@ -363,6 +363,20 @@ fn is_recognized_tag_key(key: &str) -> bool {
     CONTAINER_MAPPINGS.contains_key(key) || CONTAINER_DD_TAG_KEYS.contains(key)
 }
 
+/// Returns whether `attribute` is a non-empty, string-valued Datadog-convention container tag, such as
+/// `kube_namespace` or `pod_name`.
+///
+/// These are consumed as container tags before span conversion, so they never reach span meta. OTel convention keys
+/// such as `container.id` and `k8s.namespace.name` aren't Datadog-convention keys, so they still do. An empty value
+/// produces no container tag, so it stays where it is.
+pub fn is_datadog_container_tag_attribute(attribute: &otlp_common::KeyValue) -> bool {
+    let is_non_empty_string = matches!(
+        attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()),
+        Some(Value::StringValue(value)) if !value.is_empty()
+    );
+    is_non_empty_string && CONTAINER_DD_TAG_KEYS.contains(attribute.key.as_str())
+}
+
 const ATTRIBUTE_DATADOG_HOSTNAME: &str = "datadog.host.name";
 const ATTRIBUTE_HOST: &str = "host";
 const AZURE_RESOURCE_GROUP_NAME: &str = "azure.resourcegroup.name";
