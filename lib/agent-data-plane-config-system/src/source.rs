@@ -178,9 +178,10 @@ impl SourceTree {
     /// describe is still reported under its full path. An object that is a setting in its own right is
     /// also reported under its own key, so it can still be looked up as the setting it is: a setting a
     /// model describes, such as the map `otlp_config.traces.span_name_remappings`, or one the
-    /// compatibility classifier has an entry for, such as an unsupported `logs_config.tag_filters`.
-    /// Every key that comes out of one leaf carries that leaf's provenance, because one input supplied
-    /// the whole value. A leaf holding an array or a scalar is reported as it stands.
+    /// compatibility classifier has an entry for, such as an unsupported
+    /// `use_v3_api.distributions.endpoints`. Every key that comes out of one leaf carries that leaf's
+    /// provenance, because one input supplied the whole value. A leaf holding an array or a scalar is
+    /// reported as it stands.
     pub(crate) fn flattened_keys(&self) -> Vec<(String, &Value, Provenance)> {
         let mut keys = Vec::new();
         self.root.flatten(&mut String::new(), &mut keys);
