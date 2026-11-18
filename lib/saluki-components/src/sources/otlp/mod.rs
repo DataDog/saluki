@@ -298,7 +298,7 @@ impl Source for Otlp {
         )?;
 
         // Build our gRPC and HTTP servers and spawn them.
-        let handler = SourceHandler::new(tx, metrics.clone());
+        let handler = SourceHandler::new(tx, metrics.clone(), debug_output);
         let mut server_config =
             OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
                 .with_cors(cors)
@@ -336,7 +336,6 @@ impl Source for Otlp {
                 logs_translator,
                 traces_translator,
                 metrics,
-                debug_output,
             ),
         )
         .on_runtime(context.topology_context().global_thread_pool().clone())
@@ -374,11 +373,16 @@ enum OtlpSignal {
 struct SourceHandler {
     tx: mpsc::Sender<OtlpSignal>,
     metrics: Metrics,
+    debug_output: OtlpDebugOutput,
 }
 
 impl SourceHandler {
-    fn new(tx: mpsc::Sender<OtlpSignal>, metrics: Metrics) -> Self {
-        Self { tx, metrics }
+    fn new(tx: mpsc::Sender<OtlpSignal>, metrics: Metrics, debug_output: OtlpDebugOutput) -> Self {
+        Self {
+            tx,
+            metrics,
+            debug_output,
+        }
     }
 }
 
@@ -389,6 +393,7 @@ impl OtlpHandler for SourceHandler {
             self.metrics.metrics_errors_decode().increment(1);
             generic_error!("Failed to decode metrics export request: {}", e)
         })?;
+        self.debug_output.log_metrics(&request);
 
         // Send the entire request as a single channel message so the converter processes it
         // atomically. This preserves the request boundary for usage beacon emission without
@@ -402,6 +407,7 @@ impl OtlpHandler for SourceHandler {
 
     async fn handle_logs(&self, body: Bytes) -> Result<(), GenericError> {
         let request = ExportLogsServiceRequest::decode(body).error_context("Failed to decode logs export request.")?;
+        self.debug_output.log_logs(&request);
 
         for resource_logs in request.resource_logs {
             self.tx
@@ -415,6 +421,7 @@ impl OtlpHandler for SourceHandler {
     async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError> {
         let request =
             ExportTraceServiceRequest::decode(body).error_context("Failed to decode trace export request.")?;
+        self.debug_output.log_traces(&request);
 
         for resource_spans in request.resource_spans {
             self.tx
@@ -429,7 +436,7 @@ impl OtlpHandler for SourceHandler {
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpSignal>, source_context: SourceContext,
     mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator,
-    mut traces_translator: OtlpTracesTranslator, metrics: Metrics, debug_output: OtlpDebugOutput,
+    mut traces_translator: OtlpTracesTranslator, metrics: Metrics,
 ) {
     debug!("OTLP resource converter task started.");
 
@@ -452,7 +459,6 @@ async fn run_converter(
 
                 match otlp_signal {
                     OtlpSignal::Metrics(request) => {
-                        debug_output.log_metrics(&request);
                         let mut detected_languages = FastHashSet::default();
 
                         for resource_metrics in request.resource_metrics {
@@ -492,7 +498,6 @@ async fn run_converter(
                         }
                     }
                     OtlpSignal::Logs(resource_logs) => {
-                        debug_output.log_logs(&resource_logs);
                         for log in logs_translator.translate_logs(resource_logs, &metrics) {
                             let dispatcher = logs_dispatcher.get_or_insert_with(|| {
                                 source_context
@@ -506,7 +511,6 @@ async fn run_converter(
                         }
                     }
                     OtlpSignal::Traces(resource_spans) => {
-                        debug_output.log_traces(&resource_spans);
                         for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
                             let dispatcher = traces_dispatcher.get_or_insert_with(|| {
                                 source_context
@@ -864,7 +868,7 @@ mod tests {
 
         let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
         let (tx, _rx) = tokio::sync::mpsc::channel::<super::OtlpSignal>(1);
-        let handler = super::SourceHandler::new(tx, metrics);
+        let handler = super::SourceHandler::new(tx, metrics, super::OtlpDebugOutput::default());
 
         // Invalid protobuf bytes cause decode to fail.
         let result = handler.handle_metrics(bytes::Bytes::from_static(b"not protobuf")).await;
@@ -887,7 +891,7 @@ mod tests {
         // Create a channel with no receiver, then drop the receiver so the send fails.
         let (tx, rx) = tokio::sync::mpsc::channel::<super::OtlpSignal>(1);
         drop(rx);
-        let handler = super::SourceHandler::new(tx, metrics);
+        let handler = super::SourceHandler::new(tx, metrics, super::OtlpDebugOutput::default());
 
         // A valid (empty) request that decodes fine but can't be sent because the channel is closed.
         let request = otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest::default();
