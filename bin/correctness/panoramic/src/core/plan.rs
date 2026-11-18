@@ -721,9 +721,10 @@ impl Planner<'_, '_, '_> {
         let collect = collect.unwrap_or_default();
         let mut collected = BTreeSet::new();
         for file in &collect {
-            if !is_file_name(&file.name) {
+            // A ':' would let a Windows harness read `C:name` as a path on another drive.
+            if !is_file_name(&file.name) || file.name.contains(':') {
                 self.at.push(format!(
-                    "collect: the name '{}' must be a plain file name, with no directory",
+                    "collect: the name '{}' must be a plain file name, with no directory or ':'",
                     file.name
                 ));
             }
