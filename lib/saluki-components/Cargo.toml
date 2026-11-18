@@ -97,7 +97,6 @@ tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tower-http = { workspace = true, features = ["cors"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
-tracing-rolling-file = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }

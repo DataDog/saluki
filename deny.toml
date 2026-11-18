@@ -30,9 +30,9 @@ ignore = [
   { id = "RUSTSEC-2024-0449", reason = "unmaintained only; no drop-in safe replacement, pending serde-saphyr migration" },
 
   # chrono and chrono-tz are unmaintained. No known vulnerability. We're migrating our own usage to `jiff`, which drops
-  # chrono-tz entirely, but chrono also arrives through `tracing-rolling-file` (to be replaced in-house) and
-  # `lading-payload` (needs an upstream change), so the chrono exception outlives the in-tree migration.
-  { id = "RUSTSEC-2026-0543", reason = "unmaintained only; pending jiff migration, tracing-rolling-file replacement, and lading-payload" },
+  # chrono-tz entirely, but chrono also arrives through `lading-payload` (needs an upstream change), so the chrono
+  # exception outlives the in-tree migration.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained only; pending jiff migration and lading-payload" },
   { id = "RUSTSEC-2026-0555", reason = "unmaintained only; pending jiff migration of the saluki-app log formatter" },
 
   # heapless 0.8 has several unsoundness advisories. It arrives only through `faster-hex` 0.10, which `gix` uses in the
