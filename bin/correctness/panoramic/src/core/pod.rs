@@ -34,7 +34,7 @@ use kube::api::{Api, AttachParams, LogParams, PostParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::{Client, Config};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::time::{sleep_until, timeout_at, Instant};
@@ -880,19 +880,21 @@ impl Realized for PodRunning {
         &self, exec: Exec, stdout: &mut (dyn AsyncWrite + Send + Unpin), stderr: &mut (dyn AsyncWrite + Send + Unpin),
         deadline: Instant,
     ) -> Result<i64, HandleError> {
-        if !exec.env.is_empty() || exec.stdin.is_some() {
+        let Exec { argv, env, stdin } = exec;
+        // TODO: pass the environment, for instance through `env`, once a step runs a participant's command.
+        if !env.is_empty() {
             return Err(HandleError::Harness(
-                "an exec in a pod takes no environment and no standard input".to_string(),
+                "an exec in a pod takes no environment".to_string(),
             ));
         }
         let params = AttachParams::default()
             .container(&self.name)
-            .stdin(false)
+            .stdin(stdin.is_some())
             .stdout(true)
             .stderr(true)
             .max_stdout_buf_size(64 * 1024)
             .max_stderr_buf_size(64 * 1024);
-        let mut process = match timeout_at(deadline, self.pods.exec(&self.name, exec.argv, &params)).await {
+        let mut process = match timeout_at(deadline, self.pods.exec(&self.name, argv, &params)).await {
             Ok(Ok(process)) => process,
             Ok(Err(e)) => {
                 return Err(self
@@ -913,9 +915,20 @@ impl Realized for PodRunning {
                 "an exec in a pod gave no output streams".to_string(),
             ));
         };
+        let input = process.stdin();
         let run = async {
-            let (copied_out, copied_err) =
-                tokio::join!(tokio::io::copy(&mut out, stdout), tokio::io::copy(&mut err, stderr));
+            let write = async {
+                if let (Some(bytes), Some(mut input)) = (stdin, input) {
+                    // A command that exits before it reads everything says so in its status.
+                    let _ = input.write_all(&bytes).await;
+                    let _ = input.shutdown().await;
+                }
+            };
+            let (copied_out, copied_err, ()) = tokio::join!(
+                tokio::io::copy(&mut out, stdout),
+                tokio::io::copy(&mut err, stderr),
+                write
+            );
             copied_out?;
             copied_err?;
             Ok::<_, std::io::Error>(status.await)
