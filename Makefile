@@ -509,7 +509,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-docs check-deny check-fips-module check-licenses check-unused-deps generate-api-docs check-features check-aix-cross
+check-all: check-fmt check-clippy check-docs check-review-guidelines check-deny check-fips-module check-licenses check-unused-deps generate-api-docs check-features check-aix-cross
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools ensure-rust-nightly
@@ -577,7 +577,7 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 check-docs: check-lint-tools
 check-docs: ## Checks prose/code documentation against our style guide
 	@echo "[*] Checking prose/code documentation against our style guide..."
-	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,docs/development/plans/*,*datadog_configuration*}' docs lib bin
+	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,docs/development/plans/*,*datadog_configuration*,*codereview_guideline.md}' docs lib bin
 
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools
@@ -962,6 +962,18 @@ PYTHON = $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
 .PHONY: test-release-notes
 test-release-notes: ## Runs unit tests for release-note tooling
 	@$(PYTHON) -m unittest ci/tooling/test_release_notes.py -v
+
+.PHONY: generate-review-guidelines
+generate-review-guidelines: ## Generates the codereview_guideline.md files from docs/development
+	@$(PYTHON) ci/tooling/review_guidelines.py generate
+
+.PHONY: check-review-guidelines
+check-review-guidelines: ## Checks that the codereview_guideline.md files match docs/development
+	@$(PYTHON) ci/tooling/review_guidelines.py check
+
+.PHONY: test-review-guidelines
+test-review-guidelines: ## Runs unit tests for the review guideline generator
+	@$(PYTHON) -m unittest ci/tooling/test_review_guidelines.py -v
 
 .PHONY: check-release-notes
 check-release-notes: ## Validates committed Reno release-note files

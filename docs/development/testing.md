@@ -260,6 +260,53 @@ You can run experiments locally with `smp local-run` to debug experiment configs
 replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment—for normal
 development, lean on CI.
 
+## Reviewing test changes
+
+Reviewers check test changes against two checklists: one for the test tools, and one for the test cases.
+
+### Correctness tooling review checklist
+
+Reviewers check changes to the tools under `bin/correctness/` against these rules:
+
+<!-- review:correctness-tooling -->
+Apply these rules to files under `bin/correctness/`: `panoramic`, `millstone`, `airlock`, `stele`, `datadog-intake`,
+and `otlp-fixtures`. Look first for bugs that hang a run, crash it, leave processes or containers behind, or let a
+case pass when ADP is wrong.
+
+- Each wait, probe, and exec has a deadline, and each read has a deadline or an idle timeout. A target that stops
+  responding fails the case, and doesn't hang the job.
+- An analysis compares only output that the case controls. It removes the targets' own telemetry, as
+  `is_internal_telemetry` does in the metrics analysis, because that telemetry depends on timing and on the container.
+- Don't ask for edge cases that no current case can produce. An analysis that is too strict fails a case, so it
+  doesn't hide a regression. Flag analysis logic that can let a case pass when ADP is wrong, such as a filter or a
+  tolerance that also matches real output.
+- Make sure that a regression in the testing harness and libraries doesn't leave a formerly asserted invariant
+  unchecked.
+<!-- /review -->
+
+### Test case review checklist
+
+Reviewers check changes to the test cases under `test/` against these rules:
+
+<!-- review:test-cases -->
+Apply these rules to files under `test/`: correctness cases, integration cases, and SMP experiments.
+
+- A correctness case must fail when ADP is wrong.
+- The Core Agent and ADP can both run some pipelines, such as DogStatsD and OTLP. If ADP doesn't receive the traffic,
+  the Core Agent handles it, and the case compares the Agent with itself. When a case turns on such a pipeline in ADP,
+  ask what shows that ADP received the traffic. Don't ask when the case or the description already shows it.
+- With `DD_DATA_PLANE_STANDALONE_MODE` set to `"true"`, ADP uses only its local configuration and doesn't register
+  with the Core Agent. The value is `"false"` or unset in connected mode, which is the production mode. Ask for a
+  connected-mode case when a change affects how settings reach ADP. Examples are changes to the configuration stream,
+  registration, and environment translation.
+- The `baseline` and `comparison` targets differ only in the setting under test and in the settings that turn on ADP.
+  Settings that only ADP reads can also differ, such as `DD_AGGREGATE_CONTEXT_LIMIT` and `ADP_DD_` variables. Flag a
+  setting that the Datadog Agent also reads and that only one side sets, when no comment explains it.
+- Flag a setting in a case or an SMP experiment that ADP no longer reads, such as a removed or renamed key. ADP
+  ignores it without an error, so the case no longer tests it. For SMP, comment on
+  `test/smp/regression/adp/experiments.yaml`, not on the generated `experiment.yaml` files.
+<!-- /review -->
+
 ## Fuzzing
 
 We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
