@@ -54,7 +54,7 @@ pub use self::metrics::config::{
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
 pub use self::resolver::OtlpContextSettings;
-use crate::common::otlp::debug_output::OtlpDebugVerbosity;
+use crate::common::otlp::debug_output::{OtlpDebugOutput, OtlpDebugVerbosity};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
@@ -196,6 +196,7 @@ impl SourceBuilder for OtlpConfiguration {
         let translator_metrics =
             metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
         let logs_translator = OtlpLogsTranslator::new(origin_tag_resolver.clone());
+        let debug_output = OtlpDebugOutput::new(self.debug_verbosity);
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -215,6 +216,7 @@ impl SourceBuilder for OtlpConfiguration {
             metrics,
             translator_metrics,
             logs_translator,
+            debug_output,
         }))
     }
 }
@@ -248,6 +250,7 @@ pub struct Otlp {
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
     translator_metrics: metrics::telemetry::OtlpMetricsTranslatorMetrics,
     logs_translator: OtlpLogsTranslator,
+    debug_output: OtlpDebugOutput,
 }
 
 #[async_trait]
@@ -271,6 +274,7 @@ impl Source for Otlp {
             metrics,
             translator_metrics,
             logs_translator,
+            debug_output,
         } = *self;
 
         let global_shutdown = context.take_shutdown_handle();
@@ -330,6 +334,7 @@ impl Source for Otlp {
                 logs_translator,
                 traces_translator,
                 metrics,
+                debug_output,
             ),
         )
         .on_runtime(context.topology_context().global_thread_pool().clone())
@@ -422,7 +427,7 @@ impl OtlpHandler for SourceHandler {
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpSignal>, source_context: SourceContext,
     mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator,
-    mut traces_translator: OtlpTracesTranslator, metrics: Metrics,
+    mut traces_translator: OtlpTracesTranslator, metrics: Metrics, debug_output: OtlpDebugOutput,
 ) {
     debug!("OTLP resource converter task started.");
 
@@ -445,6 +450,7 @@ async fn run_converter(
 
                 match otlp_signal {
                     OtlpSignal::Metrics(request) => {
+                        debug_output.log_metrics(&request);
                         let mut detected_languages = FastHashSet::default();
 
                         for resource_metrics in request.resource_metrics {
@@ -484,6 +490,7 @@ async fn run_converter(
                         }
                     }
                     OtlpSignal::Logs(resource_logs) => {
+                        debug_output.log_logs(&resource_logs);
                         for log in logs_translator.translate_logs(resource_logs, &metrics) {
                             let dispatcher = logs_dispatcher.get_or_insert_with(|| {
                                 source_context
@@ -497,6 +504,7 @@ async fn run_converter(
                         }
                     }
                     OtlpSignal::Traces(resource_spans) => {
+                        debug_output.log_traces(&resource_spans);
                         for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
                             let dispatcher = traces_dispatcher.get_or_insert_with(|| {
                                 source_context
