@@ -17,6 +17,9 @@ use crate::core::template::Template;
 const IMAGE: &str = "saluki-images/correctness-tools:latest";
 const PROGRAM: &str = "/usr/local/bin/datadog-intake";
 
+/// How much of an error answer's body a failed dump quotes, so a large error page does not flood the case record.
+const MAX_ERROR_BODY_BYTES: usize = 512;
+
 /// The intake takes no `with` parameters.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -91,11 +94,12 @@ impl Operation for Dump {
         let path = "/metrics/dump";
         let response = on.http_get("api", path, limit).await?;
         if response.status != 200 {
+            let body = String::from_utf8_lossy(&response.body);
+            let shown = &body[..body.floor_char_boundary(MAX_ERROR_BODY_BYTES)];
+            let cut = if shown.len() < body.len() { " (truncated)" } else { "" };
             return Err(HandleError::Software(format!(
-                "the intake answered {} with status {}: {}",
-                path,
-                response.status,
-                String::from_utf8_lossy(&response.body)
+                "the intake answered {} with status {}: {}{}",
+                path, response.status, shown, cut
             )));
         }
         let metrics: Value = serde_json::from_slice(&response.body)
