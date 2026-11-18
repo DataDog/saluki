@@ -169,11 +169,12 @@ The notes added in `A` and `B` shipped in `1.9.0`. When Reno walks back from `1.
 `A`, it never meets the `1.9.0` tag, so on its own it would list those notes again under `1.10.0`.
 
 `ci/tooling/release_notes.py render` corrects for that. When the newest earlier release, `1.9.0`, isn't in the tag's
-history, it takes the notes present at `B`, where the two histories meet, and drops the ones Reno already gives to a
-release in the tag's history. It passes the rest to Reno as `ignore_notes`, in a temporary copy of the configuration;
-`releasenotes/config.yaml` doesn't change. Patch releases, and older lines that were tagged on `main`, have their
-newest earlier release in their history and render as before. A change merged to `main` after the cut and backported
-to `1.9.x` isn't in `B`, so its note appears in both `1.9.x` and `1.10.0`.
+history, it takes the notes present both at `B`, where the two histories meet, and at `1.9.0`, and drops the ones
+Reno already gives to a release in the tag's history. It passes the rest to Reno as `ignore_notes`, in a temporary copy
+of the configuration; `releasenotes/config.yaml` doesn't change. Patch releases, and older lines that were tagged on
+`main`, have their newest earlier release in their history and render as before. A change merged to `main` after the
+cut and backported to `1.9.x` isn't in `B`, so its note appears in both `1.9.x` and `1.10.0`. A note removed from
+`releases/1.9.x` before `1.9.0` isn't in `1.9.0`, so it appears in `1.10.0`.
 
 ## Older release lines
 

@@ -316,6 +316,31 @@ class ReleaseNoteRenderingTest(unittest.TestCase):
         # The ignored notes go into a temporary configuration, never into the checkout's.
         self.assertNotIn("ignore_notes", (self.repository / "releasenotes/config.yaml").read_text(encoding="utf-8"))
 
+    def test_a_note_removed_from_the_previous_line_ships_in_the_next(self):
+        configured = self.commit("Add release note configuration")
+        self.note("first-0123456789abcdef.yaml", "Shipped in 1.9.0.")
+        self.note("deferred-0011223344556677.yaml", "Deferred to 1.10.0.")
+        cut_19 = self.commit("Notes", configured)
+        # The deferred feature and its note are removed from the release branch before 1.9.0 is tagged.
+        deferred = self.repository / "releasenotes/notes/deferred-0011223344556677.yaml"
+        text = deferred.read_text(encoding="utf-8")
+        deferred.unlink()
+        tag_19 = self.commit_to("refs/heads/releases/1.9.x", "Cut 1.9", cut_19, files=("target-1.9",))
+        self.run_git("update-ref", "refs/tags/1.9.0", tag_19)
+        deferred.write_text(text, encoding="utf-8")
+        self.note("second-fedcba9876543210.yaml", "Shipped in 1.10.0.")
+        cut_110 = self.commit("Second note", cut_19)
+        tag_110 = self.commit_to("refs/heads/releases/1.10.x", "Cut 1.10", cut_110, files=("target-1.10",))
+        self.run_git("update-ref", "refs/tags/1.10.0", tag_110)
+
+        rst, _ = self.render_with_real_reno("1.9.0")
+        self.assertNotIn("Deferred to 1.10.0.", rst)
+
+        rst, _ = self.render_with_real_reno("1.10.0")
+        self.assertIn("Deferred to 1.10.0.", rst)
+        self.assertIn("Shipped in 1.10.0.", rst)
+        self.assertNotIn("Shipped in 1.9.0.", rst)
+
     def test_renders_from_a_linked_worktree(self):
         self.tag_each_line_on_its_release_branch()
         worktree = Path(self.temporary_directory.name) / "linked-worktree"

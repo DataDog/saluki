@@ -155,8 +155,10 @@ def find_notes_shipped_off_history(version: str, repository: Path, run) -> list[
     note that `X.Y.0` already shipped a second time.
 
     The fix: find the newest earlier release. If it isn't in `version`'s history, the notes it shipped from `main` are
-    the ones present where the two histories meet, the commit where its release branch was cut. Leave out the notes
-    that Reno already gives to a release in `version`'s history, and return the rest for Reno to ignore.
+    the ones present both where the two histories meet, the commit where its release branch was cut, and in that
+    release's own tree. A note removed from the release branch before its tag didn't ship there, so it stays in
+    `version`. Leave out the notes that Reno already gives to a release in `version`'s history, and return the rest for
+    Reno to ignore.
 
     Releases whose newest earlier release is in their history, such as patch releases and lines tagged on `main`,
     return nothing and render as before. A change merged to `main` after the cut and backported to the line isn't in
@@ -180,7 +182,7 @@ def find_notes_shipped_off_history(version: str, repository: Path, run) -> list[
         return []
     base = run(["git", "merge-base", f"refs/tags/{previous}", f"refs/tags/{version}"]).stdout.strip()
     released = notes_at(f"refs/tags/{max(reachable, key=release_key)}") if reachable else set()
-    return sorted(notes_at(base) - released)
+    return sorted((notes_at(base) & notes_at(f"refs/tags/{previous}")) - released)
 
 
 def render_release_notes(version: str, repository: Path) -> str:
