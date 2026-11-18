@@ -2707,7 +2707,8 @@ inventory:
   logs_config.tag_filters:
     support: none
     severity: medium
-    planned: false
+    planned: true
+    issue: "#3228"
     pipelines: [logs]
     description: "Include/exclude filters on log tags"
     documentation: |-

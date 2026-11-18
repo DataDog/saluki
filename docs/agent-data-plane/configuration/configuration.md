@@ -77,6 +77,7 @@ tracking.
 | `logs_config.sender_recovery_interval`                          | Backoff error decrease per success                | [#2974] |
 | `logs_config.sender_recovery_reset`                             | Reset backoff errors on success                   | [#2974] |
 | `logs_config.socks5_proxy_address`                              | SOCKS5 proxy address for TCP logs                 | [#2976] |
+| `logs_config.tag_filters`                                       | Include/exclude filters on log tags               | [#3228] |
 | `logs_config.use_compression`                                   | Enable payload compression                        | [#2973] |
 | `logs_config.use_http`                                          | Force the HTTP transport                          | [#2976] |
 | `logs_config.use_port_443`                                      | Send TCP logs to the 443 intake                   | [#2976] |
@@ -168,7 +169,6 @@ architecture is fundamentally different or the feature is platform-specific.
 | `logs_config.pipeline_failover.router_channel_size`                                      | Router channel size when failover is on            | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.pipelines`                                                                  | Number of parallel logs pipelines                  | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.stop_grace_period`                                                          | Seconds to wait for pipeline flush on stop         | See below                                                                                                                                                                                                                                                                 |
-| `logs_config.tag_filters`                                                                | Include/exclude filters on log tags                | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.unreliable_mount.enabled`                                                   | Unreliable-mount profile (affects validation)      | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.debug.verbosity`                                                            | Verbosity of the OTLP debug exporter               | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.flush_timeout`                                                | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
@@ -500,16 +500,6 @@ before force close.
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
 configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
 proxy mode, the core Agent processes OTLP logs and applies this key.
-
-### `logs_config.tag_filters`
-
-In the core Agent's OTLP logs path: compiled once at start. Malformed patterns only warn (never
-block start). The processor lazily resolves the filter on the exporter's log source and the JSON
-encoder emits `Origin.TransportTags()`, so `ddtags` of OTLP logs are filtered.
-
-ADP ignores this key and filters no tags on logs. This only matters for the logs ADP handles
-itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
-applies this key.
 
 ### `logs_config.unreliable_mount.enabled`
 
@@ -2053,3 +2043,4 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#3090]: https://github.com/DataDog/saluki/issues/3090
 [#3091]: https://github.com/DataDog/saluki/issues/3091
 [#3092]: https://github.com/DataDog/saluki/issues/3092
+[#3228]: https://github.com/DataDog/saluki/issues/3228
