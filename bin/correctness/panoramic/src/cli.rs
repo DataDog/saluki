@@ -168,15 +168,15 @@ pub struct RunCommand {
     #[arg(long, value_parser = str::parse::<Os>, verbatim_doc_comment)]
     pub subject_os: Option<Os>,
 
-    /// Image a participant case runs in place of one it names, as `<name>=<image>`,
-    /// where `<name>` is the image exactly as the case or its participant type writes
-    /// it. Repeat the flag for more than one image; the environment variable takes them
-    /// as one comma-separated list. A name given twice, or one no discovered case uses,
-    /// is an error. CI uses this to run the cases against the images built for the
-    /// commit
+    /// Image or host program a participant case runs in place of one it names, as
+    /// `<name>=<reference>`, where `<name>` is the image or program path exactly as the
+    /// case or its participant type writes it. Repeat the flag for more than one; the
+    /// environment variable takes them as one comma-separated list. A name given twice,
+    /// or one no discovered case uses, is an error. CI uses this to run the cases
+    /// against the images and binaries built for the commit
     #[arg(
         long = "set",
-        value_name = "NAME=IMAGE",
+        value_name = "NAME=REFERENCE",
         env = "PANORAMIC_SET",
         value_delimiter = ',',
         verbatim_doc_comment
@@ -385,12 +385,12 @@ pub struct PlanCommand {
     #[arg(long)]
     pub text: bool,
 
-    /// Image the case runs in place of one it names, as `<name>=<image>`. Same
-    /// semantics as on `run`: the plan shows both, and a name the case does not use
-    /// is an error
+    /// Image or host program the case runs in place of one it names, as
+    /// `<name>=<reference>`. Same semantics as on `run`: the plan shows both, and a
+    /// name the case does not use is an error
     #[arg(
         long = "set",
-        value_name = "NAME=IMAGE",
+        value_name = "NAME=REFERENCE",
         env = "PANORAMIC_SET",
         value_delimiter = ',',
         verbatim_doc_comment
