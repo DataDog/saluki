@@ -7,16 +7,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::time::{timeout_at, Instant};
 
-use super::stopped;
+use super::{stopped, EXEC_SLACK};
 use crate::core::case::Timeout;
 use crate::core::handle::HandleError;
 use crate::core::record::StepStatus;
 use crate::core::step::{Need, Step, StepContext, StepFactory, StepFields, StepPurpose, StepReport};
 use crate::core::template::Template;
-
-/// How long past the step's deadline the participant is given to end a command, so that a command that outlives the
-/// step is reported by the step and not as a problem of the mechanism.
-const EXEC_SLACK: Duration = Duration::from_secs(5);
 
 /// The most of a command's standard output or error a message quotes: the last bytes of each.
 const MAX_QUOTED_OUTPUT_BYTES: usize = 4096;
