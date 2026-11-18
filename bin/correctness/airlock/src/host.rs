@@ -34,6 +34,7 @@ pub struct HostCommand {
     pub name: String,
     /// The file to execute.
     pub program: PathBuf,
+    /// The arguments, not including the program itself.
     pub args: Vec<String>,
     /// The program's whole environment: nothing is inherited.
     pub env: BTreeMap<String, String>,
