@@ -81,7 +81,7 @@ impl ConfigurationSystem {
 mod tests {
     use std::collections::HashSet;
 
-    use datadog_agent_config::classifier::Pipeline;
+    use datadog_agent_config::classifier::{ConfigClassifier, Pipeline};
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use serde_json::{json, Value};
 
@@ -194,6 +194,27 @@ mod tests {
         cross_cutting
             .check_compatibility(&pipelines(&[]))
             .expect_err("a cross-cutting high-severity key fails the check with no pipeline active");
+    }
+
+    #[test]
+    fn an_unsupported_object_setting_is_classified_under_its_own_key() {
+        // `use_v3_api.distributions.endpoints` holds an object and no model describes it. The check must see
+        // it as the setting it is, whether it comes from a file or from the configuration stream.
+        let endpoints = json!({ "https://example.test": ["api-key"] });
+        let from_file = system_with(json!({ "use_v3_api": { "distributions": { "endpoints": endpoints } } }));
+        let from_stream = system_from_settings(&[(
+            "use_v3_api.distributions.endpoints",
+            endpoints.clone(),
+            StreamProvenance::Explicit,
+        )]);
+        let classifier = ConfigClassifier::new();
+
+        for system in [from_file, from_stream] {
+            let classified = system.sources().flattened_keys().into_iter().any(|(key, value, _)| {
+                key == "use_v3_api.distributions.endpoints" && classifier.classify(&key, value).is_some()
+            });
+            assert!(classified);
+        }
     }
 
     #[test]
