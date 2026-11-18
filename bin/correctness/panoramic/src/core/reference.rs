@@ -146,11 +146,13 @@ impl PlannedParticipant {
 
 /// The values references name, as far as they are known: what the plan knows, then each runtime identity once its
 /// participant is created or has started.
+#[derive(Clone)]
 pub(crate) struct Values {
     participants: BTreeMap<String, Known>,
 }
 
 /// What is known of one participant.
+#[derive(Clone)]
 struct Known {
     realization: Realization,
     endpoints: BTreeMap<String, (Protocol, PlannedAddress)>,

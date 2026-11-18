@@ -30,6 +30,12 @@ Unit tests that create containers are ignored by default, so `make test` doesn't
 containers. Their image comes from the internal registry. CI doesn't run them, so run them by hand when you change the
 container mechanisms, the container backend or the lifecycle.
 
+### Tests that need a kind cluster
+
+Unit tests that create pods are ignored too. Run them with `make test-kind`, which needs `kind` and `kubectl` on your
+`PATH` and a single-node kind cluster named `saluki-correctness`, or the one `KIND_CLUSTER_NAME` names, and builds the
+courier the tests place on its node. CI doesn't run them, so run them by hand when you change the pod backend.
+
 ### Architecture tests
 
 The `architecture-tests` crate in `test/architecture/` protects architectural invariants as part of the unit-test

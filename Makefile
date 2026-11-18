@@ -596,7 +596,13 @@ test: ## Runs all unit tests
 test-container-daemon: check-rust-build-tools cargo-install-cargo-nextest build-courier
 test-container-daemon: ## Runs the unit tests that need a Docker daemon
 	@echo "[*] Running unit tests against the Docker daemon..."
-	cargo nextest run -p airlock -p panoramic --run-ignored ignored-only
+	cargo nextest run -p airlock -p panoramic --run-ignored ignored-only -E 'not test(/kind_tests/)'
+
+.PHONY: test-kind
+test-kind: check-rust-build-tools cargo-install-cargo-nextest check-kind-tools build-courier
+test-kind: ## Runs the unit tests that need a kind cluster
+	@echo "[*] Running unit tests against a kind cluster..."
+	cargo nextest run -p panoramic --run-ignored ignored-only -E 'test(/kind_tests/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest

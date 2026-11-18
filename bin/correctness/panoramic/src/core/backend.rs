@@ -234,8 +234,6 @@ pub(crate) struct Preparing<'a> {
     /// Takes every resource of the scope before it is made.
     pub(crate) ledger: &'a ResourceLedger,
     /// Where background work of the case runs. The runner stops it before reclaim.
-    // TODO: remove the dead_code allowance once a backend runs background work for a case.
-    #[allow(dead_code)]
     pub(crate) tasks: &'a CaseTasks,
     /// Fires when the runner stops the case.
     pub(crate) cancel: &'a CancellationToken,
