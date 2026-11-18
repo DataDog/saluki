@@ -7,6 +7,7 @@
 //! writes it. Rendering is a pure function of the verbosity and the batch, so tests can check it without capturing logs.
 
 use std::borrow::Cow;
+use std::fmt::{self, Write as _};
 
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -264,11 +265,65 @@ fn normal_span_line(span: &Span) -> String {
     ])
 }
 
+/// The most bytes `detailed` output writes for one request.
+///
+/// Pretty-printing puts every byte of a byte field on a line of its own, so a request that fits the receiver's size
+/// limit can still dump to many times that size. Output past this limit is cut off and marked.
+const MAX_DETAILED_BYTES: usize = 1024 * 1024;
+
+/// Ends a `detailed` dump that was cut off at [`MAX_DETAILED_BYTES`].
+const TRUNCATION_MARKER: &str = "\n... (output truncated)";
+
 /// Renders every field of a received message, through its `Debug` implementation.
 ///
-/// Byte fields such as trace and span IDs print as lists of numbers rather than hex.
-fn detailed(message: &impl std::fmt::Debug) -> String {
-    format!("{message:#?}")
+/// Byte fields such as trace and span IDs print as lists of numbers rather than hex. The dump is cut off at
+/// [`MAX_DETAILED_BYTES`].
+fn detailed(message: &impl fmt::Debug) -> String {
+    detailed_with_limit(message, MAX_DETAILED_BYTES)
+}
+
+fn detailed_with_limit(message: &impl fmt::Debug, limit: usize) -> String {
+    let mut dump = BoundedString::new(limit);
+    if write!(dump, "{message:#?}").is_err() {
+        dump.text.push_str(TRUNCATION_MARKER);
+    }
+    dump.text
+}
+
+/// A string that stops accepting text once it reaches a size limit.
+///
+/// Writing past the limit fails, which also stops the formatting that was producing the text, so a dump that's too
+/// large costs no more than the limit to produce.
+struct BoundedString {
+    text: String,
+    limit: usize,
+}
+
+impl BoundedString {
+    fn new(limit: usize) -> Self {
+        Self {
+            text: String::new(),
+            limit,
+        }
+    }
+}
+
+impl fmt::Write for BoundedString {
+    fn write_str(&mut self, chunk: &str) -> fmt::Result {
+        let room = self.limit.saturating_sub(self.text.len());
+        if chunk.len() <= room {
+            self.text.push_str(chunk);
+            return Ok(());
+        }
+
+        // Keep as much of the chunk as fits, without splitting a character.
+        let mut end = room;
+        while !chunk.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.text.push_str(&chunk[..end]);
+        Err(fmt::Error)
+    }
 }
 
 /// Joins the non-empty fields of a line with single spaces.
@@ -726,5 +781,34 @@ mod tests {
             rendered,
             "Logs: resource logs: 1, log records: 4\ninfo\nerror\nfatal\nUNSPECIFIED"
         );
+    }
+
+    #[test]
+    fn a_detailed_dump_within_the_limit_is_written_whole() {
+        let message = vec![1u8, 2, 3];
+
+        assert_eq!(detailed_with_limit(&message, 1024), format!("{message:#?}"));
+    }
+
+    #[test]
+    fn a_detailed_dump_past_the_limit_is_cut_off_and_marked() {
+        // Pretty-printing writes a line for every byte, so this dumps to far more than the limit.
+        let message = vec![0u8; 10_000];
+
+        let dump = detailed_with_limit(&message, 100);
+
+        assert!(dump.ends_with(TRUNCATION_MARKER));
+        assert_eq!(dump.len(), 100 + TRUNCATION_MARKER.len());
+    }
+
+    #[test]
+    fn a_detailed_dump_is_cut_off_on_a_character_boundary() {
+        // The dump is an opening quote, then two-byte characters, and the limit falls in the middle of the fifth.
+        let message = "é".repeat(100);
+
+        let dump = detailed_with_limit(&message, 10);
+
+        assert!(dump.ends_with(TRUNCATION_MARKER));
+        assert_eq!(dump.len(), 9 + TRUNCATION_MARKER.len());
     }
 }
