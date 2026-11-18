@@ -827,6 +827,10 @@ pub struct ApmConfig {
     pub connection_limit: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub connection_reset_interval: i64,
+
+    #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enable_rare_sampler: bool,
 
@@ -945,6 +949,7 @@ impl Default for ApmConfig {
             apm_non_local_traffic: Default::default(),
             compute_stats_by_span_kind: defaults::default_bool::<true>(),
             connection_limit: defaults::default_u64::<i64, 2000>(),
+            connection_reset_interval: Default::default(),
             enable_rare_sampler: Default::default(),
             env: Default::default(),
             error_tracking_standalone: Default::default(),

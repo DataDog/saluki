@@ -543,6 +543,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.apm.non_local_traffic = ConfigValue::new(value, provenance);
     }
 
+    fn consume_apm_config_connection_reset_interval(&mut self, value: i64) {
+        self.config.shared.endpoints.traces.connection_reset_interval = Duration::from_secs(u64::from(
+            non_positive_as_zero("apm_config.connection_reset_interval", value),
+        ));
+    }
+
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool) {
         self.config.domains.traces.compute_stats_by_span_kind = value;
     }
@@ -3038,6 +3044,28 @@ mod tests {
         );
         assert!(!endpoints.opw_intake.enabled);
         assert!(!endpoints.vector_intake.enabled);
+    }
+
+    #[test]
+    fn the_traces_connection_reset_interval_reads_seconds_and_recovers_from_negatives() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(Duration::ZERO, config.shared.endpoints.traces.connection_reset_interval);
+
+        for (value, expected) in [(30, 30), (0, 0), (-1, 0)] {
+            let (config, errors) = translate_explicit(json!({
+                "apm_config": { "connection_reset_interval": value },
+            }));
+
+            assert!(errors.is_none());
+            assert_eq!(
+                Duration::from_secs(expected),
+                config.shared.endpoints.traces.connection_reset_interval,
+                "{value}"
+            );
+            // Only traces follow the key: the shared forwarder keeps its own interval.
+            assert_eq!(0, config.shared.endpoints.forwarder.connection_reset_interval);
+        }
     }
 
     #[test]
