@@ -670,7 +670,7 @@ to every use. A step field may reference any participant's endpoint.
 | A socket path in `endpoints` | at plan; it may refer only to `self.dir`, because the address is built from it |
 | `command`, `args`, `programs`, `env`, a pattern in `ready` | when the participant is created |
 | A template file in a container or as host processes | when the participant is created |
-| A template file in a pod | when the pod is created, or after it starts if the file holds a value that exists only then |
+| A template file in a pod | when the pod is created, or after it starts if the file holds a value of the pod itself that exists only then |
 | `commands`, and the template fields of a step | when the step runs |
 | `image`, a program's `path`, a `files` key, `with`, `mounts`, `collect`, `processes` | never hold references |
 
@@ -681,7 +681,10 @@ fixed. Anything else is a plan error. Three consequences:
   at create and the address exists after start. Where software needs it, the participant type
   provides it from inside the container.
 - A pod's template file that holds an after-start value is written by the pod backend once the
-  values exist, and the pod's command waits for it. Only such a pod waits.
+  values exist, and the pod's command waits for it. Only such a pod waits, and it must set
+  `command`, which runs behind the wait. Only the pod's own values (`self.ip`, `self.container_id`
+  and `self.pod_uid`) are accepted in such a file. An after-start value anywhere else, or of another
+  participant, is a plan error.
 - A value substituted into a `regex: true` pattern is escaped, so a path or an address matches
   itself.
 

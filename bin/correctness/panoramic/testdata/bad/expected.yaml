@@ -4,6 +4,7 @@ file-source-outside-the-suite: {subject_os: linux, error: "is outside the suite 
 malformed-reference-in-template-file: {subject_os: linux, error: "is not a reference"}
 millstone-file-not-a-template: {subject_os: linux, error: "the case must place it with template: true"}
 own-ip-at-create: {subject_os: linux, error: "has a value once participant 'app' starts"}
+pod-file-needs-a-command: {subject_os: linux, error: "the file holds a value that exists once the pod starts, so the pod's command runs behind a wait for the file: set 'command'"}
 reserved-path: {subject_os: linux, error: "is reserved by the harness"}
 socket-path-too-long: {subject_os: linux, error: "and a Unix socket path on linux holds at most 107"}
 supervising-file-replaced: {subject_os: linux, error: "the case replaces '/etc/services.d/agent/finish'"}

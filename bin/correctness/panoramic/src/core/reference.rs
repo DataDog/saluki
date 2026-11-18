@@ -10,7 +10,8 @@
 //! and container ID exist only once it is created or started. A reference is accepted in a place only when its value
 //! exists by the time the place is fixed: at create for the command line, environment, files and readiness patterns,
 //! and when a step runs for its named commands. A participant is created after every participant whose container ID it
-//! names in a place fixed at create.
+//! names in a place fixed at create. One place is fixed later: a template file in a pod may hold the pod's own values
+//! that exist once it starts, because the pod backend writes the file then.
 //!
 //! The resolver runs at plan compile, at create and when a step runs, each time with more values known: [`Values`]
 //! gains each runtime identity as its participant is created or starts. The plan records each template it cannot fill
@@ -60,6 +61,12 @@ impl Place {
     /// Whether the place is fixed when the participant is created, rather than when a step runs.
     fn fixed_at_create(&self) -> bool {
         !matches!(self, Self::CommandArg(..) | Self::CommandEnv(..))
+    }
+
+    /// Whether the place is a template file, which a pod writes after it starts when the file needs a value of the pod
+    /// that exists only then.
+    fn is_file(&self) -> bool {
+        matches!(self, Self::File(_))
     }
 }
 
@@ -149,6 +156,7 @@ struct Known {
     endpoints: BTreeMap<String, (Protocol, PlannedAddress)>,
     connections: BTreeMap<String, (String, Reached)>,
     container_id: Option<String>,
+    pod_uid: Option<String>,
     ip: Option<String>,
 }
 
@@ -178,6 +186,7 @@ impl Values {
                         .map(|(name, connection)| (name.clone(), (connection.url.clone(), connection.reached.clone())))
                         .collect(),
                     container_id: None,
+                    pod_uid: None,
                     ip: None,
                 };
                 (name.clone(), known)
@@ -193,6 +202,9 @@ impl Values {
         };
         if let Some(container_id) = &identities.container_id {
             known.container_id = Some(container_id.clone());
+        }
+        if let Some(pod_uid) = &identities.pod_uid {
+            known.pod_uid = Some(pod_uid.clone());
         }
         if let Some(ip) = &identities.ip {
             known.ip = Some(ip.clone());
@@ -301,10 +313,7 @@ impl Values {
                     (IdentityPart::ContainerId, Enclosure::KubernetesPod) => {
                         runtime(&known.container_id, Later::Started)
                     }
-                    // TODO: record a pod's UID with the pod backend.
-                    (IdentityPart::PodUid, Enclosure::KubernetesPod) => {
-                        Ok(Lookup::Later(owner.to_string(), Later::Started))
-                    }
+                    (IdentityPart::PodUid, Enclosure::KubernetesPod) => runtime(&known.pod_uid, Later::Started),
                     (IdentityPart::ContainerId | IdentityPart::PodUid, enclosure) => {
                         Err(format!("never has a value: participant '{}' is a {}", owner, enclosure))
                     }
@@ -349,8 +358,10 @@ pub(super) fn fill_references(
     let values = Values::of_plan(participants);
     let mut edges = BTreeSet::new();
     for (name, participant) in participants.iter_mut() {
+        let in_pod = participant.realization.enclosure == Enclosure::KubernetesPod;
         let mut errors = Vec::new();
         let mut later = BTreeMap::new();
+        let mut late_file = None;
         participant.visit_templates(|place, template| {
             let mut waits: BTreeMap<String, Later> = BTreeMap::new();
             for reference in template.references() {
@@ -376,7 +387,12 @@ pub(super) fn fill_references(
                         continue;
                     }
                 };
-                if place.fixed_at_create() {
+                // A pod writes such a file once it has started.
+                let written_late = in_pod && place.is_file() && when == Later::Started && of == *name;
+                if written_late {
+                    late_file.get_or_insert_with(|| place.to_string());
+                }
+                if place.fixed_at_create() && !written_late {
                     match when {
                         Later::Created if of != *name => {
                             edges.insert((of.clone(), name.clone()));
@@ -401,6 +417,15 @@ pub(super) fn fill_references(
             }
         });
         participant.later = later;
+        if let Some(place) =
+            late_file.filter(|_| !matches!(&participant.launch, Launch::Image { command: Some(_), .. }))
+        {
+            errors.push(format!(
+                "{}: the file holds a value that exists once the pod starts, so the pod's command runs behind a wait \
+                 for the file: set 'command'",
+                place
+            ));
+        }
         for message in errors {
             problems.push(Some(format!("participant '{}'", name)), message);
         }
