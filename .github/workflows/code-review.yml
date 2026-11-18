@@ -42,7 +42,9 @@ jobs:
       pull-requests: write
       checks: write
       id-token: write
-    uses: DataDog/code-review-action/.github/workflows/code-review.yml@bfdb2dc28a2cbd1a480867648dcdada188086468 # main, unreleased (Codex ubuntu-24.04 fix)
+    # Pinned to an unreleased commit for the Codex ubuntu-24.04 runner fix (DataDog/code-review-action#110). Renovate
+    # skips this reference until it's repinned to the first release containing that fix, with a `# vX.Y.Z` comment.
+    uses: DataDog/code-review-action/.github/workflows/code-review.yml@bfdb2dc28a2cbd1a480867648dcdada188086468
     with:
       provider: claude
       trigger_mode: ${{ github.event_name == 'pull_request' && 'always' || 'on_demand' }}
