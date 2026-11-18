@@ -30,8 +30,16 @@ printf '{"Replace": {"%s": "%s"}}\n' "$agent/pkg/trace/api/oracle_test.go" "$her
     go test -c -tags test -overlay "$work/overlay.json" -o "$work/oracle.test" ./api
 )
 
+# A test that runs past 15 minutes is ended, which prints its output, and so its PARITY_SEED: a run of 50,000 payloads
+# per decoder takes under two minutes, and shrinking a failure is bounded at two.
+cat >"$work/nextest.toml" <<'TOML'
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 15 }
+TOML
+
 cd "$saluki"
 TRACE_AGENT_ORACLE="$work/oracle.test" PARITY_CASES="$cases" PARITY_BODY="${PARITY_BODY:-}" \
   PARITY_SEED="${PARITY_SEED:-}" \
-  cargo nextest run -p saluki-components --run-ignored only --no-fail-fast --success-output final \
+  cargo nextest run --config-file "$work/nextest.toml" -p saluki-components --run-ignored only --no-fail-fast \
+  --success-output final \
   -E "test(/decoders::datadog::parity::${filter}/)"

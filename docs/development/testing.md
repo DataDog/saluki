@@ -309,7 +309,8 @@ PARITY_SEED=<seed> test/trace-agent-oracle/fuzz.sh ~/dd/datadog-agent 50000 pari
 ```
 
 Each run draws new payloads from a random seed, which each test prints as `PARITY_SEED=<seed>`, and a failure repeats.
-With the same seed and the same `datadog-agent` checkout, a run draws the same payloads. To fix a difference, add the shrunk payload as a unit test of the decoder that fails, then
+With the same seed and the same `datadog-agent` checkout, a run draws the same payloads. Shrinking a failure is
+bounded at two minutes, and `fuzz.sh` ends a test that runs past 15, so a stalled run still reports its seed. To fix a difference, add the shrunk payload as a unit test of the decoder that fails, then
 fix the decoder. The tests accept the deliberate deviations that `parity.rs` documents, such as the bound on the
 strings that references resolve to, and the trace-agent's random order of v0.1 chunks.
 
