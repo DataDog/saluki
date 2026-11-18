@@ -272,11 +272,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let mut settings = settings;
     // Created before the checks, so the display shows the progress of the kind setup they run.
     let (tx, rx) = create_event_channel();
-    let kind_images = legacy_kind_images(&test_cases);
-    let kind_needed = !kind_images.is_empty() || participant_case::uses_pods(plans.iter().map(|(_, plan)| *plan));
     let kind = participant_case::KindSetup {
         cluster: cmd.kind_cluster_name.clone(),
-        extra_images: kind_images,
         events: tx.clone(),
     };
     let mut kind_lifecycle = None;
@@ -290,7 +287,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                     error!("{}", e);
                 }
             }
-            if kind_needed {
+            if participant_case::uses_pods(plans.iter().map(|(_, plan)| *plan)) {
                 tear_down_unused_kind(kind_lifecycle, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster).await;
             }
             return ExitCode::from(EXIT_HARNESS_ERROR);
@@ -439,20 +436,6 @@ async fn tear_down_unused_kind(lifecycle: Option<KindLifecycle>, cluster_name: &
             cluster_name, cluster_name
         ),
     }
-}
-
-/// Collects the unique set of images required by all legacy kind-runtime tests in the given list.
-fn legacy_kind_images(tests: &[Box<dyn test::Test>]) -> Vec<String> {
-    use std::collections::BTreeSet;
-    let mut images = BTreeSet::new();
-    for test in tests {
-        if test.participant_case().is_none() && test.runtime() == config::KIND_RUNTIME {
-            for (_, image) in test.images() {
-                images.insert(image);
-            }
-        }
-    }
-    images.into_iter().collect()
 }
 
 async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
@@ -721,16 +704,17 @@ mod tests {
         std::fs::write(
             case_dir.join("config.yaml"),
             r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-baseline: {image: base}
-comparison: {image: comp}
+type: integration
+name: unselected
+timeout: 1s
+intake:
+  enabled: true
+procedure: []
 "#,
         )
         .unwrap();
         for (entry, expected) in [
-            ("millstone=tools:custom", EXIT_NO_TESTS_SELECTED),
+            ("intake=tools:custom", EXIT_NO_TESTS_SELECTED),
             ("typo=tools:custom", EXIT_HARNESS_ERROR),
         ] {
             let cli = Cli::try_parse_from([

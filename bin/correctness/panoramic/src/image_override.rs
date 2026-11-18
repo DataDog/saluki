@@ -117,57 +117,36 @@ fn available_names(tests: &[Box<dyn Test>]) -> String {
 mod tests {
     use super::*;
     use crate::config::IntegrationConfig;
-    use crate::correctness::config::Config as CorrectnessConfig;
 
-    /// An integration case scoped to the linux runtime, with the intake sidecar enabled.
-    fn integration_case(overrides: &ImageOverrides<'_>) -> Box<dyn Test> {
-        let case: IntegrationConfig = serde_saphyr::from_str(
+    /// An integration case scoped to the linux runtime, with or without the intake sidecar.
+    fn integration_case(overrides: &ImageOverrides<'_>, intake: bool) -> Box<dyn Test> {
+        let case: IntegrationConfig = serde_saphyr::from_str(&format!(
             r#"
 name: integration-case
 timeout: 10s
 intake:
-  enabled: true
+  enabled: {intake}
 procedure: []
-"#,
-        )
+"#
+        ))
         .expect("integration case should parse");
         let settings = crate::integration::IntegrationSettings::new(crate::config::LINUX_RUNTIME, overrides);
         Box::new(crate::integration::IntegrationTestCase::new(case, &settings))
     }
 
-    fn correctness_case(overrides: &ImageOverrides<'_>) -> Box<dyn Test> {
-        let mut case: CorrectnessConfig = serde_saphyr::from_str(
-            r#"
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-"#,
-        )
-        .expect("correctness case should parse");
-
-        overrides.apply_correctness(&mut case);
-        Box::new(crate::correctness::case::CorrectnessTestCase::new(
-            "correctness".to_string(),
-            case,
-        ))
-    }
-
     #[test]
     fn a_pair_splits_at_the_first_equals() {
-        let parsed: ImageOverride = "millstone=registry.example.com/tools:abc=123"
+        let parsed: ImageOverride = "container=registry.example.com/agent:abc=123"
             .parse()
             .expect("a pair should parse");
 
-        assert_eq!(parsed.name, "millstone");
-        assert_eq!(parsed.image, "registry.example.com/tools:abc=123");
+        assert_eq!(parsed.name, "container");
+        assert_eq!(parsed.image, "registry.example.com/agent:abc=123");
     }
 
     #[test]
     fn a_pair_missing_a_name_or_an_image_is_rejected() {
-        for entry in ["millstone", "=image", "millstone=", ""] {
+        for entry in ["container", "=image", "container=", ""] {
             let error = entry
                 .parse::<ImageOverride>()
                 .expect_err("an incomplete pair should be rejected");
@@ -178,21 +157,20 @@ comparison:
     #[test]
     fn every_name_a_test_declares_can_be_overridden() {
         let defaults = ImageOverrides::new(&[]);
-        let names: Vec<String> = [integration_case(&defaults), correctness_case(&defaults)]
-            .iter()
-            .flat_map(|test| test.images().into_keys().map(str::to_string))
+        let names: Vec<String> = integration_case(&defaults, true)
+            .images()
+            .into_keys()
+            .map(str::to_string)
             .collect();
-        let mut entries: Vec<ImageOverride> = names
+        let entries: Vec<ImageOverride> = names
             .into_iter()
             .map(|name| ImageOverride {
                 name,
                 image: "registry.example.com/replacement:v1".to_string(),
             })
             .collect();
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        entries.dedup_by(|a, b| a.name == b.name);
         let overrides = ImageOverrides::new(&entries);
-        let tests = [integration_case(&overrides), correctness_case(&overrides)];
+        let tests = [integration_case(&overrides, true)];
         overrides.validate(&tests).unwrap();
         for test in tests {
             for image in test.images().values() {
@@ -204,52 +182,46 @@ comparison:
     #[test]
     fn an_override_reaches_only_the_tests_declaring_its_name() {
         let entries = [
-            "millstone=registry.example.com/tools:abc123".parse().unwrap(),
+            "intake=registry.example.com/tools:abc123".parse().unwrap(),
             "container=registry.example.com/agent:abc123".parse().unwrap(),
         ];
         let overrides = ImageOverrides::new(&entries);
-        let tests = vec![integration_case(&overrides), correctness_case(&overrides)];
+        let tests = vec![integration_case(&overrides, true), integration_case(&overrides, false)];
         overrides.validate(&tests).expect("both names are declared in this run");
 
         assert_eq!(
-            tests[0].images().get("container"),
-            Some(&"registry.example.com/agent:abc123".to_string())
-        );
-        assert_eq!(
-            tests[1].images().get("millstone"),
+            tests[0].images().get("intake"),
             Some(&"registry.example.com/tools:abc123".to_string())
         );
-
-        // The correctness case keeps the image its own file declares for a container the overrides
-        // did not name.
         assert_eq!(
-            tests[1].images().get("baseline"),
-            Some(&"saluki-images/datadog-agent:testing-release".to_string())
+            tests[1].images().get("container"),
+            Some(&"registry.example.com/agent:abc123".to_string())
         );
+        assert_eq!(tests[1].images().get("intake"), None);
     }
 
     #[test]
     fn a_name_no_test_declares_is_rejected_with_the_names_that_exist() {
-        let entries = ["millstoen=registry.example.com/tools:abc123".parse().unwrap()];
+        let entries = ["contaner=registry.example.com/agent:abc123".parse().unwrap()];
         let overrides = ImageOverrides::new(&entries);
-        let tests = vec![correctness_case(&overrides)];
+        let tests = vec![integration_case(&overrides, true)];
         let error = overrides
             .validate(&tests)
             .expect_err("a misspelled name should be rejected");
         let error = format!("{error:?}");
 
-        assert!(error.contains("millstoen"), "unexpected error: {error}");
-        assert!(error.contains("millstone"), "unexpected error: {error}");
+        assert!(error.contains("contaner"), "unexpected error: {error}");
+        assert!(error.contains("container"), "unexpected error: {error}");
     }
 
     #[test]
     fn the_same_name_twice_is_rejected() {
         let entries = [
-            "millstone=registry.example.com/tools:first".parse().unwrap(),
-            "millstone=registry.example.com/tools:second".parse().unwrap(),
+            "container=registry.example.com/agent:first".parse().unwrap(),
+            "container=registry.example.com/agent:second".parse().unwrap(),
         ];
         let overrides = ImageOverrides::new(&entries);
-        let tests = vec![correctness_case(&overrides)];
+        let tests = vec![integration_case(&overrides, true)];
         let error = overrides
             .validate(&tests)
             .expect_err("a repeated name should be rejected");

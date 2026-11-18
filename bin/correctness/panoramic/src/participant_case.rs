@@ -230,8 +230,6 @@ fn write_plan(plan: &CasePlan, log_dir: &Path) {
 pub(crate) struct KindSetup {
     /// The cluster's name.
     pub(crate) cluster: String,
-    /// Images that cases outside the participant case schema need in the cluster.
-    pub(crate) extra_images: Vec<String>,
     /// Where setup reports its progress, for the run's display.
     pub(crate) events: UnboundedSender<TestEvent>,
 }
@@ -249,8 +247,7 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 /// participants use, every image, pulled if the Docker daemon lacks it, the courier, and, for pods, a kind cluster that
 /// holds the images. `plans` holds the plan of each case that runs, by name.
 ///
-/// A kind cluster is made if it is missing, and a run with any pod, or with images in `kind.extra_images`, sets it up
-/// once here, outside every case's timeout. Setup puts the cluster in `lifecycle` as soon as it exists, so the caller
+/// A kind cluster is made if it is missing, and a run with any pod sets it up once here, outside every case's timeout. Setup puts the cluster in `lifecycle` as soon as it exists, so the caller
 /// can remove it even when a later check fails.
 ///
 /// Returns the backend of each realization the cases use.
@@ -294,8 +291,7 @@ pub(crate) async fn check_before_the_first_case(
     }
     pod_cases.dedup();
     let pods = !pod_cases.is_empty();
-    let kind_needed = pods || !kind.extra_images.is_empty();
-    if !errors.is_empty() || !(containers || kind_needed) {
+    if !errors.is_empty() || !(containers || pods) {
         return if errors.is_empty() {
             Ok(Backends::default())
         } else {
@@ -343,39 +339,29 @@ pub(crate) async fn check_before_the_first_case(
         let backend = ContainerBackend::new(docker.clone(), &LINUX, courier.clone().into());
         backends.insert(Enclosure::LinuxContainer, Arc::new(backend));
     }
-    if kind_needed {
-        let images = pod_images
-            .keys()
-            .map(|image| image.to_string())
-            .chain(kind.extra_images)
-            .collect();
-        let KindSetup { cluster, events, .. } = kind;
-        let named = |cases: &[&str]| match cases {
-            [] => "the cases that need it".to_string(),
-            cases => format!("cases {}", cases.join(", ")),
-        };
+    if pods {
+        let images = pod_images.keys().map(|image| image.to_string()).collect();
+        let KindSetup { cluster, events } = kind;
         match KindLifecycle::ensure(cluster.clone(), images, events).await {
             Ok(ready) => *lifecycle = Some(ready),
             Err(e) => {
                 return Err(vec![format!(
-                    "Kind cluster '{}' cannot be set up for {}: {:#}",
+                    "Kind cluster '{}' cannot be set up for cases {}: {:#}",
                     cluster,
-                    named(&pod_cases),
+                    pod_cases.join(", "),
                     e
                 )])
             }
         }
-        if pods {
-            match PodBackend::connect(&cluster, docker, courier.into()).await {
-                Ok(backend) => backends.insert(Enclosure::KubernetesPod, Arc::new(backend)),
-                Err(e) => {
-                    return Err(vec![format!(
-                        "Kind cluster '{}' cannot run cases {}: {:#}",
-                        cluster,
-                        pod_cases.join(", "),
-                        e
-                    )])
-                }
+        match PodBackend::connect(&cluster, docker, courier.into()).await {
+            Ok(backend) => backends.insert(Enclosure::KubernetesPod, Arc::new(backend)),
+            Err(e) => {
+                return Err(vec![format!(
+                    "Kind cluster '{}' cannot run cases {}: {:#}",
+                    cluster,
+                    pod_cases.join(", "),
+                    e
+                )])
             }
         }
     }
