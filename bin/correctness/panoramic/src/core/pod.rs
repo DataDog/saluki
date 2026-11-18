@@ -232,6 +232,12 @@ impl CasePods {
         self.node_path("/courier")
     }
 
+    /// The path on the node of `path` if it is under `/airlock`, where every pod sees the same files.
+    fn shared_path(&self, path: &str) -> Option<String> {
+        let rest = path.strip_prefix(POD_ROOT)?.strip_prefix('/')?;
+        (!rest.split('/').any(|part| part == "..")).then(|| self.node_path(&format!("{}/{}", POD_ROOT, rest)))
+    }
+
     /// The path on the node of file number `index` of `participant`.
     fn file(&self, participant: &str, index: usize) -> String {
         self.node_path(&format!("/files/{}/{}", participant, index))
@@ -327,7 +333,8 @@ impl Scope for CasePods {
 /// The pod of one participant as the plan describes it, and its files.
 struct PodPlan {
     pod: Pod,
-    /// The files placed on the node before the pod exists, and mounted at their destinations.
+    /// The files placed on the node before the pod exists: in the shared tree if under `/airlock`, and mounted at their
+    /// destinations otherwise.
     files: Vec<NodeFile>,
     /// The files placed after the pod starts, and copied to their destinations by the pod's command.
     late: Vec<LateFile>,
@@ -410,14 +417,21 @@ impl CasePods {
                 Contents::Bytes(bytes) => bytes.clone(),
                 Contents::Template(template) => fill(template)?.into_bytes(),
             };
-            let node_path = self.file(name, index);
-            mounts.add(
-                &format!("file-{}", index),
-                node_path.clone(),
-                Some("File"),
-                &file.destination,
-                false,
-            );
+            // A mount over the shared tree would hide the file from every other reader of it.
+            let node_path = match self.shared_path(&file.destination) {
+                Some(path) => path,
+                None => {
+                    let path = self.file(name, index);
+                    mounts.add(
+                        &format!("file-{}", index),
+                        path.clone(),
+                        Some("File"),
+                        &file.destination,
+                        false,
+                    );
+                    path
+                }
+            };
             files.push(NodeFile {
                 node_path,
                 contents,
@@ -803,15 +817,12 @@ impl PodRunning {
     ///
     /// Returns a harness error if `path` is not under `/airlock`, which is the only place a pod's files are read.
     fn read_path(&self, path: &str) -> Result<String, HandleError> {
-        match path.strip_prefix("/airlock/") {
-            Some(rest) if !rest.split('/').any(|part| part == "..") => {
-                Ok(self.case.node_path(&format!("{}/{}", POD_ROOT, rest)))
-            }
-            _ => Err(HandleError::Harness(format!(
+        self.case.shared_path(path).ok_or_else(|| {
+            HandleError::Harness(format!(
                 "'{}' is not readable: a pod's files are read through the node, and only under /airlock",
                 path
-            ))),
-        }
+            ))
+        })
     }
 }
 
