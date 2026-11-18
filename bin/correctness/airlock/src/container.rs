@@ -2,7 +2,7 @@
 //!
 //! Creating and starting are separate, so files can be placed between them. A container joins the case network
 //! under its participant name, mounts the case volume when its scope has one, and can publish TCP ports on the runner's
-//! `127.0.0.1`. Docker chooses each host port, and [`Container::published_port`] reads it back after start.
+//! `127.0.0.1`. Docker chooses each host port, and [`Container::status`] reads it back after start.
 
 use std::{collections::HashMap, pin::Pin, time::Duration};
 
@@ -10,7 +10,8 @@ use bollard::{
     container::LogOutput,
     errors::Error,
     models::{
-        ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HostConfig, NetworkingConfig, PortBinding,
+        ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HostConfig, Mount, MountType,
+        NetworkingConfig, PortBinding,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -32,6 +33,10 @@ use crate::{
 /// The host address published ports bind to.
 const PUBLISH_HOST_IP: &str = "127.0.0.1";
 
+/// The ephemeral port range of a Linux container, for `net.ipv4.ip_local_port_range`. It stays above every fixed port a
+/// test process listens on, so an outbound socket cannot take one.
+pub const LINUX_EPHEMERAL_PORT_RANGE: &str = "60000 65535";
+
 /// What to run in a container, and how it joins its case scope.
 #[derive(Clone, Debug, Default)]
 pub struct ContainerSpec {
@@ -40,6 +45,8 @@ pub struct ContainerSpec {
     command: Option<Vec<String>>,
     env: Vec<String>,
     published_ports: Vec<u16>,
+    mounts: Vec<Mount>,
+    sysctls: HashMap<String, String>,
 }
 
 impl ContainerSpec {
@@ -74,6 +81,24 @@ impl ContainerSpec {
         self.published_ports.push(port);
         self
     }
+
+    /// Mounts the host path `host` at `path` in the container. Creating the container fails if `host` does not exist.
+    pub fn with_bind(mut self, host: impl Into<String>, path: impl Into<String>, read_only: bool) -> Self {
+        self.mounts.push(Mount {
+            source: Some(host.into()),
+            target: Some(path.into()),
+            typ: Some(MountType::BIND),
+            read_only: Some(read_only),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Sets a kernel parameter in the container's namespaces, such as `net.ipv4.ip_local_port_range`.
+    pub fn with_sysctl(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.sysctls.insert(key.into(), value.into());
+        self
+    }
 }
 
 /// One output chunk of a container or an exec.
@@ -103,13 +128,27 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = Result<Output, GenericError>> 
 pub struct Container {
     pub(crate) docker: Docker,
     pub(crate) name: String,
+    pub(crate) id: String,
+    /// The case network the container joined.
+    pub(crate) network: String,
+}
+
+/// What Docker reports of a container after its start.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Status {
+    /// Whether the container is running.
+    pub running: bool,
+    /// The container's address on the case network, while it runs.
+    pub ip: Option<String>,
+    /// The host port Docker chose for each published TCP port, while the container runs.
+    pub published_ports: HashMap<u16, u16>,
 }
 
 impl CaseScope {
     /// Creates the container for `participant` from `spec`, without starting it.
     ///
-    /// The container is named [`CaseScope::container_name`], joins the case network under the participant's name, and
-    /// carries the scope's labels, so [`CaseScope::reclaim`] removes it.
+    /// The container is named [`CaseScope::container_name`], joins the case network under the participant's name, which
+    /// is also its host name, and carries the scope's labels, so [`CaseScope::reclaim`] removes it.
     ///
     /// # Errors
     ///
@@ -154,6 +193,7 @@ impl CaseScope {
             .collect();
 
         let body = ContainerCreateBody {
+            hostname: Some(participant.to_string()),
             image: Some(spec.image),
             entrypoint: spec.entrypoint,
             cmd: spec.command,
@@ -162,21 +202,25 @@ impl CaseScope {
             exposed_ports: Some(exposed_ports),
             host_config: Some(HostConfig {
                 binds,
-                network_mode: Some(network),
+                mounts: (!spec.mounts.is_empty()).then_some(spec.mounts),
+                network_mode: Some(network.clone()),
                 port_bindings: Some(port_bindings),
+                sysctls: (!spec.sysctls.is_empty()).then_some(spec.sysctls),
                 ..Default::default()
             }),
             networking_config: Some(networking_config),
             ..Default::default()
         };
         let options = CreateContainerOptionsBuilder::default().name(&name).build();
-        bounded(Some(deadline), self.docker.create_container(Some(options), body))
+        let created = bounded(Some(deadline), self.docker.create_container(Some(options), body))
             .await
             .map_err(|e| generic_error!("Failed to create container '{}': {}", name, e))?;
 
         Ok(Container {
             docker: self.docker.clone(),
             name,
+            id: created.id,
+            network,
         })
     }
 }
@@ -185,6 +229,11 @@ impl Container {
     /// Returns the container's name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the ID Docker gave the container.
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     /// Starts the container.
@@ -218,19 +267,11 @@ impl Container {
     /// Returns an error if inspecting the container fails, if Docker reports no binding of `port` on `127.0.0.1`, or if
     /// `deadline` passes first.
     pub async fn published_port(&self, port: u16, deadline: Instant) -> Result<u16, GenericError> {
-        let inspect = bounded(Some(deadline), self.docker.inspect_container(&self.name, None))
-            .await
-            .map_err(|e| generic_error!("Failed to inspect container '{}': {}", self.name, e))?;
-        let key = format!("{}/tcp", port);
-        inspect
-            .network_settings
-            .and_then(|settings| settings.ports)
-            .and_then(|mut ports| ports.remove(&key))
-            .flatten()
-            .into_iter()
-            .flatten()
-            .filter(|binding| binding.host_ip.as_deref() == Some(PUBLISH_HOST_IP))
-            .find_map(|binding| binding.host_port.and_then(|host_port| host_port.parse().ok()))
+        self.status(deadline)
+            .await?
+            .published_ports
+            .get(&port)
+            .copied()
             .ok_or_else(|| {
                 generic_error!(
                     "Docker reports no host port for port {} of container '{}'.",
@@ -238,6 +279,43 @@ impl Container {
                     self.name
                 )
             })
+    }
+
+    /// Returns whether the container is running, with its address and published ports. Call it after [`Self::start`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if inspecting the container fails, or if `deadline` passes first.
+    pub async fn status(&self, deadline: Instant) -> Result<Status, GenericError> {
+        let inspect = bounded(Some(deadline), self.docker.inspect_container(&self.name, None))
+            .await
+            .map_err(|e| generic_error!("Failed to inspect container '{}': {}", self.name, e))?;
+        let running = inspect.state.and_then(|state| state.running).unwrap_or(false);
+        let settings = inspect.network_settings.unwrap_or_default();
+        let ip = settings
+            .networks
+            .and_then(|mut networks| networks.remove(&self.network))
+            .and_then(|endpoint| endpoint.ip_address)
+            .filter(|ip| !ip.is_empty());
+        let published_ports = settings
+            .ports
+            .into_iter()
+            .flatten()
+            .filter_map(|(key, bindings)| {
+                let port = key.strip_suffix("/tcp")?.parse().ok()?;
+                let host_port = bindings
+                    .into_iter()
+                    .flatten()
+                    .filter(|binding| binding.host_ip.as_deref() == Some(PUBLISH_HOST_IP))
+                    .find_map(|binding| binding.host_port.and_then(|host_port| host_port.parse().ok()))?;
+                Some((port, host_port))
+            })
+            .collect();
+        Ok(Status {
+            running,
+            ip,
+            published_ports,
+        })
     }
 
     /// Waits for the container to stop running and returns its exit code. Call it after [`Self::start`].

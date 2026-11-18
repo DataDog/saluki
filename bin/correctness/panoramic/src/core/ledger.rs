@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use airlock::driver::{Driver, DriverDetails};
+use airlock::scope::CaseScope;
 use airlock::unix::UnixProcess;
 use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
@@ -36,9 +37,9 @@ pub(crate) fn random_id() -> String {
 
 /// Shares a case's registered resources between its test body and the runner.
 ///
-/// Register isolation groups and namespaces before creation requests. The runner calls [`Self::reclaim`] to attempt
-/// removal in reverse registration order. Dropping the last ledger handle sends SIGKILL to registered process groups;
-/// directories, Docker resources, and namespaces require explicit reclaim.
+/// Register isolation groups, case scopes and namespaces before creation requests. The runner calls
+/// [`Self::reclaim`] to attempt removal in reverse registration order. Dropping the last ledger handle sends SIGKILL to
+/// registered process groups; directories, Docker resources, and namespaces require explicit reclaim.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ResourceLedger {
     entries: Arc<Mutex<Vec<Entry>>>,
@@ -55,6 +56,8 @@ struct Entry {
 enum Resource {
     /// The containers, shared volume, and network labeled with this isolation-group ID.
     IsolationGroup(String),
+    /// The containers, volume and network of one case scope.
+    CaseScope(CaseScope),
     /// A host process and its process group.
     Process(UnixProcess),
     /// A Kubernetes namespace, removed through the client that created it.
@@ -82,10 +85,11 @@ impl Resource {
     /// Removes the resource, returning a namespace that is still terminating.
     ///
     /// A directory or namespace that is already gone counts as removed. Filesystem removal may continue on a
-    /// blocking thread after its future is dropped.
-    async fn remove(self) -> Result<Option<Terminating>, GenericError> {
+    /// blocking thread after its future is dropped. A case scope's Docker requests are bounded by `deadline`.
+    async fn remove(self, deadline: Instant) -> Result<Option<Terminating>, GenericError> {
         match self {
             Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
+            Self::CaseScope(scope) => scope.reclaim(deadline).await.map(|()| None),
             Self::Process(process) => process.cleanup().await.map(|()| None),
             Self::Namespace { name, client } => {
                 let api = Api::<Namespace>::all(client);
@@ -106,10 +110,11 @@ impl Resource {
 }
 
 impl fmt::Debug for Resource {
-    /// Omits a namespace's client, which isn't `Debug`.
+    /// Omits a namespace's client, which isn't `Debug`, and names a case scope by its resource name.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IsolationGroup(id) => f.debug_tuple("IsolationGroup").field(id).finish(),
+            Self::CaseScope(scope) => f.debug_tuple("CaseScope").field(&scope.resource_name()).finish(),
             Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
@@ -122,6 +127,7 @@ impl fmt::Display for Resource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
+            Self::CaseScope(scope) => write!(f, "case_scope:{}", scope.resource_name()),
             Self::Process(process) => write!(f, "process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
             Self::Directory(path) => write!(f, "directory:{}", path.display()),
@@ -180,6 +186,11 @@ impl ResourceLedger {
         id
     }
 
+    /// Registers a case scope. Call it before preparing the scope.
+    pub(crate) fn case_scope(&self, scope: CaseScope) {
+        self.register(Resource::CaseScope(scope));
+    }
+
     /// Takes ownership of a spawned process.
     pub(crate) fn process(&self, process: UnixProcess) {
         self.register(Resource::Process(process));
@@ -200,6 +211,7 @@ impl ResourceLedger {
         for entry in self.lock().iter_mut() {
             let named = match &entry.resource {
                 Resource::IsolationGroup(id) => id == name,
+                Resource::CaseScope(scope) => scope.resource_name() == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
                 Resource::Process(_) | Resource::Directory(_) => false,
             };
@@ -209,7 +221,8 @@ impl ResourceLedger {
         }
     }
 
-    /// Runs a creation request for the registered isolation group or namespace `name`.
+    /// Runs a creation request for the registered isolation group, case scope or namespace `name`. A case scope's name
+    /// is its resource name.
     ///
     /// If cancellation drops the request, returns `None` and marks the resource unsettled.
     pub(crate) async fn create<F>(&self, name: &str, cancel: &CancellationToken, request: F) -> Option<F::Output>
@@ -218,6 +231,21 @@ impl ResourceLedger {
     {
         let created = cancel.run_until_cancelled(request).await;
         if created.is_none() {
+            self.mark_unsettled(name);
+        }
+        created
+    }
+
+    /// Runs a creation request bounded by `deadline` as [`Self::create`] does. A request that fails once `deadline` has
+    /// passed was cut short too, so it also marks the resource unsettled.
+    pub(crate) async fn create_by<F, T>(
+        &self, name: &str, cancel: &CancellationToken, deadline: Instant, request: F,
+    ) -> Option<Result<T, GenericError>>
+    where
+        F: Future<Output = Result<T, GenericError>>,
+    {
+        let created = self.create(name, cancel, request).await;
+        if matches!(created, Some(Err(_))) && Instant::now() >= deadline {
             self.mark_unsettled(name);
         }
         created
@@ -268,7 +296,7 @@ impl ResourceLedger {
                     ReclaimResult::Leaked,
                     Some(format!("kept because {} was not reclaimed", kept_by)),
                 )),
-                _ => match timeout_at(deadline, resource.remove()).await {
+                _ => match timeout_at(deadline, resource.remove(deadline)).await {
                     Ok(Ok(Some(terminating))) => Removal::Terminating(Box::new(terminating)),
                     Ok(Ok(None)) => Removal::Settled(removed(unsettled)),
                     Ok(Err(e)) => Removal::Settled((ReclaimResult::Leaked, Some(format!("{:#}", e)))),

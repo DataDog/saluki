@@ -4622,6 +4622,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bollard",
+ "bytes",
  "chrono",
  "clap",
  "colored",

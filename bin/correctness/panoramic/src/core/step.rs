@@ -14,6 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::handle::{Handle, HandleError};
 use super::record::StepStatus;
 
 /// What a step does to the case.
@@ -113,24 +114,6 @@ pub(crate) trait Operation: fmt::Debug + Send + Sync {
 pub(crate) enum Uses {
     Command(&'static str),
     Request(&'static str),
-}
-
-/// What a step acts on a started participant through. Every method works the same on every realization.
-// TODO: add the operations with the container backend.
-#[derive(Debug)]
-pub(crate) struct Handle<'a> {
-    _participant: PhantomData<&'a ()>,
-}
-
-/// Why a handle operation failed.
-// TODO: remove the dead_code allowance once handles exist.
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub(crate) enum HandleError {
-    /// The mechanism failed. The step is `errored`.
-    Harness(String),
-    /// The mechanism worked and the software answered badly. The step is `failed`.
-    Software(String),
 }
 
 /// What a running step can reach: handles to the case's started participants.

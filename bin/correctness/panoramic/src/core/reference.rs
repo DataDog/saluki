@@ -12,9 +12,10 @@
 //! and when a step runs for its named commands. A participant is created after every participant whose container ID it
 //! names in a place fixed at create.
 //!
-//! The resolver runs at plan compile, at create and when a step runs, each time with more values known. The plan
-//! records each template it cannot fill yet, with the participants it waits for: once the last of them is created or
-//! has started, every reference in the template has a value.
+//! The resolver runs at plan compile, at create and when a step runs, each time with more values known: [`Values`]
+//! gains each runtime identity as its participant is created or starts. The plan records each template it cannot fill
+//! yet, with the participants it waits for: once the last of them is created or has started, every reference in the
+//! template has a value.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -135,7 +136,8 @@ impl PlannedParticipant {
     }
 }
 
-/// The values references name, as far as they are known.
+/// The values references name, as far as they are known: what the plan knows, then each runtime identity once its
+/// participant is created or has started.
 pub(crate) struct Values {
     participants: BTreeMap<String, Known>,
 }
@@ -145,6 +147,8 @@ struct Known {
     realization: Realization,
     endpoints: BTreeMap<String, (Protocol, PlannedAddress)>,
     connections: BTreeMap<String, (String, Reached)>,
+    container_id: Option<String>,
+    ip: Option<String>,
 }
 
 /// A value as far as it is known.
@@ -156,7 +160,7 @@ enum Lookup {
 
 impl Values {
     /// The values a plan knows: addresses, connections and directories.
-    fn of_plan(participants: &BTreeMap<String, PlannedParticipant>) -> Self {
+    pub(crate) fn of_plan(participants: &BTreeMap<String, PlannedParticipant>) -> Self {
         let participants = participants
             .iter()
             .map(|(name, participant)| {
@@ -172,11 +176,44 @@ impl Values {
                         .iter()
                         .map(|(name, connection)| (name.clone(), (connection.url.clone(), connection.reached.clone())))
                         .collect(),
+                    container_id: None,
+                    ip: None,
                 };
                 (name.clone(), known)
             })
             .collect();
         Self { participants }
+    }
+
+    /// Records the container ID `participant` got when it was created.
+    // TODO: remove the dead_code allowance once the lifecycle creates participants.
+    #[allow(dead_code)]
+    pub(crate) fn created(&mut self, participant: &str, container_id: &str) {
+        if let Some(known) = self.participants.get_mut(participant) {
+            known.container_id = Some(container_id.to_string());
+        }
+    }
+
+    /// Records the address `participant` has on the case's network once it has started.
+    // TODO: remove the dead_code allowance once the lifecycle starts participants.
+    #[allow(dead_code)]
+    pub(crate) fn started(&mut self, participant: &str, ip: &str) {
+        if let Some(known) = self.participants.get_mut(participant) {
+            known.ip = Some(ip.to_string());
+        }
+    }
+
+    /// Fills in every reference of `template`, held by `holder`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first reference that has no value yet.
+    pub(crate) fn fill(&self, holder: &str, template: &Template) -> Result<String, String> {
+        let filled = template.resolve(false, |reference| self.text(holder, reference));
+        if let Some(reference) = filled.references().next() {
+            return Err(format!("'{}' has no value yet", reference));
+        }
+        Ok(filled.text().to_string())
     }
 
     /// The text of `reference` held by `holder`, if it is known.
@@ -232,8 +269,14 @@ impl Values {
             }
             Reference::Identity { holder: owner, part } => {
                 let owner = owner.resolve(holder);
-                let enclosure = known(owner)?.realization.enclosure;
-                let started = || Ok(Lookup::Later(owner.to_string(), Later::Started));
+                let known = known(owner)?;
+                let enclosure = known.realization.enclosure;
+                let runtime = |value: &Option<String>, when| {
+                    Ok(match value {
+                        Some(value) => Lookup::Known(value.clone()),
+                        None => Lookup::Later(owner.to_string(), when),
+                    })
+                };
                 match (part, enclosure) {
                     (IdentityPart::Dir, enclosure) => enclosure
                         .facts()
@@ -241,12 +284,17 @@ impl Values {
                         .map(Lookup::Known)
                         .ok_or_else(|| format!("has no value: a {} has no directory at plan yet", enclosure)),
                     (IdentityPart::Ip, Enclosure::HostProcessGroup) => Ok(Lookup::Known("127.0.0.1".to_string())),
-                    (IdentityPart::Ip, _) => started(),
+                    (IdentityPart::Ip, _) => runtime(&known.ip, Later::Started),
                     (IdentityPart::ContainerId, Enclosure::LinuxContainer | Enclosure::WindowsContainer) => {
-                        Ok(Lookup::Later(owner.to_string(), Later::Created))
+                        runtime(&known.container_id, Later::Created)
                     }
-                    (IdentityPart::ContainerId, Enclosure::KubernetesPod) => started(),
-                    (IdentityPart::PodUid, Enclosure::KubernetesPod) => started(),
+                    (IdentityPart::ContainerId, Enclosure::KubernetesPod) => {
+                        runtime(&known.container_id, Later::Started)
+                    }
+                    // TODO: record a pod's UID with the pod backend.
+                    (IdentityPart::PodUid, Enclosure::KubernetesPod) => {
+                        Ok(Lookup::Later(owner.to_string(), Later::Started))
+                    }
                     (IdentityPart::ContainerId | IdentityPart::PodUid, enclosure) => {
                         Err(format!("never has a value: participant '{}' is a {}", owner, enclosure))
                     }

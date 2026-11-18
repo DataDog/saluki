@@ -705,7 +705,7 @@ impl Planner<'_, '_, '_> {
         }
 
         let mounts = mounts.unwrap_or_default();
-        if !mounts.is_empty() && !matches!(enclosure, Enclosure::LinuxContainer | Enclosure::KubernetesPod) {
+        if !mounts.is_empty() && !enclosure.facts().mounts {
             self.at.push(format!(
                 "'mounts' apply to Linux containers and pods, and this participant is a {}",
                 enclosure
