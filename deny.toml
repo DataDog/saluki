@@ -28,6 +28,12 @@ ignore = [
   # RUSTSEC-2024-0449: unsafe-libyaml (via the deprecated serde_yaml, and lading-payload) is unmaintained. No known
   # vulnerability. Migrating to serde-saphyr needs reworking our serde_yaml::Value usage and coordinating with lading.
   { id = "RUSTSEC-2024-0449", reason = "unmaintained only; no drop-in safe replacement, pending serde-saphyr migration" },
+
+  # chrono and chrono-tz are unmaintained. No known vulnerability. We're migrating our own usage to `jiff`, which drops
+  # chrono-tz entirely, but chrono also arrives through `tracing-rolling-file` (to be replaced in-house) and
+  # `lading-payload` (needs an upstream change), so the chrono exception outlives the in-tree migration.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained only; pending jiff migration, tracing-rolling-file replacement, and lading-payload" },
+  { id = "RUSTSEC-2026-0555", reason = "unmaintained only; pending jiff migration of the saluki-app log formatter" },
 ]
 
 [graph]
