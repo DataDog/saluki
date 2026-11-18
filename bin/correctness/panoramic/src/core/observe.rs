@@ -19,9 +19,11 @@
 //! # Output and collected files
 //!
 //! Output is captured line by line as it arrives: kept per process for steps, and written to
-//! `<log dir>/<participant>/<process>.log`. A participant whose processes are all supervised also gets its container
-//! log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. A capture that stops while its
-//! participant runs is an observation error: a step that relies on having seen all of a process's output errors.
+//! `<log dir>/<participant>/<process>.log`. Text after the last newline is not a line yet. It is kept apart as the
+//! process's unterminated output, until a newline completes it or the capture ends. A participant whose processes are
+//! all supervised also gets its container log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. A
+//! capture that stops while its participant runs is an observation error: a step that relies on having seen all of a
+//! process's output errors.
 //! Files to collect are copied to `<log dir>/<participant>/collected/<name>` after the procedure. Each carries its own
 //! retention, which [`retain`] applies to the outcome.
 
@@ -149,6 +151,9 @@ struct Observed {
     /// Each process's output so far, line by line. The whole output is kept for the case's length, on purpose: steps
     /// match against all of it, and a case is bounded in time.
     output: BTreeMap<String, watch::Sender<Vec<String>>>,
+    /// What each process has written since its last newline, for each process that has written some: one entry for
+    /// each of its streams that ends without a newline.
+    unterminated: Mutex<BTreeMap<String, Vec<String>>>,
     /// Why the capture of a process's output stopped before its output ended, for each process whose capture did.
     capture_failures: Mutex<BTreeMap<String, String>>,
 }
@@ -163,6 +168,7 @@ impl Observation {
         Self(Arc::new(Observed {
             exit: watch::Sender::new(None),
             output,
+            unterminated: Mutex::default(),
             capture_failures: Mutex::default(),
         }))
     }
@@ -203,6 +209,23 @@ impl Observation {
         failures.get(process).cloned()
     }
 
+    /// What `process` has written since its last newline, one entry for each stream that has some. A step that must
+    /// see all the output matches it as well as the lines.
+    pub(crate) fn unterminated(&self, process: &str) -> Vec<String> {
+        let unterminated = self.0.unterminated.lock().unwrap_or_else(|e| e.into_inner());
+        unterminated.get(process).cloned().unwrap_or_default()
+    }
+
+    /// Replaces what `process` has written since its last newline.
+    fn set_unterminated(&self, process: &str, tails: Vec<String>) {
+        let mut unterminated = self.0.unterminated.lock().unwrap_or_else(|e| e.into_inner());
+        if tails.is_empty() {
+            unterminated.remove(process);
+        } else {
+            unterminated.insert(process.to_string(), tails);
+        }
+    }
+
     /// Adds `line` to the output of `process`.
     pub(crate) fn line(&self, process: &str, line: String) {
         if let Some(output) = self.0.output.get(process) {
@@ -226,6 +249,11 @@ impl Lines {
         };
         let complete: Vec<u8> = self.partial.drain(..=end).collect();
         complete[..end].split(|&byte| byte == b'\n').map(line).collect()
+    }
+
+    /// The text after the last newline, if there is any.
+    fn tail(&self) -> Option<String> {
+        (!self.partial.is_empty()).then(|| line(&self.partial))
     }
 
     /// The last line, if it has no newline.
@@ -283,6 +311,13 @@ impl Sink {
         }
     }
 
+    /// Publishes the unterminated end of each of the streams in `lines` to the process.
+    fn publish<'a>(&self, lines: impl IntoIterator<Item = &'a Lines>) {
+        if let Some((observation, process)) = &self.process {
+            observation.set_unterminated(process, lines.into_iter().filter_map(Lines::tail).collect());
+        }
+    }
+
     /// Records that the capture broke, so a step does not take the output as whole.
     fn failed(&self, why: String) {
         if let Some((observation, process)) = &self.process {
@@ -325,8 +360,10 @@ impl Sink {
                 }
             };
             self.write(lines).await;
+            self.publish([&stdout, &stderr]);
         }
         self.write(stdout.finish().into_iter().chain(stderr.finish())).await;
+        self.publish([]);
     }
 
     /// Captures the log file at `path` in `participant`, which the courier at `courier` follows for `limit` or until
@@ -359,6 +396,7 @@ impl Sink {
                     Ok(read) => {
                         received += read;
                         self.write(lines.push(&chunk[..read])).await;
+                        self.publish([&lines]);
                     }
                     Err(e) => {
                         warn!(path, error = %e, "Stopped capturing a followed file.");
@@ -386,12 +424,14 @@ impl Sink {
             Ok(Some(contents)) => {
                 if let Some(rest) = contents.get(received..) {
                     self.write(lines.push(rest)).await;
+                    self.publish([&lines]);
                 }
             }
             Ok(None) => {}
             Err(e) => warn!(path, error = %e, "Failed to read a followed file once more."),
         }
         self.write(lines.finish()).await;
+        self.publish([]);
     }
 }
 

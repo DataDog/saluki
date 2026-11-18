@@ -2,6 +2,7 @@
 //!
 //! Each line of a process's output is matched on its own, as text it must contain, or, with `regex: true`, as a regex.
 //! A value a reference fills into a regex is escaped, so a path or an address matches itself.
+//! The end of a process's output that has no newline yet counts as a line.
 
 use std::time::Duration;
 
@@ -77,7 +78,7 @@ impl Step for LogContains {
             let pattern = Pattern::new(filled.clone(), self.regex)?;
             let mut output = Output::new(handle, self.process.as_deref())?;
             loop {
-                if let Some((process, line)) = output.find(&pattern) {
+                if let Some((process, line)) = output.find(handle, &pattern) {
                     let message = format!("Found '{}' in process '{}': {}", filled, process, line);
                     return Ok(StepReport {
                         status: StepStatus::Passed,
@@ -155,7 +156,7 @@ impl Step for LogNotContains {
             let pattern = Pattern::new(filled.clone(), self.regex)?;
             let mut output = Output::new(handle, None)?;
             loop {
-                if let Some((process, line)) = output.find(&pattern) {
+                if let Some((process, line)) = output.find(handle, &pattern) {
                     let message = format!("Found '{}' in process '{}': {}", filled, process, line);
                     return Ok(StepReport {
                         status: StepStatus::Failed,
@@ -233,13 +234,19 @@ impl<'a> Output<'a> {
         Ok(Self { processes })
     }
 
-    /// The first line not read yet that matches `pattern`, and its process.
-    fn find(&mut self, pattern: &Pattern) -> Option<(&'a str, String)> {
+    /// The first line not read yet that matches `pattern`, and its process. A process's unterminated output counts as
+    /// a line, so output that is never ended with a newline is matched too.
+    fn find(&mut self, handle: &Handle<'_>, pattern: &Pattern) -> Option<(&'a str, String)> {
         for (process, output, read) in &mut self.processes {
             let lines = output.borrow();
             let found = lines[*read..].iter().find(|line| pattern.matches(line)).cloned();
             *read = lines.len();
             if let Some(line) = found {
+                return Some((process, line));
+            }
+            drop(lines);
+            let unterminated = handle.output_unterminated(process);
+            if let Some(line) = unterminated.into_iter().find(|line| pattern.matches(line)) {
                 return Some((process, line));
             }
         }

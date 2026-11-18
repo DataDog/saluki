@@ -115,6 +115,12 @@ impl<'a> Handle<'a> {
         self.observation.output(process).ok_or_else(|| self.no_process(process))
     }
 
+    /// What `process` has written since its last newline, one entry for each of its streams that has some. `process`
+    /// is one of the participant's, from [`Handle::output`] or [`Handle::watched`].
+    pub(crate) fn output_unterminated(&self, process: &str) -> Vec<String> {
+        self.observation.unterminated(process)
+    }
+
     /// Checks that the output of `process` is whole so far: its capture has not broken.
     ///
     /// # Errors
