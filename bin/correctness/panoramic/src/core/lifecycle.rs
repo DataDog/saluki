@@ -431,8 +431,17 @@ impl Case<'_> {
             .map_err(|e| format!("Failed to create '{}': {}", dir.display(), e))?;
         let limit = self.run.deadline.at.saturating_duration_since(Instant::now());
         let tasks = self.run.tasks;
+        let facts = planned.realization.enclosure.facts();
         let mut through_container = false;
         for process in &planned.processes {
+            if matches!(process.output(), OutputChannel::File { .. })
+                && (facts.courier.is_none() || facts.log_dir(name).is_none())
+            {
+                return Err(format!(
+                    "Participant '{}' is a {}, which has no courier or log directory.",
+                    name, planned.realization.enclosure
+                ));
+            }
             let output = dir.join(format!("{}.log", process.name()));
             let sink = Sink::create(
                 output.clone(),
