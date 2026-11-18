@@ -1781,210 +1781,288 @@
 <a href=#1781 id=1781 data-nosnippet>1781</a>        </span>);
 <a href=#1782 id=1782 data-nosnippet>1782</a>    }
 <a href=#1783 id=1783 data-nosnippet>1783</a>
-<a href=#1784 id=1784 data-nosnippet>1784</a>    <span class="kw">fn </span>transform_with_workload_provider(workload_provider: <span class="prelude-ty">Option</span>&lt;TestWorkloadProvider&gt;) -&gt; ApmStats {
-<a href=#1785 id=1785 data-nosnippet>1785</a>        <span class="kw">let </span>now = now_nanos();
-<a href=#1786 id=1786 data-nosnippet>1786</a>        ApmStats {
-<a href=#1787 id=1787 data-nosnippet>1787</a>            concentrator: SpanConcentrator::new(<span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[], Default::default(), now),
-<a href=#1788 id=1788 data-nosnippet>1788</a>            flush_interval: DEFAULT_FLUSH_INTERVAL,
-<a href=#1789 id=1789 data-nosnippet>1789</a>            agent_env: MetaString::from(<span class="string">"none"</span>),
-<a href=#1790 id=1790 data-nosnippet>1790</a>            agent_hostname: MetaString::default(),
-<a href=#1791 id=1791 data-nosnippet>1791</a>            workload_provider: workload_provider
-<a href=#1792 id=1792 data-nosnippet>1792</a>                .map(|provider| Arc::new(provider) <span class="kw">as </span>Arc&lt;<span class="kw">dyn </span>WorkloadProvider + Send + Sync&gt;),
-<a href=#1793 id=1793 data-nosnippet>1793</a>            splits: Counter::noop(),
-<a href=#1794 id=1794 data-nosnippet>1794</a>        }
-<a href=#1795 id=1795 data-nosnippet>1795</a>    }
-<a href=#1796 id=1796 data-nosnippet>1796</a>
-<a href=#1797 id=1797 data-nosnippet>1797</a>    <span class="kw">fn </span>string_attributes(pairs: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) -&gt; FastHashMap&lt;MetaString, AttributeValue&gt; {
-<a href=#1798 id=1798 data-nosnippet>1798</a>        pairs
-<a href=#1799 id=1799 data-nosnippet>1799</a>            .iter()
-<a href=#1800 id=1800 data-nosnippet>1800</a>            .map(|(k, v)| (MetaString::from(<span class="kw-2">*</span>k), AttributeValue::String(MetaString::from(<span class="kw-2">*</span>v))))
-<a href=#1801 id=1801 data-nosnippet>1801</a>            .collect()
-<a href=#1802 id=1802 data-nosnippet>1802</a>    }
-<a href=#1803 id=1803 data-nosnippet>1803</a>
-<a href=#1804 id=1804 data-nosnippet>1804</a>    <span class="kw">const </span>CONTAINER_VERSION: ContainerVersionData&lt;<span class="lifetime">'static</span>&gt; = ContainerVersionData {
-<a href=#1805 id=1805 data-nosnippet>1805</a>        git_commit_sha: <span class="string">"container-sha"</span>,
-<a href=#1806 id=1806 data-nosnippet>1806</a>        image_tag: <span class="string">"container-image"</span>,
-<a href=#1807 id=1807 data-nosnippet>1807</a>        app_version: <span class="string">"container-v"</span>,
-<a href=#1808 id=1808 data-nosnippet>1808</a>    };
-<a href=#1809 id=1809 data-nosnippet>1809</a>
-<a href=#1810 id=1810 data-nosnippet>1810</a>    <span class="attr">#[test]
-<a href=#1811 id=1811 data-nosnippet>1811</a>    </span><span class="kw">fn </span>version_data_falls_back_to_container_tags() {
-<a href=#1812 id=1812 data-nosnippet>1812</a>        <span class="kw">let </span>transform = transform_with_workload_provider(<span class="prelude-val">None</span>);
-<a href=#1813 id=1813 data-nosnippet>1813</a>        <span class="kw">let </span>trace = Trace::new(<span class="macro">vec!</span>[make_test_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)], TraceIngestInfo::Datadog);
-<a href=#1814 id=1814 data-nosnippet>1814</a>
-<a href=#1815 id=1815 data-nosnippet>1815</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, CONTAINER_VERSION);
-<a href=#1816 id=1816 data-nosnippet>1816</a>        <span class="macro">assert_eq!</span>(key.version, <span class="string">"container-v"</span>);
-<a href=#1817 id=1817 data-nosnippet>1817</a>        <span class="macro">assert_eq!</span>(key.git_commit_sha, <span class="string">"container-sha"</span>);
-<a href=#1818 id=1818 data-nosnippet>1818</a>        <span class="macro">assert_eq!</span>(key.image_tag, <span class="string">"container-image"</span>);
-<a href=#1819 id=1819 data-nosnippet>1819</a>    }
-<a href=#1820 id=1820 data-nosnippet>1820</a>
-<a href=#1821 id=1821 data-nosnippet>1821</a>    <span class="attr">#[test]
-<a href=#1822 id=1822 data-nosnippet>1822</a>    </span><span class="kw">fn </span>trace_version_data_wins_over_container_tags() {
-<a href=#1823 id=1823 data-nosnippet>1823</a>        <span class="kw">let </span>transform = transform_with_workload_provider(<span class="prelude-val">None</span>);
+<a href=#1784 id=1784 data-nosnippet>1784</a>    <span class="comment">// Span conversion extracts no peer tag keys of its own, so a peer tag set only on the OTLP resource reaches span
+<a href=#1785 id=1785 data-nosnippet>1785</a>    // meta through the generic resource-attribute loop, and the concentrator reads it from there.
+<a href=#1786 id=1786 data-nosnippet>1786</a>    </span><span class="attr">#[test]
+<a href=#1787 id=1787 data-nosnippet>1787</a>    </span><span class="kw">fn </span>peer_tag_set_only_on_otlp_resource_reaches_stats() {
+<a href=#1788 id=1788 data-nosnippet>1788</a>        <span class="kw">use </span>otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
+<a href=#1789 id=1789 data-nosnippet>1789</a>        <span class="kw">use </span>otlp_protos::opentelemetry::proto::resource::v1::Resource;
+<a href=#1790 id=1790 data-nosnippet>1790</a>        <span class="kw">use </span>otlp_protos::opentelemetry::proto::trace::v1::span::SpanKind;
+<a href=#1791 id=1791 data-nosnippet>1791</a>        <span class="kw">use </span>otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span <span class="kw">as </span>OtlpSpan};
+<a href=#1792 id=1792 data-nosnippet>1792</a>        <span class="kw">use </span>saluki_core::data_model::event::Event;
+<a href=#1793 id=1793 data-nosnippet>1793</a>
+<a href=#1794 id=1794 data-nosnippet>1794</a>        <span class="kw">use </span><span class="kw">crate</span>::common::otlp::origin::OtlpOriginTagResolver;
+<a href=#1795 id=1795 data-nosnippet>1795</a>        <span class="kw">use </span><span class="kw">crate</span>::common::otlp::traces::translator::{traces_settings, OtlpTracesTranslator};
+<a href=#1796 id=1796 data-nosnippet>1796</a>        <span class="kw">use </span><span class="kw">crate</span>::common::otlp::Metrics;
+<a href=#1797 id=1797 data-nosnippet>1797</a>
+<a href=#1798 id=1798 data-nosnippet>1798</a>        <span class="kw">let </span>now = now_nanos();
+<a href=#1799 id=1799 data-nosnippet>1799</a>        <span class="kw">let </span>client_span = OtlpSpan {
+<a href=#1800 id=1800 data-nosnippet>1800</a>            trace_id: <span class="macro">vec!</span>[<span class="number">1</span>; <span class="number">16</span>],
+<a href=#1801 id=1801 data-nosnippet>1801</a>            span_id: <span class="macro">vec!</span>[<span class="number">2</span>; <span class="number">8</span>],
+<a href=#1802 id=1802 data-nosnippet>1802</a>            name: <span class="string">"SELECT ..."</span>.to_string(),
+<a href=#1803 id=1803 data-nosnippet>1803</a>            kind: SpanKind::Client <span class="kw">as </span>i32,
+<a href=#1804 id=1804 data-nosnippet>1804</a>            start_time_unix_nano: now - <span class="number">1_000_000</span>,
+<a href=#1805 id=1805 data-nosnippet>1805</a>            end_time_unix_nano: now,
+<a href=#1806 id=1806 data-nosnippet>1806</a>            ..Default::default()
+<a href=#1807 id=1807 data-nosnippet>1807</a>        };
+<a href=#1808 id=1808 data-nosnippet>1808</a>        <span class="kw">let </span>resource_spans = ResourceSpans {
+<a href=#1809 id=1809 data-nosnippet>1809</a>            resource: <span class="prelude-val">Some</span>(Resource {
+<a href=#1810 id=1810 data-nosnippet>1810</a>                attributes: <span class="macro">vec!</span>[KeyValue {
+<a href=#1811 id=1811 data-nosnippet>1811</a>                    key: <span class="string">"db.instance"</span>.to_string(),
+<a href=#1812 id=1812 data-nosnippet>1812</a>                    value: <span class="prelude-val">Some</span>(AnyValue {
+<a href=#1813 id=1813 data-nosnippet>1813</a>                        value: <span class="prelude-val">Some</span>(Value::StringValue(<span class="string">"i-1234"</span>.to_string())),
+<a href=#1814 id=1814 data-nosnippet>1814</a>                    }),
+<a href=#1815 id=1815 data-nosnippet>1815</a>                }],
+<a href=#1816 id=1816 data-nosnippet>1816</a>                ..Default::default()
+<a href=#1817 id=1817 data-nosnippet>1817</a>            }),
+<a href=#1818 id=1818 data-nosnippet>1818</a>            scope_spans: <span class="macro">vec!</span>[ScopeSpans {
+<a href=#1819 id=1819 data-nosnippet>1819</a>                spans: <span class="macro">vec!</span>[client_span],
+<a href=#1820 id=1820 data-nosnippet>1820</a>                ..Default::default()
+<a href=#1821 id=1821 data-nosnippet>1821</a>            }],
+<a href=#1822 id=1822 data-nosnippet>1822</a>            ..Default::default()
+<a href=#1823 id=1823 data-nosnippet>1823</a>        };
 <a href=#1824 id=1824 data-nosnippet>1824</a>
-<a href=#1825 id=1825 data-nosnippet>1825</a>        <span class="comment">// The payload version and the root span's image tag and commit SHA win over the container's tags.
-<a href=#1826 id=1826 data-nosnippet>1826</a>        </span><span class="kw">let </span>span = make_test_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>).with_attributes(string_attributes(<span class="kw-2">&amp;</span>[
-<a href=#1827 id=1827 data-nosnippet>1827</a>            (TAG_GIT_COMMIT_SHA, <span class="string">"span-sha"</span>),
-<a href=#1828 id=1828 data-nosnippet>1828</a>            (<span class="string">"_dd.image_tag"</span>, <span class="string">"span-image"</span>),
-<a href=#1829 id=1829 data-nosnippet>1829</a>        ]));
-<a href=#1830 id=1830 data-nosnippet>1830</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[span], TraceIngestInfo::Datadog);
-<a href=#1831 id=1831 data-nosnippet>1831</a>        trace.payload.app_version = MetaString::from(<span class="string">"payload-v"</span>);
-<a href=#1832 id=1832 data-nosnippet>1832</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, CONTAINER_VERSION);
-<a href=#1833 id=1833 data-nosnippet>1833</a>        <span class="macro">assert_eq!</span>(key.version, <span class="string">"payload-v"</span>);
-<a href=#1834 id=1834 data-nosnippet>1834</a>        <span class="macro">assert_eq!</span>(key.git_commit_sha, <span class="string">"span-sha"</span>);
-<a href=#1835 id=1835 data-nosnippet>1835</a>        <span class="macro">assert_eq!</span>(key.image_tag, <span class="string">"span-image"</span>);
-<a href=#1836 id=1836 data-nosnippet>1836</a>
-<a href=#1837 id=1837 data-nosnippet>1837</a>        <span class="comment">// The commit SHA set on the tracer payload wins over the root span's.
-<a href=#1838 id=1838 data-nosnippet>1838</a>        </span>trace.attributes = Arc::new(string_attributes(<span class="kw-2">&amp;</span>[(TAG_GIT_COMMIT_SHA, <span class="string">"payload-sha"</span>)]));
-<a href=#1839 id=1839 data-nosnippet>1839</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, CONTAINER_VERSION);
-<a href=#1840 id=1840 data-nosnippet>1840</a>        <span class="macro">assert_eq!</span>(key.git_commit_sha, <span class="string">"payload-sha"</span>);
+<a href=#1825 id=1825 data-nosnippet>1825</a>        <span class="kw">let </span><span class="kw-2">mut </span>translator = OtlpTracesTranslator::new(
+<a href=#1826 id=1826 data-nosnippet>1826</a>            traces_settings(),
+<a href=#1827 id=1827 data-nosnippet>1827</a>            <span class="number">5000</span>,
+<a href=#1828 id=1828 data-nosnippet>1828</a>            SemanticRegistryProvider::default(),
+<a href=#1829 id=1829 data-nosnippet>1829</a>            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+<a href=#1830 id=1830 data-nosnippet>1830</a>        );
+<a href=#1831 id=1831 data-nosnippet>1831</a>        <span class="kw">let </span>trace = translator
+<a href=#1832 id=1832 data-nosnippet>1832</a>            .translate_spans(resource_spans, <span class="kw-2">&amp;</span>Metrics::for_tests())
+<a href=#1833 id=1833 data-nosnippet>1833</a>            .find_map(Event::try_into_trace)
+<a href=#1834 id=1834 data-nosnippet>1834</a>            .expect(<span class="string">"the client span should translate into a trace"</span>);
+<a href=#1835 id=1835 data-nosnippet>1835</a>        <span class="kw">let </span>span = <span class="kw-2">&amp;</span>trace.spans()[<span class="number">0</span>];
+<a href=#1836 id=1836 data-nosnippet>1836</a>        <span class="macro">assert_eq!</span>(
+<a href=#1837 id=1837 data-nosnippet>1837</a>            span.attributes.get(<span class="string">"db.instance"</span>).and_then(AttributeValue::as_string),
+<a href=#1838 id=1838 data-nosnippet>1838</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>MetaString::from(<span class="string">"i-1234"</span>)),
+<a href=#1839 id=1839 data-nosnippet>1839</a>            <span class="string">"a resource-only peer tag must reach span meta"
+<a href=#1840 id=1840 data-nosnippet>1840</a>        </span>);
 <a href=#1841 id=1841 data-nosnippet>1841</a>
-<a href=#1842 id=1842 data-nosnippet>1842</a>        <span class="comment">// Empty trace values don't hide the container's tags.
-<a href=#1843 id=1843 data-nosnippet>1843</a>        </span><span class="kw">let </span>span = make_test_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>).with_attributes(string_attributes(<span class="kw-2">&amp;</span>[
-<a href=#1844 id=1844 data-nosnippet>1844</a>            (<span class="string">"version"</span>, <span class="string">""</span>),
-<a href=#1845 id=1845 data-nosnippet>1845</a>            (TAG_GIT_COMMIT_SHA, <span class="string">""</span>),
-<a href=#1846 id=1846 data-nosnippet>1846</a>            (<span class="string">"_dd.image_tag"</span>, <span class="string">""</span>),
-<a href=#1847 id=1847 data-nosnippet>1847</a>        ]));
-<a href=#1848 id=1848 data-nosnippet>1848</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[span], TraceIngestInfo::Datadog);
-<a href=#1849 id=1849 data-nosnippet>1849</a>        trace.attributes = Arc::new(string_attributes(<span class="kw-2">&amp;</span>[(TAG_GIT_COMMIT_SHA, <span class="string">""</span>)]));
-<a href=#1850 id=1850 data-nosnippet>1850</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, CONTAINER_VERSION);
-<a href=#1851 id=1851 data-nosnippet>1851</a>        <span class="macro">assert_eq!</span>(key.version, <span class="string">"container-v"</span>);
-<a href=#1852 id=1852 data-nosnippet>1852</a>        <span class="macro">assert_eq!</span>(key.git_commit_sha, <span class="string">"container-sha"</span>);
-<a href=#1853 id=1853 data-nosnippet>1853</a>        <span class="macro">assert_eq!</span>(key.image_tag, <span class="string">"container-image"</span>);
-<a href=#1854 id=1854 data-nosnippet>1854</a>    }
-<a href=#1855 id=1855 data-nosnippet>1855</a>
-<a href=#1856 id=1856 data-nosnippet>1856</a>    <span class="attr">#[test]
-<a href=#1857 id=1857 data-nosnippet>1857</a>    </span><span class="kw">fn </span>stats_carry_version_data_from_the_workload_provider() {
-<a href=#1858 id=1858 data-nosnippet>1858</a>        <span class="kw">let </span>provider = TestWorkloadProvider::with_entity(
-<a href=#1859 id=1859 data-nosnippet>1859</a>            EntityId::Container(MetaString::from(<span class="string">"cid-1"</span>)),
-<a href=#1860 id=1860 data-nosnippet>1860</a>            <span class="kw-2">&amp;</span>[<span class="string">"git.commit.sha:abc123"</span>, <span class="string">"image_tag:1.2.3"</span>, <span class="string">"version:v4"</span>],
-<a href=#1861 id=1861 data-nosnippet>1861</a>        );
-<a href=#1862 id=1862 data-nosnippet>1862</a>        <span class="kw">let </span><span class="kw-2">mut </span>transform = transform_with_workload_provider(<span class="prelude-val">Some</span>(provider));
-<a href=#1863 id=1863 data-nosnippet>1863</a>
-<a href=#1864 id=1864 data-nosnippet>1864</a>        <span class="kw">let </span>now = now_nanos();
-<a href=#1865 id=1865 data-nosnippet>1865</a>        <span class="kw">let </span><span class="kw-2">mut </span>attrs = FastHashMap::default();
-<a href=#1866 id=1866 data-nosnippet>1866</a>        attrs.insert(MetaString::from(<span class="string">"_dd.measured"</span>), AttributeValue::Float(<span class="number">1.0</span>));
-<a href=#1867 id=1867 data-nosnippet>1867</a>        <span class="kw">let </span>span = Span::new(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>, <span class="string">"web"</span>, <span class="number">1</span>, <span class="number">0</span>, now, <span class="number">100_000_000</span>, <span class="number">0</span>).with_attributes(attrs);
-<a href=#1868 id=1868 data-nosnippet>1868</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[span], TraceIngestInfo::Datadog);
-<a href=#1869 id=1869 data-nosnippet>1869</a>        trace.payload.container_id = MetaString::from(<span class="string">"cid-1"</span>);
-<a href=#1870 id=1870 data-nosnippet>1870</a>        transform.process_trace(<span class="kw-2">&amp;</span>trace);
-<a href=#1871 id=1871 data-nosnippet>1871</a>
-<a href=#1872 id=1872 data-nosnippet>1872</a>        <span class="kw">let </span>stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * <span class="number">2</span>, <span class="bool-val">true</span>);
-<a href=#1873 id=1873 data-nosnippet>1873</a>        <span class="macro">assert_eq!</span>(stats.len(), <span class="number">1</span>);
-<a href=#1874 id=1874 data-nosnippet>1874</a>        <span class="macro">assert_eq!</span>(stats[<span class="number">0</span>].version(), <span class="string">"v4"</span>);
-<a href=#1875 id=1875 data-nosnippet>1875</a>        <span class="macro">assert_eq!</span>(stats[<span class="number">0</span>].git_commit_sha(), <span class="string">"abc123"</span>);
-<a href=#1876 id=1876 data-nosnippet>1876</a>        <span class="macro">assert_eq!</span>(stats[<span class="number">0</span>].image_tag(), <span class="string">"1.2.3"</span>);
-<a href=#1877 id=1877 data-nosnippet>1877</a>    }
-<a href=#1878 id=1878 data-nosnippet>1878</a>
-<a href=#1879 id=1879 data-nosnippet>1879</a>    <span class="attr">#[test]
-<a href=#1880 id=1880 data-nosnippet>1880</a>    </span><span class="kw">fn </span>stats_normalize_the_payload_env_like_the_trace_encoder() {
-<a href=#1881 id=1881 data-nosnippet>1881</a>        <span class="kw">let </span>transform = transform_with_workload_provider(<span class="prelude-val">None</span>);
-<a href=#1882 id=1882 data-nosnippet>1882</a>        <span class="kw">let </span>key_for = |payload_env: <span class="kw-2">&amp;</span>str| {
-<a href=#1883 id=1883 data-nosnippet>1883</a>            <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[make_test_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)], TraceIngestInfo::Datadog);
-<a href=#1884 id=1884 data-nosnippet>1884</a>            trace.payload.env = MetaString::from(payload_env);
-<a href=#1885 id=1885 data-nosnippet>1885</a>            transform
-<a href=#1886 id=1886 data-nosnippet>1886</a>                .build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, ContainerVersionData::default())
-<a href=#1887 id=1887 data-nosnippet>1887</a>                .env
-<a href=#1888 id=1888 data-nosnippet>1888</a>                .to_string()
-<a href=#1889 id=1889 data-nosnippet>1889</a>        };
-<a href=#1890 id=1890 data-nosnippet>1890</a>
-<a href=#1891 id=1891 data-nosnippet>1891</a>        <span class="macro">assert_eq!</span>(key_for(<span class="string">"Prod Env"</span>), <span class="string">"prod_env"</span>);
-<a href=#1892 id=1892 data-nosnippet>1892</a>        <span class="macro">assert_eq!</span>(key_for(<span class="string">"prod"</span>), <span class="string">"prod"</span>);
-<a href=#1893 id=1893 data-nosnippet>1893</a>        <span class="comment">// A payload env that normalizes to nothing falls back to the agent's.
-<a href=#1894 id=1894 data-nosnippet>1894</a>        </span><span class="macro">assert_eq!</span>(key_for(<span class="string">"!!!"</span>), <span class="string">"none"</span>);
-<a href=#1895 id=1895 data-nosnippet>1895</a>        <span class="macro">assert_eq!</span>(key_for(<span class="string">""</span>), <span class="string">"none"</span>);
-<a href=#1896 id=1896 data-nosnippet>1896</a>    }
-<a href=#1897 id=1897 data-nosnippet>1897</a>
-<a href=#1898 id=1898 data-nosnippet>1898</a>    <span class="attr">#[test]
-<a href=#1899 id=1899 data-nosnippet>1899</a>    </span><span class="kw">fn </span>hostname_prefers_payload_then_root_span_then_agent() {
-<a href=#1900 id=1900 data-nosnippet>1900</a>        <span class="kw">let </span>now = now_nanos();
-<a href=#1901 id=1901 data-nosnippet>1901</a>        <span class="kw">let </span>transform = ApmStats {
-<a href=#1902 id=1902 data-nosnippet>1902</a>            concentrator: SpanConcentrator::new(<span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[], Default::default(), now),
-<a href=#1903 id=1903 data-nosnippet>1903</a>            flush_interval: DEFAULT_FLUSH_INTERVAL,
-<a href=#1904 id=1904 data-nosnippet>1904</a>            agent_env: MetaString::default(),
-<a href=#1905 id=1905 data-nosnippet>1905</a>            agent_hostname: MetaString::from(<span class="string">"agent-host"</span>),
-<a href=#1906 id=1906 data-nosnippet>1906</a>            workload_provider: <span class="prelude-val">None</span>,
-<a href=#1907 id=1907 data-nosnippet>1907</a>            splits: Counter::noop(),
-<a href=#1908 id=1908 data-nosnippet>1908</a>        };
-<a href=#1909 id=1909 data-nosnippet>1909</a>        <span class="kw">let </span>trace_with = |payload_hostname: <span class="kw-2">&amp;</span>str, root_hostname: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;| {
-<a href=#1910 id=1910 data-nosnippet>1910</a>            <span class="kw">let </span><span class="kw-2">mut </span>attrs = FastHashMap::default();
-<a href=#1911 id=1911 data-nosnippet>1911</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(root_hostname) = root_hostname {
-<a href=#1912 id=1912 data-nosnippet>1912</a>                attrs.insert(
-<a href=#1913 id=1913 data-nosnippet>1913</a>                    MetaString::from(<span class="string">"_dd.hostname"</span>),
-<a href=#1914 id=1914 data-nosnippet>1914</a>                    AttributeValue::String(MetaString::from(root_hostname)),
-<a href=#1915 id=1915 data-nosnippet>1915</a>                );
-<a href=#1916 id=1916 data-nosnippet>1916</a>            }
-<a href=#1917 id=1917 data-nosnippet>1917</a>            <span class="kw">let </span>root_span = Span::new(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>, <span class="string">"web"</span>, <span class="number">1</span>, <span class="number">0</span>, now, <span class="number">1_000_000</span>, <span class="number">0</span>).with_attributes(attrs);
-<a href=#1918 id=1918 data-nosnippet>1918</a>            <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[root_span], TraceIngestInfo::Datadog);
-<a href=#1919 id=1919 data-nosnippet>1919</a>            trace.payload.hostname = MetaString::from(payload_hostname);
-<a href=#1920 id=1920 data-nosnippet>1920</a>            trace
-<a href=#1921 id=1921 data-nosnippet>1921</a>        };
-<a href=#1922 id=1922 data-nosnippet>1922</a>        <span class="kw">let </span>hostname = |trace: <span class="kw-2">&amp;</span>Trace| {
-<a href=#1923 id=1923 data-nosnippet>1923</a>            transform
-<a href=#1924 id=1924 data-nosnippet>1924</a>                .build_payload_key(trace, <span class="string">""</span>, ContainerVersionData::default())
-<a href=#1925 id=1925 data-nosnippet>1925</a>                .hostname
-<a href=#1926 id=1926 data-nosnippet>1926</a>                .to_string()
-<a href=#1927 id=1927 data-nosnippet>1927</a>        };
-<a href=#1928 id=1928 data-nosnippet>1928</a>
-<a href=#1929 id=1929 data-nosnippet>1929</a>        <span class="comment">// The payload hostname beats the root span's `_dd.hostname`.
-<a href=#1930 id=1930 data-nosnippet>1930</a>        </span><span class="macro">assert_eq!</span>(hostname(<span class="kw-2">&amp;</span>trace_with(<span class="string">"payload-host"</span>, <span class="prelude-val">Some</span>(<span class="string">"root-host"</span>))), <span class="string">"payload-host"</span>);
-<a href=#1931 id=1931 data-nosnippet>1931</a>        <span class="macro">assert_eq!</span>(hostname(<span class="kw-2">&amp;</span>trace_with(<span class="string">""</span>, <span class="prelude-val">Some</span>(<span class="string">"root-host"</span>))), <span class="string">"root-host"</span>);
-<a href=#1932 id=1932 data-nosnippet>1932</a>        <span class="macro">assert_eq!</span>(hostname(<span class="kw-2">&amp;</span>trace_with(<span class="string">""</span>, <span class="prelude-val">None</span>)), <span class="string">"agent-host"</span>);
-<a href=#1933 id=1933 data-nosnippet>1933</a>    }
-<a href=#1934 id=1934 data-nosnippet>1934</a>
-<a href=#1935 id=1935 data-nosnippet>1935</a>    <span class="attr">#[test]
-<a href=#1936 id=1936 data-nosnippet>1936</a>    </span><span class="kw">fn </span>otlp_trace_without_a_hostname_is_attributed_to_the_configured_hostname() {
-<a href=#1937 id=1937 data-nosnippet>1937</a>        <span class="kw">let </span>now = now_nanos();
-<a href=#1938 id=1938 data-nosnippet>1938</a>        <span class="kw">let </span>transform = ApmStats {
-<a href=#1939 id=1939 data-nosnippet>1939</a>            concentrator: SpanConcentrator::new(<span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[], Default::default(), now),
-<a href=#1940 id=1940 data-nosnippet>1940</a>            flush_interval: DEFAULT_FLUSH_INTERVAL,
-<a href=#1941 id=1941 data-nosnippet>1941</a>            agent_env: MetaString::default(),
-<a href=#1942 id=1942 data-nosnippet>1942</a>            agent_hostname: MetaString::from(<span class="string">"agent-host"</span>),
-<a href=#1943 id=1943 data-nosnippet>1943</a>            workload_provider: <span class="prelude-val">None</span>,
-<a href=#1944 id=1944 data-nosnippet>1944</a>            splits: Counter::noop(),
-<a href=#1945 id=1945 data-nosnippet>1945</a>        };
-<a href=#1946 id=1946 data-nosnippet>1946</a>
-<a href=#1947 id=1947 data-nosnippet>1947</a>        <span class="comment">// A serverless OTLP resource reports no hostname, so its stats use the configured one. The trace payload
-<a href=#1948 id=1948 data-nosnippet>1948</a>        // itself stays empty.
-<a href=#1949 id=1949 data-nosnippet>1949</a>        </span><span class="kw">let </span>span = Span::new(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>, <span class="string">"web"</span>, <span class="number">1</span>, <span class="number">0</span>, now, <span class="number">1_000_000</span>, <span class="number">0</span>);
-<a href=#1950 id=1950 data-nosnippet>1950</a>        <span class="kw">let </span>trace = Trace::new(
-<a href=#1951 id=1951 data-nosnippet>1951</a>            <span class="macro">vec!</span>[span],
-<a href=#1952 id=1952 data-nosnippet>1952</a>            TraceIngestInfo::Otlp {
-<a href=#1953 id=1953 data-nosnippet>1953</a>                receiver_sampling_rate: <span class="number">1.0</span>,
-<a href=#1954 id=1954 data-nosnippet>1954</a>            },
-<a href=#1955 id=1955 data-nosnippet>1955</a>        );
-<a href=#1956 id=1956 data-nosnippet>1956</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, ContainerVersionData::default());
-<a href=#1957 id=1957 data-nosnippet>1957</a>        <span class="macro">assert_eq!</span>(key.hostname.as_ref(), <span class="string">"agent-host"</span>);
-<a href=#1958 id=1958 data-nosnippet>1958</a>    }
-<a href=#1959 id=1959 data-nosnippet>1959</a>
-<a href=#1960 id=1960 data-nosnippet>1960</a>    <span class="macro">proptest!</span> {
-<a href=#1961 id=1961 data-nosnippet>1961</a>        <span class="attr">#[test]
-<a href=#1962 id=1962 data-nosnippet>1962</a>        #[cfg_attr(miri, ignore)]
-<a href=#1963 id=1963 data-nosnippet>1963</a>        </span><span class="kw">fn </span>property_test_split_respects_max_entries((payloads, max_entries_per_event) <span class="kw">in </span>arb_split_inputs()) {
-<a href=#1964 id=1964 data-nosnippet>1964</a>            <span class="kw">let </span>input_total: usize = payloads.iter().flat_map(|p| p.stats()).map(|b| b.stats().len()).sum();
-<a href=#1965 id=1965 data-nosnippet>1965</a>
-<a href=#1966 id=1966 data-nosnippet>1966</a>            <span class="kw">let </span>result = split_into_trace_stats(payloads, max_entries_per_event);
-<a href=#1967 id=1967 data-nosnippet>1967</a>
-<a href=#1968 id=1968 data-nosnippet>1968</a>            <span class="comment">// Property 1: No TraceStats should exceed max_entries_per_event
-<a href=#1969 id=1969 data-nosnippet>1969</a>            </span><span class="kw">for </span>trace_stats <span class="kw">in </span><span class="kw-2">&amp;</span>result {
-<a href=#1970 id=1970 data-nosnippet>1970</a>                <span class="kw">let </span>count = count_grouped_stats(trace_stats);
-<a href=#1971 id=1971 data-nosnippet>1971</a>                <span class="macro">prop_assert!</span>(
-<a href=#1972 id=1972 data-nosnippet>1972</a>                    count &lt;= max_entries_per_event,
-<a href=#1973 id=1973 data-nosnippet>1973</a>                    <span class="string">"TraceStats has {} grouped stats, exceeds max of {}"</span>,
-<a href=#1974 id=1974 data-nosnippet>1974</a>                    count,
-<a href=#1975 id=1975 data-nosnippet>1975</a>                    max_entries_per_event
-<a href=#1976 id=1976 data-nosnippet>1976</a>                );
-<a href=#1977 id=1977 data-nosnippet>1977</a>            }
-<a href=#1978 id=1978 data-nosnippet>1978</a>
-<a href=#1979 id=1979 data-nosnippet>1979</a>            <span class="comment">// Property 2: Total stats should be preserved
-<a href=#1980 id=1980 data-nosnippet>1980</a>            </span><span class="kw">let </span>output_total: usize = result.iter().map(count_grouped_stats).sum();
-<a href=#1981 id=1981 data-nosnippet>1981</a>            <span class="macro">prop_assert_eq!</span>(input_total, output_total, <span class="string">"Total stats count should be preserved"</span>);
-<a href=#1982 id=1982 data-nosnippet>1982</a>
-<a href=#1983 id=1983 data-nosnippet>1983</a>            <span class="comment">// Property 3: Events are marked as split exactly when there is more than one of them
-<a href=#1984 id=1984 data-nosnippet>1984</a>            </span><span class="kw">for </span>trace_stats <span class="kw">in </span><span class="kw-2">&amp;</span>result {
-<a href=#1985 id=1985 data-nosnippet>1985</a>                <span class="macro">prop_assert_eq!</span>(trace_stats.is_split_payload(), result.len() &gt; <span class="number">1</span>);
-<a href=#1986 id=1986 data-nosnippet>1986</a>            }
-<a href=#1987 id=1987 data-nosnippet>1987</a>        }
-<a href=#1988 id=1988 data-nosnippet>1988</a>    }
-<a href=#1989 id=1989 data-nosnippet>1989</a>}
+<a href=#1842 id=1842 data-nosnippet>1842</a>        <span class="kw">let </span><span class="kw-2">mut </span>concentrator = SpanConcentrator::new(<span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[], Default::default(), now);
+<a href=#1843 id=1843 data-nosnippet>1843</a>        <span class="kw">let </span>payload_key = PayloadAggregationKey {
+<a href=#1844 id=1844 data-nosnippet>1844</a>            env: MetaString::from(<span class="string">"test"</span>),
+<a href=#1845 id=1845 data-nosnippet>1845</a>            ..Default::default()
+<a href=#1846 id=1846 data-nosnippet>1846</a>        };
+<a href=#1847 id=1847 data-nosnippet>1847</a>        <span class="kw">let </span>stat_span = concentrator
+<a href=#1848 id=1848 data-nosnippet>1848</a>            .new_stat_span_from_span(span)
+<a href=#1849 id=1849 data-nosnippet>1849</a>            .expect(<span class="string">"a client span with a peer tag should produce stats"</span>);
+<a href=#1850 id=1850 data-nosnippet>1850</a>        concentrator.add_span(<span class="kw-2">&amp;</span>stat_span, <span class="number">1.0</span>, <span class="kw-2">&amp;</span>payload_key, <span class="kw-2">&amp;</span>InfraTags::default(), <span class="string">""</span>);
+<a href=#1851 id=1851 data-nosnippet>1851</a>
+<a href=#1852 id=1852 data-nosnippet>1852</a>        <span class="kw">let </span>payloads = concentrator.flush(now + BUCKET_DURATION_NS * <span class="number">3</span>, <span class="bool-val">true</span>);
+<a href=#1853 id=1853 data-nosnippet>1853</a>        <span class="kw">let </span>peer_tags: Vec&lt;String&gt; = payloads
+<a href=#1854 id=1854 data-nosnippet>1854</a>            .iter()
+<a href=#1855 id=1855 data-nosnippet>1855</a>            .flat_map(|payload| payload.stats())
+<a href=#1856 id=1856 data-nosnippet>1856</a>            .flat_map(|bucket| bucket.stats())
+<a href=#1857 id=1857 data-nosnippet>1857</a>            .flat_map(|grouped| grouped.peer_tags().iter().map(|tag| tag.to_string()))
+<a href=#1858 id=1858 data-nosnippet>1858</a>            .collect();
+<a href=#1859 id=1859 data-nosnippet>1859</a>        <span class="macro">assert_eq!</span>(peer_tags, [<span class="string">"db.instance:i-1234"</span>]);
+<a href=#1860 id=1860 data-nosnippet>1860</a>    }
+<a href=#1861 id=1861 data-nosnippet>1861</a>
+<a href=#1862 id=1862 data-nosnippet>1862</a>    <span class="kw">fn </span>transform_with_workload_provider(workload_provider: <span class="prelude-ty">Option</span>&lt;TestWorkloadProvider&gt;) -&gt; ApmStats {
+<a href=#1863 id=1863 data-nosnippet>1863</a>        <span class="kw">let </span>now = now_nanos();
+<a href=#1864 id=1864 data-nosnippet>1864</a>        ApmStats {
+<a href=#1865 id=1865 data-nosnippet>1865</a>            concentrator: SpanConcentrator::new(<span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[], Default::default(), now),
+<a href=#1866 id=1866 data-nosnippet>1866</a>            flush_interval: DEFAULT_FLUSH_INTERVAL,
+<a href=#1867 id=1867 data-nosnippet>1867</a>            agent_env: MetaString::from(<span class="string">"none"</span>),
+<a href=#1868 id=1868 data-nosnippet>1868</a>            agent_hostname: MetaString::default(),
+<a href=#1869 id=1869 data-nosnippet>1869</a>            workload_provider: workload_provider
+<a href=#1870 id=1870 data-nosnippet>1870</a>                .map(|provider| Arc::new(provider) <span class="kw">as </span>Arc&lt;<span class="kw">dyn </span>WorkloadProvider + Send + Sync&gt;),
+<a href=#1871 id=1871 data-nosnippet>1871</a>            splits: Counter::noop(),
+<a href=#1872 id=1872 data-nosnippet>1872</a>        }
+<a href=#1873 id=1873 data-nosnippet>1873</a>    }
+<a href=#1874 id=1874 data-nosnippet>1874</a>
+<a href=#1875 id=1875 data-nosnippet>1875</a>    <span class="kw">fn </span>string_attributes(pairs: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) -&gt; FastHashMap&lt;MetaString, AttributeValue&gt; {
+<a href=#1876 id=1876 data-nosnippet>1876</a>        pairs
+<a href=#1877 id=1877 data-nosnippet>1877</a>            .iter()
+<a href=#1878 id=1878 data-nosnippet>1878</a>            .map(|(k, v)| (MetaString::from(<span class="kw-2">*</span>k), AttributeValue::String(MetaString::from(<span class="kw-2">*</span>v))))
+<a href=#1879 id=1879 data-nosnippet>1879</a>            .collect()
+<a href=#1880 id=1880 data-nosnippet>1880</a>    }
+<a href=#1881 id=1881 data-nosnippet>1881</a>
+<a href=#1882 id=1882 data-nosnippet>1882</a>    <span class="kw">const </span>CONTAINER_VERSION: ContainerVersionData&lt;<span class="lifetime">'static</span>&gt; = ContainerVersionData {
+<a href=#1883 id=1883 data-nosnippet>1883</a>        git_commit_sha: <span class="string">"container-sha"</span>,
+<a href=#1884 id=1884 data-nosnippet>1884</a>        image_tag: <span class="string">"container-image"</span>,
+<a href=#1885 id=1885 data-nosnippet>1885</a>        app_version: <span class="string">"container-v"</span>,
+<a href=#1886 id=1886 data-nosnippet>1886</a>    };
+<a href=#1887 id=1887 data-nosnippet>1887</a>
+<a href=#1888 id=1888 data-nosnippet>1888</a>    <span class="attr">#[test]
+<a href=#1889 id=1889 data-nosnippet>1889</a>    </span><span class="kw">fn </span>version_data_falls_back_to_container_tags() {
+<a href=#1890 id=1890 data-nosnippet>1890</a>        <span class="kw">let </span>transform = transform_with_workload_provider(<span class="prelude-val">None</span>);
+<a href=#1891 id=1891 data-nosnippet>1891</a>        <span class="kw">let </span>trace = Trace::new(<span class="macro">vec!</span>[make_test_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)], TraceIngestInfo::Datadog);
+<a href=#1892 id=1892 data-nosnippet>1892</a>
+<a href=#1893 id=1893 data-nosnippet>1893</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, CONTAINER_VERSION);
+<a href=#1894 id=1894 data-nosnippet>1894</a>        <span class="macro">assert_eq!</span>(key.version, <span class="string">"container-v"</span>);
+<a href=#1895 id=1895 data-nosnippet>1895</a>        <span class="macro">assert_eq!</span>(key.git_commit_sha, <span class="string">"container-sha"</span>);
+<a href=#1896 id=1896 data-nosnippet>1896</a>        <span class="macro">assert_eq!</span>(key.image_tag, <span class="string">"container-image"</span>);
+<a href=#1897 id=1897 data-nosnippet>1897</a>    }
+<a href=#1898 id=1898 data-nosnippet>1898</a>
+<a href=#1899 id=1899 data-nosnippet>1899</a>    <span class="attr">#[test]
+<a href=#1900 id=1900 data-nosnippet>1900</a>    </span><span class="kw">fn </span>trace_version_data_wins_over_container_tags() {
+<a href=#1901 id=1901 data-nosnippet>1901</a>        <span class="kw">let </span>transform = transform_with_workload_provider(<span class="prelude-val">None</span>);
+<a href=#1902 id=1902 data-nosnippet>1902</a>
+<a href=#1903 id=1903 data-nosnippet>1903</a>        <span class="comment">// The payload version and the root span's image tag and commit SHA win over the container's tags.
+<a href=#1904 id=1904 data-nosnippet>1904</a>        </span><span class="kw">let </span>span = make_test_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>).with_attributes(string_attributes(<span class="kw-2">&amp;</span>[
+<a href=#1905 id=1905 data-nosnippet>1905</a>            (TAG_GIT_COMMIT_SHA, <span class="string">"span-sha"</span>),
+<a href=#1906 id=1906 data-nosnippet>1906</a>            (<span class="string">"_dd.image_tag"</span>, <span class="string">"span-image"</span>),
+<a href=#1907 id=1907 data-nosnippet>1907</a>        ]));
+<a href=#1908 id=1908 data-nosnippet>1908</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[span], TraceIngestInfo::Datadog);
+<a href=#1909 id=1909 data-nosnippet>1909</a>        trace.payload.app_version = MetaString::from(<span class="string">"payload-v"</span>);
+<a href=#1910 id=1910 data-nosnippet>1910</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, CONTAINER_VERSION);
+<a href=#1911 id=1911 data-nosnippet>1911</a>        <span class="macro">assert_eq!</span>(key.version, <span class="string">"payload-v"</span>);
+<a href=#1912 id=1912 data-nosnippet>1912</a>        <span class="macro">assert_eq!</span>(key.git_commit_sha, <span class="string">"span-sha"</span>);
+<a href=#1913 id=1913 data-nosnippet>1913</a>        <span class="macro">assert_eq!</span>(key.image_tag, <span class="string">"span-image"</span>);
+<a href=#1914 id=1914 data-nosnippet>1914</a>
+<a href=#1915 id=1915 data-nosnippet>1915</a>        <span class="comment">// The commit SHA set on the tracer payload wins over the root span's.
+<a href=#1916 id=1916 data-nosnippet>1916</a>        </span>trace.attributes = Arc::new(string_attributes(<span class="kw-2">&amp;</span>[(TAG_GIT_COMMIT_SHA, <span class="string">"payload-sha"</span>)]));
+<a href=#1917 id=1917 data-nosnippet>1917</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, CONTAINER_VERSION);
+<a href=#1918 id=1918 data-nosnippet>1918</a>        <span class="macro">assert_eq!</span>(key.git_commit_sha, <span class="string">"payload-sha"</span>);
+<a href=#1919 id=1919 data-nosnippet>1919</a>
+<a href=#1920 id=1920 data-nosnippet>1920</a>        <span class="comment">// Empty trace values don't hide the container's tags.
+<a href=#1921 id=1921 data-nosnippet>1921</a>        </span><span class="kw">let </span>span = make_test_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>).with_attributes(string_attributes(<span class="kw-2">&amp;</span>[
+<a href=#1922 id=1922 data-nosnippet>1922</a>            (<span class="string">"version"</span>, <span class="string">""</span>),
+<a href=#1923 id=1923 data-nosnippet>1923</a>            (TAG_GIT_COMMIT_SHA, <span class="string">""</span>),
+<a href=#1924 id=1924 data-nosnippet>1924</a>            (<span class="string">"_dd.image_tag"</span>, <span class="string">""</span>),
+<a href=#1925 id=1925 data-nosnippet>1925</a>        ]));
+<a href=#1926 id=1926 data-nosnippet>1926</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[span], TraceIngestInfo::Datadog);
+<a href=#1927 id=1927 data-nosnippet>1927</a>        trace.attributes = Arc::new(string_attributes(<span class="kw-2">&amp;</span>[(TAG_GIT_COMMIT_SHA, <span class="string">""</span>)]));
+<a href=#1928 id=1928 data-nosnippet>1928</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, CONTAINER_VERSION);
+<a href=#1929 id=1929 data-nosnippet>1929</a>        <span class="macro">assert_eq!</span>(key.version, <span class="string">"container-v"</span>);
+<a href=#1930 id=1930 data-nosnippet>1930</a>        <span class="macro">assert_eq!</span>(key.git_commit_sha, <span class="string">"container-sha"</span>);
+<a href=#1931 id=1931 data-nosnippet>1931</a>        <span class="macro">assert_eq!</span>(key.image_tag, <span class="string">"container-image"</span>);
+<a href=#1932 id=1932 data-nosnippet>1932</a>    }
+<a href=#1933 id=1933 data-nosnippet>1933</a>
+<a href=#1934 id=1934 data-nosnippet>1934</a>    <span class="attr">#[test]
+<a href=#1935 id=1935 data-nosnippet>1935</a>    </span><span class="kw">fn </span>stats_carry_version_data_from_the_workload_provider() {
+<a href=#1936 id=1936 data-nosnippet>1936</a>        <span class="kw">let </span>provider = TestWorkloadProvider::with_entity(
+<a href=#1937 id=1937 data-nosnippet>1937</a>            EntityId::Container(MetaString::from(<span class="string">"cid-1"</span>)),
+<a href=#1938 id=1938 data-nosnippet>1938</a>            <span class="kw-2">&amp;</span>[<span class="string">"git.commit.sha:abc123"</span>, <span class="string">"image_tag:1.2.3"</span>, <span class="string">"version:v4"</span>],
+<a href=#1939 id=1939 data-nosnippet>1939</a>        );
+<a href=#1940 id=1940 data-nosnippet>1940</a>        <span class="kw">let </span><span class="kw-2">mut </span>transform = transform_with_workload_provider(<span class="prelude-val">Some</span>(provider));
+<a href=#1941 id=1941 data-nosnippet>1941</a>
+<a href=#1942 id=1942 data-nosnippet>1942</a>        <span class="kw">let </span>now = now_nanos();
+<a href=#1943 id=1943 data-nosnippet>1943</a>        <span class="kw">let </span><span class="kw-2">mut </span>attrs = FastHashMap::default();
+<a href=#1944 id=1944 data-nosnippet>1944</a>        attrs.insert(MetaString::from(<span class="string">"_dd.measured"</span>), AttributeValue::Float(<span class="number">1.0</span>));
+<a href=#1945 id=1945 data-nosnippet>1945</a>        <span class="kw">let </span>span = Span::new(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>, <span class="string">"web"</span>, <span class="number">1</span>, <span class="number">0</span>, now, <span class="number">100_000_000</span>, <span class="number">0</span>).with_attributes(attrs);
+<a href=#1946 id=1946 data-nosnippet>1946</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[span], TraceIngestInfo::Datadog);
+<a href=#1947 id=1947 data-nosnippet>1947</a>        trace.payload.container_id = MetaString::from(<span class="string">"cid-1"</span>);
+<a href=#1948 id=1948 data-nosnippet>1948</a>        transform.process_trace(<span class="kw-2">&amp;</span>trace);
+<a href=#1949 id=1949 data-nosnippet>1949</a>
+<a href=#1950 id=1950 data-nosnippet>1950</a>        <span class="kw">let </span>stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * <span class="number">2</span>, <span class="bool-val">true</span>);
+<a href=#1951 id=1951 data-nosnippet>1951</a>        <span class="macro">assert_eq!</span>(stats.len(), <span class="number">1</span>);
+<a href=#1952 id=1952 data-nosnippet>1952</a>        <span class="macro">assert_eq!</span>(stats[<span class="number">0</span>].version(), <span class="string">"v4"</span>);
+<a href=#1953 id=1953 data-nosnippet>1953</a>        <span class="macro">assert_eq!</span>(stats[<span class="number">0</span>].git_commit_sha(), <span class="string">"abc123"</span>);
+<a href=#1954 id=1954 data-nosnippet>1954</a>        <span class="macro">assert_eq!</span>(stats[<span class="number">0</span>].image_tag(), <span class="string">"1.2.3"</span>);
+<a href=#1955 id=1955 data-nosnippet>1955</a>    }
+<a href=#1956 id=1956 data-nosnippet>1956</a>
+<a href=#1957 id=1957 data-nosnippet>1957</a>    <span class="attr">#[test]
+<a href=#1958 id=1958 data-nosnippet>1958</a>    </span><span class="kw">fn </span>stats_normalize_the_payload_env_like_the_trace_encoder() {
+<a href=#1959 id=1959 data-nosnippet>1959</a>        <span class="kw">let </span>transform = transform_with_workload_provider(<span class="prelude-val">None</span>);
+<a href=#1960 id=1960 data-nosnippet>1960</a>        <span class="kw">let </span>key_for = |payload_env: <span class="kw-2">&amp;</span>str| {
+<a href=#1961 id=1961 data-nosnippet>1961</a>            <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[make_test_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)], TraceIngestInfo::Datadog);
+<a href=#1962 id=1962 data-nosnippet>1962</a>            trace.payload.env = MetaString::from(payload_env);
+<a href=#1963 id=1963 data-nosnippet>1963</a>            transform
+<a href=#1964 id=1964 data-nosnippet>1964</a>                .build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, ContainerVersionData::default())
+<a href=#1965 id=1965 data-nosnippet>1965</a>                .env
+<a href=#1966 id=1966 data-nosnippet>1966</a>                .to_string()
+<a href=#1967 id=1967 data-nosnippet>1967</a>        };
+<a href=#1968 id=1968 data-nosnippet>1968</a>
+<a href=#1969 id=1969 data-nosnippet>1969</a>        <span class="macro">assert_eq!</span>(key_for(<span class="string">"Prod Env"</span>), <span class="string">"prod_env"</span>);
+<a href=#1970 id=1970 data-nosnippet>1970</a>        <span class="macro">assert_eq!</span>(key_for(<span class="string">"prod"</span>), <span class="string">"prod"</span>);
+<a href=#1971 id=1971 data-nosnippet>1971</a>        <span class="comment">// A payload env that normalizes to nothing falls back to the agent's.
+<a href=#1972 id=1972 data-nosnippet>1972</a>        </span><span class="macro">assert_eq!</span>(key_for(<span class="string">"!!!"</span>), <span class="string">"none"</span>);
+<a href=#1973 id=1973 data-nosnippet>1973</a>        <span class="macro">assert_eq!</span>(key_for(<span class="string">""</span>), <span class="string">"none"</span>);
+<a href=#1974 id=1974 data-nosnippet>1974</a>    }
+<a href=#1975 id=1975 data-nosnippet>1975</a>
+<a href=#1976 id=1976 data-nosnippet>1976</a>    <span class="attr">#[test]
+<a href=#1977 id=1977 data-nosnippet>1977</a>    </span><span class="kw">fn </span>hostname_prefers_payload_then_root_span_then_agent() {
+<a href=#1978 id=1978 data-nosnippet>1978</a>        <span class="kw">let </span>now = now_nanos();
+<a href=#1979 id=1979 data-nosnippet>1979</a>        <span class="kw">let </span>transform = ApmStats {
+<a href=#1980 id=1980 data-nosnippet>1980</a>            concentrator: SpanConcentrator::new(<span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[], Default::default(), now),
+<a href=#1981 id=1981 data-nosnippet>1981</a>            flush_interval: DEFAULT_FLUSH_INTERVAL,
+<a href=#1982 id=1982 data-nosnippet>1982</a>            agent_env: MetaString::default(),
+<a href=#1983 id=1983 data-nosnippet>1983</a>            agent_hostname: MetaString::from(<span class="string">"agent-host"</span>),
+<a href=#1984 id=1984 data-nosnippet>1984</a>            workload_provider: <span class="prelude-val">None</span>,
+<a href=#1985 id=1985 data-nosnippet>1985</a>            splits: Counter::noop(),
+<a href=#1986 id=1986 data-nosnippet>1986</a>        };
+<a href=#1987 id=1987 data-nosnippet>1987</a>        <span class="kw">let </span>trace_with = |payload_hostname: <span class="kw-2">&amp;</span>str, root_hostname: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;| {
+<a href=#1988 id=1988 data-nosnippet>1988</a>            <span class="kw">let </span><span class="kw-2">mut </span>attrs = FastHashMap::default();
+<a href=#1989 id=1989 data-nosnippet>1989</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(root_hostname) = root_hostname {
+<a href=#1990 id=1990 data-nosnippet>1990</a>                attrs.insert(
+<a href=#1991 id=1991 data-nosnippet>1991</a>                    MetaString::from(<span class="string">"_dd.hostname"</span>),
+<a href=#1992 id=1992 data-nosnippet>1992</a>                    AttributeValue::String(MetaString::from(root_hostname)),
+<a href=#1993 id=1993 data-nosnippet>1993</a>                );
+<a href=#1994 id=1994 data-nosnippet>1994</a>            }
+<a href=#1995 id=1995 data-nosnippet>1995</a>            <span class="kw">let </span>root_span = Span::new(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>, <span class="string">"web"</span>, <span class="number">1</span>, <span class="number">0</span>, now, <span class="number">1_000_000</span>, <span class="number">0</span>).with_attributes(attrs);
+<a href=#1996 id=1996 data-nosnippet>1996</a>            <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[root_span], TraceIngestInfo::Datadog);
+<a href=#1997 id=1997 data-nosnippet>1997</a>            trace.payload.hostname = MetaString::from(payload_hostname);
+<a href=#1998 id=1998 data-nosnippet>1998</a>            trace
+<a href=#1999 id=1999 data-nosnippet>1999</a>        };
+<a href=#2000 id=2000 data-nosnippet>2000</a>        <span class="kw">let </span>hostname = |trace: <span class="kw-2">&amp;</span>Trace| {
+<a href=#2001 id=2001 data-nosnippet>2001</a>            transform
+<a href=#2002 id=2002 data-nosnippet>2002</a>                .build_payload_key(trace, <span class="string">""</span>, ContainerVersionData::default())
+<a href=#2003 id=2003 data-nosnippet>2003</a>                .hostname
+<a href=#2004 id=2004 data-nosnippet>2004</a>                .to_string()
+<a href=#2005 id=2005 data-nosnippet>2005</a>        };
+<a href=#2006 id=2006 data-nosnippet>2006</a>
+<a href=#2007 id=2007 data-nosnippet>2007</a>        <span class="comment">// The payload hostname beats the root span's `_dd.hostname`.
+<a href=#2008 id=2008 data-nosnippet>2008</a>        </span><span class="macro">assert_eq!</span>(hostname(<span class="kw-2">&amp;</span>trace_with(<span class="string">"payload-host"</span>, <span class="prelude-val">Some</span>(<span class="string">"root-host"</span>))), <span class="string">"payload-host"</span>);
+<a href=#2009 id=2009 data-nosnippet>2009</a>        <span class="macro">assert_eq!</span>(hostname(<span class="kw-2">&amp;</span>trace_with(<span class="string">""</span>, <span class="prelude-val">Some</span>(<span class="string">"root-host"</span>))), <span class="string">"root-host"</span>);
+<a href=#2010 id=2010 data-nosnippet>2010</a>        <span class="macro">assert_eq!</span>(hostname(<span class="kw-2">&amp;</span>trace_with(<span class="string">""</span>, <span class="prelude-val">None</span>)), <span class="string">"agent-host"</span>);
+<a href=#2011 id=2011 data-nosnippet>2011</a>    }
+<a href=#2012 id=2012 data-nosnippet>2012</a>
+<a href=#2013 id=2013 data-nosnippet>2013</a>    <span class="attr">#[test]
+<a href=#2014 id=2014 data-nosnippet>2014</a>    </span><span class="kw">fn </span>otlp_trace_without_a_hostname_is_attributed_to_the_configured_hostname() {
+<a href=#2015 id=2015 data-nosnippet>2015</a>        <span class="kw">let </span>now = now_nanos();
+<a href=#2016 id=2016 data-nosnippet>2016</a>        <span class="kw">let </span>transform = ApmStats {
+<a href=#2017 id=2017 data-nosnippet>2017</a>            concentrator: SpanConcentrator::new(<span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[], Default::default(), now),
+<a href=#2018 id=2018 data-nosnippet>2018</a>            flush_interval: DEFAULT_FLUSH_INTERVAL,
+<a href=#2019 id=2019 data-nosnippet>2019</a>            agent_env: MetaString::default(),
+<a href=#2020 id=2020 data-nosnippet>2020</a>            agent_hostname: MetaString::from(<span class="string">"agent-host"</span>),
+<a href=#2021 id=2021 data-nosnippet>2021</a>            workload_provider: <span class="prelude-val">None</span>,
+<a href=#2022 id=2022 data-nosnippet>2022</a>            splits: Counter::noop(),
+<a href=#2023 id=2023 data-nosnippet>2023</a>        };
+<a href=#2024 id=2024 data-nosnippet>2024</a>
+<a href=#2025 id=2025 data-nosnippet>2025</a>        <span class="comment">// A serverless OTLP resource reports no hostname, so its stats use the configured one. The trace payload
+<a href=#2026 id=2026 data-nosnippet>2026</a>        // itself stays empty.
+<a href=#2027 id=2027 data-nosnippet>2027</a>        </span><span class="kw">let </span>span = Span::new(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>, <span class="string">"web"</span>, <span class="number">1</span>, <span class="number">0</span>, now, <span class="number">1_000_000</span>, <span class="number">0</span>);
+<a href=#2028 id=2028 data-nosnippet>2028</a>        <span class="kw">let </span>trace = Trace::new(
+<a href=#2029 id=2029 data-nosnippet>2029</a>            <span class="macro">vec!</span>[span],
+<a href=#2030 id=2030 data-nosnippet>2030</a>            TraceIngestInfo::Otlp {
+<a href=#2031 id=2031 data-nosnippet>2031</a>                receiver_sampling_rate: <span class="number">1.0</span>,
+<a href=#2032 id=2032 data-nosnippet>2032</a>            },
+<a href=#2033 id=2033 data-nosnippet>2033</a>        );
+<a href=#2034 id=2034 data-nosnippet>2034</a>        <span class="kw">let </span>key = transform.build_payload_key(<span class="kw-2">&amp;</span>trace, <span class="string">""</span>, ContainerVersionData::default());
+<a href=#2035 id=2035 data-nosnippet>2035</a>        <span class="macro">assert_eq!</span>(key.hostname.as_ref(), <span class="string">"agent-host"</span>);
+<a href=#2036 id=2036 data-nosnippet>2036</a>    }
+<a href=#2037 id=2037 data-nosnippet>2037</a>
+<a href=#2038 id=2038 data-nosnippet>2038</a>    <span class="macro">proptest!</span> {
+<a href=#2039 id=2039 data-nosnippet>2039</a>        <span class="attr">#[test]
+<a href=#2040 id=2040 data-nosnippet>2040</a>        #[cfg_attr(miri, ignore)]
+<a href=#2041 id=2041 data-nosnippet>2041</a>        </span><span class="kw">fn </span>property_test_split_respects_max_entries((payloads, max_entries_per_event) <span class="kw">in </span>arb_split_inputs()) {
+<a href=#2042 id=2042 data-nosnippet>2042</a>            <span class="kw">let </span>input_total: usize = payloads.iter().flat_map(|p| p.stats()).map(|b| b.stats().len()).sum();
+<a href=#2043 id=2043 data-nosnippet>2043</a>
+<a href=#2044 id=2044 data-nosnippet>2044</a>            <span class="kw">let </span>result = split_into_trace_stats(payloads, max_entries_per_event);
+<a href=#2045 id=2045 data-nosnippet>2045</a>
+<a href=#2046 id=2046 data-nosnippet>2046</a>            <span class="comment">// Property 1: No TraceStats should exceed max_entries_per_event
+<a href=#2047 id=2047 data-nosnippet>2047</a>            </span><span class="kw">for </span>trace_stats <span class="kw">in </span><span class="kw-2">&amp;</span>result {
+<a href=#2048 id=2048 data-nosnippet>2048</a>                <span class="kw">let </span>count = count_grouped_stats(trace_stats);
+<a href=#2049 id=2049 data-nosnippet>2049</a>                <span class="macro">prop_assert!</span>(
+<a href=#2050 id=2050 data-nosnippet>2050</a>                    count &lt;= max_entries_per_event,
+<a href=#2051 id=2051 data-nosnippet>2051</a>                    <span class="string">"TraceStats has {} grouped stats, exceeds max of {}"</span>,
+<a href=#2052 id=2052 data-nosnippet>2052</a>                    count,
+<a href=#2053 id=2053 data-nosnippet>2053</a>                    max_entries_per_event
+<a href=#2054 id=2054 data-nosnippet>2054</a>                );
+<a href=#2055 id=2055 data-nosnippet>2055</a>            }
+<a href=#2056 id=2056 data-nosnippet>2056</a>
+<a href=#2057 id=2057 data-nosnippet>2057</a>            <span class="comment">// Property 2: Total stats should be preserved
+<a href=#2058 id=2058 data-nosnippet>2058</a>            </span><span class="kw">let </span>output_total: usize = result.iter().map(count_grouped_stats).sum();
+<a href=#2059 id=2059 data-nosnippet>2059</a>            <span class="macro">prop_assert_eq!</span>(input_total, output_total, <span class="string">"Total stats count should be preserved"</span>);
+<a href=#2060 id=2060 data-nosnippet>2060</a>
+<a href=#2061 id=2061 data-nosnippet>2061</a>            <span class="comment">// Property 3: Events are marked as split exactly when there is more than one of them
+<a href=#2062 id=2062 data-nosnippet>2062</a>            </span><span class="kw">for </span>trace_stats <span class="kw">in </span><span class="kw-2">&amp;</span>result {
+<a href=#2063 id=2063 data-nosnippet>2063</a>                <span class="macro">prop_assert_eq!</span>(trace_stats.is_split_payload(), result.len() &gt; <span class="number">1</span>);
+<a href=#2064 id=2064 data-nosnippet>2064</a>            }
+<a href=#2065 id=2065 data-nosnippet>2065</a>        }
+<a href=#2066 id=2066 data-nosnippet>2066</a>    }
+<a href=#2067 id=2067 data-nosnippet>2067</a>}
 </code></pre></div></section></main></body></html>
