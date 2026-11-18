@@ -963,21 +963,22 @@ impl Running for PodRunning {
         self.identities.clone()
     }
 
+    /// Polls the container's state. A read that fails or stalls ends the wait, so the exit is never taken as running
+    /// when it cannot be observed.
     async fn wait(&self, deadline: Instant) -> Result<i64, GenericError> {
-        let mut last = "the deadline passed".to_string();
         loop {
-            match timeout_at(deadline, self.terminated()).await {
+            match timeout_at((Instant::now() + STATUS_LIMIT).min(deadline), self.terminated()).await {
                 Ok(Ok(Some(code))) => return Ok(code),
                 Ok(Ok(None)) => {}
                 Ok(Err(kube::Error::Api(status))) if status.is_not_found() => {
                     return Err(generic_error!("pod '{}' is gone", self.name));
                 }
-                Ok(Err(e)) => last = format!("Failed to read the state of pod '{}': {}", self.name, e),
-                Err(_) => return Err(generic_error!("{}", last)),
+                Ok(Err(e)) => return Err(generic_error!("Failed to read the state of pod '{}': {}", self.name, e)),
+                Err(_) => return Err(generic_error!("Reading the state of pod '{}' timed out.", self.name)),
             }
             sleep_until((Instant::now() + EXIT_POLL).min(deadline)).await;
             if Instant::now() >= deadline {
-                return Err(generic_error!("{}", last));
+                return Err(generic_error!("the deadline passed"));
             }
         }
     }
