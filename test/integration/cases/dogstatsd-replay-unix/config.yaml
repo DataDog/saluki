@@ -26,6 +26,7 @@ procedure:
     payloads:
       - "integration.replay.unix.one:1|c"
       - "integration.replay.unix.two:1|c"
+    payload_interval: 1s
     capture_duration: 3s
     stats_duration: 3s
     expected_metrics:
