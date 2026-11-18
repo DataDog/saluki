@@ -1979,7 +1979,8 @@ Why this order:
     refuses a directory that exists, and the macOS job's sweep removes it. A host process group has no
     exit or log directory.
   - A host participant's processes are its programs, observed through their pipes and exits. A
-    process with a record or an output file, or one that names no program, is a plan error. A command's
+    process with a record or an output file, or one that names no program, is a plan error, and so is a
+    program with no process, whose output nothing would read. A command's
     `program` names one of the participant's programs, and only host processes have programs. A
     program at `./x` must be a file the participant places with an execute bit.
   - The realization reports each program's exit apart, behind `Handle::exit`. A host process group's
