@@ -39,6 +39,7 @@ use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::time::{sleep_until, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use super::backend::{
     Backend, Created, Exec, Identities, Preparing, Realized, Running, Scope, CRI_SOCKET, EXIT_DIR_ENV, HOST_PID,
@@ -765,16 +766,30 @@ async fn forward(case: &CasePods, name: &str, port: u16) -> Result<u16, GenericE
     let connections = case.tasks.clone();
     let name = name.to_string();
     case.tasks.spawn(async move {
-        while let Ok((mut connection, _)) = listener.accept().await {
+        loop {
+            let mut connection = match listener.accept().await {
+                Ok((connection, _)) => connection,
+                Err(e) => {
+                    warn!(pod = %name, port, error = %e, "Stopped forwarding a local port to a pod.");
+                    return;
+                }
+            };
             let (pods, name) = (pods.clone(), name.clone());
             connections.spawn(async move {
-                let Ok(mut forwarder) = pods.portforward(&name, &[port]).await else {
-                    return;
+                let mut forwarder = match pods.portforward(&name, &[port]).await {
+                    Ok(forwarder) => forwarder,
+                    Err(e) => {
+                        warn!(pod = %name, port, error = %e, "Failed to forward a connection to a pod.");
+                        return;
+                    }
                 };
                 let Some(mut stream) = forwarder.take_stream(port) else {
+                    warn!(pod = %name, port, "Failed to forward a connection to a pod: the forward has no stream.");
                     return;
                 };
-                let _ = tokio::io::copy_bidirectional(&mut connection, &mut stream).await;
+                if let Err(e) = tokio::io::copy_bidirectional(&mut connection, &mut stream).await {
+                    warn!(pod = %name, port, error = %e, "A connection forwarded to a pod failed.");
+                }
             });
         }
     });
