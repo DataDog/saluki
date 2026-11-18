@@ -148,9 +148,10 @@ impl<'a> Handle<'a> {
 
     /// How `process` exited, or that it is still running, or why that cannot be determined.
     ///
-    /// The only process of a container exits when the container does. A supervised process has exited once its exit
-    /// record holds a complete line, read within `limit`. Its status is undetermined when the record cannot be read or
-    /// does not parse, and when the participant has exited and the record holds no exit.
+    /// The only process of a container exits when the container does, and a process the realization reports apart, such
+    /// as a host program, exits as it says. A supervised process has exited once its exit record holds a complete line,
+    /// read within `limit`. Its status is undetermined when the record cannot be read or does not parse, and when the
+    /// participant has exited and the record holds no exit.
     ///
     /// # Errors
     ///
@@ -160,6 +161,9 @@ impl<'a> Handle<'a> {
         // Taken before the record is read: an empty record read after the participant exited is final.
         let reported = self.observation.exit();
         let ExitChannel::Record { file } = spec.exit() else {
+            if let Some(exit) = self.realized.reported_exit(process) {
+                return Ok(exit);
+            }
             return Ok(match reported {
                 None => ProcessExit::Running,
                 Some(Ok(code)) => ProcessExit::Exited(ExitStatus { code, signal: None }),

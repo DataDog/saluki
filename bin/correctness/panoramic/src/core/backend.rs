@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::handle::HandleError;
 use super::ledger::ResourceLedger;
-use super::observe::Sink;
+use super::observe::{ProcessExit, Sink};
 use super::participant::Enclosure;
 use super::plan::PlannedParticipant;
 use super::reference::Values;
@@ -229,6 +229,13 @@ pub(crate) trait Realized: fmt::Debug + Send + Sync {
     ///
     /// Returns a harness error if the file cannot be read, or `deadline` passes first.
     async fn read_file(&self, path: &str, deadline: Instant) -> Result<Option<Vec<u8>>, HandleError>;
+
+    /// The exit of `process` as the realization reports it apart from the participant's own, as each program of a host
+    /// process group has. `None` where the realization reports one exit, the participant's, which is its only
+    /// process's.
+    fn reported_exit(&self, _process: &str) -> Option<ProcessExit> {
+        None
+    }
 
     /// The runner host's port for the participant's published `endpoint`, or `None` if it has none. A participant that
     /// exited before its ports were read back has none.
