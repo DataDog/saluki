@@ -974,7 +974,7 @@ fn meta_struct_maps_to_bytes_attributes() {
 }
 
 /// Tracks the live heap bytes allocated by the current thread, so a test can bound what a decode allocates.
-mod alloc_tracking {
+pub(crate) mod alloc_tracking {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
 

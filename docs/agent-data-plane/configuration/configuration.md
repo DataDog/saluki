@@ -1129,7 +1129,7 @@ Prefer an `http://` destination. Over a `unix://` destination, the trace-agent a
 
 ### `data_plane.experimental.apm.native_trace_intake`
 
-ADP serves `/v1.0/traces`, and MessagePack payloads on `/v0.4/traces`, `/v0.3/traces` and `/v0.2/traces`, itself. As the trace-agent does, `/v0.2/traces` rejects MessagePack with `415 Unsupported Media Type`. ADP still forwards JSON payloads, and the other trace endpoints, to the trace-agent behind the APM relay.
+ADP serves `/v1.0/traces`, `/v0.4/traces`, `/v0.3/traces` and `/v0.2/traces` itself, in JSON and MessagePack, and picks the decoder from `Content-Type` as the trace-agent does. As the trace-agent does, `/v0.2/traces` rejects MessagePack with `415 Unsupported Media Type`. ADP still forwards the other trace endpoints to the trace-agent behind the APM relay.
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 
