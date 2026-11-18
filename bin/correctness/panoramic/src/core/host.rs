@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use futures::StreamExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
-use tokio::time::{timeout_at, Instant};
+use tokio::time::{timeout, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::backend::{Backend, Created, Exec, Identities, Preparing, Realized, Running, Scope};
@@ -39,6 +39,10 @@ use super::wiring::PlannedAddress;
 
 /// The variables of the runner's environment that a program gets, when the runner has them.
 const PASS_THROUGH: [&str; 3] = ["PATH", "HOME", "TMPDIR"];
+
+/// How long [`RealizedHost::exec`] keeps reading the output of a command that has exited, which a background child can
+/// keep open.
+const OUTPUT_AFTER_EXIT: Duration = Duration::from_millis(500);
 
 /// The mode of each of a participant's own directories.
 const OWN_DIR_MODE: u32 = 0o755;
@@ -421,14 +425,27 @@ impl Realized for RealizedHost {
             }
             Ok::<_, String>(())
         };
-        let waited = async { exit.wait_for(Option::is_some).await.map(|exited| exited.clone()) };
-        let ran = async {
-            let (copied, exited) = tokio::join!(copy, waited);
-            copied?;
-            match exited {
-                Ok(Some(exit)) => exit,
+        let waited = async {
+            match exit.wait_for(Option::is_some).await.map(|exited| exited.clone()) {
+                Ok(Some(exited)) => exited,
                 Ok(None) => Err(format!("'{}' has not exited", program)),
                 Err(e) => Err(format!("The exit of '{}' is not reported: {}", program, e)),
+            }
+        };
+        tokio::pin!(copy, waited);
+        let ran = async {
+            tokio::select! {
+                copied = &mut copy => {
+                    copied?;
+                    waited.await
+                }
+                exited = &mut waited => {
+                    // A background child can hold the pipes after the command has exited, so read for a short time.
+                    if let Ok(copied) = timeout(OUTPUT_AFTER_EXIT, &mut copy).await {
+                        copied?;
+                    }
+                    exited
+                }
             }
         };
         let exited = match timeout_at(deadline, ran).await {
