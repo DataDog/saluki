@@ -192,7 +192,8 @@ impl<'a> DataPlaneConfiguration<'a> {
 
     /// Returns `true` if ADP handles OTLP logs itself, rather than relaying them to the Core Agent.
     ///
-    /// This decides whether the OTLP source's logs are wired into the logs pipeline.
+    /// This is the case in which the OTLP topology wires the OTLP source's logs into the logs pipeline, so it
+    /// requires that pipeline.
     pub const fn otlp_logs_native(&self) -> bool {
         self.otlp_enabled() && !self.otlp_proxy_enabled()
     }
