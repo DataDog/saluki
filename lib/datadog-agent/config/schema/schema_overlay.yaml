@@ -381,7 +381,7 @@ inventory:
     description: "Failed sends before a payload is dropped"
     documentation: |-
       The trace-agent drops a trace or stats payload after this many failed sends, 4 by default. ADP follows its forwarder: it
-      retries with backoff, up to `forwarder_backoff_max`, until the byte-bounded retry queue evicts the payload. Almost no deployments set this key, so ADP doesn't implement it.
+      retries with backoff, up to `forwarder_backoff_max`, until the byte-bounded retry queue evicts the payload. Nothing uses this key in practice, so ADP doesn't implement it.
 
   apm_config.max_traces_per_second:
     support: full
@@ -582,7 +582,7 @@ inventory:
     pipelines: [traces]
     description: "Concurrent stats requests"
     documentation: |-
-      ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Almost no deployments set this key, so ADP doesn't implement it.
+      ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.
 
   apm_config.stats_writer.queue_size:
     support: none
@@ -591,7 +591,7 @@ inventory:
     pipelines: [traces]
     description: "Pending stats payloads"
     documentation: |-
-      ADP sends traces and APM stats from one forwarder with a byte-bounded retry queue, so a writer can't have its own queue size. Almost no deployments set this key, so ADP doesn't implement it.
+      ADP sends traces and APM stats from one forwarder with a byte-bounded retry queue, so a writer can't have its own queue size. Nothing uses this key in practice, so ADP doesn't implement it.
 
   apm_config.sync_flushing:
     support: none
@@ -601,7 +601,7 @@ inventory:
     description: "Flush payloads on request, not on a timer"
     documentation: |-
       The trace-agent flushes its writers only when the host asks, which serverless deployments use. ADP's encoders flush on
-      timers and ADP has no host flush, so ADP doesn't support this mode. Almost no deployments set this key, so ADP doesn't implement it.
+      timers and ADP has no host flush, so ADP doesn't support this mode. Nothing uses this key in practice, so ADP doesn't implement it.
 
   apm_config.target_traces_per_second:
     support: full
@@ -624,7 +624,7 @@ inventory:
     pipelines: [traces]
     description: "Concurrent trace requests"
     documentation: |-
-      ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Almost no deployments set this key, so ADP doesn't implement it.
+      ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.
 
   apm_config.trace_writer.queue_size:
     support: none
@@ -634,7 +634,7 @@ inventory:
     description: "Pending trace payloads"
     documentation: |-
       The trace-agent deprecates this key and always queues one payload. ADP sends traces from a forwarder with a byte-bounded
-      retry queue and doesn't read it. Almost no deployments set this key, so ADP doesn't implement it.
+      retry queue and doesn't read it. Nothing uses this key in practice, so ADP doesn't implement it.
 
   apm_config.traces_send_to_main_endpoint:
     support: full
