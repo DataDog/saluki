@@ -408,7 +408,7 @@ impl Case<'_> {
         let (watching, watched) = (running.clone(), observation.clone());
         self.run.tasks.spawn(async move {
             let exit = watching.wait(Instant::now() + EXIT_WATCH_TIME).await;
-            watched.exited(exit);
+            watched.exited(exit.map_err(|e| format!("{:#}", e)));
         });
         let mut started = Started {
             realized: running,
@@ -593,7 +593,9 @@ impl Case<'_> {
                     Ok(Some(code)) => started.observation.exited(Ok(code)),
                     Ok(None) => {}
                     // Nothing else may check the participant after this, so its state is undetermined.
-                    Err(e) if started.observation.exit().is_none() => started.observation.exited(Err(e)),
+                    Err(e) if started.observation.exit().is_none() => {
+                        started.observation.exited(Err(format!("{:#}", e)))
+                    }
                     Err(_) => {}
                 }
             });
