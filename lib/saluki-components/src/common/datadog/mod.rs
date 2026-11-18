@@ -14,6 +14,7 @@ pub(crate) mod sketch_shadow;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_util;
+pub mod traces;
 pub mod transaction;
 pub mod validation;
 pub(crate) mod version_data;
