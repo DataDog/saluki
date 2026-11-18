@@ -931,6 +931,10 @@ endif
 fast-edit-test: fmt sync-licenses check-clippy check-deny check-licenses test-all
 fast-edit-test: ## Runs a lightweight format/lint/test pass
 
+.PHONY: sandbox-setup
+sandbox-setup: ## Prepares a remote agent sandbox to build and test without network access
+	@ci/tooling/sandbox-setup.sh
+
 ##@ CI
 
 .PHONY: emit-adp-build-metadata
