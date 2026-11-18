@@ -317,14 +317,15 @@ impl<'a> Handle<'a> {
         }
     }
 
-    /// Makes one HTTP `GET` request for `path` at the endpoint. Any status is a response.
+    /// Makes one HTTP `GET` request for `path` at the endpoint, over TLS if the endpoint serves it, and without
+    /// checking the server's certificate if `skip_verify` is set. Any status is a response.
     ///
     /// # Errors
     ///
     /// Returns a software error if no response arrives within `limit`, and a harness error if the endpoint cannot be
     /// requested.
     pub(crate) async fn http_get(
-        &self, endpoint: &str, path: &str, limit: Duration,
+        &self, endpoint: &str, path: &str, skip_verify: bool, limit: Duration,
     ) -> Result<HttpResponse, HandleError> {
         let (planned, route) = self.route(endpoint, EndpointOperation::Request)?;
         if !path.starts_with('/') {
@@ -334,7 +335,15 @@ impl<'a> Handle<'a> {
             )));
         }
         match route {
-            Reach::PublishedPort | Reach::ForwardedPort => self.published_get(endpoint, path, limit).await,
+            Reach::PublishedPort | Reach::ForwardedPort => {
+                self.published_get(endpoint, planned.tls, path, skip_verify, limit)
+                    .await
+            }
+            // The plan refuses a request to a TLS endpoint through the courier, which does not speak TLS.
+            Reach::CourierInServer if planned.tls => Err(HandleError::Harness(format!(
+                "endpoint '{}' of participant '{}' serves TLS, which the courier does not speak",
+                endpoint, self.name
+            ))),
             Reach::CourierInServer => {
                 let address = planned.courier_address(self.name, EndpointOperation::Request);
                 self.courier()?.http_get(&address, path, limit).await
@@ -386,9 +395,11 @@ impl<'a> Handle<'a> {
         Ok(Courier::new(self.realized, path))
     }
 
-    /// Requests `path` from the runner, through the port published or forwarded for `endpoint` on the runner's loopback
-    /// address. A redirect is a response, as through the courier.
-    async fn published_get(&self, endpoint: &str, path: &str, limit: Duration) -> Result<HttpResponse, HandleError> {
+    /// Requests `path` from the runner, through the port published or forwarded for `endpoint` on the runner's
+    /// loopback address, over HTTPS if `tls`. A redirect is a response, as through the courier.
+    async fn published_get(
+        &self, endpoint: &str, tls: bool, path: &str, skip_verify: bool, limit: Duration,
+    ) -> Result<HttpResponse, HandleError> {
         let port = self.realized.host_port(endpoint).ok_or_else(|| {
             HandleError::Software(format!(
                 "endpoint '{}' of participant '{}' has no published port: the participant had exited by the time its \
@@ -396,17 +407,20 @@ impl<'a> Handle<'a> {
                 endpoint, self.name
             ))
         })?;
-        // One client for the process, so requests share its connection pool.
-        static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-        let client = match CLIENT.get() {
+        // One client of each kind for the process, so requests share their connection pools.
+        static VERIFYING: OnceLock<reqwest::Client> = OnceLock::new();
+        static NOT_VERIFYING: OnceLock<reqwest::Client> = OnceLock::new();
+        let cell = if skip_verify { &NOT_VERIFYING } else { &VERIFYING };
+        let client = match cell.get() {
             Some(client) => client,
             None => {
                 let client = reqwest::Client::builder()
                     .no_proxy()
                     .redirect(reqwest::redirect::Policy::none())
+                    .danger_accept_invalid_certs(skip_verify)
                     .build()
                     .map_err(harness)?;
-                CLIENT.get_or_init(|| client)
+                cell.get_or_init(|| client)
             }
         };
         let failed = |e: reqwest::Error| {
@@ -416,8 +430,9 @@ impl<'a> Handle<'a> {
                 HandleError::Software(format!("{:#}", GenericError::from(e)))
             }
         };
+        let scheme = if tls { "https" } else { "http" };
         let response = client
-            .get(format!("http://127.0.0.1:{}{}", port, path))
+            .get(format!("{}://127.0.0.1:{}{}", scheme, port, path))
             .timeout(limit)
             .send()
             .await
