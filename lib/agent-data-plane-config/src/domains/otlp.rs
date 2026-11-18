@@ -35,21 +35,21 @@ pub struct Domain {
 /// Debug logging of received OTLP data.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DebugOutput {
-    /// How much detail is logged for each received batch.
+    /// How much detail is logged for each received export request.
     ///
     /// Stays [`DebugVerbosity::None`] unless `otlp_config.debug.verbosity` is configured explicitly. A schema default
     /// of `basic` doesn't turn the output on.
     pub verbosity: DebugVerbosity,
 }
 
-/// How much detail is logged for each received batch of OTLP data.
+/// How much detail is logged for each received OTLP export request.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum DebugVerbosity {
     /// Log nothing.
     #[default]
     None,
 
-    /// Log one summary line per batch, with the number of items received.
+    /// Log one summary line per request, with the number of items received.
     Basic,
 
     /// Log the summary line, then about one line for each item received.

@@ -1109,13 +1109,14 @@ is enabled.
 ADP logs the OTLP metrics, logs, and traces it receives natively, at the level this key sets:
 
 - `none`: nothing is logged.
-- `basic`: one summary line per received batch, with the number of items it carries.
+- `basic`: one summary line per received export request, with the number of items it carries.
 - `normal`: the summary line, then about one line per item.
 - `detailed`: the summary line, then every field of every item.
 
 The output stays off unless you set the key. A configured `otlp_config.debug` section with no `verbosity`
 doesn't turn it on in ADP. ADP writes the output to its log at the `info` level, so a higher log level hides it.
-The format of the lines is ADP's own, and `detailed` prints trace and span IDs as lists of numbers. Support is
+The format of the lines is ADP's own. `detailed` prints trace and span IDs as lists of numbers, and cuts each request's
+output off at 1 MiB. Support is
 partial because of this format, and because ADP doesn't read the section's other settings, such as log sampling.
 In OTLP proxy mode, ADP doesn't process the signals it forwards, so this key doesn't apply to them.
 

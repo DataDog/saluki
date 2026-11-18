@@ -1,10 +1,11 @@
-//! Debug logging of the OTLP data ADP receives.
+//! Debug logging of the OTLP data the source receives.
 //!
 //! Operators turn this on to confirm that data is arriving and to see what it looks like. It's a view into what was
-//! received and doesn't change what ADP processes or sends.
+//! received and doesn't change what the source processes or sends.
 //!
-//! Each signal has a `render_*` method that decides what to log for one received batch, and a `log_*` method that
-//! writes it. Rendering is a pure function of the verbosity and the batch, so tests can check it without capturing logs.
+//! Each signal has a `render_*` method that decides what to log for one export request, and a `log_*` method that
+//! writes it. Rendering is a pure function of the verbosity and the request, so tests can check it without capturing
+//! logs.
 
 use std::borrow::Cow;
 use std::fmt::{self, Write as _};
@@ -22,14 +23,14 @@ use super::logs::transform::derive_status;
 use crate::common::otlp::traces::transform::bytes_to_hex_lowercase;
 use crate::common::otlp::value::otlp_value_to_string;
 
-/// How much detail is logged for each received batch of OTLP data.
+/// How much detail is logged for each received OTLP export request.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OtlpDebugVerbosity {
     /// Log nothing.
     #[default]
     None,
 
-    /// Log one summary line per batch, with the number of items received.
+    /// Log one summary line per request, with the number of items received.
     Basic,
 
     /// Log the summary line, then about one line for each item received.
@@ -39,7 +40,7 @@ pub enum OtlpDebugVerbosity {
     Detailed,
 }
 
-/// Logs the OTLP data ADP receives, at the configured verbosity.
+/// Logs the OTLP data the source receives, at the configured verbosity.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OtlpDebugOutput {
     verbosity: OtlpDebugVerbosity,
@@ -94,7 +95,7 @@ impl OtlpDebugOutput {
 
     /// Returns what to log for a metrics export request, or `None` when nothing should be logged.
     fn render_metrics(&self, request: &ExportMetricsServiceRequest) -> Option<String> {
-        self.render_batch(
+        self.render_request(
             || summarize_metrics(request),
             || normal_metrics(request),
             || detailed(request),
@@ -103,7 +104,7 @@ impl OtlpDebugOutput {
 
     /// Returns what to log for a logs export request, or `None` when nothing should be logged.
     fn render_logs(&self, request: &ExportLogsServiceRequest) -> Option<String> {
-        self.render_batch(
+        self.render_request(
             || summarize_logs(request),
             || normal_logs(request),
             || detailed(request),
@@ -112,7 +113,7 @@ impl OtlpDebugOutput {
 
     /// Returns what to log for a traces export request, or `None` when nothing should be logged.
     fn render_traces(&self, request: &ExportTraceServiceRequest) -> Option<String> {
-        self.render_batch(
+        self.render_request(
             || summarize_traces(request),
             || normal_traces(request),
             || detailed(request),
@@ -123,7 +124,7 @@ impl OtlpDebugOutput {
     ///
     /// Each part is a closure that only runs at the verbosity that needs it, so a lower verbosity never pays to
     /// summarize or format what it won't log.
-    fn render_batch(
+    fn render_request(
         &self, summary: impl FnOnce() -> String, normal_body: impl FnOnce() -> String,
         detailed_body: impl FnOnce() -> String,
     ) -> Option<String> {
@@ -632,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn detailed_traces_log_every_field_of_the_batch_after_the_summary() {
+    fn detailed_traces_log_every_field_of_the_request_after_the_summary() {
         let request = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
                 scope_spans: vec![ScopeSpans {
@@ -649,7 +650,7 @@ mod tests {
 
         let rendered = output(OtlpDebugVerbosity::Detailed)
             .render_traces(&request)
-            .expect("detailed verbosity logs every batch");
+            .expect("detailed verbosity logs every request");
 
         assert!(rendered.starts_with("Traces: resource spans: 1, spans: 1\n"));
         assert!(rendered.contains("name: \"query\""));
@@ -661,10 +662,10 @@ mod tests {
     fn detailed_logs_and_metrics_log_every_field_after_the_summary() {
         let logs = output(OtlpDebugVerbosity::Detailed)
             .render_logs(&logs_request(&[1]))
-            .expect("detailed verbosity logs every batch");
+            .expect("detailed verbosity logs every request");
         let metrics = output(OtlpDebugVerbosity::Detailed)
             .render_metrics(&metrics_request())
-            .expect("detailed verbosity logs every batch");
+            .expect("detailed verbosity logs every request");
 
         assert!(logs.starts_with("Logs: resource logs: 1, log records: 1\n"));
         assert!(logs.contains("severity_number"));
@@ -676,10 +677,10 @@ mod tests {
     fn a_verbosity_renders_only_the_parts_it_logs() {
         let renders_nothing = || -> String { panic!("this part must not be rendered") };
 
-        output(OtlpDebugVerbosity::None).render_batch(renders_nothing, renders_nothing, renders_nothing);
-        output(OtlpDebugVerbosity::Basic).render_batch(String::new, renders_nothing, renders_nothing);
-        output(OtlpDebugVerbosity::Normal).render_batch(String::new, String::new, renders_nothing);
-        output(OtlpDebugVerbosity::Detailed).render_batch(String::new, renders_nothing, String::new);
+        output(OtlpDebugVerbosity::None).render_request(renders_nothing, renders_nothing, renders_nothing);
+        output(OtlpDebugVerbosity::Basic).render_request(String::new, renders_nothing, renders_nothing);
+        output(OtlpDebugVerbosity::Normal).render_request(String::new, String::new, renders_nothing);
+        output(OtlpDebugVerbosity::Detailed).render_request(String::new, renders_nothing, String::new);
     }
 
     #[test]

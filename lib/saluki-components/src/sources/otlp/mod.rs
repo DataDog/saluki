@@ -101,7 +101,7 @@ pub struct OtlpConfiguration {
     /// Context resolver settings.
     pub contexts: OtlpContextSettings,
 
-    /// How much detail to log about each batch of OTLP data received.
+    /// How much detail to log about each OTLP export request received.
     pub debug_verbosity: OtlpDebugVerbosity,
 
     /// Maximum length of a span's resource name, in bytes.
