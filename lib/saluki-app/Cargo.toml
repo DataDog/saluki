@@ -16,12 +16,9 @@ arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 bytesize = { workspace = true }
-chrono = { workspace = true }
-chrono-tz = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
-iana-time-zone = { workspace = true }
 itoa = { workspace = true }
 metrics = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }

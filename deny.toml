@@ -29,9 +29,8 @@ ignore = [
   # vulnerability. Migrating to serde-saphyr needs reworking our serde_yaml::Value usage and coordinating with lading.
   { id = "RUSTSEC-2024-0449", reason = "unmaintained only; no drop-in safe replacement, pending serde-saphyr migration" },
 
-  # chrono and chrono-tz are unmaintained. No known vulnerability. We're migrating our own usage to `jiff`, which drops
-  # chrono-tz entirely, but chrono also arrives through `lading-payload` (needs an upstream change), so the chrono
-  # exception outlives the in-tree migration.
+  # chrono is unmaintained. No known vulnerability. We're migrating our own usage to `jiff`, but chrono also arrives
+  # through `lading-payload` (needs an upstream change), so this exception outlives the in-tree migration.
   { id = "RUSTSEC-2026-0543", reason = "unmaintained only; pending jiff migration and lading-payload" },
   { id = "RUSTSEC-2026-0555", reason = "unmaintained only; pending jiff migration of the saluki-app log formatter" },
 
@@ -63,6 +62,9 @@ deny = [
   # in the workspace Cargo.toml. Lift both once AWS-LC-FIPS 4.x moves from "Modules in Process" to "Validations" in
   # https://github.com/aws/aws-lc/blob/main/crypto/fipsmodule/FIPS.md.
   { crate = "aws-lc-fips-sys@>=0.14", reason = "AWS-LC-FIPS 4.x is not yet certified; see aws-lc-rs pin in Cargo.toml" },
+  { crate = "chrono-tz", reason = "unmaintained (RUSTSEC-2026-0555); use saluki_common::time for time zones" },
+  # Older jiff versions come in through third-party crates, so the ban only covers 1.x.
+  { crate = "jiff@>=1", wrappers = ["saluki-common"], reason = "date and time code goes through saluki_common::time" },
 ]
 
 [licenses]

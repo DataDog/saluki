@@ -16,6 +16,7 @@ futures = { workspace = true }
 http-body = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }
+jiff = { workspace = true }
 papaya = { workspace = true }
 pin-project = { workspace = true }
 regex = { workspace = true, features = ["unicode-perl", "unicode-case"] }
