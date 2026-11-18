@@ -1194,9 +1194,9 @@ One function runs one case from its plan. The runner in the binary schedules cas
 | --- | --- |
 | prepare | Each realization backend prepares its part of the case's scope: a network and a volume, a namespace, or a state directory. Every resource is entered in the ledger before it is made. |
 | create | In create order, each participant is created from its data. References whose values exist are resolved and files are placed. Nothing runs yet. |
-| start | Participants start level by level. A level starts once every endpoint its participants connect to shows its readiness evidence. A gate fails as soon as its server is seen to exit. |
+| start | Participants start level by level. A level starts once every endpoint its participants connect to shows its readiness evidence. The level fails as soon as the server of any of its gates is seen to exit, until the level starts. |
 | procedure | The steps run in order, and a `parallel` block runs its steps together. Each step has its own time budget inside the case's timeout. |
-| observe | Exited participants get a short grace to finish their output, then the files to collect are copied out. This also runs after a failed create or start, if anything started. |
+| observe | Exited participants get a short grace to finish their output. Then every capture takes what is left of its output, a running participant's too, and the files to collect are copied out. This also runs after a failed create or start, if anything started. |
 | reclaim | The ledger removes everything the case made, under its own budget, on every path: pass, failure, error, timeout and cancellation. Each resource is reported as reclaimed, leaked or unsettled. |
 
 - **Two orders.** Create order exists because one participant's data may need a value another
@@ -1266,22 +1266,23 @@ Every process a participant declares has one exit channel and one output channel
   `$PANORAMIC_EXIT_DIR/<name>`: `{"code": <code>, "signal": <signal>, "time": "<seconds>.<fraction>"}`,
   where the time is a Unix time with one to nine fractional digits. A normal exit has signal 0. A
   death by signal has code 256 and the signal number. The reader ignores other fields, so the format
-  can grow. The first line is final, so a restart never returns a process to running. A case can
-  declare supervised processes of its own, so this format is a contract and the user guide documents
-  it.
+  can grow. A line counts once its newline is written. The first line is final, so a restart never
+  returns a process to running. A case can declare supervised processes of its own, so this format
+  is a contract and the user guide documents it.
 - **Signals.** A container reports death by signal as code 128 + n, while a record and a waited
   child carry the signal separately. `exits_with` asserts a code, and no case asserts on death by
   signal today. Matching a signal the same way on every realization is added with the first case
   that needs it.
 - **Output.** Output is written under `<log dir>/<participant>/` as it arrives, and each line keeps
-  the name of its process.
+  the name of its process. A participant whose processes are all supervised also gets its container
+  log, which holds what the supervisor writes, as `_container.log`, a name no process log takes.
 - **Reports.** `run.json` and `result.json` keep today's shape and gain fields: the subject OS, the
   skipped outcome with its reason, each participant's realization, per-process exits and output
   paths, reclaim entries and collected files. Exit codes are 0 passed, 1 failed, 2 harness error,
   and 3 when nothing ran.
 - **Retention is data.** A file to collect, whether a participant's data lists it or a step writes
-  it, carries `keep: always` or `keep: on_failure`. The runner applies the rule and knows no file
-  names.
+  it, carries `keep: always` or `keep: on_failure`. The lifecycle applies the rule to the outcome it
+  records, and the runner knows no file names.
 
 ### Steps and operations
 
@@ -1719,7 +1720,10 @@ Why this order:
 
 - **Builds:** exit observation with its three states, exit records, output capture, collection with
   retention as data, and the lifecycle: prepare, create in order, start behind readiness gates,
-  steps, observe. Reclaim stays with the scheduler.
+  the step driver with `parallel` blocks and per-step budgets, observe. Reclaim stays with the
+  scheduler. Three plan checks that observation needs: at most one process of a container is
+  observed through the container, `collect` names are plain file names, and mount paths are
+  absolute.
 - **Watch out:** the lifecycle reads only the plan. It does not call the participant type at create
   time or read the loaded case; only an operation a step calls runs participant type code. An
   undetermined exit is an error, never a pass. Only a consumer waits for readiness.
@@ -1729,8 +1733,8 @@ Why this order:
 - **Builds:** the route from a case file to a run. Discovery sends a file with no top-level `type:`
   to the new loader. A third `Test` runs a plan. `--subject-os`, a recorded skip, an unsatisfiable
   case as a harness error, the checks before the first case, and `--set` with `PANORAMIC_SET`
-  (moved here from `schema`). The step driver with
-  `log_contains`, `log_not_contains`, `process_stable_for`, `file_contains` and `parallel`. The test
+  (moved here from `schema`). The steps `log_contains`, `log_not_contains`,
+  `process_stable_for` and `file_contains`, which the lifecycle's step driver runs. The test
   that every real case compiles for every OS it declares. Migrates the Linux-only cases on
   `agent-adp` that need no other step, such as `adp-ipc-no-dns`, `adp-logging-default-path` and
   `adp-rar-disabled`.

@@ -28,7 +28,7 @@ CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64
 Unit tests that create containers are ignored by default, so `make test` doesn't need Docker. Run them with
 `make test-container-daemon`, which needs a reachable Docker daemon and builds the courier the tests copy into their
 containers. Their image comes from the internal registry. CI doesn't run them, so run them by hand when you change the
-container mechanisms or the container backend.
+container mechanisms, the container backend or the lifecycle.
 
 ### Architecture tests
 
