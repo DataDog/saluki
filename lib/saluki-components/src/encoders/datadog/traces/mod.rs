@@ -61,6 +61,8 @@ const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
 /// The version data tags are low cardinality, so a low cardinality lookup finds them.
 const VERSION_DATA_TAG_CARDINALITY: OriginTagCardinality = OriginTagCardinality::Low;
 
+const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
+const TAG_SDK_OTLP_EXPORT: &str = "_dd.sdk.otlp_export";
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
@@ -596,7 +598,13 @@ impl TraceEndpointEncoder {
     }
 
     fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> std::io::Result<()> {
-        let source = attributes_to_source(&trace.attributes);
+        let is_otlp = matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. });
+        // Resource attributes only describe the source of OTLP traces.
+        let source = if is_otlp {
+            attributes_to_source(&trace.attributes)
+        } else {
+            None
+        };
 
         // OTLP traces report the receiver sampling rate and mark the tracer version as OTLP. Native traces keep
         // their tracer version as sent.
@@ -614,12 +622,8 @@ impl TraceEndpointEncoder {
         };
 
         // `ignore_missing_datadog_fields` is an OTLP setting, so it never changes how Datadog traces are encoded.
-        let ignore_missing_datadog_fields =
-            self.ignore_missing_datadog_fields && matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. });
+        let ignore_missing_datadog_fields = self.ignore_missing_datadog_fields && is_otlp;
 
-        // Resolve computed metadata strings (may produce strings not directly present on trace fields).
-        let container_tags =
-            resolve_container_tags_from_attrs(&trace.attributes, source.as_ref(), ignore_missing_datadog_fields);
         // The payload environment is normalized like any other tag value before it's interned.
         let payload_env: &str = if is_normalized_tag_value(&trace.payload.env) {
             &trace.payload.env
@@ -634,12 +638,31 @@ impl TraceEndpointEncoder {
         } else {
             None
         };
-        let hostname_str: Option<&str> = resolve_hostname(
-            get_tracer_hostname(trace).map(|hostname| hostname.as_ref()),
-            matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. }),
-            Some(self.default_hostname.as_ref()),
-            ignore_missing_datadog_fields,
-        );
+
+        // OTLP traces derive container tags from their resource, and their hostname is the one the translator resolved.
+        // Datadog traces carry what the receiver resolved, and an empty tracer hostname stays empty, as the reference
+        // writer leaves it: the agent's own hostname is reported once, on the agent payload.
+        let otlp_container_tags = is_otlp
+            .then(|| {
+                resolve_container_tags_from_attrs(&trace.attributes, source.as_ref(), ignore_missing_datadog_fields)
+            })
+            .flatten();
+        let (container_tags, hostname_str): (Option<&str>, Option<&str>) = if is_otlp {
+            (
+                otlp_container_tags.as_deref(),
+                resolve_hostname(
+                    get_tracer_hostname(trace).map(|hostname| hostname.as_ref()),
+                    true,
+                    Some(self.default_hostname.as_ref()),
+                    ignore_missing_datadog_fields,
+                ),
+            )
+        } else {
+            (
+                non_empty(&trace.payload.receiver().container_tags),
+                non_empty(&trace.payload.hostname),
+            )
+        };
         // The container's `version` tag fills in an application version that the payload leaves empty. The tags come
         // from the trace's own container-tag attributes and from the container's known tags, as they do for stats. They
         // are gathered only when the version is missing.
@@ -711,13 +734,22 @@ impl TraceEndpointEncoder {
                 tp.app_version_ref(self.string_table.intern(app_version))?;
             }
 
-            // Container tags go in the payload-level attributes map.
-            if let Some(ct) = &container_tags {
-                let k_ref = self.string_table.intern(CONTAINER_TAGS_META_KEY);
-                let v_ref = self.string_table.intern(ct);
-                tp.attributes().write_entry(k_ref, |av: &mut _| {
-                    av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
-                })?;
+            // Receiver-resolved metadata goes in the payload-level attributes map, as `handleTracesV1` sets it.
+            for (key, value) in [
+                (CONTAINER_TAGS_META_KEY, container_tags),
+                (TAG_PROCESS_TAGS, non_empty(&trace.payload.receiver().process_tags)),
+                (
+                    TAG_SDK_OTLP_EXPORT,
+                    non_empty(&trace.payload.receiver().sdk_otlp_export),
+                ),
+            ] {
+                if let Some(value) = value {
+                    let k_ref = self.string_table.intern(key);
+                    let v_ref = self.string_table.intern(value);
+                    tp.attributes().write_entry(k_ref, |av: &mut _| {
+                        av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
+                    })?;
+                }
             }
 
             // Single TraceChunk containing all spans.
@@ -953,6 +985,10 @@ fn encode_etp_attribute_value<S: ScratchBuffer>(
         .map(|_| ())
 }
 
+fn non_empty(s: &str) -> Option<&str> {
+    (!s.is_empty()).then_some(s)
+}
+
 /// Resolves the hostname to report for a trace.
 ///
 /// `tracer_hostname` is the hostname the trace carries. Without one, OTLP traces report none: the translator already
@@ -1052,7 +1088,7 @@ mod tests {
     use protobuf::Message as _;
     use saluki_core::data_model::{
         event::{
-            trace::{Span as DdSpan, Trace, TraceIngestInfo},
+            trace::{ReceiverMetadata, Span as DdSpan, Trace, TraceIngestInfo},
             Event,
         },
         tags::Tag,
@@ -1419,6 +1455,75 @@ mod tests {
         assert!(!has_tag, "ETS chunk tag should be absent when ETS is disabled");
     }
 
+    /// Resolves the hostname and string-valued payload attributes of the single ETP tracer payload in `buf`.
+    fn decode_etp_payload_metadata(buf: &[u8]) -> (String, HashMap<String, String>) {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        let [tp] = payload.idxTracerPayloads.as_slice() else {
+            panic!("expected one tracer payload");
+        };
+        let strings = tp.strings();
+        (
+            resolve_ref(strings, tp.hostnameRef()).to_string(),
+            string_attrs(tp.attributes(), strings),
+        )
+    }
+
+    #[test]
+    fn datadog_trace_with_empty_hostname_does_not_fall_back_to_agent_hostname() {
+        let mut encoder = make_encoder(false);
+        let mut buf = Vec::new();
+        encoder
+            .encode(&make_trace(TraceIngestInfo::Datadog), &mut buf)
+            .expect("encode should succeed");
+        let (hostname, _) = decode_etp_payload_metadata(&buf);
+        assert_eq!(hostname, "");
+
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.hostname = MetaString::from("tracer-host");
+        buf.clear();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let (hostname, _) = decode_etp_payload_metadata(&buf);
+        assert_eq!(hostname, "tracer-host");
+    }
+
+    #[test]
+    fn datadog_trace_payload_metadata_becomes_payload_attributes() {
+        let mut encoder = make_encoder(false);
+        let mut buf = Vec::new();
+        encoder
+            .encode(&make_trace(TraceIngestInfo::Datadog), &mut buf)
+            .expect("encode should succeed");
+        let (_, attrs) = decode_etp_payload_metadata(&buf);
+        assert!(attrs.is_empty(), "empty metadata is not emitted: {attrs:?}");
+
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.receiver = Some(Arc::new(ReceiverMetadata {
+            container_tags: MetaString::from("image_tag:1.0,kube_namespace:prod"),
+            process_tags: MetaString::from("entrypoint.name:app"),
+            sdk_otlp_export: MetaString::from("false"),
+            ..ReceiverMetadata::new()
+        }));
+        // OTLP-style resource attributes don't describe Datadog traces, so they never become container tags.
+        Arc::make_mut(&mut trace.attributes).insert(
+            MetaString::from("container.id"),
+            AttributeValue::String(MetaString::from("abc123")),
+        );
+        buf.clear();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let (_, attrs) = decode_etp_payload_metadata(&buf);
+        assert_eq!(
+            attrs,
+            HashMap::from([
+                (
+                    "_dd.tags.container".to_string(),
+                    "image_tag:1.0,kube_namespace:prod".to_string()
+                ),
+                ("_dd.tags.process".to_string(), "entrypoint.name:app".to_string()),
+                ("_dd.sdk.otlp_export".to_string(), "false".to_string()),
+            ])
+        );
+    }
+
     #[test]
     fn resolve_hostname_prefers_the_trace_hostname_then_the_ingest_default() {
         // A hostname carried by the trace always wins.
@@ -1435,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn encoded_hostname_comes_from_the_payload_then_the_root_span_then_the_ingest_default() {
+    fn encoded_otlp_hostname_comes_from_the_payload_then_the_root_span() {
         let with_root_hostname = |payload_hostname: &str| {
             let mut attributes = FastHashMap::default();
             attributes.insert(
@@ -1443,7 +1548,12 @@ mod tests {
                 AttributeValue::String(MetaString::from("root-host")),
             );
             let span = DdSpan::new("svc", "op", "res", "web", 1, 0, 0, 1000, 0).with_attributes(attributes);
-            let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+            let mut trace = Trace::new(
+                vec![span],
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            );
             trace.priority = Some(1);
             trace.payload.hostname = MetaString::from(payload_hostname);
             trace
@@ -1466,9 +1576,9 @@ mod tests {
         });
         assert_eq!(encoded_hostname(&trace), "");
 
-        // Other traces fall back to the encoder's default hostname.
+        // Datadog traces without one stay empty too, as the reference writer leaves them.
         let trace = make_trace(TraceIngestInfo::Datadog);
-        assert_eq!(encoded_hostname(&trace), "test-host");
+        assert_eq!(encoded_hostname(&trace), "");
     }
 
     #[test]
@@ -1533,20 +1643,11 @@ mod tests {
         assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, false));
     }
 
-    /// `ignore_missing_datadog_fields` is an OTLP setting: with it on, an OTLP trace without a hostname keeps an empty
-    /// one, while a Datadog trace still gets the default hostname.
+    /// `ignore_missing_datadog_fields` is an OTLP setting: with it on, an OTLP trace no longer derives its container
+    /// tags from its resource attributes, while a Datadog trace encodes the same either way.
     #[test]
     fn ignore_missing_datadog_fields_applies_only_to_otlp_traces() {
-        let cases = [
-            (
-                TraceIngestInfo::Otlp {
-                    receiver_sampling_rate: 1.0,
-                },
-                "",
-            ),
-            (TraceIngestInfo::Datadog, "test-host"),
-        ];
-        for (ingest_info, want_hostname) in cases {
+        let encode = |ingest_info, ignore_missing_datadog_fields| {
             let mut encoder = TraceEndpointEncoder::new(
                 MetaString::from("test-host"),
                 "0.0.0".to_string(),
@@ -1554,21 +1655,33 @@ mod tests {
                 DEFAULT_TARGET_TPS,
                 DEFAULT_ERRORS_PER_SECOND,
                 false,
-                true,
+                ignore_missing_datadog_fields,
+            );
+            let mut trace = make_trace(ingest_info);
+            Arc::make_mut(&mut trace.attributes).insert(
+                MetaString::from("container.name"),
+                AttributeValue::String(MetaString::from("web")),
             );
             let mut buf = Vec::new();
-            encoder
-                .encode(&make_trace(ingest_info), &mut buf)
-                .expect("encode should succeed");
+            encoder.encode(&trace, &mut buf).expect("encode should succeed");
+            buf
+        };
 
-            let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
-            let hostnames: Vec<&str> = payload
-                .idxTracerPayloads
-                .iter()
-                .map(|tp| resolve_ref(tp.strings(), tp.hostnameRef()))
-                .collect();
-            assert_eq!(hostnames, [want_hostname], "{ingest_info:?}");
-        }
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
+        let container_tags = |buf: &[u8]| decode_etp_payload_metadata(buf).1.remove("_dd.tags.container");
+        assert_eq!(container_tags(&encode(otlp, true)), None);
+        assert_eq!(
+            container_tags(&encode(otlp, false)).as_deref(),
+            Some("container_name:web")
+        );
+
+        // Datadog traces encode the same either way.
+        assert_eq!(
+            encode(TraceIngestInfo::Datadog, true),
+            encode(TraceIngestInfo::Datadog, false)
+        );
     }
 
     #[test]
