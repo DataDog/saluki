@@ -11,6 +11,7 @@ use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, 
 use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
+use crate::common::otlp::traces::transform::otlp_value_to_string;
 use crate::common::otlp::traces::translator::ContainerTagPromotion;
 
 // ============================================================================
@@ -253,13 +254,20 @@ pub fn resolve_otlp_trace_container_tags(
             None => continue,
         };
 
-        // The enrichment step can replace a scalar string's value in the typed map. The replacement keeps the
-        // attribute's place in the order, so it takes the sender's value there, and the tags can't disagree with
-        // `Trace::attributes`. Arrays aren't enriched: the typed map holds their stringified form, so they use the
-        // raw element.
-        let tag_value = match (value, typed_attributes.get(kv.key.as_str())) {
-            (Some(Value::StringValue(_)), Some(AttributeValue::String(typed))) => {
-                Some(typed.as_ref()).filter(|typed| !typed.is_empty())
+        // The enrichment step can replace an attribute's value in the typed map, scalar or array. The replacement
+        // keeps the attribute's place in the order, so it takes the sender's value there, and the tags can't
+        // disagree with `Trace::attributes`. An unmodified attribute reaches the typed map as its stringified
+        // value, so a replacement is any non-empty string that differs from it.
+        let tag_value = match typed_attributes.get(kv.key.as_str()) {
+            Some(AttributeValue::String(typed)) if !typed.is_empty() => {
+                let unmodified = value
+                    .and_then(otlp_value_to_string)
+                    .is_some_and(|serialized| serialized == typed.as_ref());
+                if unmodified {
+                    tag_value
+                } else {
+                    Some(typed.as_ref())
+                }
             }
             _ => tag_value,
         };

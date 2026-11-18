@@ -1387,6 +1387,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn translate_spans_keeps_an_enriched_replacement_of_the_image_tags_array() {
+        // With promotion Off or Duplicate, a workload tag named `container.image.tags` replaces the sender's
+        // array in the typed attributes and on spans. The replacement is a scalar string, so it must win over the
+        // sender's first element and agree with `Trace::attributes`.
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("abc123")),
+            &["container.image.tags:enriched"],
+        );
+        let rs = build_resource_spans(
+            vec![
+                string_kv("container.id", "abc123"),
+                string_array_kv("container.image.tags", &["sender", "latest"]),
+            ],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider, ContainerTagPromotion::Off, true, rs);
+        assert_eq!(traces.len(), 1);
+        // The typed attributes hold the replacement, not the stringified array.
+        assert_eq!(attr(&traces[0], "container.image.tags").as_deref(), Some("enriched"));
+        let tags: Vec<&str> = traces[0]
+            .payload
+            .resolved_container_tags()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect();
+        assert!(tags.contains(&"image_tag:enriched"), "got {tags:?}");
+        assert!(
+            !tags.iter().any(|tag| tag.starts_with("image_tag:sender")),
+            "got {tags:?}"
+        );
+    }
+
     /// Returns a provider holding one convention tag and one custom tag for the given container.
     fn provider_for_container() -> TestWorkloadProvider {
         TestWorkloadProvider::with_entity(
