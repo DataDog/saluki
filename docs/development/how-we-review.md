@@ -31,7 +31,7 @@ Security problems are treated the same as correctness problems.
 ## How we write review comments
 
 <!-- review:writing-findings -->
-- **Short and informative.** Be direct and concise: "Don't clone here.", "Why are we cloning here?". If there is
+- **Short and informative.** Be direct and concise, as in "Don't clone here." or "Why are we cloning here?" If there is
   relevant detail to go along with the suggestion, name it specifically: "Otherwise, this will allocate for every packet
   received."
 - **"We" for project rules.** We state a convention as a fact: "We avoid fully qualified paths here." Personal
@@ -39,9 +39,9 @@ Security problems are treated the same as correctness problems.
 - **Questions about intent and evidence.** "What does this add over the existing eviction?" "Is this how the Core Agent
   does it?" Use questions to gain clarity or seek evidence for changes which aren't self-explanatory. Don't assume if
   you're unsure.
-- **Concrete fixes.** For simple fixes, like spelling errors or type swaps, use the form of "`old` -> `new`". For larger
-  changes, use a suggestion block. When referencing existing code that should be followed, link directly to the relevant
-  code rather than stating a vague location or reference point.
+- **Concrete fixes.** For simple fixes, like spelling errors or type swaps, use the form "`old` -> `new`" for them. For
+  larger changes, use a suggestion block. When referencing existing code that should be followed, link directly to the
+  relevant code rather than stating a vague location or reference point.
 
 It's not unreasonable that a small pull request can pass review and be approved without any review comments.
 <!-- /review -->
@@ -67,7 +67,7 @@ These findings are never blocking, so put "Not blocking:" at the start of each o
 - A cost that the pull request description names, together with how it measures or fixes the cost.
 
 Post nits after all other findings, and try limiting the number of nits to somewhere around 3-5. If the same class of
-nit comes up often, try addressing it with a single comment that mentions the different areas where the nit occured.
+nit comes up often, try addressing it with a single comment that mentions the different areas where the nit occurred.
 Overall, the goal is not to be perfect and note every single thing a review finds, but to ensure that all blocking
 issues are resolved, and that we fix _easy_ problems (non-blocking/nits) and try to leave the areas we touch a little
 better than we found them,

@@ -13,3 +13,5 @@ case pass when ADP is wrong.
 - Don't ask for edge cases that no current case can produce. An analysis that is too strict fails a case, so it
   doesn't hide a regression. Flag analysis logic that can let a case pass when ADP is wrong, such as a filter or a
   tolerance that also matches real output.
+- Make sure that a regression in the testing harness and libraries doesn't leave a formerly asserted invariant
+  unchecked.

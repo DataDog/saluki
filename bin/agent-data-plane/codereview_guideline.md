@@ -4,6 +4,7 @@
 
 Apply these rules to files under `bin/agent-data-plane`.
 
+- This is the primary product of this repository and our customer-facing behavioral surface.
 - The Agent Data Plane crate is, primarily, the point at which we assemble various components and types into our topology
   and so shouldn't be a spot where we're adding unit tests. The major exception to this is code that lives in internal
   modules. If you would reach for a unit test when making a change to how the topology is configured or how we handle
