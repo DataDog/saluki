@@ -271,8 +271,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         })
         .collect();
     let mut settings = settings;
-    settings.containers = match participant_case::check_before_the_first_case(&plans).await {
-        Ok(containers) => containers,
+    settings.backends = match participant_case::check_before_the_first_case(&plans).await {
+        Ok(backends) => backends,
         Err(errors) => {
             for e in errors {
                 if use_tui {

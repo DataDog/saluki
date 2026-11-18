@@ -8,6 +8,7 @@ use chrono::Local;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::config::{os_of_runtime, runtime_of};
+use crate::core::backend::Backends;
 use crate::core::participant::Os;
 use crate::participant_case::Replacement;
 use crate::{image_override::ImageOverride, reporter::OutputFormat, test::RunnerSettings};
@@ -264,7 +265,7 @@ impl RunCommand {
             adp_binary_path: self.adp_binary_path.clone(),
             core_agent_binary_path: self.core_agent_binary_path.clone(),
             alpine_image: self.alpine_image.clone(),
-            containers: None,
+            backends: Backends::default(),
         }
     }
 

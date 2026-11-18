@@ -9,7 +9,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::assertions::LogBuffer;
-use crate::core::container::ContainerBackend;
+use crate::core::backend::Backends;
 use crate::core::deadline::Deadline;
 use crate::core::ledger::ResourceLedger;
 use crate::core::record::CaseRecord;
@@ -51,8 +51,8 @@ pub(crate) struct RunnerSettings {
     /// The Alpine image used for the short-lived shared-volume permission fix-up container.
     pub(crate) alpine_image: String,
 
-    /// Realizes the Linux containers of participant cases, once the checks before the first case have passed.
-    pub(crate) containers: Option<ContainerBackend>,
+    /// Realizes the participants of participant cases, once the checks before the first case have passed.
+    pub(crate) backends: Backends,
 }
 
 /// Carries information that a test needs at runtime such as the logging directory and the cancellation channel.
