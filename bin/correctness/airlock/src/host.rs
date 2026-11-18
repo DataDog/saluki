@@ -24,12 +24,16 @@ use tokio_util::io::ReaderStream;
 
 use crate::container::{Output, OutputStream};
 
-/// How long [`HostProcess::stop`] waits for the exit after SIGKILL.
+/// How long [`HostProcess::stop`] waits after SIGKILL for the exit and for the group to empty.
 #[cfg(unix)]
 const KILL_WAIT: Duration = Duration::from_secs(2);
 
 /// How many chunks of output wait for whoever reads them, before the program's pipes fill.
 const OUTPUT_BUFFER: usize = 64;
+
+/// How often [`HostProcess::stop`] checks whether the group is empty after SIGKILL.
+#[cfg(unix)]
+const GROUP_POLL: Duration = Duration::from_millis(20);
 
 /// A program to run.
 #[derive(Clone, Debug)]
@@ -161,14 +165,14 @@ impl HostProcess {
         &self.name
     }
 
-    /// Stops the process and its group: SIGTERM, then SIGKILL after `grace`, then up to two seconds for the exit.
+    /// Stops the process and its group: SIGTERM, then SIGKILL after `grace`, then up to two seconds for the exit and for the group to empty.
     ///
     /// Whatever is left in the group is killed even when the program itself exited. Dropping the future before the
     /// SIGKILL drops the process, which sends SIGKILL.
     ///
     /// # Errors
     ///
-    /// Returns an error if the process has not exited after the SIGKILL. A process on a target with no process groups
+    /// Returns an error if the process has not exited, or its group is not empty, after the SIGKILL. A process on a target with no process groups
     /// is not signalled, and stopping it does nothing.
     #[cfg_attr(not(unix), allow(unused_mut, unused_variables))]
     pub async fn stop(mut self, grace: Duration) -> Result<(), GenericError> {
@@ -181,10 +185,18 @@ impl HostProcess {
                 let _ = timeout(grace, self.exit.wait_for(Option::is_some)).await;
             }
             self.signal(libc::SIGKILL);
-            self.group = None;
-            if timeout(KILL_WAIT, self.exit.wait_for(Option::is_some)).await.is_err() {
+            let group = self.group.take();
+            let gone = async {
+                let _ = self.exit.wait_for(Option::is_some).await;
+                if let Some(group) = group {
+                    while group_exists(group) {
+                        tokio::time::sleep(GROUP_POLL).await;
+                    }
+                }
+            };
+            if timeout(KILL_WAIT, gone).await.is_err() {
                 return Err(generic_error!(
-                    "'{}' did not exit within {:?} of SIGKILL",
+                    "'{}' or something in its process group did not exit within {:?} of SIGKILL",
                     self.name,
                     KILL_WAIT
                 ));
@@ -232,6 +244,15 @@ where
             )),
         })
         .boxed()
+}
+
+/// Whether any process is left in group `group`.
+#[cfg(unix)]
+fn group_exists(group: i32) -> bool {
+    // SAFETY: `killpg` takes no pointers and touches no memory of this process. Signal 0 only checks.
+    let sent = unsafe { libc::killpg(group, 0) };
+    // A group that the process may not signal still exists.
+    sent == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 /// Passes on the chunks of `output`, and goes on reading it after the returned stream is dropped.
