@@ -51,8 +51,6 @@ impl fmt::Display for HandleError {
 }
 
 /// How a command run in a participant ended.
-// TODO: remove the dead_code allowance once a step runs a command.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Exited {
     pub(crate) code: i64,
@@ -219,8 +217,6 @@ impl<'a> Handle<'a> {
     ///
     /// Returns a software error if the participant has exited, and a harness error if the command cannot be run
     /// otherwise, or does not exit within `limit`.
-    // TODO: remove the dead_code allowance once a step runs a command.
-    #[allow(dead_code)]
     pub(crate) async fn exec(
         &self, argv: Vec<String>, env: BTreeMap<String, String>, limit: Duration,
     ) -> Result<Exited, HandleError> {
