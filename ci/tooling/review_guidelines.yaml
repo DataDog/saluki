@@ -96,31 +96,22 @@ files:
   - path: lib/datadog-agent/config/codereview_guideline.md
     title: Configuration system review checklist
     sections:
-      - region: configuration-system.md#config-schema
+      - region: configuration-system.md#config-system-skill
 
   - path: lib/agent-data-plane-config/codereview_guideline.md
     title: Configuration model review checklist
     sections:
-      - region: configuration-system.md#config-model
+      - region: configuration-system.md#config-system-skill
 
   - path: lib/agent-data-plane-config-system/codereview_guideline.md
     title: Configuration translation review checklist
     sections:
-      - region: configuration-system.md#config-translation
-      - region: configuration-system.md#config-stream
-        level: 3
-
-  - path: lib/datadog-agent/runtime/codereview_guideline.md
-    title: Remote agent runtime review checklist
-    sections:
-      - region: configuration-system.md#remote-agent-runtime
-      - region: configuration-system.md#config-stream
-        level: 3
+      - region: configuration-system.md#config-system-skill
 
   - path: lib/saluki-config/codereview_guideline.md
     title: Configuration library review checklist
     sections:
-      - region: configuration-system.md#config-library
+      - region: configuration-system.md#config-system-skill
 
   - path: lib/saluki-core/codereview_guideline.md
     title: Core crate review checklist

@@ -2,8 +2,7 @@
 
 This page explains the architecture of the configuration system and inventory, and the workflows for changing them.
 Read it before working on `lib/agent-data-plane-config*`, `lib/datadog-agent/config*`, `schema_overlay.yaml`,
-`SalukiConfiguration`, `DatadogConfiguration`, or typed configuration migrations. Its
-[review checklist](#review-checklist) also covers `lib/saluki-config` and `lib/datadog-agent/runtime`.
+`SalukiConfiguration`, `DatadogConfiguration`, or typed configuration migrations.
 
 Saluki configures its runtime through a typed boundary. An alternate method of reading configuration,
 `GenericConfiguration`, exists in `saluki-config` for external clients who may want a raw map view, but
@@ -104,11 +103,9 @@ Under `inventory`, support is `full`, `partial`, `none`, or `unknown`. `excluded
 - `partial`: ADP reads the key, but differs in some cases. Describe those differences.
 - `none`: ADP doesn't support the key. Choose a severity based on the effect on users, and state whether support is
   planned. Link an issue when work should be tracked.
-- `unknown`: compatibility hasn't been established. Record what still needs investigation. With a `severity`, the
-  startup check applies the key to every pipeline.
-- `excluded`: ADP silently ignores the key and omits it from compatibility documentation. Use this for a key whose
-  feature doesn't affect what ADP does, such as logs processing, which ADP doesn't currently support. Don't use it to
-  hide a gap that needs tracking: a key that ADP must honor, but doesn't, is `none`.
+- `unknown`: compatibility hasn't been established. Record what still needs investigation.
+- `excluded`: ADP silently ignores the key and omits it from compatibility documentation. Use this for features ADP
+  doesn't currently support, not to hide gaps that need tracking.
 
 An investigation toward intended support is `planned: true`. A documentation-only issue doesn't mean support is
 planned.
@@ -211,6 +208,11 @@ keeps the last-known-good model and leaves the sources as they were.
 
 ## Workflows
 
+<!-- review:config-system-skill -->
+A `/config-system` skill exists to help answer questions about the configuration system, including adding, updating,
+and removing settings, as well as explaining and defining how parts of the configuration system works.
+<!-- /review -->
+
 ### Add or change a witnessed key
 
 1. Confirm its `schema_overlay.yaml` classification. If support becomes `full` or `partial`, provide the required
@@ -284,180 +286,21 @@ Use the `config-schema-update` skill, which walks through comparing, vendoring, 
 
 ## Review checklist
 
-These lists are the review rules for configuration changes. Each list is also a scoped `codereview_guideline.md`
-file, or part of one. The AI reviewer loads a file when a pull request changes a file under its directory. So each
-list stands alone, and repeats what it needs from the earlier sections. Before you open a pull request, check your
-change against the lists for the directories that it changes.
+For any configuration change, check the risks:
 
-The lists also cover `lib/saluki-config` and `lib/datadog-agent/runtime`. The runtime opens the Core Agent
-configuration stream and converts its settings, so its rules live here, next to the stream rules.
+- **Reachability**: every formerly configurable value still has a path from source to model to consumer.
+- **Defaults**: the effective default is unchanged, and is stated once in the configuration layer.
+- **Input handling**: parsing, coercion, normalization, and validation moved to the configuration layer.
+- **Model boundary**: components receive component-owned values, never model slices.
+- **Dynamic behavior**: startup and update paths construct the same reactive state from typed input.
+- **Test preservation**: deleting legacy deserialization coverage didn't delete behavioral coverage.
 
-The architecture tests in `test/architecture` enforce the dependency boundaries of the configuration crates, so these
-lists don't repeat them. No test covers the boundary of the runtime, so its list does.
-
-### Datadog schema and inventory
-
-In `lib/datadog-agent/config/codereview_guideline.md`:
-
-<!-- review:config-schema -->
-Apply these rules to files under `lib/datadog-agent/config`. This crate holds the vendored Datadog schema, its
-overlay, the code generators, and the decoders for Datadog keys.
-
-- Files under `schema/core/` and `schema/otel/` are vendored upstream copies. A vendor update replaces them with the
-  files of one upstream commit, and also changes `_version.txt` to that commit. Don't flag the changes of a vendor
-  update. Flag a change to these files that doesn't update `_version.txt`.
-- Don't flag a hand edit or a stale file under `src/generated/`. The `check-schema-overlay` CI job regenerates these
-  files and fails on any difference.
-- The generated `DatadogConfiguration` reads each key in the Agent's canonical shape. Flag a generator change that emits
-  a serde `rename` or `alias`, for example for a `renamed_from` name. The environment and file readers, and
-  `overlay_agent_layer` for the stream, resolve former names before deserialization.
-- Check each `support` value and each `excluded` entry in `schema/schema_overlay.yaml` against what ADP does with the
-  key:
-  - `full`: ADP reads the key, accepts each value that the Agent accepts, and does what the Agent does. If ADP rejects
-    some values, such as TLS versions below 1.2, or differs in some cases, the key is `partial`. Its `documentation`
-    describes the difference.
-  - `none`: setting the key changes what users observe, and ADP doesn't do the same. Choose `severity` from that effect,
-    and give an experimental key `low` at most. ADP doesn't start when an input sets a `high` key for an active
-    pipeline.
-  - `unknown`: ADP's compatibility with the key isn't known yet. With a `severity`, the startup check applies the key to
-    every pipeline. So ADP doesn't start when an input sets an `unknown` key with `severity: high`.
-  - `excluded`: the feature behind the key doesn't affect what ADP does. A `none` entry for such a key shows operators
-    an incompatibility warning that isn't true. Flag a key under `excluded` that ADP reads or must honor.
-- Scalar leaves use the `cast_de` coercions for every source, including the Core Agent stream. Flag scalar coercion that
-  only one source gets. Don't flag a per-key `env_parser` transform, such as `comma_separated`: as in the Agent, it
-  applies only to environment strings.
-- A decoder accepts each form that the Agent accepts for the key, and a test covers each form. The stream sends some
-  forms of its own. A map that the Agent read from the environment arrives as a JSON string. An empty collection arrives
-  as `null`, and a duration as integer nanoseconds. Other forms include:
-  - a scalar or a list
-  - a quoted number, a `0x` integer, or a leading-zero octal integer
-  - a byte size such as `12mb` or `12MB`
-  - a duration as a Go duration string such as `10s`, or as a bare number of nanoseconds in a string
-<!-- /review -->
-
-### Configuration model
-
-In `lib/agent-data-plane-config/codereview_guideline.md`:
-
-<!-- review:config-model -->
-Apply these rules to files under `lib/agent-data-plane-config`, the typed configuration model
-(`SalukiConfiguration`).
-
-- A field whose meaning depends on whether an input set it is a `ConfigValue<T>`, and its readers call
-  `is_explicit()`. A model method, such as `Endpoints::primary_endpoint`, resolves the provenance, so that components
-  get only the effective value. Flag code that compares a value with its default to decide whether someone set it.
-- Use `Option<T>` only when absence has a meaning, not to defer a default. Prefer `ConfigValue<T>` to
-  `ConfigValue<Option<T>>`.
-- Define each Saluki-only default once, in `src/defaults.rs`, and use that constant everywhere that the default
-  appears. A witnessed field's `Default` holds only a placeholder, because translation always writes the default from
-  the generated schema. Flag a Datadog schema default that the model restates.
-- A Saluki-only default is a value that its consumer accepts. For example, a connect target has no default port `0`.
-  If no default works, use `Option<T>`, and report an error when the value is missing.
-- A field that a consumer divides by, or uses as a window or bucket width, has a type that rejects `0`, such as
-  `NonZeroU64`. A number in a fixed unit has the unit in its name, such as `window_duration_seconds`.
-<!-- /review -->
-
-### Loading and translation
-
-In `lib/agent-data-plane-config-system/codereview_guideline.md`, together with the
-[Core Agent configuration stream](#core-agent-configuration-stream) rules:
-
-<!-- review:config-translation -->
-Apply these rules to files under `lib/agent-data-plane-config-system`. This crate loads the local file and the
-environment, layers the Core Agent stream over them, and translates the result into `SalukiConfiguration`.
-
-- A recorded `TranslateError` is a startup error, and it also rejects the whole live update. To recover from a bad
-  value, log a warning and use what the Agent uses, such as the default.
-- A key in the vendored schema is a Datadog key, whatever its prefix. The translator gets its value through its
-  `consume_<key>` method, and its `support` in `lib/datadog-agent/config/schema/schema_overlay.yaml` says what ADP does
-  with it. Any other key is a `SalukiOnly` field. Flag a `SalukiOnly` field for a schema key. Also flag a change to what
-  ADP does with a Datadog key that doesn't update its `support`.
-- `SalukiOnly` field names and nesting match the key path exactly. A mismatch doesn't fail: the value doesn't arrive,
-  and the model keeps its default. Flag `#[serde(rename)]` and `#[serde(alias)]` on these fields. Also flag a new field
-  without a test that sets the real key and checks the model field.
-- A `SALUKI_KEYS` entry in `lib/datadog-agent/config-overlay-model/src/saluki_keys.rs` has the same path as its
-  `SalukiOnly` field. Its displayed default is a string, not the constant. Check that it matches the effective default,
-  such as the constant in `lib/agent-data-plane-config/src/defaults.rs`. Flag a change to the path or the default of a
-  key that doesn't update its entry.
-- A change to the source or model type of a key keeps each input form that the last release accepted, and each effective
-  default. A move of a key between `SalukiOnly` and the schema does too. Ask the author to list the input forms, and
-  check that a test covers each one.
-- In connected mode, ADP layers the Core Agent stream over the local sources. In the local sources, the environment
-  overrides `datadog.yaml`. A value that the stream marks as a default doesn't hide a value that a local input set. Flag
-  a change to this order that the pull request doesn't explain.
-- Corpus replay compares each modeled setting with what the recorded Agent read. When a change makes a replay check
-  fail, fix ADP, or add an entry to `src/corpus_replay/expected.rs`. The `Cause` of the entry says why ADP differs. Flag
-  an `intentional` entry for an ADP bug, and an entry whose `Cause` doesn't explain the difference. Flag a new recording
-  of the corpus that only makes an ADP change pass. Don't flag a missing tracking issue on a `known_bug` entry: the
-  replay test fails without one.
-<!-- /review -->
-
-### Core Agent configuration stream
-
-In the guideline files for `lib/agent-data-plane-config-system` and `lib/datadog-agent/runtime`:
-
-<!-- review:config-stream -->
-Apply these rules to files under `lib/agent-data-plane-config-system` and `lib/datadog-agent/runtime` that read the
-Core Agent configuration stream or its values.
-
-- The Core Agent streams every key that it knows. A key that nobody set arrives with its default, which for many string
-  keys is an empty string that the Agent treats as unset. `setting_to_config_setting` gives each `ConfigSetting` a
-  `Provenance`, and marks the Agent sources in `AGENT_UNSET_SOURCES` as defaults. For a Datadog schema key, flag code
-  that decides from presence, such as `is_some()` or `contains_key`. Also flag code that treats `Some("")` as a
-  configured value.
-- A Saluki-only key isn't in the Agent's schema, so the Agent streams it only when an input set it. `SalukiOnly::seed`
-  copies each value that is present, which is correct for these keys. Don't flag it.
-- When two keys set one underlying value, the stream sends both keys, even if nobody set one of them. An Agent older
-  than the rename of a key also streams the key under its former name. `overlay_agent_layer` in
-  `lib/agent-data-plane-config-system/src/system.rs` resolves the pair. Flag a fallback that fails or picks the wrong
-  value when both keys arrive. Choose the key by provenance.
-- A setting key is flat and can be dotted, and its value is the whole value of one setting. Expand the key into
-  sections, and insert the value whole. A map key in the value, such as an intake URL in `additional_endpoints`, can
-  contain periods.
-- In connected mode, `ConfigurationSystem::connected` in `lib/agent-data-plane-config-system/src/system.rs` waits for
-  the first snapshot from the stream, and translates it. `RemoteAgent::start` doesn't return until then. Flag a change
-  that removes this wait, or that returns a configuration before the first snapshot translates.
-<!-- /review -->
-
-### Remote agent runtime
-
-In `lib/datadog-agent/runtime/codereview_guideline.md`, together with the
-[Core Agent configuration stream](#core-agent-configuration-stream) rules:
-
-<!-- review:remote-agent-runtime -->
-Apply these rules to files under `lib/datadog-agent/runtime`. This crate is the shared runtime for each process that
-runs as a remote agent of the Datadog Agent, such as ADP.
-
-- The runtime serves more than one binary. Its configuration scope stops at the `ConfigUpdate` stream and the traits in
-  `src/facade/config.rs`. Flag any ADP-specific references, such as ADP crates or mentions of "Agent Data Plane" or ADP.
-  Code that depends on details about the current data plane binary the code is used within should get those details from
-  `saluki_metadata`.
-- `LocalConfiguration` holds the values from the file and the environment. It supplies only the values that the
-  process needs before the stream starts: standalone mode, the client configuration, and the advertised secure API
-  address. The runtime uses them only to choose the mode, to register, and to open the stream. After
-  `RemoteAgent::start`, code reads the `AuthoritativeConfiguration`, which can hold different values. Flag code that
-  uses a local value after startup. Also flag a new value in `LocalConfiguration` that the authoritative
-  configuration can supply.
-- A Core Agent stream can start with a snapshot and send its events to subscribers that arrive later, as the
-  autodiscovery broadcaster does. Such a stream opens only when its first subscriber exists. A subscriber that
-  arrives after the stream opens misses the snapshot. Flag a broadcaster that opens such a stream when its worker
-  starts. Don't flag a stream with one consumer that exists before the stream opens, such as the tagger and
-  workloadmeta streams.
-<!-- /review -->
-
-### Configuration library
-
-In `lib/saluki-config/codereview_guideline.md`:
-
-<!-- review:config-library -->
-Apply these rules to files under `lib/saluki-config`, a general-purpose configuration library.
-
-- ADP uses only part of this crate, such as the stream types in `dynamic`, the `yaml` module, and `DurationString`.
-  `GenericConfiguration`, `ConfigurationLoader`, and the by-key dynamic view, such as `FieldUpdateWatcher`, have no
-  consumer in this repository, but they serve external clients. Don't flag them as unused. Flag a change that
-  removes them, or that removes their unit tests, because those tests are their only coverage.
-- A setting key is flat and can be dotted. Expand it into nested maps, as `upsert` does, and insert the value whole.
-<!-- /review -->
+- **Replay coverage:** a change to a deserializer, the environment reader, translation, or a key's
+  support runs the replay tests,
+  `cargo nextest run --lib -p agent-data-plane-config-system corpus_replay`. A failing check means a
+  recorded outcome changed. Update production code, or the matching typed expectation in
+  `src/corpus_replay/` deliberately, in the same change; never regenerate the corpus to make an
+  agent-data-plane change pass.
 
 ## Check your work
 
@@ -469,14 +312,3 @@ make fmt                        # use this, not cargo fmt
 cargo check --workspace --tests # quick compilation check
 make check-all                  # required to pass CI
 ```
-
-A change to a deserializer, the environment reader, translation, or the support of a key also needs the corpus replay
-tests:
-
-```shell
-cargo nextest run --lib -p agent-data-plane-config-system corpus_replay
-```
-
-A failing check means that a recorded outcome changed. In the same change, fix ADP, or edit the matching expectation
-in `lib/agent-data-plane-config-system/src/corpus_replay/expected.rs` on purpose. Never regenerate the corpus to make
-an ADP change pass.

@@ -2,36 +2,5 @@
 
 ## Configuration system review checklist
 
-Apply these rules to files under `lib/datadog-agent/config`. This crate holds the vendored Datadog schema, its
-overlay, the code generators, and the decoders for Datadog keys.
-
-- Files under `schema/core/` and `schema/otel/` are vendored upstream copies. A vendor update replaces them with the
-  files of one upstream commit, and also changes `_version.txt` to that commit. Don't flag the changes of a vendor
-  update. Flag a change to these files that doesn't update `_version.txt`.
-- Don't flag a hand edit or a stale file under `src/generated/`. The `check-schema-overlay` CI job regenerates these
-  files and fails on any difference.
-- The generated `DatadogConfiguration` reads each key in the Agent's canonical shape. Flag a generator change that emits
-  a serde `rename` or `alias`, for example for a `renamed_from` name. The environment and file readers, and
-  `overlay_agent_layer` for the stream, resolve former names before deserialization.
-- Check each `support` value and each `excluded` entry in `schema/schema_overlay.yaml` against what ADP does with the
-  key:
-  - `full`: ADP reads the key, accepts each value that the Agent accepts, and does what the Agent does. If ADP rejects
-    some values, such as TLS versions below 1.2, or differs in some cases, the key is `partial`. Its `documentation`
-    describes the difference.
-  - `none`: setting the key changes what users observe, and ADP doesn't do the same. Choose `severity` from that effect,
-    and give an experimental key `low` at most. ADP doesn't start when an input sets a `high` key for an active
-    pipeline.
-  - `unknown`: ADP's compatibility with the key isn't known yet. With a `severity`, the startup check applies the key to
-    every pipeline. So ADP doesn't start when an input sets an `unknown` key with `severity: high`.
-  - `excluded`: the feature behind the key doesn't affect what ADP does. A `none` entry for such a key shows operators
-    an incompatibility warning that isn't true. Flag a key under `excluded` that ADP reads or must honor.
-- Scalar leaves use the `cast_de` coercions for every source, including the Core Agent stream. Flag scalar coercion that
-  only one source gets. Don't flag a per-key `env_parser` transform, such as `comma_separated`: as in the Agent, it
-  applies only to environment strings.
-- A decoder accepts each form that the Agent accepts for the key, and a test covers each form. The stream sends some
-  forms of its own. A map that the Agent read from the environment arrives as a JSON string. An empty collection arrives
-  as `null`, and a duration as integer nanoseconds. Other forms include:
-  - a scalar or a list
-  - a quoted number, a `0x` integer, or a leading-zero octal integer
-  - a byte size such as `12mb` or `12MB`
-  - a duration as a Go duration string such as `10s`, or as a bare number of nanoseconds in a string
+A `/config-system` skill exists to help answer questions about the configuration system, including adding, updating,
+and removing settings, as well as explaining and defining how parts of the configuration system works.
