@@ -6,6 +6,8 @@
 //! Each signal has a `render_*` method that decides what to log for one received batch, and a `log_*` method that
 //! writes it. Rendering is a pure function of the verbosity and the batch, so tests can check it without capturing logs.
 
+use std::borrow::Cow;
+
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
@@ -203,12 +205,12 @@ fn normal_metric_line(metric: &Metric) -> String {
     let unit = if metric.unit.is_empty() {
         String::new()
     } else {
-        format!(", unit: {}", metric.unit)
+        format!(", unit: {}", escape_control_chars(&metric.unit))
     };
 
     format!(
         "{} ({}{unit}) data points: {}",
-        metric.name,
+        escape_control_chars(&metric.name),
         metric_kind(metric),
         count_data_points(metric)
     )
@@ -234,7 +236,11 @@ fn normal_log_line(record: &LogRecord) -> String {
     };
     let body = record.body.as_ref().map(format_value).unwrap_or_default();
 
-    join_fields([severity.to_string(), body, format_attributes(&record.attributes)])
+    join_fields([
+        escape_control_chars(severity).into_owned(),
+        body,
+        format_attributes(&record.attributes),
+    ])
 }
 
 /// Renders one line per span: its name, trace and span IDs, and attributes.
@@ -251,7 +257,7 @@ fn normal_traces(request: &ExportTraceServiceRequest) -> String {
 
 fn normal_span_line(span: &Span) -> String {
     join_fields([
-        span.name.clone(),
+        escape_control_chars(&span.name).into_owned(),
         bytes_to_hex_lowercase(&span.trace_id),
         bytes_to_hex_lowercase(&span.span_id),
         format_attributes(&span.attributes),
@@ -280,19 +286,47 @@ fn format_attributes(attributes: &[KeyValue]) -> String {
         .iter()
         .map(|attribute| {
             let value = attribute.value.as_ref().map(format_value).unwrap_or_default();
-            format!("{}={value}", attribute.key)
+            format!("{}={value}", escape_control_chars(&attribute.key))
         })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// Renders an attribute or body value as text. An absent value renders as nothing.
+/// Renders an attribute or body value as text on a single line. An absent value renders as nothing.
 fn format_value(value: &AnyValue) -> String {
-    value
+    let text = value
         .value
         .as_ref()
         .and_then(|kind: &AnyValueKind| otlp_value_to_string(kind))
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    match escape_control_chars(&text) {
+        Cow::Borrowed(_) => text,
+        Cow::Owned(escaped) => escaped,
+    }
+}
+
+/// Escapes control characters, so a line of `normal` output can't be split into several by the data it describes.
+///
+/// A sender controls the names and values that end up in a line. A newline in one would otherwise start what looks
+/// like a separate log entry. Text with nothing to escape is returned as it is, without copying it.
+fn escape_control_chars(text: &str) -> Cow<'_, str> {
+    // U+2028 and U+2029 aren't control characters, but some log viewers break lines on them.
+    let needs_escape = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+
+    if !text.chars().any(needs_escape) {
+        return Cow::Borrowed(text);
+    }
+
+    let mut escaped = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        if needs_escape(c) {
+            escaped.extend(c.escape_default());
+        } else {
+            escaped.push(c);
+        }
+    }
+    Cow::Owned(escaped)
 }
 
 /// Names the type of a metric.
@@ -591,5 +625,82 @@ mod tests {
         output(OtlpDebugVerbosity::Basic).render_batch(String::new, renders_nothing, renders_nothing);
         output(OtlpDebugVerbosity::Normal).render_batch(String::new, String::new, renders_nothing);
         output(OtlpDebugVerbosity::Detailed).render_batch(String::new, renders_nothing, String::new);
+    }
+
+    #[test]
+    fn normal_keeps_each_item_on_one_line_when_the_data_has_control_characters() {
+        let record = LogRecord {
+            severity_text: "ERROR".to_string(),
+            body: Some(AnyValue {
+                value: Some(AnyValueKind::StringValue("first\nsecond\r\u{2028}third".to_string())),
+            }),
+            attributes: vec![string_attribute("k\ney", "v\talue")],
+            ..Default::default()
+        };
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![record],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let rendered = output(OtlpDebugVerbosity::Normal)
+            .render_logs(&request)
+            .expect("normal verbosity logs every request");
+
+        assert_eq!(
+            rendered,
+            "Logs: resource logs: 1, log records: 1\n\
+             ERROR first\\nsecond\\r\\u{2028}third k\\ney=v\\talue"
+        );
+    }
+
+    #[test]
+    fn normal_escapes_control_characters_in_span_and_metric_names() {
+        let traces = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![Span {
+                        name: "forged\nentry".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let metrics = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![Metric {
+                        name: "forged\nmetric".to_string(),
+                        unit: "u\nit".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let traces = output(OtlpDebugVerbosity::Normal).render_traces(&traces).unwrap();
+        let metrics = output(OtlpDebugVerbosity::Normal).render_metrics(&metrics).unwrap();
+
+        assert_eq!(traces.lines().count(), 2);
+        assert!(traces.contains("forged\\nentry"));
+        assert_eq!(metrics.lines().count(), 2);
+        assert!(metrics.contains("forged\\nmetric (empty, unit: u\\nit)"));
+    }
+
+    #[test]
+    fn text_without_control_characters_is_not_copied_to_escape_it() {
+        assert!(matches!(
+            escape_control_chars("plain text, ünïcode ok"),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(escape_control_chars("line\nbreak"), Cow::Owned(_)));
     }
 }
