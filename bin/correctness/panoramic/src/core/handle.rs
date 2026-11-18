@@ -115,16 +115,16 @@ impl<'a> Handle<'a> {
         self.observation.output(process).ok_or_else(|| self.no_process(process))
     }
 
-    /// Checks that the output of `process` is whole so far: its capture has not stopped while the participant ran.
+    /// Checks that the output of `process` is whole so far: its capture has not broken.
     ///
     /// # Errors
     ///
-    /// Returns a harness error if the capture stopped while the participant ran.
+    /// Returns a harness error if the capture broke before the output ended.
     pub(crate) fn output_whole(&self, process: &str) -> Result<(), HandleError> {
         match self.observation.capture_failure(process) {
             None => Ok(()),
             Some(why) => Err(HandleError::Harness(format!(
-                "the output of process '{}' of '{}' stopped being captured while it ran: {}",
+                "the output of process '{}' of '{}' stopped being captured: {}",
                 process, self.name, why
             ))),
         }

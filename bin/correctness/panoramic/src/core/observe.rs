@@ -149,7 +149,7 @@ struct Observed {
     /// Each process's output so far, line by line. The whole output is kept for the case's length, on purpose: steps
     /// match against all of it, and a case is bounded in time.
     output: BTreeMap<String, watch::Sender<Vec<String>>>,
-    /// Why the capture of a process's output stopped while the participant ran, for each process whose capture did.
+    /// Why the capture of a process's output stopped before its output ended, for each process whose capture did.
     capture_failures: Mutex<BTreeMap<String, String>>,
 }
 
@@ -189,16 +189,15 @@ impl Observation {
         self.0.output.get(process).map(watch::Sender::subscribe)
     }
 
-    /// Records that the capture of `process`'s output stopped, for the reason given, unless the participant has
-    /// exited: then the capture had nothing more to take.
+    /// Records that the capture of `process`'s output stopped, for the reason given, whether or not the participant
+    /// has exited: output that ended is not a failure, and callers report only a capture that broke, which may have
+    /// left the output short.
     pub(crate) fn capture_failed(&self, process: &str, why: String) {
-        if self.exit().is_none() {
-            let mut failures = self.0.capture_failures.lock().unwrap_or_else(|e| e.into_inner());
-            failures.entry(process.to_string()).or_insert(why);
-        }
+        let mut failures = self.0.capture_failures.lock().unwrap_or_else(|e| e.into_inner());
+        failures.entry(process.to_string()).or_insert(why);
     }
 
-    /// Why the capture of `process`'s output stopped while the participant ran, or `None` if it did not.
+    /// Why the capture of `process`'s output stopped before its output ended, or `None` if it did not.
     pub(crate) fn capture_failure(&self, process: &str) -> Option<String> {
         let failures = self.0.capture_failures.lock().unwrap_or_else(|e| e.into_inner());
         failures.get(process).cloned()
@@ -284,7 +283,7 @@ impl Sink {
         }
     }
 
-    /// Records that the capture stopped while the participant ran, so a step does not take the output as whole.
+    /// Records that the capture broke, so a step does not take the output as whole.
     fn failed(&self, why: String) {
         if let Some((observation, process)) = &self.process {
             observation.capture_failed(process, why);
