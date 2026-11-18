@@ -1865,9 +1865,11 @@ Why this order:
   options, and files written after start for values a pod only has then. Migrates the cases that
   run in pods: the origin detection matrix, which becomes one directory per variant, sharing files.
   Job names do not change.
-- **Watch out:** once `cmprest` has merged, this PR migrates the last legacy comparison case, so it
-  removes `PANORAMIC_IMAGE_OVERRIDES` from the mixins and adds the check that a legacy file in
-  `test/correctness/cases` fails at load. If this PR merges first, `cmprest` does both.
+- **Watch out:** this PR stacks on `cmprest` and migrates the last legacy comparison case. That
+  PR leaves `PANORAMIC_IMAGE_OVERRIDES` in the mixins and adds no check, so this PR removes the
+  override and adds the check that a legacy comparison file, one whose `type` is `correctness` or
+  `correctness_matrix`, fails at load. The check keys on the `type`, not on the directory, because
+  every legacy comparison file lives in `test/correctness/cases`.
   - The comparison runner stays in the tree until `rmlegacy`, with no case to run. The check keeps a
     legacy comparison file that a teammate adds after this PR from running without its image inputs.
   - Every legacy kind case migrates here, so kind setup moves from the `Test` trait to plans in one
@@ -1959,8 +1961,8 @@ Why this order:
 **15. `rmlegacy`: delete the legacy runners and rewrite the testing guide**
 
 - **Builds:** no new code.
-  - Deletes the comparison runner under `bin/correctness/panoramic/src/correctness/`, the
-    comparison schemas, the generator's legacy branch and the baseline mixin.
+  - Deletes the comparison runner under `bin/correctness/panoramic/src/correctness/` and the
+    comparison schemas. The baseline mixin and the generator's baseline branch go in `pod`.
   - Deletes the integration runners, the legacy schema, actions and assertions, `traffic.rs`, the
     routing, `--runtime` and the other legacy flags, `image_override.rs`, airlock's legacy behaviour
     and the temporary guard rule.
