@@ -1875,10 +1875,12 @@ Why this order:
   - `kind load` needs a single-platform image. No symlinks: Windows checkouts break them.
   - The pod is submitted in the start phase, and the start gate applies only to a pod with a file
     written after start.
-  - In a pod the load generator's senders exit when they finish and never print the line the
-    container cases wait on. Wait on `millstone stopped.`, or bring `exits_with` forward from
-    `hostproc`.
+  - `compare` gave `millstone` `--completion-file`, so its senders stay alive after they finish and
+    print "Millstone finished sending". Pods wait on that line as containers do, and then on
+    `process_stable_for`.
   - The shared `millstone.yaml` has comments that contain `{{`, which a template file must reword.
+  - The variants share their files through a directory under `cases/` that has no `config.yaml`.
+    Discovery skips it, and so does the test that every real case compiles.
   - Adds the one pod cleanup test.
 
 ### Linux-only cases
