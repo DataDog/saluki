@@ -867,12 +867,18 @@ impl Realized for PodRunning {
             .stderr(true)
             .max_stdout_buf_size(64 * 1024)
             .max_stderr_buf_size(64 * 1024);
-        let mut process = match self.pods.exec(&self.name, exec.argv, &params).await {
-            Ok(process) => process,
-            Err(e) => {
+        let mut process = match timeout_at(deadline, self.pods.exec(&self.name, exec.argv, &params)).await {
+            Ok(Ok(process)) => process,
+            Ok(Err(e)) => {
                 return Err(self
                     .failed(format!("Failed to exec in pod '{}': {}", self.name, e))
                     .await)
+            }
+            Err(_) => {
+                return Err(HandleError::Harness(format!(
+                    "the deadline passed before the exec in pod '{}' started",
+                    self.name
+                )))
             }
         };
         // The status is taken first and kept, because the process task fails if nothing receives it.
@@ -905,7 +911,7 @@ impl Realized for PodRunning {
             }
             Ok(Ok(status)) => status,
         };
-        let _ = process.join().await;
+        let _ = timeout_at(deadline, process.join()).await;
         match status.as_ref().map(exit_code) {
             Some(Ok(code)) => Ok(code),
             Some(Err(why)) => Err(self.failed(why).await),
