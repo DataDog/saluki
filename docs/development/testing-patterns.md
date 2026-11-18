@@ -271,8 +271,7 @@ You **SHOULD** write a proper benchmark, whether through an actual benchmarking 
 
 ## Review checklist
 
-Reviewers check the tests in a pull request, and the tests that its production changes need. The rules in
-The last three items check the [Flaky tests](#flaky-tests) rules.
+Reviewers check the tests in a pull request, and the tests that its production changes need.
 
 <!-- review:review-checklist -->
 - Flag a property test whose name doesn't start with `property_test_`. The Make targets select property tests by this

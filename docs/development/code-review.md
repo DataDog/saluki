@@ -56,10 +56,9 @@ when a guideline names a repository path that doesn't exist. It also warns about
 
 ## General guidelines
 
-These apply to every PR, and make up the root `codereview_guideline.md`. It starts with the instructions on
-[How we review](./how-we-review.md#instructions-for-ai-reviewers). The checklist that follows comes from the pages that
-own each topic:
+These apply to every PR, and make up the root `codereview_guideline.md`:
 
+- [How we review](./how-we-review.md): how to write effective/succinct review comments, how to push back
 - [Style guide](./style-guide.md): layering, error handling, log messages, API design and naming, nits, and comments
   and docs
 - [Conventions](./conventions.md): generated files, Datadog Agent parity, reuse, hot paths and memory, concurrency and
@@ -72,16 +71,6 @@ The checklist opens with this line:
 <!-- review:checklist-intro -->
 Flag changes that break these rules.
 <!-- /review -->
-
-## Area checklists
-
-Each of these makes up a `codereview_guideline.md` file in a subdirectory, and applies only to PRs that change files
-under that directory. When a page already covers an area, the checklist for that area lives on that page:
-
-- `lib/saluki-core`: [Core crate](./conventions.md#core-crate)
-- `lib/datadog-agent/config`, `lib/agent-data-plane-config`, `lib/agent-data-plane-config-system`, `lib/saluki-config`,
-  and `lib/datadog-agent/runtime`: [Configuration system review checklist](./configuration-system.md#review-checklist)
-- `bin/correctness` and `test`: [Reviewing test changes](./testing.md#reviewing-test-changes)
 
 ### I/O crate
 
@@ -154,7 +143,7 @@ Apply these rules to files under `bin/agent-data-plane`.
   runs before the mapping or split that it depends on. A destination that measures input, such as `dsd_stats_out` on
   `dsd_in.metrics`, connects to the raw source output.
 - When the Datadog Agent expects another metric name, add a remap rule in `src/state/metrics/rules/`. The target doesn't
-  start with `datadog.agent.`, which the Core Agent adds, and it carries the Agent's help text.A metric, tag, or
+  start with `datadog.agent.`, which the Core Agent adds, and it carries the Agent's help text. A metric, tag, or
   component ID rename updates the rules that match it, including identifying tags such as `component_id` and
   `resolver_id`.
 - Ensure that metric remap rules are arranged from highest to lowest specificity when there are multiple rules for the

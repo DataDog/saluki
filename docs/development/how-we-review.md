@@ -68,8 +68,8 @@ These findings are never blocking, so put "Not blocking:" at the start of each o
 Post nits after all other findings, and try limiting the number of nits to somewhere around 3-5. If the same class of
 nit comes up often, try addressing it with a single comment that mentions the different areas where the nit occurred.
 Overall, the goal is not to be perfect and note every single thing a review finds, but to ensure that all blocking
-issues are resolved, and that we fix _easy_ problems (non-blocking/nits) and try to leave the areas we touch a little
-better than we found them,
+issues are resolved, and that we fix _easy_ problems (non-blocking/nits), leaving the code a little better than we found
+it.
 <!-- /review -->
 
 ## What we don't flag

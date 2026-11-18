@@ -90,22 +90,31 @@ files:
   - path: lib/datadog-agent/config/codereview_guideline.md
     title: Configuration system review checklist
     sections:
-      - region: configuration-system.md#config-system-skill
+      - region: configuration-system.md#config-review-checklist
+      - region: configuration-system.md#config-schema
+        level: 3
+        heading: Vendored schema
+      - region: configuration-system.md#config-env-shape
+        level: 3
+        heading: Environment variables
 
   - path: lib/agent-data-plane-config/codereview_guideline.md
     title: Configuration model review checklist
     sections:
-      - region: configuration-system.md#config-system-skill
+      - region: configuration-system.md#config-review-checklist
 
   - path: lib/agent-data-plane-config-system/codereview_guideline.md
     title: Configuration translation review checklist
     sections:
-      - region: configuration-system.md#config-system-skill
+      - region: configuration-system.md#config-review-checklist
+      - region: configuration-system.md#config-env-shape
+        level: 3
+        heading: Environment variables
 
   - path: lib/saluki-config/codereview_guideline.md
     title: Configuration library review checklist
     sections:
-      - region: configuration-system.md#config-system-skill
+      - region: configuration-system.md#config-review-checklist
 
   - path: lib/saluki-core/codereview_guideline.md
     title: Core crate review checklist

@@ -13,7 +13,7 @@ Apply these rules to files under `bin/agent-data-plane`.
   runs before the mapping or split that it depends on. A destination that measures input, such as `dsd_stats_out` on
   `dsd_in.metrics`, connects to the raw source output.
 - When the Datadog Agent expects another metric name, add a remap rule in `src/state/metrics/rules/`. The target doesn't
-  start with `datadog.agent.`, which the Core Agent adds, and it carries the Agent's help text.A metric, tag, or
+  start with `datadog.agent.`, which the Core Agent adds, and it carries the Agent's help text. A metric, tag, or
   component ID rename updates the rules that match it, including identifying tags such as `component_id` and
   `resolver_id`.
 - Ensure that metric remap rules are arranged from highest to lowest specificity when there are multiple rules for the
