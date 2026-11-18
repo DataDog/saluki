@@ -120,8 +120,10 @@ impl Backend for HostBackend {
                 ));
             }
             Err(e) => {
-                return Err(GenericError::from(e)
-                    .context(format!("Failed to create the state directory '{}'.", self.root.display())));
+                return Err(GenericError::from(e).context(format!(
+                    "Failed to create the state directory '{}'.",
+                    self.root.display()
+                )));
             }
         }
         // Only a directory this run created is this run's to remove.
