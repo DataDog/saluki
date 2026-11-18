@@ -675,6 +675,10 @@ mod tests {
         let mut failures = Vec::new();
         for suite in ["integration", "correctness"] {
             for dir in case_dirs(&cases.join(suite).join("cases")) {
+                // A directory with no case file holds files that cases share.
+                if !dir.join(case::CASE_FILE).exists() {
+                    continue;
+                }
                 match config::is_legacy_case(&dir.join(case::CASE_FILE)) {
                     Ok(false) => {}
                     Ok(true) => continue,
