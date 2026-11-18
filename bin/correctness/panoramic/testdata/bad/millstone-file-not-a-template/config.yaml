@@ -1,0 +1,12 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  app:
+    subject: true
+    image: alpine:3.20
+  load:
+    type: millstone
+    files:
+      millstone.yaml: millstone.yaml
+    connect: {comparison_target: app.api, baseline_target: app.api}
+procedure: []

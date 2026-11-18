@@ -24,8 +24,9 @@
 //! all supervised also gets its container log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. A
 //! capture that stops while its participant runs is an observation error: a step that relies on having seen all of a
 //! process's output errors.
-//! Files to collect are copied to `<log dir>/<participant>/collected/<name>` after the procedure. Each carries its own
-//! retention, which [`retain`] applies to the outcome.
+//! Files to collect are copied to `<log dir>/<participant>/collected/<name>` after the procedure. A step may write a
+//! file about a participant to the same place while it runs, through [`Kept`]. Each carries its own retention, which
+//! [`retain`] applies to the outcome.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -481,6 +482,47 @@ pub(crate) async fn collect(
         }
     }
     collected
+}
+
+/// The files steps write about participants while the procedure runs, collected with the files copied out of them.
+#[derive(Debug)]
+pub(crate) struct Kept {
+    /// The case's log directory, which holds each participant's.
+    log_dir: PathBuf,
+    files: Mutex<Vec<Collected>>,
+}
+
+impl Kept {
+    pub(crate) fn new(log_dir: &Path) -> Self {
+        Self {
+            log_dir: log_dir.to_path_buf(),
+            files: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Writes `contents` as the collected file `name` of `participant`, kept by `keep`. A file that cannot be written
+    /// is left out with a warning, as a file that cannot be copied out is.
+    pub(crate) async fn write(&self, participant: &str, name: &str, contents: &[u8], keep: Keep) {
+        let dir = self.log_dir.join(participant).join(COLLECTED_DIR);
+        let path = dir.join(name);
+        let written = match tokio::fs::create_dir_all(&dir).await {
+            Ok(()) => tokio::fs::write(&path, contents).await,
+            Err(e) => Err(e),
+        };
+        match written {
+            Ok(()) => self.files.lock().unwrap().push(Collected {
+                participant: participant.to_string(),
+                path,
+                keep,
+            }),
+            Err(e) => warn!(path = %path.display(), error = %e, "Failed to write a file a step keeps."),
+        }
+    }
+
+    /// The files written so far.
+    pub(crate) fn files(&self) -> Vec<Collected> {
+        self.files.lock().unwrap().clone()
+    }
 }
 
 /// Removes each collected file the outcome does not keep: a file kept on failure goes when the case passed. Returns
