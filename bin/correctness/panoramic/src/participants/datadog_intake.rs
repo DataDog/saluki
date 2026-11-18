@@ -126,7 +126,7 @@ impl Operation for Dump {
         let mut dump = Map::new();
         for (key, path) in DUMP_PATHS.into_iter().filter(|(key, _)| asked(key)) {
             let limit = deadline.saturating_duration_since(Instant::now());
-            let response = on.http_get("api", path, false, limit).await?;
+            let response = on.http_get("api", path, false, true, limit).await?;
             if response.status != 200 {
                 let body = String::from_utf8_lossy(&response.body);
                 let shown = &body[..body.floor_char_boundary(MAX_ERROR_BODY_BYTES)];
