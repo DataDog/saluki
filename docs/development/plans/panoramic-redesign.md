@@ -1230,9 +1230,9 @@ realizations, because one container backend covers Linux and Windows containers.
 | --- | --- | --- | --- | --- |
 | Per case | one bridge network, one volume | one `nat` network | one namespace, one directory on the kind node | one state directory under `/tmp` |
 | Launch | image, with the spec's command and args or the image's own | the same | one pod with one container, and a headless Service | each program started so that it and its children can be signalled together, in the participant's directory, with a cleared environment plus `PATH`, `HOME`, `TMPDIR` |
-| Files | one archive placed between create and start | the same, under `C:\` | written on the node before the pod exists, each mounted at its destination | written under the participant's directory |
+| Files | one archive placed between create and start | the same, under `C:\` | written on the node before the pod exists, each mounted at its destination, except a file that holds a value only the started pod has, which the pod's command copies into place from `/panoramic/late` | written under the participant's directory |
 | `{{ self.dir }}` | `/airlock/<p>/shared` on the case's volume, mounted in every container of the case | `C:\airlock\<p>\shared`, inside the container only | `/airlock/<p>/shared` on the node directory every pod of the case mounts | `<state directory>/<p>/shared` |
-| Reserved paths | `/panoramic/courier`, `/airlock/<p>/exit`, `/airlock/<p>/log` | `C:\panoramic\courier.exe`, `C:\airlock\<p>\exit`, `C:\airlock\<p>\log` | as a Linux container | none |
+| Reserved paths | `/panoramic/courier`, `/airlock/<p>/exit`, `/airlock/<p>/log` | `C:\panoramic\courier.exe`, `C:\airlock\<p>\exit`, `C:\airlock\<p>\log` | as a Linux container, and `/panoramic/late` | none |
 | Courier | copied in with the files | copied in with the files | mounted read-only from the node | the library, inside the harness |
 | Exit of a process | the container's exit, or a record file | the same | the container's terminated state, or a record file read through the node | the wait result of the child |
 | Output of a process | the container log, or a log file followed by the courier | the same | the container log, or a log file read through the node | the child's pipes |
@@ -1247,13 +1247,16 @@ The table leaves out five points.
 - **The courier follows log files in containers.** A supervised process writes its output to a file.
   Following it with `sh` and `tail` from the image would make both a hidden requirement on any image
   a case names, so Linux containers use the courier's `follow`, as Windows containers do. A pod's
-  log file is read through the node.
+  log file is followed by the courier on the node. A pod's files are read through the node, and
+  only under `/airlock`.
 - **A pod is submitted in the start phase.** Create writes its files and its Service; start submits
   the pod and waits for it to run. A pod's command is wrapped in a shell loop that waits for late
   files only when the participant has a template file holding a value known after start. Among
-  today's cases that is `millstone` in the kind cases. Such a pod's image needs a shell, and that is a
-  stated requirement of the pod realization for a participant with a late-written template file.
-  Every other pod runs its image unwrapped and needs no shell.
+  today's cases that is `millstone` in the kind cases. The loop copies each such file from
+  `/panoramic/late`, a path pods reserve, into place, because a mounted file must exist when the pod
+  is submitted. Such a pod's image needs a shell, and that is a stated requirement of the pod
+  realization for a participant with a late-written template file. Every other pod runs its image
+  unwrapped and needs no shell.
 - **Host-process cases run one at a time.** The scheduler holds one extra permit that a case takes
   when its layout has a host process group. Two invocations on one host can still collide, which
   stays a host rule.
@@ -1486,7 +1489,7 @@ The cases are the main test. A test of the harness alone covers what a passing c
 | Cleanup, containers | A failed start and a cancelled case leave no container, network or volume | Ignored tests beside the container backend and in `airlock` | By hand, `make test-container-daemon` |
 | Cleanup, host processes | The same, for a process group and its directory | Unit tests beside the backend | Unit test jobs on Linux and macOS |
 | Cleanup, Windows containers | The same | Ignored tests | By hand, on a Windows host with Docker |
-| Cleanup, pods | A failed start leaves no namespace or node directory | One ignored test | By hand, `make test-container-daemon` |
+| Cleanup, pods | A failed start leaves no namespace or node directory | One ignored test | By hand, `make test-kind` |
 | Real cases compile | Every case compiles for every OS it declares | One test over every case directory | Unit test jobs |
 | The boundary | `core` names neither `participants` nor `steps`, and those two do not name each other | One rule in `test/architecture` | Unit test jobs |
 

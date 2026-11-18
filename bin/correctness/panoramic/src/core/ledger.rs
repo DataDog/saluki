@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use airlock::container::Container;
 use airlock::driver::{Driver, DriverDetails};
 use airlock::scope::CaseScope;
 use airlock::unix::UnixProcess;
@@ -64,6 +65,9 @@ enum Resource {
     Namespace { name: String, client: Client },
     /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),
+    /// A directory on a kind node, removed through the node's container once every namespace of the walk is gone, so a
+    /// pod still running cannot lose the files it mounts.
+    NodeDirectory { node: Container, path: String },
 }
 
 /// A namespace awaiting confirmation that deletion finished.
@@ -79,6 +83,8 @@ type Settled = (ReclaimResult, Option<String>);
 enum Removal {
     Settled(Settled),
     Terminating(Box<Terminating>),
+    /// A resource removed after every namespace is confirmed gone.
+    AfterNamespaces(Resource),
 }
 
 impl Resource {
@@ -105,6 +111,22 @@ impl Resource {
                     .map(|()| None)
                     .with_error_context(|| format!("Failed to remove '{}'", path.display())),
             },
+            Self::NodeDirectory { node, path } => {
+                let removed = node
+                    .exec(vec!["rm".to_string(), "-rf".to_string(), path.clone()], None, deadline)
+                    .await
+                    .with_error_context(|| format!("Failed to remove '{}' on node '{}'", path, node.name()))?;
+                if removed.exit_code != 0 {
+                    return Err(generic_error!(
+                        "Failed to remove '{}' on node '{}': rm exited with {}: {}",
+                        path,
+                        node.name(),
+                        removed.exit_code,
+                        String::from_utf8_lossy(&removed.stderr).trim()
+                    ));
+                }
+                Ok(None)
+            }
         }
     }
 }
@@ -118,6 +140,11 @@ impl fmt::Debug for Resource {
             Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
+            Self::NodeDirectory { node, path } => f
+                .debug_struct("NodeDirectory")
+                .field("node", &node.name())
+                .field("path", path)
+                .finish(),
         }
     }
 }
@@ -131,6 +158,7 @@ impl fmt::Display for Resource {
             Self::Process(process) => write!(f, "process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
             Self::Directory(path) => write!(f, "directory:{}", path.display()),
+            Self::NodeDirectory { path, .. } => write!(f, "node_directory:{}", path),
         }
     }
 }
@@ -152,6 +180,11 @@ impl Terminating {
             }
         }
     }
+}
+
+/// Why a resource is kept when `kept_by` was not reclaimed.
+fn kept(kept_by: &str) -> Option<String> {
+    Some(format!("kept because {} was not reclaimed", kept_by))
 }
 
 /// Keeps a completed removal unsettled when creation may still finish afterward.
@@ -201,9 +234,15 @@ impl ResourceLedger {
         self.register(Resource::Namespace { name, client });
     }
 
-    /// Registers a directory the case created.
+    /// Registers a directory the case created. Call it before creating the directory.
     pub(crate) fn directory(&self, path: PathBuf) {
         self.register(Resource::Directory(path));
+    }
+
+    /// Registers a directory the case creates on the kind node `node`. Call it before creating the directory, and
+    /// before registering the namespaces whose pods mount it.
+    pub(crate) fn node_directory(&self, node: Container, path: String) {
+        self.register(Resource::NodeDirectory { node, path });
     }
 
     /// Marks a creation request cut short: the runtime may finish creating the resource after removal.
@@ -213,7 +252,7 @@ impl ResourceLedger {
                 Resource::IsolationGroup(id) => id == name,
                 Resource::CaseScope(scope) => scope.resource_name() == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
-                Resource::Process(_) | Resource::Directory(_) => false,
+                Resource::Process(_) | Resource::Directory(_) | Resource::NodeDirectory { .. } => false,
             };
             if named {
                 entry.unsettled = true;
@@ -279,8 +318,9 @@ impl ResourceLedger {
 
     /// Attempts cleanup in reverse registration order under one deadline.
     ///
-    /// Namespace deletions start during the walk; confirmation polls run concurrently afterward. Returns results in
-    /// reverse registration order and an issue for each failed or unconfirmed removal. Expiry drops pending removal
+    /// Namespace deletions start during the walk; confirmation polls run concurrently afterward, and a node directory
+    /// is removed once every namespace is confirmed gone. Returns results in reverse registration order and an issue
+    /// for each failed or unconfirmed removal. Expiry drops pending removal
     /// futures; dropping a process sends SIGKILL if needed.
     pub(crate) async fn reclaim(&self, deadline: Instant) -> (Vec<ReclaimEntry>, Vec<Issue>) {
         let entries = std::mem::take(&mut *self.lock());
@@ -291,11 +331,12 @@ impl ResourceLedger {
 
         for Entry { resource, unsettled } in entries.into_iter().rev() {
             let label = resource.to_string();
+            let namespace = matches!(resource, Resource::Namespace { .. });
             let removal = match (&resource, &kept_by) {
-                (Resource::Directory(_), Some(kept_by)) => Removal::Settled((
-                    ReclaimResult::Leaked,
-                    Some(format!("kept because {} was not reclaimed", kept_by)),
-                )),
+                (Resource::Directory(_) | Resource::NodeDirectory { .. }, Some(kept_by)) => {
+                    Removal::Settled((ReclaimResult::Leaked, kept(kept_by)))
+                }
+                (Resource::NodeDirectory { .. }, None) => Removal::AfterNamespaces(resource),
                 _ => match timeout_at(deadline, resource.remove(deadline)).await {
                     Ok(Ok(Some(terminating))) => Removal::Terminating(Box::new(terminating)),
                     Ok(Ok(None)) => Removal::Settled(removed(unsettled)),
@@ -312,27 +353,59 @@ impl ResourceLedger {
             if let Removal::Settled((_, Some(_))) = removal {
                 kept_by.get_or_insert_with(|| label.clone());
             }
-            removals.push((label, unsettled, removal));
+            removals.push((label, unsettled, namespace, removal));
         }
 
-        let settled = join_all(removals.into_iter().map(|(label, unsettled, removal)| async move {
-            let settled = match removal {
-                Removal::Settled(settled) => settled,
-                Removal::Terminating(terminating) => match timeout_at(deadline, terminating.gone()).await {
-                    Ok(Ok(())) => removed(unsettled),
+        let confirmed = join_all(
+            removals
+                .into_iter()
+                .map(|(label, unsettled, namespace, removal)| async move {
+                    let settled = match removal {
+                        Removal::Settled(settled) => Ok(settled),
+                        Removal::Terminating(terminating) => Ok(match timeout_at(deadline, terminating.gone()).await {
+                            Ok(Ok(())) => removed(unsettled),
+                            Ok(Err(e)) => (ReclaimResult::Leaked, Some(format!("{:#}", e))),
+                            Err(_) => (
+                                ReclaimResult::Unsettled,
+                                Some(format!(
+                                    "still terminating when the {:?} reclaim budget expired",
+                                    RECLAIM_TIME
+                                )),
+                            ),
+                        }),
+                        Removal::AfterNamespaces(resource) => Err(resource),
+                    };
+                    (label, unsettled, namespace, settled)
+                }),
+        )
+        .await;
+
+        // A pod of a namespace that is not gone may still use the node directory.
+        let namespace_kept = confirmed
+            .iter()
+            .find_map(|(label, _, namespace, settled)| match settled {
+                Ok((result, _)) if *namespace && *result != ReclaimResult::Reclaimed => Some(label.clone()),
+                _ => None,
+            });
+        let mut settled = Vec::with_capacity(confirmed.len());
+        for (label, unsettled, _, outcome) in confirmed {
+            let outcome = match (outcome, &namespace_kept) {
+                (Ok(settled), _) => settled,
+                (Err(_), Some(kept_by)) => (ReclaimResult::Leaked, kept(kept_by)),
+                (Err(resource), None) => match timeout_at(deadline, resource.remove(deadline)).await {
+                    Ok(Ok(_)) => removed(unsettled),
                     Ok(Err(e)) => (ReclaimResult::Leaked, Some(format!("{:#}", e))),
                     Err(_) => (
                         ReclaimResult::Unsettled,
                         Some(format!(
-                            "still terminating when the {:?} reclaim budget expired",
+                            "still being removed when the {:?} reclaim budget expired",
                             RECLAIM_TIME
                         )),
                     ),
                 },
             };
-            (label, settled)
-        }))
-        .await;
+            settled.push((label, outcome));
+        }
 
         let mut reclaim = Vec::with_capacity(settled.len());
         let mut issues = Vec::new();

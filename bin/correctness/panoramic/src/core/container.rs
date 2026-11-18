@@ -371,41 +371,58 @@ struct RealizedContainer {
     ip: Option<String>,
 }
 
+/// Why a command run in a container did not return an exit code.
+pub(super) struct ExecFailure {
+    pub(super) message: String,
+    /// Whether the runner's own writer failed, so the participant is not to blame.
+    pub(super) writing: bool,
+}
+
+/// Runs `exec` in `container`, writes its output to `stdout` and `stderr` as it arrives, and returns its exit code.
+pub(super) async fn exec_in(
+    container: &Container, exec: Exec, stdout: &mut (dyn AsyncWrite + Send + Unpin),
+    stderr: &mut (dyn AsyncWrite + Send + Unpin), deadline: Instant,
+) -> Result<i64, ExecFailure> {
+    let mut request = ExecRequest::new(exec.argv);
+    for (key, value) in &exec.env {
+        request = request.with_env_var(key, value);
+    }
+    if let Some(stdin) = exec.stdin {
+        request = request.with_stdin(stdin);
+    }
+    let mut stdout = Watched::new(stdout);
+    let mut stderr = Watched::new(stderr);
+    container
+        .exec_into(request, &mut stdout, &mut stderr, deadline)
+        .await
+        .map_err(|e| ExecFailure {
+            message: format!("{:#}", e),
+            writing: stdout.failed || stderr.failed,
+        })
+}
+
 #[async_trait]
 impl Realized for RealizedContainer {
     async fn exec(
         &self, exec: Exec, stdout: &mut (dyn AsyncWrite + Send + Unpin), stderr: &mut (dyn AsyncWrite + Send + Unpin),
         deadline: Instant,
     ) -> Result<i64, HandleError> {
-        let mut request = ExecRequest::new(exec.argv);
-        for (key, value) in &exec.env {
-            request = request.with_env_var(key, value);
-        }
-        if let Some(stdin) = exec.stdin {
-            request = request.with_stdin(stdin);
-        }
-        let mut stdout = Watched::new(stdout);
-        let mut stderr = Watched::new(stderr);
-        let error = match self
-            .container
-            .exec_into(request, &mut stdout, &mut stderr, deadline)
-            .await
-        {
+        let failure = match exec_in(&self.container, exec, stdout, stderr, deadline).await {
             Ok(code) => return Ok(code),
-            Err(e) => format!("{:#}", e),
+            Err(failure) => failure,
         };
-        if stdout.failed || stderr.failed {
-            return Err(HandleError::Harness(error));
+        if failure.writing {
+            return Err(HandleError::Harness(failure.message));
         }
         // Docker runs no command in a stopped container, and a participant that exited is the software's fault.
         if self.has_exited().await {
             Err(HandleError::Software(format!(
                 "container '{}' has exited: {}",
                 self.container.name(),
-                error
+                failure.message
             )))
         } else {
-            Err(HandleError::Harness(error))
+            Err(HandleError::Harness(failure.message))
         }
     }
 

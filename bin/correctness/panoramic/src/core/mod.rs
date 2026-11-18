@@ -20,6 +20,9 @@ pub(crate) mod observe;
 mod order;
 pub(crate) mod participant;
 pub(crate) mod plan;
+// TODO: remove the dead_code allowance once the run's checks before the first case connect the pod backend.
+#[allow(dead_code)]
+pub(crate) mod pod;
 mod print;
 pub(crate) mod probe;
 pub(crate) mod record;
@@ -34,3 +37,5 @@ pub(crate) mod wiring;
 
 #[cfg(test)]
 mod daemon_tests;
+#[cfg(test)]
+mod kind_tests;
