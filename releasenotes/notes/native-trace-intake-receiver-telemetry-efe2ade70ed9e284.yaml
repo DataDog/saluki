@@ -1,0 +1,15 @@
+features:
+  - |
+    With the experimental native trace intake enabled (``data_plane.experimental.apm.native_trace_intake``), Agent Data
+    Plane reports the trace-agent's receiver metrics for the payloads it serves on ``/v1.0/traces``:
+    ``datadog.trace_agent.receiver.trace``, ``traces_received``, ``traces_bytes``, ``spans_received``,
+    ``payload_accepted``, ``payload_refused``, ``payload_timeout``, ``client_dropped_p0_traces``,
+    ``client_dropped_p0_spans``, ``error`` and ``serve_traces_ms``, plus
+    ``datadog.trace_agent.normalizer.traces_dropped`` for payloads that can't be read or decoded. As in the
+    trace-agent, these metrics and the normalizer's are tagged with the tracer's ``Datadog-Meta-*`` request headers, the
+    endpoint version, the connection type and the payload's service, and counts are sent as rates over the reporting
+    interval, so existing dashboards and monitors keep working. ``serve_traces_ms`` is summarized with
+    ``histogram_aggregates``, ``histogram_percentiles`` and ``histogram_copy_to_distribution``, as DogStatsD summarizes
+    the trace-agent's. Unlike the trace-agent, Agent Data Plane publishes no zero values for tag combinations that
+    received no payload during a reporting interval, and ignores ``apm_config.send_all_internal_stats``. Payloads
+    forwarded to the trace-agent are counted by the trace-agent only.

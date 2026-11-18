@@ -157,7 +157,8 @@ impl DatadogTraceNormalizer {
             return Err(DropReason::TraceIdZero);
         }
 
-        let lang = trace.payload.language_name.clone();
+        // As the reference's `ts.Lang`, the `Datadog-Meta-Lang` header names the fallback service, not the body.
+        let lang = trace.payload.receiver().lang.clone();
         self.seen_span_ids.clear();
         for span in trace.spans_mut() {
             normalize_span(span, &lang, self.component2name, &mut self.string_builder, counts)?;
@@ -306,7 +307,9 @@ impl Transform for DatadogTraceNormalizer {
         health.mark_ready();
         debug!("Datadog trace normalizer transform started.");
 
+        // A dispatch that blocks past a tick delays the next window rather than bursting short ones.
         let mut window = tokio::time::interval_at(tokio::time::Instant::now() + WINDOW, WINDOW);
+        window.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             select! {
