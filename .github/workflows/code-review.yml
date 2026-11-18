@@ -42,7 +42,7 @@ jobs:
       pull-requests: write
       checks: write
       id-token: write
-    uses: DataDog/code-review-action/.github/workflows/code-review.yml@77ee41c172523b1efd23ac681a58f4c1eaf44eb1 # v1.3.1
+    uses: DataDog/code-review-action/.github/workflows/code-review.yml@bfdb2dc28a2cbd1a480867648dcdada188086468 # main, unreleased (Codex ubuntu-24.04 fix)
     with:
       provider: claude
       trigger_mode: ${{ github.event_name == 'pull_request' && 'always' || 'on_demand' }}
