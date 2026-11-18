@@ -16,7 +16,6 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use agent_data_plane_config::Provenance;
-use datadog_agent_config::classifier::ConfigClassifier;
 use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
 use serde_json::Value;
 
@@ -339,8 +338,7 @@ fn flatten_value<'a>(
 /// Returns whether the dotted `key` is a setting whose value can be an object: a leaf a model describes,
 /// or a key the compatibility classifier has an entry for, which no model describes.
 fn is_object_setting(key: &str) -> bool {
-    static CLASSIFIER: OnceLock<ConfigClassifier> = OnceLock::new();
-    is_modeled_leaf(key) || CLASSIFIER.get_or_init(ConfigClassifier::new).contains(key)
+    is_modeled_leaf(key) || crate::compatibility::classifier().contains(key)
 }
 
 /// Returns whether the dotted `key` is a leaf path of either source model: a setting a model describes,
