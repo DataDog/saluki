@@ -1112,8 +1112,8 @@ async fn run_endpoint_io_loop<B>(
 ///
 /// The invalid API key inspection layer sits *below* the retry circuit breaker so that it observes the raw response from
 /// the client. When secrets management is enabled, a 403 is classified as retriable and the circuit breaker converts it
-/// into a `RetryCircuitBreakerError::Retry` error that only re-enqueues the transaction — it never surfaces the response
-/// to the endpoint I/O loop — so this layer is the only place that reliably sees the rejection.
+/// into a `RetryCircuitBreakerError::Retry` error that only re-enqueues the transaction. The response never reaches the
+/// endpoint I/O loop, so this layer is the only place that reliably sees the rejection.
 fn build_endpoint_service<B>(
     client: HttpClient, config: &ForwarderConfiguration, retry_policy: SecretsHttpRetryPolicy<Incoming>,
     endpoint_request_mapper: EndpointRequestMapper<B>, emitter: DiagnosticsEmitter, endpoint_url: String,
