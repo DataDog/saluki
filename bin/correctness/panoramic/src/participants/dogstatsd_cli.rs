@@ -9,6 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::time::timeout;
 
 use crate::core::handle::{Exited, Handle, HandleError};
 use crate::core::step::{Operation, Uses};
@@ -16,9 +17,20 @@ use crate::core::step::{Operation, Uses};
 /// The most of a capture's output that a message quotes.
 const QUOTED: usize = 1024;
 
-/// Runs `adp` with `args`, and fails with the exit code alone if it exits nonzero.
+/// How much longer the backend waits for a command than `run_adp` does, so that the expiry is ours to report.
+const BACKEND_SLACK: Duration = Duration::from_secs(5);
+
+/// Runs `adp` with `args`, and fails with the exit code alone if it exits nonzero. A command that outlives `limit` is
+/// a software failure, as it is ADP that did not answer.
 async fn run_adp(on: &Handle<'_>, name: &str, args: &[String], limit: Duration) -> Result<Exited, HandleError> {
-    let exited = on.command("adp", args, &BTreeMap::new(), limit).await?;
+    let env = BTreeMap::new();
+    let Ok(ended) = timeout(limit, on.command("adp", args, &env, limit + BACKEND_SLACK)).await else {
+        return Err(HandleError::Software(format!(
+            "agent-data-plane dogstatsd {} did not exit within {:?}",
+            name, limit
+        )));
+    };
+    let exited = ended?;
     if exited.code != 0 {
         return Err(HandleError::Software(format!(
             "agent-data-plane dogstatsd {} exited with code {}",
