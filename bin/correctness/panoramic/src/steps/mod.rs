@@ -13,6 +13,7 @@ use crate::core::step::StepReport;
 
 pub(crate) mod analysis;
 mod compare;
+mod exec;
 mod file_contains;
 mod http_check;
 pub(crate) mod intake;
@@ -31,6 +32,7 @@ const ATTEMPT: Duration = Duration::from_secs(5);
 /// Registers every step.
 pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(compare::CompareFactory));
+    registry.add_step(Box::new(exec::ExecFactory));
     registry.add_step(Box::new(file_contains::FileContainsFactory));
     registry.add_step(Box::new(http_check::HttpCheckFactory));
     registry.add_step(Box::new(intake_has_metric::IntakeHasMetricFactory));
