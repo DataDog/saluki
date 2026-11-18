@@ -10,8 +10,8 @@ use bollard::{
     container::LogOutput,
     errors::Error,
     models::{
-        ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HostConfig, Mount, MountType,
-        NetworkingConfig, PortBinding,
+        ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HostConfig, HostConfigCgroupnsModeEnum, Mount,
+        MountType, NetworkingConfig, PortBinding,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -48,6 +48,7 @@ pub struct ContainerSpec {
     mounts: Vec<Mount>,
     sysctls: HashMap<String, String>,
     host_pid: bool,
+    host_cgroup_namespace: bool,
 }
 
 impl ContainerSpec {
@@ -104,6 +105,12 @@ impl ContainerSpec {
     /// Runs the container in the host's PID namespace.
     pub fn with_host_pid(mut self) -> Self {
         self.host_pid = true;
+        self
+    }
+
+    /// Runs the container in the host's cgroup namespace.
+    pub fn with_host_cgroup_namespace(mut self) -> Self {
+        self.host_cgroup_namespace = true;
         self
     }
 }
@@ -214,6 +221,7 @@ impl CaseScope {
                 port_bindings: Some(port_bindings),
                 sysctls: (!spec.sysctls.is_empty()).then_some(spec.sysctls),
                 pid_mode: spec.host_pid.then(|| "host".to_string()),
+                cgroupns_mode: spec.host_cgroup_namespace.then_some(HostConfigCgroupnsModeEnum::HOST),
                 ..Default::default()
             }),
             networking_config: Some(networking_config),
