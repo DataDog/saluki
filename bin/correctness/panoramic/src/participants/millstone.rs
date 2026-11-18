@@ -76,7 +76,7 @@ impl ParticipantType for Millstone {
                 MILLSTONE_YAML
             ));
         };
-        let template = matches!(
+        let is_template = matches!(
             cx.case.files.get(MILLSTONE_YAML).map(|file| &file.source),
             Some(FileSource::Case { template: true, .. })
         );
@@ -87,11 +87,17 @@ impl ParticipantType for Millstone {
                 MILLSTONE_YAML, COMPARISON_TARGET
             ));
         }
+        if !is_template {
+            return Err(format!(
+                "millstone's {} refers to its connections, so the case must place it with template: true",
+                MILLSTONE_YAML
+            ));
+        }
         let baseline = FileSpec {
             source: FileSource::Text {
                 label: "the case's millstone.yaml, sending to baseline_target",
                 text: text.replace(COMPARISON_TARGET, BASELINE_TARGET),
-                template,
+                template: true,
             },
             mode: None,
             supervises: false,
