@@ -158,6 +158,13 @@ pub struct ReceiverMetadata {
     pub endpoint_version: MetaString,
     /// Connection type the payload arrived over (for example, `"uds"`), reported in receiver telemetry.
     pub connection_type: MetaString,
+    /// Attributes of the tracer payload itself, as the tracer sent them, written back on the tracer payload by the
+    /// encoder.
+    ///
+    /// Kept here rather than on every trace because they are shared by every chunk of a payload. The receiver-resolved
+    /// [`container_tags`][Self::container_tags], [`process_tags`][Self::process_tags] and
+    /// [`sdk_otlp_export`][Self::sdk_otlp_export] take precedence over a same-named entry.
+    pub payload_attributes: Vec<(MetaString, AttributeValue)>,
 }
 
 impl ReceiverMetadata {
@@ -174,6 +181,7 @@ impl ReceiverMetadata {
             lang_vendor: MetaString::empty(),
             endpoint_version: MetaString::empty(),
             connection_type: MetaString::empty(),
+            payload_attributes: Vec::new(),
         }
     }
 }

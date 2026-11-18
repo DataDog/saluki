@@ -3,7 +3,7 @@
 mod apm;
 pub use self::apm::{
     ApmConfiguration, InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation, InfoReplaceRule,
-    InfoTagFilter, InfoTagFilters, TracerFlareConfiguration,
+    InfoTagFilter, InfoTagFilters, TraceIntakeConfiguration, TracerFlareConfiguration,
 };
 
 mod checks_ipc;

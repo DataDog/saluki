@@ -734,15 +734,33 @@ impl TraceEndpointEncoder {
                 tp.app_version_ref(self.string_table.intern(app_version))?;
             }
 
-            // Receiver-resolved metadata goes in the payload-level attributes map, as `handleTracesV1` sets it.
-            for (key, value) in [
+            // The tracer's own payload attributes come first. The receiver-resolved metadata is written last, as
+            // `handleTracesV1` sets it with `SetStringAttribute`: a resolved value replaces a same-named attribute
+            // rather than duplicating it, and an unresolved one leaves the tracer's attribute in place.
+            let resolved = [
                 (CONTAINER_TAGS_META_KEY, container_tags),
                 (TAG_PROCESS_TAGS, non_empty(&trace.payload.receiver().process_tags)),
                 (
                     TAG_SDK_OTLP_EXPORT,
                     non_empty(&trace.payload.receiver().sdk_otlp_export),
                 ),
-            ] {
+            ];
+            {
+                let mut attrs = tp.attributes();
+                for (k, v) in &trace.payload.receiver().payload_attributes {
+                    if resolved
+                        .iter()
+                        .any(|(key, value)| value.is_some() && *key == k.as_ref())
+                    {
+                        continue;
+                    }
+                    let k_ref = self.string_table.intern(k);
+                    attrs.write_entry(k_ref, |av: &mut _| {
+                        encode_etp_attribute_value(av, v, &mut self.string_table)
+                    })?;
+                }
+            }
+            for (key, value) in resolved {
                 if let Some(value) = value {
                     let k_ref = self.string_table.intern(key);
                     let v_ref = self.string_table.intern(value);
@@ -859,18 +877,12 @@ impl TraceEndpointEncoder {
                     })?;
                 }
 
-                // Chunk attributes: decision maker, ETS tag, OTLP sampling rate.
+                // Chunk attributes: the tracer's own, then decision maker, ETS tag, OTLP sampling rate. An OTLP
+                // trace's attributes describe its resource, not its chunk, so they aren't written here. The
+                // encoder's own keys replace a same-named tracer attribute, as `SetStringAttribute` does.
                 {
-                    let mut cattrs = chunk.attributes();
-                    if let Some(dm) = decision_maker {
-                        let k_ref = self.string_table.intern(TAG_DECISION_MAKER);
-                        let v_ref = self.string_table.intern(dm);
-                        cattrs.write_entry(k_ref, |av: &mut _| {
-                            av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
-                        })?;
-                    }
-                    if self.error_tracking_standalone {
-                        let trace_has_error = trace.spans().iter().any(|span| {
+                    let ets_error = self.error_tracking_standalone
+                        && trace.spans().iter().any(|span| {
                             span.error() != 0
                                 || span
                                     .attributes
@@ -878,13 +890,33 @@ impl TraceEndpointEncoder {
                                     .and_then(AttributeValue::as_string)
                                     .is_some_and(|v| v == "true")
                         });
-                        if trace_has_error {
-                            let k_ref = self.string_table.intern(TAG_ETS_STANDALONE_ERROR_KEY);
-                            let v_ref = self.string_table.intern(TAG_ETS_STANDALONE_ERROR_VALUE);
+                    let mut cattrs = chunk.attributes();
+                    if !is_otlp {
+                        for (k, v) in trace.attributes.iter() {
+                            let overwritten = (decision_maker.is_some() && k == TAG_DECISION_MAKER)
+                                || (ets_error && k == TAG_ETS_STANDALONE_ERROR_KEY);
+                            if overwritten {
+                                continue;
+                            }
+                            let k_ref = self.string_table.intern(k);
                             cattrs.write_entry(k_ref, |av: &mut _| {
-                                av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
+                                encode_etp_attribute_value(av, v, &mut self.string_table)
                             })?;
                         }
+                    }
+                    if let Some(dm) = decision_maker {
+                        let k_ref = self.string_table.intern(TAG_DECISION_MAKER);
+                        let v_ref = self.string_table.intern(dm);
+                        cattrs.write_entry(k_ref, |av: &mut _| {
+                            av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
+                        })?;
+                    }
+                    if ets_error {
+                        let k_ref = self.string_table.intern(TAG_ETS_STANDALONE_ERROR_KEY);
+                        let v_ref = self.string_table.intern(TAG_ETS_STANDALONE_ERROR_VALUE);
+                        cattrs.write_entry(k_ref, |av: &mut _| {
+                            av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
+                        })?;
                     }
                     if let Some(rate) = otlp_sampling_rate {
                         let k_ref = self.string_table.intern(TAG_OTLP_SAMPLING_RATE);
@@ -1522,6 +1554,68 @@ mod tests {
                 ("_dd.sdk.otlp_export".to_string(), "false".to_string()),
             ])
         );
+    }
+
+    #[test]
+    fn datadog_trace_attributes_are_written_back_with_resolved_values_last() {
+        let string = |s: &str| AttributeValue::String(MetaString::from(s));
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.receiver = Some(Arc::new(ReceiverMetadata {
+            container_tags: MetaString::from("kube_namespace:prod"),
+            payload_attributes: vec![
+                (MetaString::from("_dd.apm_mode"), string("edge")),
+                (MetaString::from("_dd.tags.container"), string("from:tracer")),
+                // Unresolved by the receiver, so the tracer's value stays.
+                (MetaString::from("_dd.tags.process"), string("entrypoint.name:app")),
+            ],
+            ..ReceiverMetadata::new()
+        }));
+        trace.attributes = Arc::new(FastHashMap::from_iter([
+            (MetaString::from("_dd.p.dm"), string("-0")),
+            (MetaString::from("chunk.key"), string("chunk-value")),
+        ]));
+        trace.decision_maker = Some(MetaString::from("-4"));
+
+        let mut encoder = make_encoder(false);
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+
+        let (_, payload_attrs) = decode_etp_payload_metadata(&buf);
+        assert_eq!(
+            payload_attrs,
+            HashMap::from([
+                ("_dd.apm_mode".to_string(), "edge".to_string()),
+                ("_dd.tags.container".to_string(), "kube_namespace:prod".to_string()),
+                ("_dd.tags.process".to_string(), "entrypoint.name:app".to_string()),
+            ])
+        );
+        let chunk_attrs = decode_etp_chunk_attributes(&buf);
+        assert_eq!(
+            chunk_attrs[0],
+            HashMap::from([
+                ("_dd.p.dm".to_string(), "-4".to_string()),
+                ("chunk.key".to_string(), "chunk-value".to_string()),
+            ])
+        );
+
+        // A replaced value is skipped rather than written as a duplicate entry, so it never reaches the string table.
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let strings = payload.idxTracerPayloads[0].strings();
+        for replaced in ["-0", "from:tracer"] {
+            assert!(
+                !strings.iter().any(|s| s == replaced),
+                "{replaced} should not be written"
+            );
+        }
+
+        // An OTLP trace's attributes describe its resource, so they never become chunk attributes.
+        let mut otlp = make_trace(TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        });
+        otlp.attributes = Arc::new(FastHashMap::from_iter([(MetaString::from("chunk.key"), string("x"))]));
+        buf.clear();
+        encoder.encode(&otlp, &mut buf).expect("encode should succeed");
+        assert!(!decode_etp_chunk_attributes(&buf)[0].contains_key("chunk.key"));
     }
 
     #[test]

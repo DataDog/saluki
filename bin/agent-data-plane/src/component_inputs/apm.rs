@@ -1,5 +1,6 @@
 //! Inputs of the APM source.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use agent_data_plane_config::domains::traces;
@@ -11,7 +12,7 @@ use saluki_common::sync::live::Live;
 use saluki_components::config::AgentEnv;
 use saluki_components::sources::{
     ApmConfiguration, InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation, InfoReplaceRule,
-    InfoTagFilter, InfoTagFilters, TracerFlareConfiguration,
+    InfoTagFilter, InfoTagFilters, TraceIntakeConfiguration, TracerFlareConfiguration,
 };
 use saluki_env::workload::CaptureEntityResolver;
 use saluki_env::WorkloadProvider;
@@ -50,6 +51,24 @@ pub(crate) fn apm_source_configuration(
         agent_client,
         semantic_registry,
         validate_endpoint: validate_endpoint(&shared.endpoints),
+        trace_intake: apm.native_trace_intake.then(|| trace_intake_configuration(config)),
+    }
+}
+
+/// Builds the native trace intake settings, with the receiver limits resolved as the trace-agent resolves them.
+fn trace_intake_configuration(config: &SalukiConfiguration) -> TraceIntakeConfiguration {
+    let apm = &config.domains.apm;
+    let parallelism = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+    TraceIntakeConfiguration {
+        max_request_bytes: apm.max_payload_size,
+        decoders: apm.effective_decoders(parallelism),
+        decoder_timeout: apm.effective_decoder_timeout(),
+        receiver_timeout: apm.effective_receiver_timeout(),
+        reject_with_too_many_requests: config
+            .domains
+            .traces
+            .features
+            .contains(&traces::ApmFeature::TooManyRequests),
     }
 }
 
@@ -235,6 +254,30 @@ mod tests {
         assert_eq!(source.tracer_flare.site, "datadoghq.eu");
         assert_eq!(source.tracer_flare.api_key.as_str(), "api-key");
         assert!(source.agent_client.is_none());
+    }
+
+    #[test]
+    fn trace_intake_is_configured_only_with_native_trace_intake() {
+        let mut config = SalukiConfiguration::default();
+        assert!(source_configuration(&config, false).trace_intake.is_none());
+
+        config.domains.apm.native_trace_intake = true;
+        config.domains.apm.max_payload_size = 1024;
+        config.domains.apm.decoders = 3;
+        config.domains.apm.decoder_timeout = 250;
+        config.domains.apm.receiver_timeout = 7;
+        let intake = source_configuration(&config, false)
+            .trace_intake
+            .expect("intake should be set");
+        assert_eq!(intake.max_request_bytes, 1024);
+        assert_eq!(intake.decoders.get(), 3);
+        assert_eq!(intake.decoder_timeout, std::time::Duration::from_millis(250));
+        assert_eq!(intake.receiver_timeout, std::time::Duration::from_secs(7));
+        assert!(!intake.reject_with_too_many_requests);
+
+        config.domains.traces.features = vec![ApmFeature::TooManyRequests];
+        let intake = source_configuration(&config, false).trace_intake.unwrap();
+        assert!(intake.reject_with_too_many_requests);
     }
 
     #[test]
