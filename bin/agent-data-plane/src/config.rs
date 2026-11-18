@@ -192,8 +192,7 @@ impl<'a> DataPlaneConfiguration<'a> {
 
     /// Returns `true` if ADP handles OTLP logs itself, rather than relaying them to the Core Agent.
     ///
-    /// This decides both whether the OTLP source's logs are wired into the logs pipeline and whether the classifier's
-    /// `logs` pipeline is active, so the startup compatibility check follows the topology.
+    /// This decides whether the OTLP source's logs are wired into the logs pipeline.
     pub const fn otlp_logs_native(&self) -> bool {
         self.otlp_enabled() && !self.otlp_proxy_enabled()
     }
@@ -201,7 +200,8 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns `true` if the logs pipeline is required.
     ///
     /// This indicates that the "baseline" logs pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as Checks or OTLP.
+    /// pipelines, such as Checks or OTLP. It also decides whether the classifier's `logs` pipeline is active, so the
+    /// startup compatibility check follows the topology.
     pub const fn logs_pipeline_required(&self) -> bool {
         self.checks_enabled() || self.otlp_logs_native()
     }
@@ -248,7 +248,7 @@ impl<'a> DataPlaneConfiguration<'a> {
         if self.traces_pipeline_required() {
             s.insert(Pipeline::Traces);
         }
-        if self.otlp_logs_native() {
+        if self.logs_pipeline_required() {
             s.insert(Pipeline::Logs);
         }
         s
@@ -627,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn logs_pipeline_is_active_only_when_otlp_logs_are_handled_natively() {
+    fn logs_pipeline_is_active_when_adp_handles_logs() {
         let logs_active = |config: &SalukiConfiguration| {
             DataPlaneConfiguration::from_configuration(config)
                 .active_pipelines()
@@ -638,10 +638,10 @@ mod tests {
         let checks_only = pipeline_configuration(true, false, false, Proxy::default());
 
         assert!(logs_active(&native));
-        // Proxying any signal proxies logs too.
+        // Proxying any signal proxies logs too, so ADP's logs pipeline doesn't run.
         assert!(!logs_active(&traces_proxied));
-        // Check logs need the logs pipeline, but they don't activate the classifier's `logs` pipeline.
-        assert!(!logs_active(&checks_only));
+        // Check logs go through ADP's logs pipeline too.
+        assert!(logs_active(&checks_only));
     }
 
     #[test]

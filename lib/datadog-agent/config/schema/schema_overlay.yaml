@@ -33,7 +33,8 @@
 # - support: unknown entries without severity produce no runtime classifier entry and are docs-only
 #
 # Pipeline tokens: dogstatsd, checks, otlp (the OTLP receiver, natively or in proxy mode), traces
-# (native trace processing), logs (native OTLP logs processing, not check logs), and cross_cutting.
+# (native trace processing), logs (ADP's logs pipeline, for native OTLP logs and check logs), and
+# cross_cutting.
 inventory:
   additional_endpoints:
     support: full
