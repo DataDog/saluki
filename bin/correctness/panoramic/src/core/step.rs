@@ -16,6 +16,8 @@ use tokio::time::Instant;
 
 use super::handle::{Handle, HandleError};
 use super::record::StepStatus;
+use super::reference::Values;
+use super::template::Template;
 
 /// What a step does to the case.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,8 +38,6 @@ pub(crate) trait StepFactory: Send + Sync {
     }
 
     /// The fields that may hold references. A reference in any other field is an error.
-    // TODO: remove the dead_code allowance once references are checked in step fields.
-    #[allow(dead_code)]
     fn template_fields(&self) -> &'static [&'static str] {
         &[]
     }
@@ -56,8 +56,6 @@ pub(crate) trait Step: fmt::Debug + Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Everything of the case the step uses, so the plan can check it before anything starts.
-    // TODO: remove the dead_code allowance once the plan checks what steps need.
-    #[allow(dead_code)]
     fn needs(&self) -> Vec<Need>;
 
     fn budget(&self) -> Duration;
@@ -67,7 +65,8 @@ pub(crate) trait Step: fmt::Debug + Send + Sync {
 }
 
 /// Something of the case a step uses.
-// TODO: remove the dead_code allowance once the plan checks what steps need.
+// TODO: remove the dead_code allowance once steps that run commands, call operations and reach endpoints are
+// registered.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Need {
@@ -83,11 +82,11 @@ pub(crate) enum Need {
 }
 
 /// What a step does to an endpoint.
-// TODO: remove the dead_code allowance once the plan checks what steps need.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EndpointOperation {
     Probe,
+    // TODO: remove the dead_code allowance once a step sends to an endpoint.
+    #[allow(dead_code)]
     Send,
     Request,
 }
@@ -116,18 +115,32 @@ pub(crate) enum Uses {
     Request(&'static str),
 }
 
-/// What a running step can reach: a handle to each of the case's started participants, and when it must be done.
-// TODO: remove the dead_code allowance once a step is registered.
-#[allow(dead_code)]
+/// What a running step can reach: a handle to each of the case's started participants, the values its template fields
+/// refer to, and when it must be done.
 pub(crate) struct StepContext<'a> {
     handles: &'a BTreeMap<String, Handle<'a>>,
+    values: &'a Values,
     /// When the step's own budget, or the case's deadline, runs out.
     pub(crate) deadline: Instant,
 }
 
 impl<'a> StepContext<'a> {
-    pub(crate) fn new(handles: &'a BTreeMap<String, Handle<'a>>, deadline: Instant) -> Self {
-        Self { handles, deadline }
+    pub(crate) fn new(handles: &'a BTreeMap<String, Handle<'a>>, values: &'a Values, deadline: Instant) -> Self {
+        Self {
+            handles,
+            values,
+            deadline,
+        }
+    }
+
+    /// The text of `template`, one of the step's template fields, with every reference filled in. Each value is
+    /// escaped when the text is matched as a regex, so a path or an address matches itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error if a reference has no value.
+    pub(crate) fn fill(&self, template: &Template, regex: bool) -> Result<String, HandleError> {
+        self.values.fill_step(template, regex).map_err(HandleError::Harness)
     }
 
     /// The handle to participant `name`.
@@ -135,8 +148,6 @@ impl<'a> StepContext<'a> {
     /// # Errors
     ///
     /// Returns a harness error if the case has no started participant `name`.
-    // TODO: remove the dead_code allowance once a step is registered.
-    #[allow(dead_code)]
     pub(crate) fn handle(&self, name: &str) -> Result<&Handle<'a>, HandleError> {
         self.handles
             .get(name)
@@ -156,8 +167,6 @@ pub(crate) struct StepReport {
 #[serde(transparent)]
 pub(crate) struct StepFields(pub(crate) BTreeMap<String, Value>);
 
-// TODO: remove the dead_code allowance once a step is registered.
-#[allow(dead_code)]
 impl StepFields {
     /// Decodes the fields into the step's own struct, which should deny unknown fields.
     ///

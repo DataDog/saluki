@@ -1,5 +1,6 @@
 //! Results of test cases: outcomes, errors, timeouts, cleanup entries and phase timings.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -7,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::core::observe::{Collected, ProcessExit};
+use crate::core::participant::{Os, Realization};
 use crate::core::record::{step_label, ActiveStep, StepResult, StepStatus};
 
 /// Phase name reported when the harness cannot tell which phase a test was in.
@@ -144,12 +147,19 @@ pub enum TestOutcome {
     Errored,
     /// The test exceeded its timeout.
     TimedOut,
+    /// The test does not run on the selected subject OS. A skip is not a failure.
+    Skipped,
 }
 
 impl TestOutcome {
     /// Whether every assertion the test ran passed.
     pub fn is_passed(&self) -> bool {
         matches!(self, Self::Passed)
+    }
+
+    /// Whether the test neither passed nor was skipped.
+    pub fn is_failure(&self) -> bool {
+        !matches!(self, Self::Passed | Self::Skipped)
     }
 
     /// Whether this outcome represents a harness-side error rather than an assertion verdict.
@@ -166,6 +176,7 @@ impl fmt::Display for TestOutcome {
             Self::Failed => "failed",
             Self::Errored => "errored",
             Self::TimedOut => "timed_out",
+            Self::Skipped => "skipped",
         };
         f.write_str(name)
     }
@@ -378,6 +389,31 @@ pub struct TestResult {
     pub phase_timings: Vec<PhaseTiming>,
     /// Full per-assertion mismatch details for log output (not shown in TUI/reporter).
     pub assertion_details: Vec<Vec<String>>,
+    /// Why the test was skipped, when the outcome is [`TestOutcome::Skipped`].
+    pub(crate) skip_reason: Option<String>,
+    /// The subject OS a participant case ran for.
+    pub(crate) subject_os: Option<Os>,
+    /// Each participant of a participant case, by name.
+    pub(crate) participants: BTreeMap<String, ParticipantRun>,
+    /// The files collected from a participant case that its outcome keeps.
+    pub(crate) collected: Vec<Collected>,
+}
+
+/// How one participant of a participant case ran.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ParticipantRun {
+    pub(crate) realization: Realization,
+    /// Each process, by name, once the participant has started.
+    pub(crate) processes: BTreeMap<String, ProcessRun>,
+}
+
+/// How one process of a started participant ran.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ProcessRun {
+    /// How it had exited by the end of the case.
+    pub(crate) exit: ProcessExit,
+    /// Where its captured output is on the runner host.
+    pub(crate) output: PathBuf,
 }
 
 impl TestResult {
@@ -423,6 +459,10 @@ impl TestResult {
             log_dir: None,
             phase_timings,
             assertion_details: Vec::new(),
+            skip_reason: None,
+            subject_os: None,
+            participants: BTreeMap::new(),
+            collected: Vec::new(),
         };
         match error {
             Some((kind, message)) => result.with_harness_error(kind, message),
@@ -436,6 +476,14 @@ impl TestResult {
         phase_timings: Vec<PhaseTiming>,
     ) -> Self {
         Self::from_steps(name, duration, Vec::new(), phase_timings).with_harness_error(kind, message)
+    }
+
+    /// Creates a result for a test that does not run on the selected subject OS, for `reason`.
+    pub(crate) fn skipped(name: impl Into<String>, reason: impl Into<String>) -> Self {
+        let mut result = Self::from_steps(name, Duration::ZERO, Vec::new(), Vec::new());
+        result.outcome = TestOutcome::Skipped;
+        result.skip_reason = Some(reason.into());
+        result
     }
 
     /// Marks a completed result as a harness error while retaining its partial evidence.
@@ -464,7 +512,8 @@ impl TestResult {
         self
     }
 
-    /// Returns the display label: `PASS`, `FAIL`, `ERROR`, `TIMEOUT`, or `INTERRUPTED` for a signal interruption.
+    /// Returns the display label: `PASS`, `FAIL`, `ERROR`, `TIMEOUT`, `SKIP`, or `INTERRUPTED` for a signal
+    /// interruption.
     pub fn label(&self) -> &'static str {
         match self.outcome {
             TestOutcome::Passed => "PASS",
@@ -474,10 +523,11 @@ impl TestResult {
             }
             TestOutcome::Errored => "ERROR",
             TestOutcome::TimedOut => "TIMEOUT",
+            TestOutcome::Skipped => "SKIP",
         }
     }
 
-    /// Formats the timeout attribution or harness error, followed by interruption details and issues.
+    /// Formats the timeout attribution, harness error or skip reason, followed by interruption details and issues.
     ///
     /// Includes steps running at interruption and a count of steps that never ran. Returns an empty list for a test
     /// with none of these diagnostics.
@@ -497,6 +547,8 @@ impl TestResult {
                     }
                 })
                 .collect()
+        } else if let Some(reason) = &self.skip_reason {
+            vec![format!("Skipped: {}", reason)]
         } else {
             Vec::new()
         };

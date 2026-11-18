@@ -51,6 +51,7 @@ const STATUS_LIMIT: Duration = Duration::from_secs(5);
 
 /// What the container backend does differently on one container OS, beside the planning facts of its
 /// enclosure.
+#[derive(Debug)]
 pub(crate) struct ContainerOs {
     enclosure: Enclosure,
     /// The Docker network driver of the case network.
@@ -110,6 +111,7 @@ impl ContainerOs {
 }
 
 /// Creates the containers of cases on one container OS.
+#[derive(Clone, Debug)]
 pub(crate) struct ContainerBackend {
     docker: Docker,
     os: &'static ContainerOs,
@@ -227,7 +229,7 @@ impl CaseContainers {
                 .map(|template| fill(values, name, template))
                 .collect::<Result<Vec<_>, _>>()
         };
-        let mut spec = ContainerSpec::new(image);
+        let mut spec = ContainerSpec::new(image.used());
         if let Some(command) = command {
             spec = spec.with_entrypoint(fill_all(command)?);
         }
@@ -343,16 +345,6 @@ impl RealizedContainer {
         }
         self.ip = status.ip;
         Ok(())
-    }
-
-    /// Stops the container, killing it if it is still running after `grace`, then removes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if Docker fails to stop or remove the container, or if `deadline` passes first.
-    pub(crate) async fn stop(&self, grace: Duration, deadline: Instant) -> Result<(), GenericError> {
-        self.container.stop(grace, deadline).await?;
-        self.container.remove(deadline).await
     }
 }
 

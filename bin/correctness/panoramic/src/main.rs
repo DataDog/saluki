@@ -39,7 +39,7 @@ mod core;
 mod dynamic_vars;
 mod integration;
 mod mounts;
-use self::config::{default_host_runtime, discover_tests};
+use self::config::discover_tests;
 
 mod events;
 use self::events::create_event_channel;
@@ -50,6 +50,7 @@ mod interrupts;
 use self::interrupts::Interrupts;
 
 mod machine_output;
+mod participant_case;
 mod participants;
 use self::machine_output::RunReport;
 
@@ -103,7 +104,7 @@ async fn main() -> ExitCode {
 
     let is_plan = matches!(cli.command, Command::Plan(_));
     let result = match cli.command {
-        Command::Run(cmd) => run_tests(cmd, use_tui).await,
+        Command::Run(cmd) => run_tests(*cmd, use_tui).await,
         Command::List(cmd) => list_tests(cmd).await,
         Command::Plan(cmd) => plan_case(cmd),
     };
@@ -178,11 +179,27 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let integration_runtime = cmd
-        .runtime
-        .clone()
-        .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime, &cmd.image_overrides) {
+    let selection = cmd
+        .selection()
+        .and_then(|(os, runtime)| Ok((os, runtime, participant_case::replacements(&cmd.set)?)));
+    let (subject_os, integration_runtime, set) = match selection {
+        Ok((os, runtime, set)) => (os, runtime.to_string(), set),
+        Err(e) => {
+            if use_tui {
+                eprintln!("{}", e);
+            } else {
+                error!("{}", e);
+            }
+            return ExitCode::from(2);
+        }
+    };
+    let test_cases = match discover_tests(
+        &cmd.test_dirs,
+        &integration_runtime,
+        &cmd.image_overrides,
+        subject_os,
+        &set,
+    ) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -242,6 +259,32 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         None => test_cases,
     };
 
+    // Once, before the first case and outside any case's timeout: what the selected participant cases need.
+    let plans: Vec<(String, &plan::CasePlan)> = test_cases
+        .iter()
+        .filter_map(|test| {
+            test.participant_case()?
+                .plan
+                .as_ref()
+                .ok()
+                .map(|plan| (test.name(), plan))
+        })
+        .collect();
+    let mut settings = settings;
+    settings.containers = match participant_case::check_before_the_first_case(&plans).await {
+        Ok(containers) => containers,
+        Err(errors) => {
+            for e in errors {
+                if use_tui {
+                    eprintln!("{}", e);
+                } else {
+                    error!("{}", e);
+                }
+            }
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
+
     // Create log directory.
     let log_dir = match std::path::absolute(cmd.log_dir()) {
         Ok(path) => path,
@@ -261,16 +304,15 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     // Install interrupt handlers before starting background work.
     let mut interrupts = Interrupts::install();
-    let mut collector = RunCollector::start(
-        RunReport::new(
-            cmd.test_dirs.clone(),
-            integration_runtime.clone(),
-            cmd.parallelism.get(),
-            log_dir.clone(),
-            test_cases.iter().map(|t| t.name()).collect(),
-        ),
-        cmd.fail_fast,
+    let mut report = RunReport::new(
+        cmd.test_dirs.clone(),
+        integration_runtime.clone(),
+        cmd.parallelism.get(),
+        log_dir.clone(),
+        test_cases.iter().map(|t| t.name()).collect(),
     );
+    report.set = set;
+    let mut collector = RunCollector::start(report, cmd.fail_fast);
 
     // Create the event channel early so the kind setup task can emit status messages.
     let (tx, rx) = create_event_channel();
@@ -438,17 +480,22 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let integration_runtime = cmd
-        .runtime
-        .clone()
-        .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime, &[]) {
+    let (subject_os, integration_runtime) = match cmd.selection() {
+        Ok(selection) => selection,
+        Err(e) => {
+            error!("{}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let mut test_cases = match discover_tests(&cmd.test_dirs, integration_runtime, &[], subject_os, &BTreeMap::new()) {
         Ok(tests) => tests,
         Err(e) => {
             error!("Failed to discover tests: {}", e);
             return ExitCode::from(2);
         }
     };
+    // A participant case that does not declare the subject OS has no row for it, as a legacy case outside the runtime.
+    test_cases.retain(|test| test.participant_case().is_none_or(|case| case.plan.is_ok()));
 
     if cmd.json {
         let mut test_map = BTreeMap::new();
@@ -499,15 +546,32 @@ fn registry() -> Registry {
     registry
 }
 
-/// Loads a participant case and plans it for every OS it declares.
-fn load_and_plan(dir: &Path) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
+/// Loads a participant case and plans it for every OS it declares, with the run's replacements `set`.
+fn load_and_plan(dir: &Path, set: &BTreeMap<String, String>) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
     let registry = registry();
     let case = case::load(dir, &registry)?;
-    plan::plan_all(&case, &registry)
+    plan::plan_all(&case, &registry, set)
 }
 
 fn plan_case(cmd: cli::PlanCommand) -> ExitCode {
-    let plans = match load_and_plan(&cmd.case_dir) {
+    let planned = participant_case::replacements(&cmd.set)
+        .map_err(|e| vec![e])
+        .and_then(|set| {
+            let plans = load_and_plan(&cmd.case_dir, &set)
+                .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>())?;
+            let images = participant_case::images(plans.values());
+            let unused: Vec<String> = set
+                .keys()
+                .filter(|name| !images.contains(*name))
+                .map(|name| format!("--set names image '{}', which the case does not use.", name))
+                .collect();
+            if unused.is_empty() {
+                Ok(plans)
+            } else {
+                Err(unused)
+            }
+        });
+    let plans = match planned {
         Ok(plans) => plans,
         Err(errors) => {
             for error in errors {
@@ -576,7 +640,7 @@ mod tests {
 
         let mut failures = Vec::new();
         for (name, expected) in &expected {
-            let errors = match load_and_plan(&dir.join(name)) {
+            let errors = match load_and_plan(&dir.join(name), &BTreeMap::new()) {
                 Ok(_) => {
                     failures.push(format!("{}: planned without an error", name));
                     continue;
@@ -604,7 +668,7 @@ mod tests {
     #[test]
     fn example_cases_plan_for_every_os_they_declare() {
         for dir in case_dirs(&testdata("examples")) {
-            let plans = load_and_plan(&dir).unwrap_or_else(|errors| {
+            let plans = load_and_plan(&dir, &BTreeMap::new()).unwrap_or_else(|errors| {
                 let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
                 panic!("{}", errors.join("\n"))
             });
@@ -613,9 +677,31 @@ mod tests {
     }
 
     #[test]
+    fn every_real_participant_case_plans_for_every_os_it_declares() {
+        let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test");
+        let mut failures = Vec::new();
+        for suite in ["integration", "correctness"] {
+            for dir in case_dirs(&cases.join(suite).join("cases")) {
+                match config::is_legacy_case(&dir.join(case::CASE_FILE)) {
+                    Ok(false) => {}
+                    Ok(true) => continue,
+                    Err(e) => {
+                        failures.push(format!("{:#}", e));
+                        continue;
+                    }
+                }
+                if let Err(errors) = load_and_plan(&dir, &BTreeMap::new()) {
+                    failures.extend(errors.iter().map(ToString::to_string));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
     fn two_plans_of_one_example_serialize_to_the_same_json() {
         for dir in case_dirs(&testdata("examples")) {
-            let dump = || serde_json::to_string_pretty(&load_and_plan(&dir).unwrap()).unwrap();
+            let dump = || serde_json::to_string_pretty(&load_and_plan(&dir, &BTreeMap::new()).unwrap()).unwrap();
             assert_eq!(dump(), dump(), "{}", dir.display());
         }
     }
@@ -671,7 +757,7 @@ comparison: {image: comp}
             let Command::Run(cmd) = cli.command else {
                 panic!("expected run")
             };
-            assert_eq!(run_tests(cmd, false).await, ExitCode::from(expected));
+            assert_eq!(run_tests(*cmd, false).await, ExitCode::from(expected));
         }
     }
 

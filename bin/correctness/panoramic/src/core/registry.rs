@@ -29,8 +29,6 @@ impl Registry {
     /// # Panics
     ///
     /// Panics if a step with the same name is already registered.
-    // TODO: remove the dead_code allowance once a step is registered.
-    #[allow(dead_code)]
     pub(crate) fn add_step(&mut self, step: Box<dyn StepFactory>) {
         let name = step.name();
         let previous = self.steps.insert(name, step);

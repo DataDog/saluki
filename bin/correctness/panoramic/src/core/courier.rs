@@ -59,6 +59,8 @@ impl<'a> Courier<'a> {
     ///
     /// Returns a software error if the address refuses the bytes within `limit`, and a harness error if the courier
     /// cannot run.
+    // TODO: remove the dead_code allowance once a step sends to an endpoint.
+    #[allow(dead_code)]
     pub(crate) async fn send(&self, address: &str, payload: Bytes, limit: Duration) -> Result<(), HandleError> {
         self.run("send", &[address], Some(payload), limit, &mut tokio::io::sink())
             .await
@@ -94,8 +96,8 @@ impl<'a> Courier<'a> {
     ///
     /// # Errors
     ///
-    /// Returns a software error if the file does not appear within `limit`, and a harness error if the courier cannot
-    /// run or `out` cannot be written.
+    /// Returns a software error if the file does not appear within `limit` or cannot be opened or read, or the
+    /// participant exits, and a harness error if the courier cannot run or `out` cannot be written.
     pub(crate) async fn follow(
         &self, path: &str, limit: Duration, out: &mut (dyn AsyncWrite + Send + Unpin),
     ) -> Result<(), HandleError> {

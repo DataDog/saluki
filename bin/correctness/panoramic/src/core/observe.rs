@@ -19,19 +19,23 @@
 //! # Output and collected files
 //!
 //! Output is captured line by line as it arrives: kept per process for steps, and written to
-//! `<log dir>/<participant>/<process>.log`. A participant whose processes are all supervised also gets its container
-//! log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. Files to collect are copied to
-//! `<log dir>/<participant>/collected/<name>` after the procedure. Each carries its own retention, which
-//! [`retain`] applies to the outcome.
+//! `<log dir>/<participant>/<process>.log`. Text after the last newline is not a line yet. It is kept apart as the
+//! process's unterminated output, until a newline completes it or the capture ends. A participant whose processes are
+//! all supervised also gets its container log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. A
+//! capture that stops while its participant runs is an observation error: a step that relies on having seen all of a
+//! process's output errors.
+//! Files to collect are copied to `<log dir>/<participant>/collected/<name>` after the procedure. Each carries its own
+//! retention, which [`retain`] applies to the outcome.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use airlock::container::{Output, OutputStream};
 use futures::StreamExt as _;
+use serde::Serialize;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::watch;
 use tokio::time::{timeout_at, Instant};
@@ -40,7 +44,6 @@ use tracing::{debug, warn};
 
 use super::backend::Realized;
 use super::courier::Courier;
-use super::handle::HandleError;
 use super::spec::{CollectFile, Keep};
 
 /// The file, in a participant's log directory, of the container log of a participant whose processes are all
@@ -60,7 +63,7 @@ const QUIET_TIME: Duration = Duration::from_millis(500);
 const DRAIN_TIME: Duration = Duration::from_secs(2);
 
 /// How a process exited.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct ExitStatus {
     /// The exit code. A container reports death by signal `n` as 128 + `n`, and an exit record as 256.
     pub(crate) code: i64,
@@ -79,7 +82,8 @@ impl fmt::Display for ExitStatus {
 }
 
 /// What is known of a process's exit.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ProcessExit {
     Running,
     Exited(ExitStatus),
@@ -147,6 +151,11 @@ struct Observed {
     /// Each process's output so far, line by line. The whole output is kept for the case's length, on purpose: steps
     /// match against all of it, and a case is bounded in time.
     output: BTreeMap<String, watch::Sender<Vec<String>>>,
+    /// What each process has written since its last newline, for each process that has written some: one entry for
+    /// each of its streams that ends without a newline.
+    unterminated: Mutex<BTreeMap<String, Vec<String>>>,
+    /// Why the capture of a process's output stopped before its output ended, for each process whose capture did.
+    capture_failures: Mutex<BTreeMap<String, String>>,
 }
 
 impl Observation {
@@ -159,6 +168,8 @@ impl Observation {
         Self(Arc::new(Observed {
             exit: watch::Sender::new(None),
             output,
+            unterminated: Mutex::default(),
+            capture_failures: Mutex::default(),
         }))
     }
 
@@ -184,7 +195,39 @@ impl Observation {
         self.0.output.get(process).map(watch::Sender::subscribe)
     }
 
-    fn line(&self, process: &str, line: String) {
+    /// Records that the capture of `process`'s output stopped, for the reason given, whether or not the participant
+    /// has exited: output that ended is not a failure, and callers report only a capture that broke, which may have
+    /// left the output short.
+    pub(crate) fn capture_failed(&self, process: &str, why: String) {
+        let mut failures = self.0.capture_failures.lock().unwrap_or_else(|e| e.into_inner());
+        failures.entry(process.to_string()).or_insert(why);
+    }
+
+    /// Why the capture of `process`'s output stopped before its output ended, or `None` if it did not.
+    pub(crate) fn capture_failure(&self, process: &str) -> Option<String> {
+        let failures = self.0.capture_failures.lock().unwrap_or_else(|e| e.into_inner());
+        failures.get(process).cloned()
+    }
+
+    /// What `process` has written since its last newline, one entry for each stream that has some. A step that must
+    /// see all the output matches it as well as the lines.
+    pub(crate) fn unterminated(&self, process: &str) -> Vec<String> {
+        let unterminated = self.0.unterminated.lock().unwrap_or_else(|e| e.into_inner());
+        unterminated.get(process).cloned().unwrap_or_default()
+    }
+
+    /// Replaces what `process` has written since its last newline.
+    fn set_unterminated(&self, process: &str, tails: Vec<String>) {
+        let mut unterminated = self.0.unterminated.lock().unwrap_or_else(|e| e.into_inner());
+        if tails.is_empty() {
+            unterminated.remove(process);
+        } else {
+            unterminated.insert(process.to_string(), tails);
+        }
+    }
+
+    /// Adds `line` to the output of `process`.
+    pub(crate) fn line(&self, process: &str, line: String) {
         if let Some(output) = self.0.output.get(process) {
             output.send_modify(|lines| lines.push(line));
         }
@@ -206,6 +249,11 @@ impl Lines {
         };
         let complete: Vec<u8> = self.partial.drain(..=end).collect();
         complete[..end].split(|&byte| byte == b'\n').map(line).collect()
+    }
+
+    /// The text after the last newline, if there is any.
+    fn tail(&self) -> Option<String> {
+        (!self.partial.is_empty()).then(|| line(&self.partial))
     }
 
     /// The last line, if it has no newline.
@@ -263,6 +311,20 @@ impl Sink {
         }
     }
 
+    /// Publishes the unterminated end of each of the streams in `lines` to the process.
+    fn publish<'a>(&self, lines: impl IntoIterator<Item = &'a Lines>) {
+        if let Some((observation, process)) = &self.process {
+            observation.set_unterminated(process, lines.into_iter().filter_map(Lines::tail).collect());
+        }
+    }
+
+    /// Records that the capture broke, so a step does not take the output as whole.
+    fn failed(&self, why: String) {
+        if let Some((observation, process)) = &self.process {
+            observation.capture_failed(process, why);
+        }
+    }
+
     /// Captures what the realization reports as the output of a participant's only process, until it ends, or until
     /// it is quiet for [`QUIET_TIME`] after `finish` fires, reading for at most [`DRAIN_TIME`] after that, even when
     /// chunks keep arriving.
@@ -293,12 +355,15 @@ impl Sink {
                 Ok(Output::Stderr(bytes)) => stderr.push(&bytes),
                 Err(e) => {
                     warn!(path = %self.path.display(), error = %e, "Stopped capturing output.");
+                    self.failed(format!("{:#}", e));
                     break;
                 }
             };
             self.write(lines).await;
+            self.publish([&stdout, &stderr]);
         }
         self.write(stdout.finish().into_iter().chain(stderr.finish())).await;
+        self.publish([]);
     }
 
     /// Captures the log file at `path` in `participant`, which the courier at `courier` follows for `limit` or until
@@ -322,6 +387,7 @@ impl Sink {
         let mut lines = Lines::default();
         // The bytes of the file that arrived, from its start.
         let mut received = 0;
+        let mut read_failure = None;
         let read = async {
             let mut chunk = vec![0; 8192];
             loop {
@@ -330,47 +396,47 @@ impl Sink {
                     Ok(read) => {
                         received += read;
                         self.write(lines.push(&chunk[..read])).await;
+                        self.publish([&lines]);
                     }
                     Err(e) => {
                         warn!(path, error = %e, "Stopped capturing a followed file.");
+                        read_failure = Some(e.to_string());
                         break;
                     }
                 }
             }
         };
         let (followed, ()) = tokio::join!(follow, read);
-        match followed {
-            // The follow ends this way when the participant exits.
-            Err(HandleError::Software(e)) => debug!(path, error = %e, "Stopped following a file."),
-            // Without the participant's exit, a harness error means the follow could not run at all.
-            Err(HandleError::Harness(e)) => {
-                let exited = self
-                    .process
-                    .as_ref()
-                    .is_some_and(|(observation, _)| observation.exit().is_some());
-                if exited {
-                    debug!(path, error = %e, "Stopped following a file.");
-                } else {
-                    warn!(path, error = %e, "Failed to follow a file.");
-                }
+        if let Some(why) = read_failure {
+            self.failed(why);
+        }
+        // The follow fails when the participant exits, which leaves nothing more to capture. While the participant
+        // runs, a failure means the courier could not run, or could not open or read the file, so the capture stopped.
+        if let Err(e) = followed {
+            if participant.has_exited().await {
+                debug!(path, error = %e, "Stopped following a file.");
+            } else {
+                warn!(path, error = %e, "Failed to follow a file.");
+                self.failed(e.to_string());
             }
-            Ok(()) => {}
         }
         match participant.read_file(path, Instant::now() + LAST_READ_TIME).await {
             Ok(Some(contents)) => {
                 if let Some(rest) = contents.get(received..) {
                     self.write(lines.push(rest)).await;
+                    self.publish([&lines]);
                 }
             }
             Ok(None) => {}
             Err(e) => warn!(path, error = %e, "Failed to read a followed file once more."),
         }
         self.write(lines.finish()).await;
+        self.publish([]);
     }
 }
 
 /// A file copied out of a participant after the procedure.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct Collected {
     pub(crate) participant: String,
     /// Where the copy is on the runner host.

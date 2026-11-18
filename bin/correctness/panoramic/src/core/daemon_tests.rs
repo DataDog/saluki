@@ -1,7 +1,7 @@
 //! Tests of the container backend and the lifecycle against a real Docker daemon. They are ignored by default; run them
 //! by hand with `make test-container-daemon`, which builds the courier they copy into each container.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
@@ -21,14 +21,14 @@ use super::case::{self, CASE_FILE};
 use super::container::{CaseContainers, ContainerBackend, LINUX};
 use super::deadline::{Budget, Deadline};
 use super::ledger::ResourceLedger;
-use super::lifecycle::{self, CaseRun, Ran};
+use super::lifecycle::{self, CaseRun};
 use super::observe::{ExitStatus, ProcessExit, CONTAINER_LOG};
 use super::participant::Os;
 use super::plan::{plan, CasePlan};
 use super::record::{CaseRecord, StepStatus};
 use super::reference::Values;
 use super::registry::Registry;
-use super::result::{ErrorKind, PhaseTracker, ReclaimEntry, ReclaimResult, TestOutcome};
+use super::result::{ErrorKind, PhaseTracker, ReclaimEntry, ReclaimResult, TestOutcome, TestResult};
 use super::spec::Keep;
 use super::step::{Need, Step, StepContext, StepFactory, StepFields, StepReport};
 use super::tasks::{CaseTasks, TASK_STOP_TIME};
@@ -51,7 +51,7 @@ fn plan_linux(config: &str, registry: &Registry) -> CasePlan {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(CASE_FILE), config.replace("{image}", DAEMON_TEST_IMAGE)).unwrap();
     case::load(dir.path(), registry)
-        .and_then(|case| plan(&case, Os::Linux, registry))
+        .and_then(|case| plan(&case, Os::Linux, registry, &BTreeMap::new()))
         .unwrap_or_else(|errors| panic!("the case should plan: {errors:?}"))
 }
 
@@ -278,7 +278,7 @@ impl Step for ExitsWithLine {
 
 /// A case the lifecycle ran, and what the runner made of it.
 struct Lived {
-    ran: Ran,
+    result: TestResult,
     entries: Vec<ReclaimEntry>,
     logs: tempfile::TempDir,
 }
@@ -286,7 +286,7 @@ struct Lived {
 impl Lived {
     /// How long the phase `name` of the lifecycle took.
     fn phase(&self, name: &str) -> Duration {
-        let timings = &self.ran.result.phase_timings;
+        let timings = &self.result.phase_timings;
         timings
             .iter()
             .find(|timing| timing.phase == name)
@@ -326,9 +326,9 @@ async fn run_case(config: &str, cancel_in_a_step: bool) -> Lived {
     let outcome = AssertUnwindSafe(lifecycle::run(&plan, &run)).catch_unwind().await;
     tasks.stop_all(Instant::now() + TASK_STOP_TIME).await;
     let (entries, _) = ledger.reclaim(deadline()).await;
-    let ran = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    let result = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     assert_scope_left_nothing(&docker, &entries).await;
-    Lived { ran, entries, logs }
+    Lived { result, entries, logs }
 }
 
 fn read(path: &Path) -> String {
@@ -375,7 +375,7 @@ procedure:
   - {step: exits_with_line, on: worker, process: job, code: 3, line: done}
 "#;
     let lived = run_case(config, false).await;
-    let result = &lived.ran.result;
+    let result = &lived.result;
     assert_eq!(result.outcome, TestOutcome::Passed, "{result:?}");
     let phases: Vec<&str> = result
         .phase_timings
@@ -384,18 +384,17 @@ procedure:
         .collect();
     assert_eq!(phases, ["prepare", "create", "start", "procedure", "observe"]);
 
-    let processes = &lived.ran.processes;
+    let processes = |name: &str| &result.participants[name].processes;
     let exited = ProcessExit::Exited(ExitStatus { code: 3, signal: None });
-    assert_eq!(processes["worker"]["job"].exit, exited);
-    assert_eq!(processes["server"]["main"].exit, ProcessExit::Running);
-    let job = read(&processes["worker"]["job"].output);
+    assert_eq!(processes("worker")["job"].exit, exited);
+    assert_eq!(processes("server")["main"].exit, ProcessExit::Running);
+    let job = read(&processes("worker")["job"].output);
     assert!(job.contains("reached the server\ndone\n"), "{job}");
-    assert!(read(&processes["server"]["main"].output).contains("listening"));
+    assert!(read(&processes("server")["main"].output).contains("listening"));
     assert!(lived.logs.path().join("worker").join(CONTAINER_LOG).exists());
 
     // The case passed, so only the file kept always is left.
-    let collected: Vec<(&Path, Keep)> = lived
-        .ran
+    let collected: Vec<(&Path, Keep)> = result
         .collected
         .iter()
         .map(|file| (file.path.as_path(), file.keep))
@@ -434,7 +433,7 @@ participants:
 procedure: []
 "#;
     let lived = run_case(config, false).await;
-    let result = &lived.ran.result;
+    let result = &lived.result;
     assert_eq!(result.outcome, TestOutcome::Errored, "{result:?}");
     let error = result.error.as_ref().expect("a failed start is a harness error");
     assert_eq!(error.kind, ErrorKind::Setup);
@@ -447,9 +446,9 @@ procedure: []
     assert!(lived.phase("start") < Duration::from_secs(30), "{result:?}");
 
     // The server started, so its output was captured, and the client never started.
-    let processes = &lived.ran.processes;
-    assert!(read(&processes["server"]["main"].output).contains("going away"));
-    assert!(!processes.contains_key("client"));
+    let processes = |name: &str| &result.participants[name].processes;
+    assert!(read(&processes("server")["main"].output).contains("going away"));
+    assert!(processes("client").is_empty());
     let results: Vec<ReclaimResult> = lived.entries.iter().map(|entry| entry.result).collect();
     assert_eq!(results, [ReclaimResult::Reclaimed]);
 }
@@ -469,20 +468,10 @@ procedure:
   - {step: exits_with_line, on: app, process: main, code: 0, line: never}
 "#;
     let lived = run_case(config, true).await;
-    let steps: Vec<StepStatus> = lived
-        .ran
-        .result
-        .assertion_results
-        .iter()
-        .map(|step| step.status)
-        .collect();
+    let steps: Vec<StepStatus> = lived.result.assertion_results.iter().map(|step| step.status).collect();
     assert_eq!(steps, [StepStatus::Interrupted]);
     // Well inside the step's own budget.
-    assert!(
-        lived.phase("procedure") < Duration::from_secs(10),
-        "{:?}",
-        lived.ran.result
-    );
+    assert!(lived.phase("procedure") < Duration::from_secs(10), "{:?}", lived.result);
     let results: Vec<ReclaimResult> = lived.entries.iter().map(|entry| entry.result).collect();
     assert_eq!(results, [ReclaimResult::Reclaimed]);
 }

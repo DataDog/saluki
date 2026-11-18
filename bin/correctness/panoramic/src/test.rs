@@ -9,11 +9,13 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::assertions::LogBuffer;
+use crate::core::container::ContainerBackend;
 use crate::core::deadline::Deadline;
 use crate::core::ledger::ResourceLedger;
 use crate::core::record::CaseRecord;
 use crate::core::result::{PhaseTracker, TestResult};
 use crate::core::tasks::CaseTasks;
+use crate::participant_case::ParticipantCase;
 
 /// Signal used to notify kind-runtime tests when the cluster is ready.
 ///
@@ -48,6 +50,9 @@ pub(crate) struct RunnerSettings {
 
     /// The Alpine image used for the short-lived shared-volume permission fix-up container.
     pub(crate) alpine_image: String,
+
+    /// Realizes the Linux containers of participant cases, once the checks before the first case have passed.
+    pub(crate) containers: Option<ContainerBackend>,
 }
 
 /// Carries information that a test needs at runtime such as the logging directory and the cancellation channel.
@@ -151,6 +156,12 @@ pub(crate) trait Test: Send + Sync {
     /// Used by the CI pipeline generator to select the appropriate job template. Defaults to `"docker"`.
     fn runtime(&self) -> String {
         "docker".to_string()
+    }
+
+    /// The test as a participant case, which the run treats apart in three ways: the checks before the first case
+    /// read its plan, `list` leaves it out on a subject OS it skips, and the runner applies no traffic retention to it.
+    fn participant_case(&self) -> Option<&ParticipantCase> {
+        None
     }
 
     /// Runs the test, reporting errors in its `TestResult`.
