@@ -1,4 +1,6 @@
-//! `exec`: a command the case writes, run inside a participant that is already running.
+//! `exec`: a command run inside a participant that is already running.
+//!
+//! The command is a list the case writes, or the name of one of the participant's own commands, such as `adp`.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -9,7 +11,7 @@ use tokio::time::{timeout_at, Instant};
 
 use super::{stopped, EXEC_SLACK};
 use crate::core::case::Timeout;
-use crate::core::handle::HandleError;
+use crate::core::handle::{Exited, HandleError};
 use crate::core::record::StepStatus;
 use crate::core::step::{Need, Step, StepContext, StepFactory, StepFields, StepPurpose, StepReport};
 use crate::core::template::Template;
@@ -29,26 +31,47 @@ impl StepFactory for ExecFactory {
     }
 
     fn template_fields(&self) -> &'static [&'static str] {
-        &["command", "env"]
+        &["command", "args", "env"]
     }
 
     fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
         let step = fields.decode::<RunCommand>()?;
-        if step.command.is_empty() {
-            return Err("command is a non-empty list: the program, then its arguments".to_string());
+        match &step.command {
+            CommandLine::Named(name) if name.is_empty() => {
+                return Err("command names one of the participant's commands, and the name is empty".to_string())
+            }
+            CommandLine::Argv(argv) if argv.is_empty() => {
+                return Err("command is a non-empty list: the program, then its arguments".to_string())
+            }
+            _ => {}
         }
         Ok(Box::new(step))
     }
 }
 
-/// Passes once `command` exits 0, within `timeout`. A command still running at the deadline fails the step.
+/// What `exec` runs.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CommandLine {
+    /// The name of one of the participant's commands.
+    Named(String),
+    /// A program and its arguments.
+    Argv(Vec<Template>),
+}
+
+/// Passes once the command exits 0, within `timeout`, and, when `output_contains` is set, its standard output followed
+/// by its standard error holds that text. `args` follow the command's own arguments. A command still running at the
+/// deadline fails the step.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RunCommand {
     on: String,
-    command: Vec<Template>,
+    command: CommandLine,
+    #[serde(default)]
+    args: Vec<Template>,
     #[serde(default)]
     env: BTreeMap<String, Template>,
+    output_contains: Option<String>,
     timeout: Timeout,
 }
 
@@ -58,6 +81,17 @@ fn quoted(output: &[u8]) -> String {
     String::from_utf8_lossy(tail).trim().to_string()
 }
 
+/// `message`, then what the command wrote to each stream.
+fn with_output(mut message: String, exited: &Exited) -> String {
+    for (label, output) in [("standard output", &exited.stdout), ("standard error", &exited.stderr)] {
+        let output = quoted(output);
+        if !output.is_empty() {
+            message.push_str(&format!("\n{}:\n{}", label, output));
+        }
+    }
+    message
+}
+
 #[async_trait]
 impl Step for RunCommand {
     fn name(&self) -> &'static str {
@@ -65,7 +99,10 @@ impl Step for RunCommand {
     }
 
     fn needs(&self) -> Vec<Need> {
-        vec![Need::Participant(self.on.clone())]
+        vec![match &self.command {
+            CommandLine::Named(name) => Need::Command(self.on.clone(), name.clone()),
+            CommandLine::Argv(_) => Need::Participant(self.on.clone()),
+        }]
     }
 
     fn budget(&self) -> Duration {
@@ -75,18 +112,33 @@ impl Step for RunCommand {
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
         let ran = async {
             let handle = cx.handle(&self.on)?;
-            let argv = self
-                .command
-                .iter()
-                .map(|argument| cx.fill(argument, false))
-                .collect::<Result<Vec<_>, _>>()?;
             let mut env = BTreeMap::new();
             for (key, value) in &self.env {
                 env.insert(key.clone(), cx.fill(value, false)?);
             }
-            let command = argv.join(" ");
+            let args = self
+                .args
+                .iter()
+                .map(|argument| cx.fill(argument, false))
+                .collect::<Result<Vec<_>, _>>()?;
             let limit = cx.deadline.saturating_duration_since(Instant::now()) + EXEC_SLACK;
-            let Ok(ended) = timeout_at(cx.deadline, handle.exec(argv, env, limit)).await else {
+            let (command, ended) = match &self.command {
+                CommandLine::Named(name) => {
+                    let command = std::iter::once(name.as_str()).chain(args.iter().map(String::as_str));
+                    let command = command.collect::<Vec<_>>().join(" ");
+                    (command, timeout_at(cx.deadline, handle.command(name, &args, &env, limit)).await)
+                }
+                CommandLine::Argv(argv) => {
+                    let mut argv = argv
+                        .iter()
+                        .map(|argument| cx.fill(argument, false))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    argv.extend(args);
+                    let command = argv.join(" ");
+                    (command, timeout_at(cx.deadline, handle.exec(argv, env, limit)).await)
+                }
+            };
+            let Ok(ended) = ended else {
                 let message = format!("'{}' did not exit within {}", command, self.timeout.text);
                 return Ok(StepReport {
                     status: StepStatus::Failed,
@@ -94,27 +146,31 @@ impl Step for RunCommand {
                 });
             };
             let exited = ended?;
-            if exited.code == 0 {
-                let stdout = quoted(&exited.stdout);
-                let message = if stdout.is_empty() {
-                    format!("'{}' exited with code 0.", command)
-                } else {
-                    format!("'{}' exited with code 0 and wrote: {}", command, stdout)
-                };
+            if exited.code != 0 {
+                let message = with_output(format!("'{}' exited with code {}.", command, exited.code), &exited);
                 return Ok(StepReport {
-                    status: StepStatus::Passed,
+                    status: StepStatus::Failed,
                     message,
                 });
             }
-            let mut message = format!("'{}' exited with code {}.", command, exited.code);
-            for (label, output) in [("standard output", &exited.stdout), ("standard error", &exited.stderr)] {
-                let output = quoted(output);
-                if !output.is_empty() {
-                    message.push_str(&format!("\n{}:\n{}", label, output));
+            if let Some(text) = &self.output_contains {
+                let output = [exited.stdout.as_slice(), exited.stderr.as_slice()].concat();
+                if !String::from_utf8_lossy(&output).contains(text.as_str()) {
+                    let message = format!("'{}' exited with code 0, and its output does not contain '{}'.", command, text);
+                    return Ok(StepReport {
+                        status: StepStatus::Failed,
+                        message: with_output(message, &exited),
+                    });
                 }
             }
+            let stdout = quoted(&exited.stdout);
+            let message = if stdout.is_empty() {
+                format!("'{}' exited with code 0.", command)
+            } else {
+                format!("'{}' exited with code 0 and wrote: {}", command, stdout)
+            };
             Ok::<_, HandleError>(StepReport {
-                status: StepStatus::Failed,
+                status: StepStatus::Passed,
                 message,
             })
         };
