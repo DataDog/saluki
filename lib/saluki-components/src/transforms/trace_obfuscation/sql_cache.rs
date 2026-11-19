@@ -200,22 +200,33 @@ mod tests {
         assert!(cache.weight() <= max_size);
     }
 
+    // The bookkeeping is measured with quick_cache's `memory_used`, which reports the capacity of its slab of entry
+    // slots (resident and ghost) and of its hash table: exactly what `metadata_bound` claims to cover. Entry contents
+    // (the strings' heap bytes) are excluded there, as they are counted by the weight against `max_size`.
     #[test]
     fn small_entry_churn_then_large_entries_stays_bounded() {
         let max_size = 100_000;
         let cache = SqlCache::new(max_size);
+        let bound = cache.metadata_bound();
+        let mut peak = 0;
+        let mut check = |cache: &SqlCache| {
+            let used = cache.inner.memory_used().total();
+            assert!(used <= bound, "bookkeeping {used} exceeds the advertised bound {bound}");
+            assert!(cache.weight() <= max_size);
+            assert!(cache.len() <= SqlCache::max_entries(max_size));
+            peak = peak.max(used);
+        };
         for i in 0..50_000 {
             let q = format!("SELECT {i}");
             cache.get_or_obfuscate(&q, "", || ok(&q)).unwrap();
-            assert!(cache.len() <= SqlCache::max_entries(max_size));
+            check(&cache);
         }
         for i in 0..20 {
             let q = format!("{i}{}", "y".repeat(20_000));
             cache.get_or_obfuscate(&q, "", || ok(&q)).unwrap();
-            assert!(cache.weight() <= max_size);
-            assert!(cache.len() <= SqlCache::max_entries(max_size));
+            check(&cache);
         }
-        assert!(cache.metadata_bound() > 0);
+        assert!(peak > 0, "the measure must see the bookkeeping");
     }
 
     #[test]
