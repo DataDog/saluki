@@ -1,7 +1,10 @@
-//! Log filtering helpers.
+//! Logging helpers.
 
 use saluki_error::{generic_error, GenericError};
 use tracing_subscriber::filter::Targets;
+
+mod rolling;
+pub use self::rolling::RollingFileWriter;
 
 /// Environment variable conventionally used to configure log filtering for Rust applications.
 const RUST_LOG_ENV_VAR: &str = "RUST_LOG";

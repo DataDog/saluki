@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use http::{uri::PathAndQuery, HeaderMap, HeaderName, HeaderValue, Method, Uri};
 use saluki_common::iter::ReusableDeduplicator;
+use saluki_common::time::Timestamp;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{encoders::*, BuildContext},
@@ -72,7 +72,7 @@ pub struct DatadogLogsConfiguration {
     origin_version: String,
 
     /// Source of the current time, for the envelope `timestamp`.
-    clock: fn() -> DateTime<Utc>,
+    clock: Clock,
 }
 
 impl DatadogLogsConfiguration {
@@ -87,7 +87,7 @@ impl DatadogLogsConfiguration {
             default_hostname: MetaString::empty(),
             origin: formatted_app_name(app_details),
             origin_version: app_details.version().raw().to_string(),
-            clock: Utc::now,
+            clock: Timestamp::now,
         }
     }
 
@@ -109,7 +109,7 @@ impl DatadogLogsConfiguration {
 
     /// Sets the source of the current time, so tests can pin the envelope `timestamp`.
     #[cfg(test)]
-    pub(crate) fn with_clock(mut self, clock: fn() -> DateTime<Utc>) -> Self {
+    pub(crate) fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
         self
     }
@@ -230,19 +230,20 @@ impl IncrementalEncoder for DatadogLogs {
     }
 }
 
+/// Source of the current time, which fails when the system clock is out of range.
+type Clock = fn() -> Result<Timestamp, GenericError>;
+
 #[derive(Debug)]
 struct LogsEndpointEncoder {
     tags_deduplicator: ReusableDeduplicator<Tag>,
     tags_buffer: String,
     default_hostname: MetaString,
     headers: Vec<(HeaderName, HeaderValue)>,
-    clock: fn() -> DateTime<Utc>,
+    clock: Clock,
 }
 
 impl LogsEndpointEncoder {
-    fn new(
-        default_hostname: MetaString, headers: Vec<(HeaderName, HeaderValue)>, clock: fn() -> DateTime<Utc>,
-    ) -> Self {
+    fn new(default_hostname: MetaString, headers: Vec<(HeaderName, HeaderValue)>, clock: Clock) -> Self {
         Self {
             tags_deduplicator: ReusableDeduplicator::new(),
             tags_buffer: String::new(),
@@ -257,8 +258,9 @@ impl LogsEndpointEncoder {
     /// The envelope has the same fields, in the same order, as the logs intake's JSON envelope: the message, the
     /// status, the time the log was encoded in milliseconds, the hostname, the service, the source, and the tags. Every
     /// field is present, empty when the log has no value for it, except that a log without a hostname gets the
-    /// default hostname. The message is written as it is: a log's producer renders whatever content the message should
-    /// carry, such as a JSON object holding the log's properties, so the log's additional properties aren't written.
+    /// default hostname, and the time is left out when the system clock is out of range. The message is written as it
+    /// is: a log's producer renders whatever content the message should carry, such as a JSON object holding the log's
+    /// properties, so the log's additional properties aren't written.
     fn write_envelope(&mut self, log: &Log, buffer: &mut Vec<u8>) -> Result<(), serde_json::Error> {
         // A log without a status is sent as `info`.
         let status = if log.status().is_empty() {
@@ -272,8 +274,10 @@ impl LogsEndpointEncoder {
         serde_json::to_writer(&mut *buffer, log.message())?;
         buffer.extend_from_slice(b",\"status\":");
         serde_json::to_writer(&mut *buffer, status)?;
-        buffer.extend_from_slice(b",\"timestamp\":");
-        buffer.extend_from_slice(itoa::Buffer::new().format((self.clock)().timestamp_millis()).as_bytes());
+        if let Ok(timestamp) = (self.clock)() {
+            buffer.extend_from_slice(b",\"timestamp\":");
+            buffer.extend_from_slice(itoa::Buffer::new().format(timestamp.as_unix_millis()).as_bytes());
+        }
         buffer.extend_from_slice(b",\"hostname\":");
         // A log without a hostname gets the default hostname, in the envelope only.
         let hostname = if log.hostname().is_empty() {
@@ -372,11 +376,12 @@ mod characterization;
 mod tests {
     use std::collections::HashMap;
 
-    use chrono::{DateTime, Utc};
+    use saluki_common::time::Timestamp;
     use saluki_core::data_model::{
         event::log::Log,
         tags::{Tag, TagSet},
     };
+    use saluki_error::{generic_error, GenericError};
     use serde_json::json;
     use stringtheory::MetaString;
 
@@ -386,10 +391,8 @@ mod tests {
     const NOW: &str = "2026-01-02T03:04:05.678Z";
     const NOW_MS: i64 = 1_767_323_045_678;
 
-    fn fixed_clock() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(NOW)
-            .expect("NOW should be RFC3339")
-            .with_timezone(&Utc)
+    fn fixed_clock() -> Result<Timestamp, GenericError> {
+        Ok(NOW.parse().expect("NOW should be RFC3339"))
     }
 
     fn envelope(log: &Log) -> String {
@@ -435,8 +438,36 @@ mod tests {
     }
 
     #[test]
+    fn the_default_clock_writes_the_current_time_in_milliseconds() {
+        let since_epoch_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after the epoch")
+                .as_millis()
+        };
+
+        let mut encoder = LogsEndpointEncoder::new(MetaString::empty(), Vec::new(), Timestamp::now);
+        let mut buffer = Vec::new();
+        let before = since_epoch_ms();
+        encoder
+            .write_envelope(&Log::new("m"), &mut buffer)
+            .expect("envelope should serialize");
+        let after = since_epoch_ms();
+
+        let envelope: serde_json::Value = serde_json::from_slice(&buffer).expect("envelope should be JSON");
+        let timestamp = u128::from(envelope["timestamp"].as_u64().expect("timestamp should be a number"));
+        assert!(
+            (before..=after).contains(&timestamp),
+            "{} not in {}..={}",
+            timestamp,
+            before,
+            after
+        );
+    }
+
+    #[test]
     fn writes_every_envelope_field_in_order() {
-        assert_eq!(fixed_clock().timestamp_millis(), NOW_MS);
+        assert_eq!(fixed_clock().expect("clock should be fixed").as_unix_millis(), NOW_MS);
         let log = Log::new("hello world")
             .with_status("Err")
             .with_source(MetaString::from_static("nginx"))
@@ -461,6 +492,23 @@ mod tests {
                 r#"{{"message":"bare","status":"info","timestamp":{},"hostname":"","service":"","ddsource":"","ddtags":""}}"#,
                 NOW_MS
             )
+        );
+    }
+
+    #[test]
+    fn leaves_out_the_timestamp_when_the_clock_is_out_of_range() {
+        fn broken_clock() -> Result<Timestamp, GenericError> {
+            Err(generic_error!("System clock is outside of the supported range."))
+        }
+
+        let mut encoder = LogsEndpointEncoder::new(MetaString::empty(), Vec::new(), broken_clock);
+        let mut buffer = Vec::new();
+        encoder
+            .write_envelope(&Log::new("bare"), &mut buffer)
+            .expect("envelope should serialize");
+        assert_eq!(
+            String::from_utf8(buffer).expect("envelope should be UTF-8"),
+            r#"{"message":"bare","status":"info","hostname":"","service":"","ddsource":"","ddtags":""}"#
         );
     }
 
