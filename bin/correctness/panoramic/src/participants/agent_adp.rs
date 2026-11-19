@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use self::dogstatsd::{Capture, Replay, Stats};
 use super::datadog_agent::{
@@ -143,7 +143,10 @@ const EMPTY_DATADOG_YAML: FileSource = FileSource::Bytes {
 };
 
 /// What every realization of `agent-adp` offers.
-const OPERATIONS: [&dyn Operation; 4] = [&ConfigDump, &Capture, &Replay, &Stats];
+const OPERATIONS: [&dyn Operation; 5] = [&ConfigDump, &ConfigSet, &Capture, &Replay, &Stats];
+
+/// The most of a command's output an error quotes: the last bytes of its standard output and error.
+const MAX_QUOTED_OUTPUT_BYTES: usize = 1024;
 
 pub(crate) struct AgentAdp;
 
@@ -385,5 +388,46 @@ impl Operation for ConfigDump {
         }
         serde_json::from_slice(&exited.stdout)
             .map_err(|e| HandleError::Software(format!("the output of agent-data-plane config is not JSON: {}", e)))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigSetArgs {
+    key: String,
+    value: String,
+}
+
+/// `config_set`: sets a key of the Agent's runtime configuration with `agent config set`, which calls the endpoint that
+/// changes it. Its argument is `{key, value}`, and it answers `{}`.
+#[derive(Debug)]
+struct ConfigSet;
+
+#[async_trait]
+impl Operation for ConfigSet {
+    fn name(&self) -> &'static str {
+        "config_set"
+    }
+
+    fn uses(&self) -> &'static [Uses] {
+        &[Uses::Command("agent")]
+    }
+
+    async fn run(&self, on: &Handle<'_>, args: Value, limit: Duration) -> Result<Value, HandleError> {
+        let ConfigSetArgs { key, value } = serde_json::from_value(args)
+            .map_err(|e| HandleError::Harness(format!("config_set takes {{key, value}}, both strings: {}", e)))?;
+        let argv = ["config".to_string(), "set".to_string(), key, value];
+        let exited = on.command("agent", &argv, &BTreeMap::new(), limit).await?;
+        if exited.code != 0 {
+            // The Agent's answer names the setting, and holds no secret the case did not write.
+            let output = [exited.stdout, exited.stderr].concat();
+            let tail = &output[output.len().saturating_sub(MAX_QUOTED_OUTPUT_BYTES)..];
+            return Err(HandleError::Software(format!(
+                "agent config set exited with code {}: {}",
+                exited.code,
+                String::from_utf8_lossy(tail).trim()
+            )));
+        }
+        Ok(json!({}))
     }
 }

@@ -126,7 +126,10 @@ impl Step for RunCommand {
                 CommandLine::Named(name) => {
                     let command = std::iter::once(name.as_str()).chain(args.iter().map(String::as_str));
                     let command = command.collect::<Vec<_>>().join(" ");
-                    (command, timeout_at(cx.deadline, handle.command(name, &args, &env, limit)).await)
+                    (
+                        command,
+                        timeout_at(cx.deadline, handle.command(name, &args, &env, limit)).await,
+                    )
                 }
                 CommandLine::Argv(argv) => {
                     let mut argv = argv
@@ -156,7 +159,10 @@ impl Step for RunCommand {
             if let Some(text) = &self.output_contains {
                 let output = [exited.stdout.as_slice(), exited.stderr.as_slice()].concat();
                 if !String::from_utf8_lossy(&output).contains(text.as_str()) {
-                    let message = format!("'{}' exited with code 0, and its output does not contain '{}'.", command, text);
+                    let message = format!(
+                        "'{}' exited with code 0, and its output does not contain '{}'.",
+                        command, text
+                    );
                     return Ok(StepReport {
                         status: StepStatus::Failed,
                         message: with_output(message, &exited),
