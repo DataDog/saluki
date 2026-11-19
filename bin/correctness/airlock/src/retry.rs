@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn with_transient_error_retryy_gives_up_after_the_attempt_budget() {
+    async fn with_transient_error_retry_gives_up_after_the_attempt_budget() {
         let attempts = std::cell::Cell::new(0);
 
         let result: Result<(), GenericError> = with_transient_error_retry("test operation", "q9183x1a", || async {
