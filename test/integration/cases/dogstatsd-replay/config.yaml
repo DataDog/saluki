@@ -1,0 +1,66 @@
+description: "Verifies DogStatsD capture and replay through a Unix datagram socket, or a named pipe on Windows"
+timeout: 150s
+subject_os: [linux, macos, windows]
+
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-dsd-replay-unix"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_DOGSTATSD_PORT: "0"
+    os:
+      linux:
+        env:
+          DD_DOGSTATSD_SOCKET: "{{ self.endpoints.dogstatsd_uds.path }}"
+      macos:
+        env:
+          DD_DOGSTATSD_SOCKET: "{{ self.endpoints.dogstatsd_uds.path }}"
+      windows:
+        env:
+          DD_DOGSTATSD_PIPE_NAME: "{{ self.endpoints.dogstatsd_pipe.name }}"
+          DD_DOGSTATSD_EOL_REQUIRED: "named_pipe"
+
+procedure:
+  - step: log_contains
+    on: adp
+    timeout: 30s
+    os:
+      linux:
+        pattern: 'listen_addr:"unixgram://{{ adp.endpoints.dogstatsd_uds.path }}"'
+      macos:
+        pattern: 'listen_addr:"unixgram://{{ adp.endpoints.dogstatsd_uds.path }}"'
+      windows:
+        pattern: 'listen_addr:"npipe://{{ adp.endpoints.dogstatsd_pipe.name }}"'
+  - step: dogstatsd_replay
+    on: adp
+    capture_duration: 3s
+    stats_duration: 3s
+    expected_metrics:
+      - "integration.replay.unix.one"
+      - "integration.replay.unix.two"
+    timeout: 30s
+    os:
+      linux:
+        endpoint: dogstatsd_uds
+        payloads:
+          - "integration.replay.unix.one:1|c"
+          - "integration.replay.unix.two:1|c"
+        payload_interval: 1s
+      macos:
+        endpoint: dogstatsd_uds
+        payloads:
+          - "integration.replay.unix.one:1|c"
+          - "integration.replay.unix.two:1|c"
+        payload_interval: 1s
+      windows:
+        endpoint: dogstatsd_pipe
+        payloads:
+          - "integration.replay.unix.one:1|c\nintegration.replay.unix.two:1|c\n"
+  - parallel:
+      - {step: process_stable_for, on: adp, process: adp, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}
