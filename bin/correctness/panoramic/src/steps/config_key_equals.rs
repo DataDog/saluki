@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::time::{sleep_until, timeout_at, Instant};
 
-use super::{stopped, ATTEMPT, EXEC_SLACK, POLL};
+use super::{stopped, EXEC_SLACK, POLL};
 use crate::core::case::Timeout;
 use crate::core::handle::HandleError;
 use crate::core::record::StepStatus;
@@ -81,12 +81,13 @@ impl Step for ConfigKeyEquals {
                     break last;
                 }
                 let started = Instant::now();
-                // The dump gets room past the step's time, so that the timeout here ends it and a dump that outlives
-                // the step is reported by the step and not as a problem of the mechanism.
+                // The dump may take the step's remaining time, so a slow dump during startup still answers. It gets
+                // room past that time, so that the timeout here ends it and a dump that outlives the step is reported
+                // by the step and not as a problem of the mechanism.
                 let limit = cx.deadline.saturating_duration_since(started) + EXEC_SLACK;
                 let dump = handle.op(CONFIG_DUMP, json!({ "view": self.view.as_str() }), limit);
                 // An attempt that is cut short leaves `last` as it was.
-                if let Ok(dumped) = timeout_at((started + ATTEMPT).min(cx.deadline), dump).await {
+                if let Ok(dumped) = timeout_at(cx.deadline, dump).await {
                     match dumped {
                         Ok(config) => match self.key.split('.').try_fold(&config, |node, part| node.get(part)) {
                             Some(value) if *value == self.value => {
