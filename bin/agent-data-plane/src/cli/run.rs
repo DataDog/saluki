@@ -86,6 +86,9 @@ use crate::{
     remote_config::{self, RemoteConfigSubscriptions},
 };
 
+/// The component that applies the logs processing rules.
+const LOGS_PROCESS: &str = "logs_process";
+
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "run")]
@@ -510,9 +513,6 @@ fn logs_pipeline_input(logs: &logs::Domain) -> &'static str {
         LOGS_PROCESS
     }
 }
-
-/// The component that applies the logs processing rules.
-const LOGS_PROCESS: &str = "logs_process";
 
 async fn add_baseline_logs_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, logs: &logs::Domain,
