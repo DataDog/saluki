@@ -129,6 +129,7 @@ fn overlay_pipeline_affinity_expr(pa: &PipelineAffinity) -> String {
                     datadog_agent_config_overlay_model::Pipeline::Checks => "Pipeline::Checks",
                     datadog_agent_config_overlay_model::Pipeline::Otlp => "Pipeline::Otlp",
                     datadog_agent_config_overlay_model::Pipeline::Traces => "Pipeline::Traces",
+                    datadog_agent_config_overlay_model::Pipeline::Logs => "Pipeline::Logs",
                 })
                 .collect();
             format!("PipelineAffinity::Pipelines(&[{}])", parts.join(", "))
