@@ -1143,9 +1143,10 @@ where
         .layer(retry_circuit_breaker)
         // Set the request's URI and endpoint-specific headers.
         //
-        // This layer sits below the retry circuit breaker, so the request that the circuit breaker keeps for a retry or
-        // a requeue holds the original relative path. The mapper prepends the endpoint's base path, which is not
-        // idempotent: above the circuit breaker, each retry would prepend the base path again.
+        // This layer sits below the retry circuit breaker, so it maps each attempt from the original request. The circuit
+        // breaker keeps the unmapped request for a retry or a requeue, so a retried request, or one persisted to disk,
+        // keeps its relative path. Above the circuit breaker, a retried request would be mapped again, and the mapper
+        // would add the endpoint's base path a second time.
         .map_request(move |request| endpoint_request_mapper(request))
         .layer(build_diagnostics_layer(emitter, endpoint_url))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
