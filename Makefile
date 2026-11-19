@@ -691,6 +691,12 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_BUILD_TIME="$(APP_BUILD_TIME)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
+.PHONY: build-datadog-intake-host
+build-datadog-intake-host: check-rust-build-tools
+build-datadog-intake-host: ## Builds the datadog-intake binary for the current host, which the host-process integration cases run
+	@echo "[*] Building datadog-intake (release, host target)..."
+	@cargo build --profile release --package datadog-intake
+
 .PHONY: build-adp-aix
 build-adp-aix: BUILD_PROFILE ?= aix-optimized-release
 build-adp-aix: ## Builds a release agent-data-plane binary natively on AIX (optimized settings without LTO)
@@ -766,7 +772,7 @@ provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
 .PHONY: test-integration-macos-ci
-test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the macOS integration cases (host processes)
+test-integration-macos-ci: build-panoramic build-adp-host build-datadog-intake-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the macOS integration cases (host processes)
 
 .PHONY: ensure-rust-nightly
 ensure-rust-nightly:

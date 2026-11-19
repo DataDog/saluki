@@ -35,6 +35,33 @@ COPY ipc_cert.pem C:\ProgramData\Datadog\ipc_cert.pem
     Invoke-Native docker build --tag $ImageTag $ContextDir
 }
 
+# The intake runs in a container from the ADP image's base, which CI has already pulled.
+function Build-WindowsIntakeImage {
+    param([string]$ImageTag)
+    $IntakeBinary = Join-Path $env:CARGO_TARGET_DIR "release\datadog-intake.exe"
+    if (-not (Test-Path $IntakeBinary)) {
+        throw "Intake binary not found at ${IntakeBinary}"
+    }
+    Assert-NoDynamicVCRuntimeImports -BinaryPath $IntakeBinary
+
+    $BaseImage = if ($env:WINDOWS_ADP_BASE_IMAGE) { $env:WINDOWS_ADP_BASE_IMAGE } else { "mcr.microsoft.com/windows/servercore:ltsc2022" }
+    $ContextDir = Join-Path $env:TEMP "saluki-windows-intake-image"
+
+    Remove-Item -Recurse -Force $ContextDir -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $ContextDir | Out-Null
+    Copy-Item -Force $IntakeBinary (Join-Path $ContextDir "datadog-intake.exe")
+
+    $Dockerfile = @"
+# escape=``
+FROM ${BaseImage}
+COPY datadog-intake.exe C:\intake\datadog-intake.exe
+"@
+    Set-Content -Path (Join-Path $ContextDir "Dockerfile") -Value $Dockerfile -Encoding ASCII
+
+    Write-Host "[*] Building Windows intake test image ${ImageTag} from ${BaseImage}..."
+    Invoke-Native docker build --tag $ImageTag $ContextDir
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
@@ -66,7 +93,7 @@ if (-not $env:APP_GIT_HASH) {
 # regardless of $env:BUILD_PROFILE. ADP tracks $env:BUILD_PROFILE so a tagged release pipeline
 # (BUILD_PROFILE=optimized-release in .gitlab-ci.yml) tests the same binary it ships, mirroring
 # the linux/darwin flows.
-Invoke-Native cargo build --release --package panoramic --package panoramic-courier
+Invoke-Native cargo build --release --package panoramic --package panoramic-courier --package datadog-intake
 # The Windows container backend copies the courier into every container, from where panoramic looks for it.
 $Courier = Join-Path $env:CARGO_TARGET_DIR "release\courier.exe"
 Assert-NoDynamicVCRuntimeImports -BinaryPath $Courier
@@ -77,6 +104,7 @@ Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plan
 
 $ImageTag = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
 Build-WindowsAdpImage -ImageTag $ImageTag
+Build-WindowsIntakeImage -ImageTag "saluki-images/datadog-intake:testing-windows"
 
 if (-not $env:PANORAMIC_LOG_DIR) {
     $env:PANORAMIC_LOG_DIR = "integration-logs"

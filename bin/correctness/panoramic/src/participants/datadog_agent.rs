@@ -186,6 +186,16 @@ pub(super) const INTAKE: Consumed = Consumed {
     ],
 };
 
+/// The connection to an intake where ADP and the Agent read one environment, so the `ADP_` forms mean nothing.
+pub(super) const INTAKE_SHARED_ENV: Consumed = Consumed {
+    accepts: &[Protocol::Http],
+    required: false,
+    env: &[
+        ("DD_DD_URL", "{{ self.connections.intake.url }}"),
+        ("DD_APM_DD_URL", "{{ self.connections.intake.url }}"),
+    ],
+};
+
 /// The connection to a DogStatsD server the Agent and ADP forward every packet they receive to, with the `ADP_` forms
 /// for the reason [`INTAKE`] has them.
 pub(super) const DOGSTATSD_FORWARD: Consumed = Consumed {

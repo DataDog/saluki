@@ -10,13 +10,20 @@ use tokio::time::Instant;
 
 use crate::core::handle::{Handle, HandleError};
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
-use crate::core::spec::{Address, EndpointSpec, Evidence, ParticipantSpec, Protocol, DEFAULT_PROCESS};
+use crate::core::spec::{Address, EndpointSpec, Evidence, ParticipantSpec, Program, Protocol, DEFAULT_PROCESS};
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
 
 /// The tools image the `Makefile` builds, and the intake's path in it.
 const IMAGE: &str = "saluki-images/correctness-tools:latest";
 const PROGRAM: &str = "/usr/local/bin/datadog-intake";
+
+/// The intake as host processes: the build's path, relative to the repository root.
+const HOST_PROGRAM: &str = "target/release/datadog-intake";
+
+/// The Windows image the CI script builds from the ADP image's base, and the intake's path in it.
+const WINDOWS_IMAGE: &str = "saluki-images/datadog-intake:testing-windows";
+const WINDOWS_PROGRAM: &str = "C:\\intake\\datadog-intake.exe";
 
 /// How much of an error answer's body a failed dump quotes, so a large error page does not flood the case record.
 const MAX_ERROR_BODY_BYTES: usize = 512;
@@ -40,6 +47,8 @@ impl ParticipantType for DatadogIntake {
         &[
             (Os::Linux, Enclosure::LinuxContainer),
             (Os::Linux, Enclosure::KubernetesPod),
+            (Os::Macos, Enclosure::HostProcessGroup),
+            (Os::Windows, Enclosure::WindowsContainer),
         ]
     }
 
@@ -50,9 +59,28 @@ impl ParticipantType for DatadogIntake {
             address: Address::Port(port),
             tls: false,
         };
+        let launch = match cx.realization.enclosure {
+            Enclosure::HostProcessGroup => ParticipantSpec {
+                programs: Some(vec![Program {
+                    name: DEFAULT_PROCESS.to_string(),
+                    path: HOST_PROGRAM.to_string(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                }]),
+                ..ParticipantSpec::default()
+            },
+            Enclosure::WindowsContainer => ParticipantSpec {
+                image: Some(WINDOWS_IMAGE.to_string()),
+                command: Some(vec![Template::parse(WINDOWS_PROGRAM)?]),
+                ..ParticipantSpec::default()
+            },
+            Enclosure::LinuxContainer | Enclosure::KubernetesPod => ParticipantSpec {
+                image: Some(IMAGE.to_string()),
+                command: Some(vec![Template::parse(PROGRAM)?]),
+                ..ParticipantSpec::default()
+            },
+        };
         Ok(ParticipantSpec {
-            image: Some(IMAGE.to_string()),
-            command: Some(vec![Template::parse(PROGRAM)?]),
             env: BTreeMap::from([
                 (
                     "INTAKE_HTTP_LISTEN_ADDR".to_string(),
@@ -83,7 +111,7 @@ impl ParticipantType for DatadogIntake {
                 ),
             ]),
             operations: &[&Dump],
-            ..ParticipantSpec::default()
+            ..launch
         })
     }
 }

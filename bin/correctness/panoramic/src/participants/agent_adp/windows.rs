@@ -102,6 +102,7 @@ pub(super) fn spec(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             ("adp".to_string(), program_command(ADP_COMMAND)?),
             ("agent".to_string(), program_command(AGENT_COMMAND)?),
         ]),
+        consumes: BTreeMap::from([("intake", datadog_agent::INTAKE_SHARED_ENV)]),
         operations: &OPERATIONS,
         ..ParticipantSpec::default()
     };
