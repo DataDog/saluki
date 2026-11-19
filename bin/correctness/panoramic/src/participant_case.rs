@@ -11,7 +11,6 @@
 //! the participant's own directory can be run. Host processes need no Docker daemon.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -34,7 +33,7 @@ use crate::core::registry::Registry;
 use crate::core::result::TestResult;
 use crate::events::TestEvent;
 use crate::kind::KindLifecycle;
-use crate::test::{Test, TestContext, TestSuite};
+use crate::test::{Test, TestContext};
 
 /// The runtime name of a case that runs participants in pods, which need a kind cluster.
 const KIND_RUNTIME: &str = "kubernetes_in_docker";
@@ -158,7 +157,7 @@ pub(crate) fn discover(
 pub(crate) struct ParticipantCase {
     name: String,
     dir: PathBuf,
-    suite: TestSuite,
+    suite: String,
     description: Option<String>,
     timeout: Duration,
     runtime: &'static str,
@@ -220,14 +219,16 @@ pub(crate) fn references<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> B
         .collect()
 }
 
-/// The suite of the case in `dir`: the directory above its cases directory names it, as in `test/correctness/cases`.
-fn suite(dir: &Path) -> TestSuite {
-    let named = dir.parent().and_then(Path::parent).and_then(Path::file_name);
-    if named == Some(OsStr::new("correctness")) {
-        TestSuite::Correctness
-    } else {
-        TestSuite::Integration
-    }
+/// The suite of the case in `dir`: the name of the directory above its cases directory, as `correctness` for
+/// `test/correctness/cases/x`, or the name of the cases directory when there is none above it.
+fn suite(dir: &Path) -> String {
+    let cases = dir.parent();
+    cases
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .or_else(|| cases.and_then(Path::file_name))
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 #[async_trait]
@@ -236,8 +237,8 @@ impl Test for ParticipantCase {
         self.name.clone()
     }
 
-    fn suite(&self) -> TestSuite {
-        self.suite
+    fn suite(&self) -> String {
+        self.suite.clone()
     }
 
     fn description(&self) -> Option<String> {
@@ -542,6 +543,17 @@ mod tests {
             std::fs::write(case.join(case::CASE_FILE), config).expect("the case file should be writable");
         }
         dir
+    }
+
+    #[test]
+    fn a_suite_is_the_directory_above_the_cases_directory_or_the_cases_directory_itself() {
+        for (dir, suite) in [
+            ("repo/test/correctness/cases/dsd-plain", "correctness"),
+            ("repo/test/integration/cases/adp-cmd-host", "integration"),
+            ("cases/some-case", "cases"),
+        ] {
+            assert_eq!(super::suite(Path::new(dir)), suite, "{dir}");
+        }
     }
 
     fn names(tests: &[Box<dyn Test>]) -> Vec<String> {

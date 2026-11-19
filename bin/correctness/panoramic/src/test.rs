@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::backend::Backends;
@@ -12,14 +11,6 @@ use crate::core::record::CaseRecord;
 use crate::core::result::{PhaseTracker, TestResult};
 use crate::core::tasks::CaseTasks;
 use crate::participant_case::ParticipantCase;
-
-#[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum TestSuite {
-    #[default]
-    Integration,
-    Correctness,
-}
 
 /// Settings shared by every test in a run.
 #[derive(Debug, Clone)]
@@ -88,8 +79,9 @@ pub(crate) trait Test: Send + Sync {
     /// The name of the test for reporting. Must be unique among all tests that are being executed.
     fn name(&self) -> String;
 
-    /// The suite of tests that the test belongs to.
-    fn suite(&self) -> TestSuite;
+    /// The suite the test belongs to: the name of the directory above its cases directory, such as `integration`. It
+    /// names the test's log directory.
+    fn suite(&self) -> String;
 
     /// A description of the test for reporting and documentation purposes.
     fn description(&self) -> Option<String>;

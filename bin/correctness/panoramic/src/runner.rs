@@ -241,7 +241,7 @@ impl Runner {
         let test_cancel = CancellationToken::new();
 
         // Create a directory for the test to write logs into and pass it into the test context.
-        let log_dir = log_base_dir.join(format!("{:?}", suite).to_lowercase()).join(&name);
+        let log_dir = log_base_dir.join(suite).join(&name);
         if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
             let mut result = TestResult::setup_error(
                 name.clone(),
@@ -515,7 +515,6 @@ pub(crate) mod test_support {
     use crate::core::record::{RunningStep, StepResult, Verdict};
     use crate::participant_case::ParticipantCase;
     use crate::reporter::test_support::step;
-    use crate::test::TestSuite;
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
     #[derive(Clone, Copy, Debug)]
@@ -636,8 +635,8 @@ pub(crate) mod test_support {
             self.name.clone()
         }
 
-        fn suite(&self) -> TestSuite {
-            TestSuite::Integration
+        fn suite(&self) -> String {
+            "integration".to_string()
         }
 
         fn description(&self) -> Option<String> {
