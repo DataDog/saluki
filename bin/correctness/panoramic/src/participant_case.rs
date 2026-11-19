@@ -21,7 +21,6 @@ use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
-use tracing::warn;
 
 use crate::core::backend::Backends;
 use crate::core::case::{self, CaseError};
@@ -36,9 +35,6 @@ use crate::core::result::TestResult;
 use crate::events::TestEvent;
 use crate::kind::KindLifecycle;
 use crate::test::{Test, TestContext, TestSuite};
-
-/// The file in a case's log directory that holds its plan when it does not pass.
-const PLAN_FILE: &str = "plan.json";
 
 /// The runtime name of a case that runs participants in pods, which need a kind cluster.
 const KIND_RUNTIME: &str = "kubernetes_in_docker";
@@ -288,22 +284,7 @@ impl Test for ParticipantCase {
             phases: &tctx.phases,
             record: &tctx.record,
         };
-        let result = lifecycle::run(plan, &run).await;
-        if !result.outcome.is_passed() {
-            write_plan(plan, tctx.log_dir());
-        }
-        result
-    }
-}
-
-/// Writes `plan` to the case's log directory `log_dir`, as `panoramic plan` prints it.
-fn write_plan(plan: &CasePlan, log_dir: &Path) {
-    let path = log_dir.join(PLAN_FILE);
-    let written = serde_json::to_string_pretty(plan)
-        .map_err(|e| e.to_string())
-        .and_then(|json| std::fs::write(&path, json + "\n").map_err(|e| e.to_string()));
-    if let Err(e) = written {
-        warn!(path = %path.display(), error = %e, "Failed to write the plan of a case that did not pass.");
+        lifecycle::run(plan, &run).await
     }
 }
 
