@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
 use regex::Regex;
+use saluki_core::data_model::tags::TagSet;
 
 use super::util::{first_attribute_str, gcp_hostname, hostname_from_attributes, Source, SourceKind};
 
@@ -28,6 +29,7 @@ const CLOUD_RESOURCE_ID: &str = "cloud.resource_id";
 const FAAS_ID: &str = "faas.id";
 const FAAS_INSTANCE: &str = "faas.instance";
 const FAAS_NAME: &str = "faas.name";
+const FAAS_VERSION: &str = "faas.version";
 const K8S_CLUSTER_NAME: &str = "k8s.cluster.name";
 const SERVICE_INSTANCE_ID: &str = "service.instance.id";
 const SERVICE_NAME: &str = "service.name";
@@ -111,6 +113,41 @@ pub fn is_gcp_serverless(attributes: &[KeyValue]) -> bool {
         attr(attributes, CLOUD_PLATFORM),
         PLATFORM_GCP_CLOUD_FUNCTIONS | PLATFORM_GCP_CLOUD_RUN
     )
+}
+
+/// Adds the serverless identity tags derived from resource attributes: the Azure App Service app identity, and the
+/// dimensions of an AWS Lambda function, a Cloud Run job, or a Cloud Run service or Cloud Functions function.
+pub fn extract_serverless_tags_from_resource_attributes(attributes: &[KeyValue], tags: &mut TagSet) {
+    if let Some(app) = azure_app_service_identity(attributes) {
+        tags.insert_tag(format!("name:{}", app.name));
+        tags.insert_tag(format!("subscription_id:{}", app.subscription_id));
+        tags.insert_tag(format!("resource_group:{}", app.resource_group));
+    }
+
+    if let Some(function) = aws_lambda_function(attributes) {
+        tags.insert_tag(format!("function_arn:{}", function.arn));
+        tags.insert_tag(format!("function_name:{}", function.name));
+        tags.insert_tag(format!("region:{}", function.region));
+        tags.insert_tag(format!("aws_account:{}", function.account));
+    }
+
+    if let Some(job) = gcp_cloud_run_job(attributes) {
+        tags.insert_tag(format!("project_id:{}", job.identity.project_id));
+        tags.insert_tag(format!("location:{}", job.identity.location));
+        tags.insert_tag(format!("job_name:{}", job.identity.workload_name));
+        tags.insert_tag(format!("instance:{}", job.instance));
+    }
+
+    if let Some(workload) = gcp_serverless_workload(attributes) {
+        tags.insert_tag(format!("project_id:{}", workload.identity.project_id));
+        tags.insert_tag(format!("location:{}", workload.identity.location));
+        tags.insert_tag(format!("service_name:{}", workload.identity.workload_name));
+        tags.insert_tag(format!("instance:{}", workload.instance));
+        let revision = attr(attributes, FAAS_VERSION);
+        if !revision.is_empty() {
+            tags.insert_tag(format!("revision_name:{revision}"));
+        }
+    }
 }
 
 /// Returns the first attribute named `key` as a string, or an empty string if it's missing or not a string.
@@ -232,12 +269,19 @@ fn azure_functions_source(attributes: &[KeyValue]) -> Option<Source> {
     source(SourceKind::AzureFunctions, identity.name)
 }
 
-fn azure_app_service_source(attributes: &[KeyValue]) -> Option<Source> {
+/// Returns the identity of an app on the Azure App Service platform.
+fn azure_app_service_identity(attributes: &[KeyValue]) -> Option<AzureIdentity<'_>> {
     if !is_azure_cloud_platform(attr(attributes, CLOUD_PLATFORM), "app_service") {
         return None;
     }
-    let identity = AzureIdentity::from_attributes(attributes, AZURE_WEB_NAMESPACE, AZURE_WEB_SITES)?;
-    source(SourceKind::AzureAppService, identity.name)
+    AzureIdentity::from_attributes(attributes, AZURE_WEB_NAMESPACE, AZURE_WEB_SITES)
+}
+
+fn azure_app_service_source(attributes: &[KeyValue]) -> Option<Source> {
+    source(
+        SourceKind::AzureAppService,
+        azure_app_service_identity(attributes)?.name,
+    )
 }
 
 fn azure_container_apps_source(attributes: &[KeyValue]) -> Option<Source> {
@@ -260,7 +304,15 @@ fn azure_container_apps_source(attributes: &[KeyValue]) -> Option<Source> {
 // AWS
 // ============================================================================
 
-fn aws_lambda_source(attributes: &[KeyValue]) -> Option<Source> {
+/// An AWS Lambda function, identified by its unqualified ARN.
+struct LambdaFunction<'a> {
+    arn: String,
+    name: &'a str,
+    region: &'a str,
+    account: &'a str,
+}
+
+fn aws_lambda_function(attributes: &[KeyValue]) -> Option<LambdaFunction<'_>> {
     if attr(attributes, CLOUD_PROVIDER) != "aws" {
         return None;
     }
@@ -278,7 +330,16 @@ fn aws_lambda_source(attributes: &[KeyValue]) -> Option<Source> {
     if parts.len() < 7 || parts[0] != "arn" || parts[2] != "lambda" || parts[5] != "function" {
         return None;
     }
-    source(SourceKind::AwsLambda, parts[..7].join(":"))
+    Some(LambdaFunction {
+        arn: parts[..7].join(":"),
+        name: parts[6],
+        region: parts[3],
+        account: parts[4],
+    })
+}
+
+fn aws_lambda_source(attributes: &[KeyValue]) -> Option<Source> {
+    source(SourceKind::AwsLambda, aws_lambda_function(attributes)?.arn)
 }
 
 fn ecs_fargate_source(attributes: &[KeyValue]) -> Option<Source> {
@@ -345,21 +406,36 @@ fn has_gcp_cloud_run_job_evidence(attributes: &[KeyValue]) -> bool {
     }) || GCP_CLOUD_RUN_JOB_RESOURCE.is_match(attr(attributes, CLOUD_RESOURCE_ID))
 }
 
-fn gcp_cloud_run_jobs_source(attributes: &[KeyValue]) -> Option<Source> {
+/// A complete Cloud Run job, Cloud Run service, or Cloud Functions identity, and the instance running it.
+struct GcpWorkload<'a> {
+    kind: SourceKind,
+    identity: GcpIdentity<'a>,
+    instance: &'a str,
+}
+
+fn gcp_cloud_run_job(attributes: &[KeyValue]) -> Option<GcpWorkload<'_>> {
     if attr(attributes, CLOUD_PLATFORM) != PLATFORM_GCP_CLOUD_RUN || !has_gcp_cloud_run_job_evidence(attributes) {
         return None;
     }
 
     let identity = GcpIdentity::from_pattern(attr(attributes, CLOUD_RESOURCE_ID), &GCP_CLOUD_RUN_JOB_RESOURCE, true)
         .with_attributes(attributes);
-    let instance_id = attr(attributes, FAAS_INSTANCE);
-    if !identity.is_complete() || instance_id.is_empty() {
+    let instance = attr(attributes, FAAS_INSTANCE);
+    if !identity.is_complete() || instance.is_empty() {
         return None;
     }
-    source(SourceKind::GcpCloudRunJobs, instance_id)
+    Some(GcpWorkload {
+        kind: SourceKind::GcpCloudRunJobs,
+        identity,
+        instance,
+    })
 }
 
-fn gcp_serverless_source(attributes: &[KeyValue]) -> Option<Source> {
+fn gcp_cloud_run_jobs_source(attributes: &[KeyValue]) -> Option<Source> {
+    source(SourceKind::GcpCloudRunJobs, gcp_cloud_run_job(attributes)?.instance)
+}
+
+fn gcp_serverless_workload(attributes: &[KeyValue]) -> Option<GcpWorkload<'_>> {
     let resource_id = attr(attributes, CLOUD_RESOURCE_ID);
     let (kind, parsed) = match attr(attributes, CLOUD_PLATFORM) {
         // Functions take precedence over their underlying Cloud Run service.
@@ -390,11 +466,20 @@ fn gcp_serverless_source(attributes: &[KeyValue]) -> Option<Source> {
     }
 
     let identity = parsed.with_attributes(attributes);
-    let instance_id = attr(attributes, FAAS_INSTANCE);
-    if !identity.is_complete() || instance_id.is_empty() {
+    let instance = attr(attributes, FAAS_INSTANCE);
+    if !identity.is_complete() || instance.is_empty() {
         return None;
     }
-    source(kind, instance_id)
+    Some(GcpWorkload {
+        kind,
+        identity,
+        instance,
+    })
+}
+
+fn gcp_serverless_source(attributes: &[KeyValue]) -> Option<Source> {
+    let workload = gcp_serverless_workload(attributes)?;
+    source(workload.kind, workload.instance)
 }
 
 fn gke_autopilot_source(attributes: &[KeyValue]) -> Option<Source> {
@@ -782,5 +867,73 @@ mod tests {
             resolve_source_from_attributes(&attributes).map(|source| (source.kind, source.identifier)),
             Some((SourceKind::Hostname, "name".to_string()))
         );
+    }
+
+    #[test]
+    fn serverless_tags_come_from_the_source_identities() {
+        let tags = |entries: &[(&str, &str)]| {
+            let mut tags = TagSet::default();
+            extract_serverless_tags_from_resource_attributes(&attrs(entries), &mut tags);
+            let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+            got.sort();
+            got
+        };
+
+        assert_eq!(
+            tags(&[
+                ("cloud.platform", "azure.app_service"),
+                ("service.name", "app"),
+                ("cloud.account.id", "sub"),
+                ("azure.resource_group.name", "rg"),
+            ]),
+            vec!["name:app", "resource_group:rg", "subscription_id:sub"]
+        );
+        assert!(tags(&[
+            ("cloud.platform", "azure.functions"),
+            ("service.name", "app"),
+            ("cloud.account.id", "sub"),
+            ("azure.resource_group.name", "rg"),
+        ])
+        .is_empty());
+        assert_eq!(
+            tags(&[("cloud.provider", "aws"), ("faas.id", FUNCTION_ARN)]),
+            vec![
+                "aws_account:123456789012",
+                "function_arn:arn:aws:lambda:us-east-1:123456789012:function:orders",
+                "function_name:orders",
+                "region:us-east-1",
+            ]
+        );
+        let cloud_run = [
+            ("cloud.platform", "gcp_cloud_run"),
+            ("cloud.account.id", "project"),
+            ("cloud.region", "us-central1"),
+            ("faas.name", "svc"),
+            ("faas.instance", "instance-1"),
+        ];
+        let mut service = cloud_run.to_vec();
+        service.push(("faas.version", "rev-1"));
+        assert_eq!(
+            tags(&service),
+            vec![
+                "instance:instance-1",
+                "location:us-central1",
+                "project_id:project",
+                "revision_name:rev-1",
+                "service_name:svc",
+            ]
+        );
+        let mut job = cloud_run.to_vec();
+        job.push(("gcp.cloud_run.job.execution", "job-1"));
+        assert_eq!(
+            tags(&job),
+            vec![
+                "instance:instance-1",
+                "job_name:svc",
+                "location:us-central1",
+                "project_id:project",
+            ]
+        );
+        assert!(tags(&cloud_run[..4]).is_empty());
     }
 }
