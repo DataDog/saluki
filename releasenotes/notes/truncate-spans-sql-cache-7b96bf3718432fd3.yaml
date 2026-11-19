@@ -1,0 +1,9 @@
+---
+enhancements:
+  - |
+    Cache obfuscated SQL queries in traces, bounded by `apm_config.obfuscation.cache.max_size` and
+    toggled by `apm_config.obfuscation.cache.enabled`, as the Datadog Agent does.
+fixes:
+  - |
+    Truncate span resources, attribute keys and values, and the env, component, and version of
+    spans to the Datadog Agent's limits, including the `big_resource` APM feature.
