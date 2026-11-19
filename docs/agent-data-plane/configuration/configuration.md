@@ -159,17 +159,12 @@ architecture is fundamentally different or the feature is platform-specific.
 | `logs_config.delegated_auth.org_uuid`                                                    | Org UUID enabling delegated auth for logs key      | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.delegated_auth.refresh_interval_mins`                                       | Delegated auth key refresh interval (minutes)      | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.disable_distributed_senders`                                                | Use legacy per-pipeline senders                    | See below                                                                                                                                                                                                                                                                 |
-| `logs_config.fingerprint_config.count`                                                   | Fingerprint line/byte count (validated only)       | See below                                                                                                                                                                                                                                                                 |
-| `logs_config.fingerprint_config.count_to_skip`                                           | Fingerprint skip count (validated only)            | See below                                                                                                                                                                                                                                                                 |
-| `logs_config.fingerprint_config.fingerprint_strategy`                                    | Fingerprint strategy (validated only)              | See below                                                                                                                                                                                                                                                                 |
-| `logs_config.fingerprint_config.max_bytes`                                               | Fingerprint max bytes (validated only)             | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.message_channel_size`                                                       | Pipeline message channel size                      | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.payload_channel_size`                                                       | Sender payload channel size                        | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.pipeline_failover.enabled`                                                  | Fail over between pipelines when blocked           | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.pipeline_failover.router_channel_size`                                      | Router channel size when failover is on            | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.pipelines`                                                                  | Number of parallel logs pipelines                  | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.stop_grace_period`                                                          | Seconds to wait for pipeline flush on stop         | See below                                                                                                                                                                                                                                                                 |
-| `logs_config.unreliable_mount.enabled`                                                   | Unreliable-mount profile (affects validation)      | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.debug.verbosity`                                                            | Verbosity of the OTLP debug exporter               | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.flush_timeout`                                                | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.max_size`                                                     | Maximum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
@@ -396,54 +391,6 @@ ADP ignores this key: its logs pipeline is part of its own topology, which this 
 configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
 proxy mode, the core Agent processes OTLP logs and applies this key.
 
-### `logs_config.fingerprint_config.count`
-
-The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
-start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is not disabled
-(defaulted per strategy if not configured); a non-integer value fails parsing.
-
-ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-this key.
-
-### `logs_config.fingerprint_config.count_to_skip`
-
-The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
-start with `Invalid fingerprint_config setting`. Must be >= 0 when strategy is not disabled; a
-non-integer value fails parsing.
-
-ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-this key.
-
-### `logs_config.fingerprint_config.fingerprint_strategy`
-
-The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
-start with `Invalid fingerprint_config setting`. An unknown value (not `line_checksum`,
-`byte_checksum` or disabled) fails validation. Default disabled skips all other fingerprint checks.
-
-ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-this key.
-
-### `logs_config.fingerprint_config.max_bytes`
-
-The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
-start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is `line_checksum`; a
-non-integer value fails parsing.
-
-ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-this key.
-
 ### `logs_config.message_channel_size`
 
 In the core Agent's OTLP logs path: buffer size of the pipeline input channel (processor input)
@@ -500,18 +447,6 @@ before force close.
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
 configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
 proxy mode, the core Agent processes OTLP logs and applies this key.
-
-### `logs_config.unreliable_mount.enabled`
-
-The core Agent only validates this key on the OTLP logs path: not used for OTLP logs, but when
-true GlobalFingerprintConfig changes defaults (strategy `line_checksum` unless configured, `max_bytes`
-4096, count default), so previously skipped fingerprint validation then applies to configured
-`fingerprint_config` values.
-
-ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-this key.
 
 ### `otlp_config.debug.verbosity`
 

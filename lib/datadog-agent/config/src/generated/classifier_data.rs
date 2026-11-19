@@ -467,30 +467,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("false"),
     },
     ClassifierEntry {
-        yaml_path: "logs_config.fingerprint_config.count",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
-        yaml_path: "logs_config.fingerprint_config.count_to_skip",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
-        yaml_path: "logs_config.fingerprint_config.fingerprint_strategy",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
-        default: DefaultValue::Json("\"disabled\""),
-    },
-    ClassifierEntry {
-        yaml_path: "logs_config.fingerprint_config.max_bytes",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
-        default: DefaultValue::Json("100000"),
-    },
-    ClassifierEntry {
         yaml_path: "logs_config.force_use_http",
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
@@ -615,12 +591,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
         default: DefaultValue::Json("{}"),
-    },
-    ClassifierEntry {
-        yaml_path: "logs_config.unreliable_mount.enabled",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
-        default: DefaultValue::Json("false"),
     },
     ClassifierEntry {
         yaml_path: "logs_config.use_compression",

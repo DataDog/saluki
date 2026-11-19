@@ -2332,74 +2332,6 @@ inventory:
       configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
       proxy mode, the core Agent processes OTLP logs and applies this key.
 
-  logs_config.fingerprint_config.count:
-    support: none
-    severity: low
-    planned: false
-    pipelines: [logs]
-    description: "Fingerprint line/byte count (validated only)"
-    documentation: |-
-      The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-      but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
-      start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is not disabled
-      (defaulted per strategy if not configured); a non-integer value fails parsing.
-
-      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-      Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-      native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-      this key.
-
-  logs_config.fingerprint_config.count_to_skip:
-    support: none
-    severity: low
-    planned: false
-    pipelines: [logs]
-    description: "Fingerprint skip count (validated only)"
-    documentation: |-
-      The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-      but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
-      start with `Invalid fingerprint_config setting`. Must be >= 0 when strategy is not disabled; a
-      non-integer value fails parsing.
-
-      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-      Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-      native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-      this key.
-
-  logs_config.fingerprint_config.fingerprint_strategy:
-    support: none
-    severity: low
-    planned: false
-    pipelines: [logs]
-    description: "Fingerprint strategy (validated only)"
-    documentation: |-
-      The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-      but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
-      start with `Invalid fingerprint_config setting`. An unknown value (not `line_checksum`,
-      `byte_checksum` or disabled) fails validation. Default disabled skips all other fingerprint checks.
-
-      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-      Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-      native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-      this key.
-
-  logs_config.fingerprint_config.max_bytes:
-    support: none
-    severity: low
-    planned: false
-    pipelines: [logs]
-    description: "Fingerprint max bytes (validated only)"
-    documentation: |-
-      The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-      but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
-      start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is `line_checksum`; a
-      non-integer value fails parsing.
-
-      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-      Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-      native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-      this key.
-
   logs_config.force_use_http:
     support: none
     severity: medium
@@ -2719,23 +2651,6 @@ inventory:
       ADP ignores this key and filters no tags on logs. This only matters for the logs ADP handles
       itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
-
-  logs_config.unreliable_mount.enabled:
-    support: none
-    severity: low
-    planned: false
-    pipelines: [logs]
-    description: "Unreliable-mount profile (affects validation)"
-    documentation: |-
-      The core Agent only validates this key on the OTLP logs path: not used for OTLP logs, but when
-      true GlobalFingerprintConfig changes defaults (strategy `line_checksum` unless configured, `max_bytes`
-      4096, count default), so previously skipped fingerprint validation then applies to configured
-      `fingerprint_config` values.
-
-      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-      Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
-      native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
-      this key.
 
   logs_config.use_compression:
     support: none
@@ -5582,6 +5497,10 @@ excluded:
   logs_config.experimental_noisy_log_detection: "2026-06-10 Experimental noisy log tagging; Go Agent log decoder feature, ADP has no log decoder."
   logs_config.file_scan_period: "2026-11-13: ADP does not currently support log file tailing."
   logs_config.file_wildcard_selection_mode: "2026-11-13: ADP does not currently support log file tailing."
+  logs_config.fingerprint_config.count: "2026-11-19: Fingerprinting is only used for log file tailing, which ADP does not support. The core Agent validates it at logs agent start, and an invalid value stops the whole Agent."
+  logs_config.fingerprint_config.count_to_skip: "2026-11-19: Fingerprinting is only used for log file tailing, which ADP does not support. The core Agent validates it at logs agent start, and an invalid value stops the whole Agent."
+  logs_config.fingerprint_config.fingerprint_strategy: "2026-11-19: Fingerprinting is only used for log file tailing, which ADP does not support. The core Agent validates it at logs agent start, and an invalid value stops the whole Agent."
+  logs_config.fingerprint_config.max_bytes: "2026-11-19: Fingerprinting is only used for log file tailing, which ADP does not support. The core Agent validates it at logs agent start, and an invalid value stops the whole Agent."
   logs_config.force_auto_multi_line_detection_v1: "2026-11-13: ADP does not currently support multi-line log aggregation."
   logs_config.frame_size: "2026-11-13: ADP does not currently support TCP and UDP log listeners."
   logs_config.input_chan_size: "2026-11-13: ADP does not currently support event platform forwarding."
@@ -5599,6 +5518,7 @@ excluded:
   logs_config.tag_multi_line_logs: "2026-11-13: ADP does not currently support multi-line log aggregation."
   logs_config.tag_truncated_logs: "2026-11-13: ADP does not currently support log line decoding."
   logs_config.tagger_warmup_duration: "2026-11-13: ADP does not currently support log tailer tags."
+  logs_config.unreliable_mount.enabled: "2026-11-19: Only changes the fingerprinting defaults for log file tailing, which ADP does not support. The core Agent validates them at logs agent start, and an invalid value stops the whole Agent."
   logs_config.unreliable_mount.rotation_drain_timeout: "2026-11-05: ADP does not currently support logs processing."
   logs_config.use_container_timestamp: "2026-06-10 Container file log timestamp mode; ADP has no container log file source."
   logs_config.use_podman_logs: "2026-11-13: ADP does not currently support container log collection."
