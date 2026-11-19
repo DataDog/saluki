@@ -11,7 +11,7 @@ env:
   DD_DATA_PLANE_STANDALONE_MODE: "true"
   DD_DATA_PLANE_OTLP_ENABLED: "true"
   # The Core Agent in the test image predates datadog-agent#59825 and relocates its OTLP listener on this key.
-  # Remove it once `.datadog-agent-version` includes that change.
+  # Remove it once the Agent in `.datadog-agent-version.json` includes that change.
   DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
   DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "true"
   DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "true"

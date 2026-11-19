@@ -10,10 +10,10 @@
 
 use std::io::Write;
 
+use saluki_common::logging::RollingFileWriter;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
-use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, Layer, Registry};
 
 mod api;
@@ -64,8 +64,8 @@ impl LoggingGuard {
     ///
     /// # Errors
     ///
-    /// Returns an error if the new output layers can't be constructed (for example, the configured log file path is
-    /// inaccessible) or if the override worker is no longer running.
+    /// Returns an error if the new output layers can't be constructed (for example, the configured syslog URI is
+    /// invalid) or if the override worker is no longer running.
     pub async fn reload(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
         let (new_stack, new_guards) = build_output_stack(&config)?;
         let new_filter = config.log_level.as_targets();
@@ -146,15 +146,14 @@ fn build_output_stack(config: &LoggingConfiguration) -> Result<(OutputStack, Vec
     }
 
     if !config.log_file.is_empty() {
-        let appender_builder = RollingFileAppenderBase::builder();
-        let appender = appender_builder
-            .filename(config.log_file.clone())
-            .max_filecount(config.log_file_max_rolls)
-            .condition_max_file_size(config.log_file_max_size.as_u64())
-            .build()
-            .map_err(|e| generic_error!("Failed to build log file appender: {}", e))?;
+        // The file is opened on the first write, so an unusable path doesn't stop logging from starting.
+        let writer = RollingFileWriter::new(
+            &config.log_file,
+            config.log_file_max_size.as_u64(),
+            config.log_file_max_rolls,
+        );
 
-        let (nb_appender, guard) = writer_to_nonblocking("file", appender);
+        let (nb_appender, guard) = writer_to_nonblocking("file", writer);
         guards.push(guard);
         layers.push(build_formatting_layer(config, nb_appender));
     }

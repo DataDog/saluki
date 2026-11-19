@@ -32,6 +32,16 @@ impl CaseTasks {
         }
     }
 
+    /// Spawns and tracks `task`, which cancellation does not drop: `task` watches [`Self::stop`] itself and ends in good
+    /// order when it fires.
+    pub(crate) fn spawn_cooperative<F>(&self, task: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.tracker.spawn(task)
+    }
+
     /// Spawns and tracks `task`; the handle yields `None` if cancellation drops it.
     ///
     /// If `stop` is already cancelled at the first poll, the wrapper drops `task` unpolled. Otherwise, each poll tries

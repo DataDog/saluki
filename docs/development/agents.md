@@ -23,6 +23,8 @@ of the software and don't lose understanding of what we're building.
 - Top priorities are correctness, then performance, in that order.
 - Code should be maintainable and human-readable.
 - Documentation is crucial.
+- Write code comments and docs in the ASD-STE100 style: short sentences, the active voice, and the present tense.
+  Comments describe the code as it is now. See [Writing style](./style-guide.md#writing-style).
 - Development is a conversation, not a monologue. Communicate early and often, from ideation to execution, so that you
   and the human operator stay aligned on the current task: debugging an issue, adding a feature, or refactoring code.
 
@@ -39,10 +41,10 @@ Some files must stay where tooling expects to find them. They point into `docs/`
 
 | File | Read by | Contents |
 |---|---|---|
-| `AGENTS.md` | Agents that follow the `AGENTS.md` convention | Pointer to this page |
+| `AGENTS.md` | Agents that follow the `AGENTS.md` convention, Bits Code Review, and Codex Cloud | Pointer to this page, and a `## Code Review Rules` section that points review agents to the `codereview_guideline.md` files |
 | `.claude/CLAUDE.md` | Claude Code | Imports this page |
 | `.agents/skills/*/SKILL.md`, symlinked from `.claude/skills` | Agent skill discovery | Procedures; reference material lives in `docs/development/` |
-| `codereview_guideline.md` files | The `/dd-review` workflow | Self-contained review prompts; see [Code review](./code-review.md) |
+| `codereview_guideline.md` files | The `/dd-review` workflow | Self-contained review prompts, generated from marked sections of `docs/development/`; see [Edit the guidelines](./code-review.md#edit-the-guidelines) |
 | `test/antithesis/AGENTS.md` | Agents working in `test/antithesis/` | Antithesis workflow notes |
 
 ## Project map
@@ -74,14 +76,16 @@ Use the `/panoramic` skill for correctness and integration testing.
 
 | Topic | Read when |
 |---|---|
-| [Style guide](./style-guide.md) | Writing any code or documentation |
+| [Style guide](./style-guide.md) | Writing any code, code comment, or documentation, including the ASD-STE100 writing rules |
 | [Conventions](./conventions.md) | Making design choices; covers project-specific design rules and taste |
 | [Common language](./common-language.md) | Interpreting requirement levels such as **MUST** and **SHOULD** |
 | [Contributing](./contributing.md) | Writing commits, opening pull requests, adding release notes, and addressing review feedback |
-| [Code review](./code-review.md) | Reviewing a change, or checking your own before opening a pull request |
+| [How we review](./how-we-review.md) | Reviewing a change: what to look for, and how to write review comments |
+| [Code review](./code-review.md) | Checking a change against the review checklists, or changing the review guidelines |
 | [Testing](./testing.md) | Choosing which kind of test to write, and running test suites |
 | [Testing patterns](./testing-patterns.md) | Writing unit tests or property tests |
 | [Configuration system](./configuration-system.md) | Working on configuration, the schema overlay, or the configuration inventory |
+| [Datadog Agent version](./agent-version.md) | How we manage, update, and use the right version of the Datadog Agent |
 | [Plans](#plans) | Planning work that spans several pull requests |
 
 For Antithesis work, read `test/antithesis/AGENTS.md`.
