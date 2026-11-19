@@ -28,7 +28,7 @@ EOF
         case "${runtime}" in
             kubernetes_in_docker)
                 base_mixin=".test-correctness-kind-definition" ;;
-            docker | linux)
+            linux)
                 base_mixin=".test-correctness-definition" ;;
             *)
                 echo "case '${case}' has runtime '${runtime}', which no correctness job runs" >&2
