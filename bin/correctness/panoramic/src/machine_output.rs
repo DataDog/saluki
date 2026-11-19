@@ -627,26 +627,17 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::collector::RunCollector;
     use crate::core::result::{ErrorKind, TestOutcome, TimeoutAttribution};
     use crate::events::TestEvent;
-
-    fn assertion(name: &str, status: AssertionStatus) -> AssertionResult {
-        AssertionResult {
-            name: name.to_string(),
-            status,
-            message: "message".to_string(),
-            duration: Duration::from_millis(5),
-        }
-    }
+    use crate::reporter::test_support::step;
 
     #[test]
     fn test_report_pins_the_contract_field_names() {
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(3),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
+            vec![step(0, "telemetry matches", StepStatus::Failed)],
             vec![PhaseTiming {
                 phase: "analysis".to_string(),
                 duration: Duration::from_millis(20),
@@ -711,10 +702,10 @@ mod tests {
     fn assertion_details_are_capped_inline_and_complete_on_disk() {
         let details: Vec<String> = (0..DETAIL_LINE_CAP + 25).map(|i| format!("line {}", i)).collect();
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
+            vec![step(0, "telemetry matches", StepStatus::Failed)],
             Vec::new(),
         )
         .with_assertion_details(vec![details]);
@@ -806,10 +797,10 @@ mod tests {
 
     #[test]
     fn cancelled_test_report_carries_no_timeout_attribution() {
-        let result = TestResult::from_assertions(
+        let result = TestResult::from_steps(
             "cancelled",
             Duration::from_secs(1),
-            vec![assertion("cancelled", AssertionStatus::Failed)],
+            vec![step(0, "cancelled", StepStatus::Failed)],
             Vec::new(),
         )
         .with_harness_error(ErrorKind::Internal, "Test was cancelled.");
@@ -842,10 +833,10 @@ mod tests {
         )
         .expect("result log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Failed)],
+            vec![step(0, "log_contains", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -892,10 +883,10 @@ mod tests {
         )
         .expect("millstone log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
+            vec![step(0, "telemetry matches", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -934,10 +925,10 @@ mod tests {
         std::fs::write(log_dir.path().join("stdout.log"), "ERROR failed to bind socket\n")
             .expect("stdout log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Passed)],
+            vec![step(0, "log_contains", StepStatus::Passed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -955,10 +946,10 @@ mod tests {
         let lines: Vec<String> = (0..DIAGNOSTIC_LINE_CAP + 10).map(|_| long_line.clone()).collect();
         std::fs::write(log_dir.path().join("stdout.log"), lines.join("\n")).expect("stdout log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Failed)],
+            vec![step(0, "log_contains", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -1004,16 +995,16 @@ mod tests {
     #[test]
     fn run_report_totals_separate_failures_from_errors() {
         let results = [
-            TestResult::from_assertions(
+            TestResult::from_steps(
                 "a",
                 Duration::from_secs(1),
-                vec![assertion("x", AssertionStatus::Passed)],
+                vec![step(0, "x", StepStatus::Passed)],
                 Vec::new(),
             ),
-            TestResult::from_assertions(
+            TestResult::from_steps(
                 "b",
                 Duration::from_secs(1),
-                vec![assertion("x", AssertionStatus::Failed)],
+                vec![step(0, "x", StepStatus::Failed)],
                 Vec::new(),
             ),
             TestResult::errored("c", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new()),
