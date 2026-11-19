@@ -281,7 +281,7 @@ fn non_empty_trimmed(s: String) -> Option<String> {
 ///
 /// Every rule is parsed before any is validated, and the rules are validated in order. The error is
 /// the Agent's message for the first problem found.
-fn parse_processing_rules(raw: Vec<serde_json::Value>) -> std::result::Result<Vec<ProcessingRule>, String> {
+fn parse_processing_rules(key: &str, raw: Vec<serde_json::Value>) -> Result<Vec<ProcessingRule>> {
     // Like Go's decoders, read an explicit null, such as a YAML field with no value, as the field's zero value.
     fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
     where
@@ -314,11 +314,15 @@ fn parse_processing_rules(raw: Vec<serde_json::Value>) -> std::result::Result<Ve
         matching: Vec<RawSourceMatch>,
     }
 
+    let invalid =
+        |message: String| TranslateError::new_with_message(key, format!("Invalid processing rules: {message}"));
+
     let raw = raw
         .into_iter()
         .enumerate()
         .map(|(index, rule)| {
-            serde_json::from_value::<RawRule>(rule).map_err(|error| format!("processing rule {index}: {error}"))
+            serde_json::from_value::<RawRule>(rule)
+                .map_err(|error| invalid(format!("processing rule {index}: {error}")))
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -332,17 +336,19 @@ fn parse_processing_rules(raw: Vec<serde_json::Value>) -> std::result::Result<Ve
             matching,
         } = rule;
         if name.is_empty() {
-            return Err("all processing rules must have a name".to_string());
+            return Err(invalid("all processing rules must have a name".to_string()));
         }
         if matches!(
             rule_type.as_str(),
             "exclude_at_match" | "include_at_match" | "mask_sequences" | "multi_line"
         ) {
             if pattern.is_empty() {
-                return Err(format!("no pattern provided for processing rule: {name}"));
+                return Err(invalid(format!("no pattern provided for processing rule: {name}")));
             }
             if regex::Regex::new(&pattern).is_err() {
-                return Err(format!("invalid pattern {pattern} for processing rule: {name}"));
+                return Err(invalid(format!(
+                    "invalid pattern {pattern} for processing rule: {name}"
+                )));
             }
         }
         let rule = match rule_type.as_str() {
@@ -357,7 +363,9 @@ fn parse_processing_rules(raw: Vec<serde_json::Value>) -> std::result::Result<Ve
             "exclude_truncated" => ProcessingRule::ExcludeTruncated { name },
             "remap_source" => {
                 if matching.is_empty() {
-                    return Err(format!("no matching entries provided for processing rule: {name}"));
+                    return Err(invalid(format!(
+                        "no matching entries provided for processing rule: {name}"
+                    )));
                 }
                 for (index, entry) in matching.iter().enumerate() {
                     for (field, value) in [
@@ -366,7 +374,9 @@ fn parse_processing_rules(raw: Vec<serde_json::Value>) -> std::result::Result<Ve
                         ("new_source", &entry.new_source),
                     ] {
                         if value.is_empty() {
-                            return Err(format!("match {index} has empty {field} in processing rule: {name}"));
+                            return Err(invalid(format!(
+                                "match {index} has empty {field} in processing rule: {name}"
+                            )));
                         }
                     }
                 }
@@ -380,8 +390,12 @@ fn parse_processing_rules(raw: Vec<serde_json::Value>) -> std::result::Result<Ve
                     .collect();
                 ProcessingRule::RemapSource { name, matching }
             }
-            "" => return Err(format!("type must be set for processing rule `{name}`")),
-            other => return Err(format!("type {other} is not supported for processing rule `{name}`")),
+            "" => return Err(invalid(format!("type must be set for processing rule `{name}`"))),
+            other => {
+                return Err(invalid(format!(
+                    "type {other} is not supported for processing rule `{name}`"
+                )))
+            }
         };
         rules.push(rule);
     }
@@ -1605,12 +1619,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         if !(self.datadog.logs_enabled || self.datadog.log_enabled) {
             return;
         }
-        match parse_processing_rules(value) {
+        match parse_processing_rules("logs_config.processing_rules", value) {
             Ok(rules) => self.config.domains.logs.processing_rules = rules,
-            Err(message) => self.record_error(TranslateError::new_with_message(
-                "logs_config.processing_rules",
-                format!("Invalid processing rules: {message}"),
-            )),
+            Err(error) => self.record_error(error),
         }
     }
 
