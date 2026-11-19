@@ -23,6 +23,7 @@ use crate::core::spec::{CommandSpec, Evidence, FileSource, FileSpec, Participant
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
 
+mod own_ip;
 mod windows;
 
 const LISTENERS: &[Listener] = &[
@@ -191,6 +192,8 @@ impl ParticipantType for AgentAdp {
             operations: &OPERATIONS,
             ..ParticipantSpec::default()
         };
+        let with: With = cx.with()?;
+        spec.files.extend(own_ip::files(cx, with.own_ip.as_ref())?);
         add_endpoints(cx, &mut spec)?;
         datadog_agent::set_defaults(cx, true, &mut spec)?;
         let enabled = |key| cx.case.env.get(key).is_some_and(|value| value.text() == "true");
@@ -235,6 +238,9 @@ fn host_processes(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
         return Err(
             "with.host_view mounts host paths into a container, and host processes already see the host".to_string(),
         );
+    }
+    if with.own_ip.is_some() {
+        return Err("with.own_ip is built for containers".to_string());
     }
     reject_adp_keys(cx, "On macOS")?;
     let own_dir = Template::parse("{{ self.dir }}")?;

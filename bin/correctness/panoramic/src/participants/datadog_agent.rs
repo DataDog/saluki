@@ -1,6 +1,6 @@
 //! What the participant types that run the Datadog Agent share: its default environment and the rules that withdraw
 //! it, its configuration file, its connections to an intake and to a server it forwards DogStatsD packets to, the host
-//! view, and its s6 services.
+//! view, the address of its own container, and its s6 services.
 //!
 //! Both sides of a comparison run the Agent, so they take one default environment from here and cannot drift apart.
 //! The default environment moves every listener of the software off its own default port, as the harness has always
@@ -218,6 +218,20 @@ pub(super) struct With {
     /// them.
     #[serde(default)]
     pub(super) host_view: bool,
+    /// Gives the participant the address of its own container, in environment variables and in its hosts file.
+    #[serde(default)]
+    pub(super) own_ip: Option<OwnIp>,
+}
+
+/// What `with.own_ip` asks for: each variable in `env` is set to the participant's own address, and each name in
+/// `hosts` resolves to it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OwnIp {
+    #[serde(default)]
+    pub(super) env: Vec<String>,
+    #[serde(default)]
+    pub(super) hosts: Vec<String>,
 }
 
 /// The files of the s6 services under `/etc/services.d/<service>/`, for each of `services`.

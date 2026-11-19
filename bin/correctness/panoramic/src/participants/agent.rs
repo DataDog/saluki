@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use super::datadog_agent::{
-    self, ListenAt, Listener, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE, NOT_WINDOWS,
+    self, ListenAt, Listener, With, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE,
+    NOT_WINDOWS,
 };
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{Evidence, ParticipantSpec, Protocol, Wiring};
@@ -102,6 +103,10 @@ impl ParticipantType for Agent {
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
+        let with: With = cx.with()?;
+        if with.own_ip.is_some() {
+            return Err("with.own_ip is agent-adp's".to_string());
+        }
         let ready = Evidence::Output {
             pattern: Template::parse(DOGSTATSD_UDP_STARTED)?,
             process: "agent".to_string(),
