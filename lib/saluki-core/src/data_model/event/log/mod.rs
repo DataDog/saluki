@@ -106,6 +106,11 @@ impl Log {
         &self.message
     }
 
+    /// Replaces the log message.
+    pub fn set_message(&mut self, message: impl Into<MetaString>) {
+        self.message = message.into();
+    }
+
     /// Returns when the log entered the pipeline, in nanoseconds since the Unix epoch, if its source recorded it.
     pub fn ingestion_timestamp(&self) -> Option<u64> {
         self.ingestion_timestamp.map(NonZeroU64::get)

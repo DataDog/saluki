@@ -25,6 +25,7 @@ use std::time::Duration;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricPrefixRule, MetricTagFilterEntry, OriginTagCardinality,
 };
+use agent_data_plane_config::domains::logs::{ProcessingRule, SourceMatch};
 use agent_data_plane_config::domains::otlp::{
     ContainerTagPromotion, CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue,
     SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
@@ -273,6 +274,137 @@ fn non_empty_trimmed(s: String) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// Parses and validates `logs_config.processing_rules` as the Agent's `GlobalProcessingRules` does
+/// (`comp/logs/agent/config/processing_rules.go`).
+///
+/// Every rule is parsed before any is validated, and the rules are validated in order. The error is
+/// the Agent's message for the first problem found. For an invalid pattern, the message also gives the
+/// reason, since a pattern that Go accepts can fail here.
+fn parse_processing_rules(key: &str, raw: Vec<serde_json::Value>) -> Result<Vec<ProcessingRule>> {
+    // Like Go's decoders, read an explicit null, such as a YAML field with no value, as the field's zero value.
+    fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: Default + serde::Deserialize<'de>,
+    {
+        Ok(<Option<T> as serde::Deserialize>::deserialize(deserializer)?.unwrap_or_default())
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawSourceMatch {
+        #[serde(default, deserialize_with = "null_as_default")]
+        attribute: String,
+        #[serde(default, deserialize_with = "null_as_default")]
+        value: String,
+        #[serde(default, deserialize_with = "null_as_default")]
+        new_source: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawRule {
+        #[serde(default, rename = "type", deserialize_with = "null_as_default")]
+        rule_type: String,
+        #[serde(default, deserialize_with = "null_as_default")]
+        name: String,
+        #[serde(default, deserialize_with = "null_as_default")]
+        pattern: String,
+        #[serde(default, deserialize_with = "null_as_default")]
+        replace_placeholder: String,
+        #[serde(default, deserialize_with = "null_as_default")]
+        matching: Vec<RawSourceMatch>,
+    }
+
+    let invalid =
+        |message: String| TranslateError::new_with_message(key, format!("Invalid processing rules: {message}"));
+    let invalid_with_source = |message: String, error: Box<dyn std::error::Error + Send + Sync>| {
+        TranslateError::new_with_context(key, format!("Invalid processing rules: {message}"), error)
+    };
+
+    let raw = raw
+        .into_iter()
+        .enumerate()
+        .map(|(index, rule)| {
+            serde_json::from_value::<RawRule>(rule)
+                .map_err(|error| invalid_with_source(format!("processing rule {index}"), error.into()))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    let mut rules = Vec::with_capacity(raw.len());
+    for rule in raw {
+        let RawRule {
+            rule_type,
+            name,
+            pattern,
+            replace_placeholder,
+            matching,
+        } = rule;
+        if name.is_empty() {
+            return Err(invalid("all processing rules must have a name".to_string()));
+        }
+        if matches!(
+            rule_type.as_str(),
+            "exclude_at_match" | "include_at_match" | "mask_sequences" | "multi_line"
+        ) {
+            if pattern.is_empty() {
+                return Err(invalid(format!("no pattern provided for processing rule: {name}")));
+            }
+            if let Err(error) = regex::Regex::new(&pattern) {
+                return Err(invalid_with_source(
+                    format!("invalid pattern {pattern} for processing rule: {name}"),
+                    error.into(),
+                ));
+            }
+        }
+        let rule = match rule_type.as_str() {
+            "exclude_at_match" => ProcessingRule::ExcludeAtMatch { name, pattern },
+            "include_at_match" => ProcessingRule::IncludeAtMatch { name, pattern },
+            "mask_sequences" => ProcessingRule::MaskSequences {
+                name,
+                pattern,
+                replace_placeholder,
+            },
+            "multi_line" => ProcessingRule::MultiLine { name, pattern },
+            "exclude_truncated" => ProcessingRule::ExcludeTruncated { name },
+            "remap_source" => {
+                if matching.is_empty() {
+                    return Err(invalid(format!(
+                        "no matching entries provided for processing rule: {name}"
+                    )));
+                }
+                for (index, entry) in matching.iter().enumerate() {
+                    for (field, value) in [
+                        ("attribute", &entry.attribute),
+                        ("value", &entry.value),
+                        ("new_source", &entry.new_source),
+                    ] {
+                        if value.is_empty() {
+                            return Err(invalid(format!(
+                                "match {index} has empty {field} in processing rule: {name}"
+                            )));
+                        }
+                    }
+                }
+                let matching = matching
+                    .into_iter()
+                    .map(|entry| SourceMatch {
+                        attribute: entry.attribute,
+                        value: entry.value,
+                        new_source: entry.new_source,
+                    })
+                    .collect();
+                ProcessingRule::RemapSource { name, matching }
+            }
+            "" => return Err(invalid(format!("type must be set for processing rule `{name}`"))),
+            other => {
+                return Err(invalid(format!(
+                    "type {other} is not supported for processing rule `{name}`"
+                )))
+            }
+        };
+        rules.push(rule);
+    }
+    Ok(rules)
 }
 
 /// Parses one `dogstatsd_mapper_profiles` object into a [`MapperProfile`].
@@ -1484,6 +1616,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_log_to_syslog(&mut self, value: bool) {
         self.config.control.logging.to_syslog = value;
+    }
+
+    fn consume_logs_config_processing_rules(&mut self, value: Vec<serde_json::Value>) {
+        // The Agent only reads the rules when its logs agent runs. `control.logs_enabled` may not be set yet, since
+        // `logs_enabled` is consumed after this key, so read the keys that enable the logs agent directly.
+        if !(self.datadog.logs_enabled || self.datadog.log_enabled) {
+            return;
+        }
+        match parse_processing_rules("logs_config.processing_rules", value) {
+            Ok(rules) => self.config.domains.logs.processing_rules = rules,
+            Err(error) => self.record_error(error),
+        }
     }
 
     fn consume_logs_enabled(&mut self, value: bool) {
@@ -2885,6 +3029,180 @@ mod tests {
         let error = errors.expect("a negative mapper cache size should record an error");
         assert!(error.to_string().contains("dogstatsd_mapper_cache_size"));
         assert!(error.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn logs_processing_rules_translate_from_a_sequence_or_json_string() {
+        use agent_data_plane_config::domains::logs::{ProcessingRule, SourceMatch};
+
+        let rules = json!([
+            { "type": "exclude_at_match", "name": "exclude", "pattern": "^debug" },
+            { "type": "include_at_match", "name": "include", "pattern": "keep" },
+            { "type": "mask_sequences", "name": "mask", "pattern": "(id=)[0-9]+", "replace_placeholder": "${1}x" },
+            { "type": "exclude_truncated", "name": "truncated" },
+            {
+                "type": "remap_source",
+                "name": "remap",
+                "matching": [{ "attribute": "vendor", "value": "acme", "new_source": "acme_logs" }]
+            },
+            { "type": "multi_line", "name": "multi_line", "pattern": "[0-9]{4}-" },
+        ]);
+
+        for source in [rules.clone(), Value::String(rules.to_string())] {
+            let (config, errors) =
+                translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": source } }));
+
+            assert!(errors.is_none(), "unexpected errors: {errors:?}");
+            assert_eq!(
+                config.domains.logs.processing_rules,
+                [
+                    ProcessingRule::ExcludeAtMatch {
+                        name: "exclude".into(),
+                        pattern: "^debug".into(),
+                    },
+                    ProcessingRule::IncludeAtMatch {
+                        name: "include".into(),
+                        pattern: "keep".into(),
+                    },
+                    ProcessingRule::MaskSequences {
+                        name: "mask".into(),
+                        pattern: "(id=)[0-9]+".into(),
+                        replace_placeholder: "${1}x".into(),
+                    },
+                    ProcessingRule::ExcludeTruncated {
+                        name: "truncated".into(),
+                    },
+                    ProcessingRule::RemapSource {
+                        name: "remap".into(),
+                        matching: vec![SourceMatch {
+                            attribute: "vendor".into(),
+                            value: "acme".into(),
+                            new_source: "acme_logs".into(),
+                        }],
+                    },
+                    ProcessingRule::MultiLine {
+                        name: "multi_line".into(),
+                        pattern: "[0-9]{4}-".into(),
+                    },
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn null_logs_processing_rule_fields_read_as_empty() {
+        use agent_data_plane_config::domains::logs::ProcessingRule;
+
+        // A YAML field with no value is null. Like the Agent, read it as an empty value.
+        let translate = |rule: Value| {
+            translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": [rule] } }))
+        };
+
+        let (config, errors) = translate(
+            json!({ "type": "mask_sequences", "name": "strip", "pattern": "secret", "replace_placeholder": null }),
+        );
+        assert!(errors.is_none(), "unexpected errors: {errors:?}");
+        assert_eq!(
+            config.domains.logs.processing_rules,
+            [ProcessingRule::MaskSequences {
+                name: "strip".into(),
+                pattern: "secret".into(),
+                replace_placeholder: String::new(),
+            }]
+        );
+
+        // An empty `matching` is then rejected with the Agent's validation message, rather than as a type error.
+        let (_, errors) = translate(json!({ "type": "remap_source", "name": "no_matching", "matching": null }));
+        let error = errors.expect("a null `matching` should fail validation").to_string();
+        assert!(
+            error.contains("no matching entries provided for processing rule: no_matching"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn logs_processing_rules_are_only_read_when_the_logs_agent_is_enabled() {
+        // Like the Agent, the rules aren't read, or validated, unless `logs_enabled` or `log_enabled` turns on the
+        // logs agent.
+        let invalid = json!([{ "type": "exclude_at_match", "name": "no_pattern" }]);
+        let (config, errors) = translate_explicit(json!({ "logs_config": { "processing_rules": invalid } }));
+        assert!(errors.is_none(), "unexpected errors: {errors:?}");
+        assert!(config.domains.logs.processing_rules.is_empty());
+
+        let valid = json!([{ "type": "exclude_truncated", "name": "truncated" }]);
+        for enabling_key in ["logs_enabled", "log_enabled"] {
+            let (config, errors) =
+                translate_explicit(json!({ enabling_key: true, "logs_config": { "processing_rules": valid } }));
+            assert!(errors.is_none(), "unexpected errors with {enabling_key}: {errors:?}");
+            assert_eq!(config.domains.logs.processing_rules.len(), 1, "{enabling_key}");
+        }
+    }
+
+    #[test]
+    fn invalid_logs_processing_rules_fail_with_the_agents_message() {
+        // The messages are those of the Agent's `ValidateProcessingRules`
+        // (`comp/logs/agent/config/processing_rules.go`).
+        let cases = [
+            (
+                json!({ "type": "exclude_at_match", "pattern": "a" }),
+                "all processing rules must have a name",
+            ),
+            (
+                json!({ "name": "untyped", "pattern": "a" }),
+                "type must be set for processing rule `untyped`",
+            ),
+            (
+                json!({ "type": "drop_everything", "name": "unknown" }),
+                "type drop_everything is not supported for processing rule `unknown`",
+            ),
+            (
+                json!({ "type": "include_at_match", "name": "no_pattern" }),
+                "no pattern provided for processing rule: no_pattern",
+            ),
+            (
+                json!({ "type": "mask_sequences", "name": "bad_pattern", "pattern": "(" }),
+                "invalid pattern ( for processing rule: bad_pattern: regex parse error",
+            ),
+            (
+                json!({ "type": "multi_line", "name": "bad_multi_line", "pattern": "[" }),
+                "invalid pattern [ for processing rule: bad_multi_line",
+            ),
+            (
+                json!({ "type": "remap_source", "name": "no_matching" }),
+                "no matching entries provided for processing rule: no_matching",
+            ),
+            (
+                json!({ "type": "remap_source", "name": "no_attribute", "matching": [{ "value": "v", "new_source": "s" }] }),
+                "match 0 has empty attribute in processing rule: no_attribute",
+            ),
+            (
+                json!({ "type": "remap_source", "name": "no_value", "matching": [{ "attribute": "a", "new_source": "s" }] }),
+                "match 0 has empty value in processing rule: no_value",
+            ),
+            (
+                json!({ "type": "remap_source", "name": "no_source", "matching": [{ "attribute": "a", "value": "v" }] }),
+                "match 0 has empty new_source in processing rule: no_source",
+            ),
+            (
+                json!({ "type": "exclude_at_match", "name": 7, "pattern": "a" }),
+                "processing rule 1: invalid type: integer `7`",
+            ),
+        ];
+
+        for (rule, expected) in cases {
+            // A valid rule before the invalid one doesn't apply either.
+            let rules = json!([{ "type": "exclude_truncated", "name": "valid" }, rule]);
+            let (config, errors) =
+                translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": rules } }));
+
+            let error = errors.unwrap_or_else(|| panic!("{rule} should fail")).to_string();
+            assert!(
+                error.contains("`logs_config.processing_rules`, Invalid processing rules: ")
+                    && error.contains(expected),
+                "{rule}: expected {expected:?} in {error:?}"
+            );
+            assert!(config.domains.logs.processing_rules.is_empty(), "{rule}");
+        }
     }
 
     #[test]
