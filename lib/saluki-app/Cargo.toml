@@ -43,7 +43,6 @@ tonic = { workspace = true, features = ["router"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
-tracing-rolling-file = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
   "ansi",
   "fmt",

@@ -62,7 +62,7 @@ pub struct LoggingConfiguration {
     /// Maximum size of a log file before it's rolled over.
     pub log_file_max_size: ByteSize,
 
-    /// Maximum number of rolled-over log files to retain.
+    /// Maximum number of rolled-over log files to retain. `0` retains one.
     pub log_file_max_rolls: usize,
 }
 

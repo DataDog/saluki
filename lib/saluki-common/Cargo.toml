@@ -40,4 +40,5 @@ metrics = { workspace = true }
 proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio-test = { workspace = true }
