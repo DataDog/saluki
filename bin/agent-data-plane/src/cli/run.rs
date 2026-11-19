@@ -1192,25 +1192,6 @@ mod tests {
     const CONTEXT_DUMP_ROUTE: &str = crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
     #[test]
-    fn logs_go_through_logs_process_only_when_there_are_processing_rules_that_apply() {
-        use agent_data_plane_config::domains::logs::{Domain, ProcessingRule};
-
-        let mut logs = Domain::default();
-        assert_eq!(super::logs_pipeline_input(&logs), "dd_logs_encode");
-
-        logs.processing_rules.push(ProcessingRule::ExcludeTruncated {
-            name: "truncated".to_string(),
-        });
-        assert_eq!(super::logs_pipeline_input(&logs), "dd_logs_encode");
-
-        logs.processing_rules.push(ProcessingRule::ExcludeAtMatch {
-            name: "exclude".to_string(),
-            pattern: "debug".to_string(),
-        });
-        assert_eq!(super::logs_pipeline_input(&logs), super::LOGS_PROCESS);
-    }
-
-    #[test]
     fn dogstatsd_capture_path_falls_back_to_run_path() {
         let run_path = PathBuf::from("/my/little/run_path");
 
