@@ -1,6 +1,6 @@
 description: "Verifies retained DogStatsD contexts through the privileged API, online CLI, and offline Agent-compatible artifact"
 timeout: 180s
-subject_os: [linux]
+subject_os: [linux, windows]
 
 participants:
   adp:
@@ -12,12 +12,15 @@ participants:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "false"
       DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    files:
-      /dogstatsd-top/run_dogstatsd_top_test.py: run_dogstatsd_top_test.py
-      # Produced by Datadog Agent 7.80.3 `dogstatsd dump-contexts`; the NDJSON file is the exact
-      # decompressed content of the zstd artifact.
-      /dogstatsd-top/agent-7.80.3-contexts.json.zstd: agent-7.80.3-contexts.json.zstd
-      /dogstatsd-top/agent-7.80.3-contexts.ndjson: agent-7.80.3-contexts.ndjson
+    os:
+      linux:
+        files:
+          # Produced by Datadog Agent 7.80.3 `dogstatsd dump-contexts`; the NDJSON file is the exact
+          # decompressed content of the zstd artifact.
+          /dogstatsd-top/: linux/
+      windows:
+        files:
+          "C:/dogstatsd-top/": windows/
 
 procedure:
   - parallel:
@@ -29,17 +32,21 @@ procedure:
       - {step: log_contains, on: adp, pattern: "Agent Data Plane running.", timeout: 60s}
   - step: exec
     on: adp
-    command:
-      - "/opt/datadog-agent/embedded/bin/python3"
-      - "/dogstatsd-top/run_dogstatsd_top_test.py"
     env:
       DOGSTATSD_PORT: "{{ adp.endpoints.dogstatsd_udp.port }}"
     timeout: 90s
+    os:
+      linux:
+        command: [/opt/datadog-agent/embedded/bin/python3, /dogstatsd-top/run_dogstatsd_top_test.py]
+      windows:
+        command: [pwsh, -NoProfile, -NonInteractive, -File, 'C:\dogstatsd-top\run_dogstatsd_top_test.ps1']
   - step: file_contains
     on: adp
-    path: "/tmp/dogstatsd-top-integration-result"
     pattern: "passed"
     timeout: 10s
+    os:
+      linux: {path: /tmp/dogstatsd-top-integration-result}
+      windows: {path: 'C:\dogstatsd-top-result'}
   - parallel:
       - {step: process_stable_for, on: adp, process: adp, duration: 10s}
       - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}
