@@ -18,8 +18,8 @@ logs_config:
   logs_dd_url: "{{ self.connections.intake.host }}:{{ self.connections.intake.port }}"
   logs_no_ssl: true
   force_use_http: true
-  # The rules apply to the rendered content of each log, in order. The patterns avoid the classes that Go and Rust
-  # regular expressions match differently, such as `\w` and `\d`.
+  # The rules apply to the rendered content of each log, in order. The last three masks match differently in the
+  # Agent and ADP, and their differences are listed in the case's known differences.
   processing_rules:
     - type: exclude_at_match
       name: exclude_healthchecks
@@ -39,6 +39,18 @@ logs_config:
       name: mask_tokens
       pattern: '"token":"[a-z0-9-]+"'
       replace_placeholder: '"token":"[masked]"'
+    - type: mask_sequences
+      name: mask_words
+      pattern: 'word=\w+'
+      replace_placeholder: "word=[masked]"
+    - type: mask_sequences
+      name: mask_refs
+      pattern: "(ref=)[a-z]+"
+      replace_placeholder: "$01[masked]"
+    - type: mask_sequences
+      name: mask_bold_tags
+      pattern: '\\u003cb\\u003e'
+      replace_placeholder: "[tag]"
 
 otlp_config:
   receiver:

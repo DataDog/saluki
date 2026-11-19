@@ -710,6 +710,8 @@ pub fn resource_host_fixture() -> Vec<u8> {
 /// whose `fixture_id` starts with `keep` matches the include rule through that property, unless the exclude rule
 /// drops it first. The `attr-include` record matches through a separate property. Only string values are used, so
 /// that no other gap changes the content.
+///
+/// The last records are masked differently by the Agent and ADP, through gaps of the processing rules themselves.
 fn processing_rule_records(start_index: u64) -> Vec<LogRecord> {
     let record = |index: u64, id: &str, attributes: Vec<KeyValue>| record(start_index + index, id, attributes);
     let with_body = |index: u64, id: &str, body: &str, attributes: Vec<KeyValue>| LogRecord {
@@ -731,5 +733,12 @@ fn processing_rule_records(start_index: u64) -> Vec<LogRecord> {
         record(6, "keep-attr-exclude", vec![kv("probe", string("healthcheck"))]),
         // Dropped by the include rule.
         record(7, "drop-no-marker", vec![]),
+        // gap/regex-dialect: `\w` matches only ASCII letters in Go, so the Agent leaves the `é` unmasked.
+        with_body(8, "keep-regex-dialect", "ordered word=café today", vec![]),
+        // gap/placeholder-expansion: Go expands `$01` to nothing, where ADP expands it to the first group.
+        with_body(9, "keep-placeholder-expansion", "linked ref=abc today", vec![]),
+        // gap/json-encoding: the Agent's content escapes `<` and `>` as `\u003c` and `\u003e`, which the pattern
+        // matches, while ADP's content holds them as they are.
+        with_body(10, "keep-json-encoding", "rendered <b> today", vec![]),
     ]
 }
