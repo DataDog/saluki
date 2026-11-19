@@ -360,11 +360,11 @@ pub(crate) type EndpointRequestMapperFactory<B> =
 
 /// Maps requests for a resolved endpoint before they are sent.
 pub(crate) type EndpointRequestMapper<B> =
-    Box<dyn FnMut(Request<TransactionBody<B>>) -> Request<TransactionBody<B>> + Send>;
+    Arc<dyn Fn(Request<TransactionBody<B>>) -> Request<TransactionBody<B>> + Send + Sync>;
 
 fn default_endpoint_request_mapper<B: 'static>(endpoint: ResolvedEndpoint) -> EndpointRequestMapper<B> {
     let mapper = for_resolved_endpoint(endpoint);
-    Box::new(mapper)
+    Arc::new(mapper)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -955,7 +955,7 @@ async fn run_endpoint_io_loop<B>(
         ?endpoint_v3_settings,
         "Starting endpoint I/O task."
     );
-    let endpoint_request_mapper = Arc::new(Mutex::new((endpoint_request_mapper_factory)(endpoint)));
+    let endpoint_request_mapper = (endpoint_request_mapper_factory)(endpoint);
 
     // Build our endpoint service.
     //
@@ -984,15 +984,7 @@ async fn run_endpoint_io_loop<B>(
     }
     let mut service = ServiceBuilder::new()
         // Set the request's URI and endpoint-specific headers.
-        .map_request({
-            let endpoint_request_mapper = Arc::clone(&endpoint_request_mapper);
-            move |request| {
-                let mut mapper = endpoint_request_mapper
-                    .lock()
-                    .expect("endpoint request mapper mutex poisoned");
-                mapper(request)
-            }
-        })
+        .map_request(move |request| endpoint_request_mapper(request))
         // Signal backend support for arbitrary tag values when configured.
         .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
