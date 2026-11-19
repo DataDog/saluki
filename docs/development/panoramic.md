@@ -186,6 +186,8 @@ are an error, and so is a path that panoramic reserves.
 
 ### References
 
+::: v-pre
+
 A reference is a value that panoramic owns, written between double braces. It has one of these forms:
 
 - `{{ self.endpoints.api.port }}`: the `port`, `path` or `name` of an endpoint. `self` is the participant that holds
@@ -221,6 +223,8 @@ type reads its connections through `{{ self.connections.<name>.url }}`. A connec
 `ready` says when an endpoint is ready: `accepts`, `exists`, `none`, `{http: <path>}` or
 `{output: <pattern>, process: <name>}`. A participant that listens on an endpoint starts before the participants that
 connect to it.
+
+:::
 
 ### Errors that panoramic finds first
 
