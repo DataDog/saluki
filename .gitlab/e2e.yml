@@ -123,15 +123,11 @@ test-integration:
       - integration-logs/
     when: always
   variables:
-    # Looks weird but we need to set this so that the test runner knows the right image path to pull the `alpine` image, which is required by
-    # `airlock` to properly configure some permissions on the shared volume before the target container is started. We don't have access to
-    # Docker Hub so the default of `alpine:latest` is insufficient.
-    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
   script:
     # Copy the images we built to the local Docker instance, under the tags the Makefile builds locally, so we can
-    # share the integration test configurations between CI and local test runs. The correctness-tools image provides
-    # the intake sidecar that opted-in test cases run.
+    # share the integration test configurations between CI and local test runs. The correctness-tools image runs the
+    # intake participant.
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
     - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID} saluki-images/datadog-agent:testing-devel
@@ -140,13 +136,12 @@ test-integration:
     # Run the panoramic binary and the courier that build-panoramic-binary published, from the repository root.
     - target/release/panoramic run -d $(pwd)/test/integration/cases
 
-# Runs the subset of integration tests that have opted in to the `mac` runtime
-# directly on a bare-metal macOS runner. No Docker, no virtualization: panoramic spawns ADP
-# (and the Core Agent for converged tests) as real macOS processes against a per-test temp
-# state directory. The Datadog Agent is installed into a sandbox under /tmp/saluki-dda by
-# the Makefile target (idempotent: re-uses the install across runs if the pinned version is
-# already present). The sandbox install never touches /opt/datadog-agent, so any system
-# install on the runner is left alone.
+# Runs the integration cases that declare macOS directly on a bare-metal macOS runner. No
+# Docker, no virtualization: panoramic spawns ADP (and the Core Agent for converged cases) as
+# real macOS processes under /tmp/panoramic, one case at a time. The Datadog Agent is
+# installed into a sandbox under /tmp/saluki-dda by the Makefile target (idempotent: re-uses
+# the install across runs if the pinned version is already present). The sandbox install never
+# touches /opt/datadog-agent, so any system install on the runner is left alone.
 .test-integration-macos-base:
   stage: e2e
   needs: []
@@ -161,8 +156,8 @@ test-integration:
     PANORAMIC_LOG_DIR: integration-logs
   before_script:
     # Defensive: clean up any leftover Agent/ADP processes from prior runs on this shared
-    # runner. All test-Agent ports are shifted out of the canonical range (see
-    # panoramic::test_env::port_isolation_env), so we don't need to touch a system
+    # runner. All test-Agent ports are shifted out of the canonical range (see `DEFAULT_ENV` in
+    # bin/correctness/panoramic/src/participants/datadog_agent.rs), so we don't need to touch a system
     # install at /opt/datadog-agent. We do need to sweep:
     #   - our own Core Agent sandbox under /tmp/saluki-dda (trace-agent / process-agent
     #     children that survived a non-graceful job termination still hold our shifted ports)

@@ -718,12 +718,12 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 # build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
 # Cases take the two binaries with --set.
 test-integration-macos-run: BUILD_PROFILE ?= release
-test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all macOS integration cases (host processes); narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
 	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		--set "target/release/agent-data-plane=$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
 		--set "/tmp/saluki-dda/datadog-agent/bin/agent/agent=$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
-		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
+		$(if $(CASE),-t $(CASE)) --no-tui \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: provision-macos-test-env
@@ -766,7 +766,7 @@ provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
 .PHONY: test-integration-macos-ci
-test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
+test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the macOS integration cases (host processes)
 
 .PHONY: ensure-rust-nightly
 ensure-rust-nightly:
