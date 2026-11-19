@@ -5,10 +5,10 @@
 //! that does not declare that OS is skipped, and the skip is recorded with its reason.
 //!
 //! Before the first case, the run checks once what the selected cases need: each realization they use, a Docker daemon
-//! for containers and pods, every image they run, pulled once if the daemon lacks it, the courier they get, and, for
-//! pods, a kind cluster that holds the images. For host processes it checks that the runner host runs the OS the case
-//! declares and that every host program outside the participant's own directory can be run. Host processes need no
-//! Docker daemon.
+//! for containers and pods, every image they run, pulled once if the daemon lacks it, the courier they get for each
+//! container OS, and, for pods, a kind cluster that holds the images. A Windows container needs a Windows runner host.
+//! For host processes it checks that the runner host runs the OS the case declares and that every host program outside
+//! the participant's own directory can be run. Host processes need no Docker daemon.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -25,7 +25,7 @@ use tracing::warn;
 use crate::config::{runtime_of, KIND_RUNTIME};
 use crate::core::backend::Backends;
 use crate::core::case::{self, CaseError};
-use crate::core::container::{ContainerBackend, LINUX};
+use crate::core::container::{ContainerBackend, LINUX, WINDOWS};
 use crate::core::host::{locate, HostBackend};
 use crate::core::lifecycle::{self, CaseRun};
 use crate::core::participant::{Enclosure, Os};
@@ -256,9 +256,10 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 }
 
 /// Checks, once and before the first case, what the selected participant cases need: each realization their
-/// participants use, every image, pulled if the Docker daemon lacks it, the courier, and, for pods, a kind cluster that
-/// holds the images. For host processes, the runner host must run the OS the participant declares, and every program
-/// that is not under the participant's own directory must be found. `plans` holds the plan of each case that runs, by
+/// participants use, every image, pulled if the Docker daemon lacks it, the courier of each container OS, and, for
+/// pods, a kind cluster that holds the images. A Windows container needs a Windows runner host. For host processes, the
+/// runner host must run the OS the participant declares, and every program that is not under the participant's own
+/// directory must be found. `plans` holds the plan of each case that runs, by
 /// name.
 ///
 /// A kind cluster is made if it is missing, and a run with any pod sets it up once here, outside every case's timeout.
@@ -279,6 +280,7 @@ pub(crate) async fn check_before_the_first_case(
     let mut pod_images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut pod_cases = Vec::new();
     let mut containers = false;
+    let mut windows = false;
     let mut hosts = false;
     let mut host_programs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, plan) in plans {
@@ -288,6 +290,19 @@ pub(crate) async fn check_before_the_first_case(
                     containers = true;
                     &mut container_images
                 }
+                Enclosure::WindowsContainer => {
+                    if Os::host() != Os::Windows {
+                        errors.push(format!(
+                            "Case '{}' runs participant '{}' as a Windows container, and the runner host runs {}.",
+                            name,
+                            participant,
+                            Os::host()
+                        ));
+                        continue;
+                    }
+                    windows = true;
+                    &mut container_images
+                }
                 Enclosure::KubernetesPod => {
                     pod_cases.push(name.as_str());
                     &mut pod_images
@@ -295,7 +310,7 @@ pub(crate) async fn check_before_the_first_case(
                 Enclosure::HostProcessGroup => {
                     hosts = true;
                     let host = Os::host();
-                    // TODO: stop host processes where there are no process groups, with the Windows backend.
+                    // Stopping a tree of host processes on Windows needs a Job object, which nothing builds yet.
                     if !cfg!(unix) {
                         errors.push(format!(
                             "Case '{}' runs participant '{}' as host processes, and the runner host {} cannot stop them: \
@@ -315,14 +330,6 @@ pub(crate) async fn check_before_the_first_case(
                                 .push(format!("{} (participant '{}')", name, participant));
                         }
                     }
-                    continue;
-                }
-                // TODO: check the other realizations with the backends that run them.
-                enclosure => {
-                    errors.push(format!(
-                        "Case '{}' runs participant '{}' as a {}, and the runner host cannot: that backend is not built.",
-                        name, participant, enclosure
-                    ));
                     continue;
                 }
             };
@@ -355,16 +362,24 @@ pub(crate) async fn check_before_the_first_case(
             None => return Err(vec!["Host processes have no state directory.".to_string()]),
         }
     }
-    if !(containers || pods) {
+    if !(containers || windows || pods) {
         return Ok(backends);
     }
 
     let docker = match airlock::docker::connect() {
         Ok(docker) => docker,
-        Err(e) => return Err(vec![format!("Containers and pods need a Docker daemon: {:#}", e)]),
+        Err(e) => {
+            return Err(vec![format!(
+                "Linux and Windows containers and pods need a Docker daemon: {:#}",
+                e
+            )])
+        }
     };
     if let Err(e) = docker.ping().await {
-        return Err(vec![format!("Containers and pods need a Docker daemon: {}", e)]);
+        return Err(vec![format!(
+            "Linux and Windows containers and pods need a Docker daemon: {}",
+            e
+        )]);
     }
     for (image, mut cases) in container_images {
         cases.dedup();
@@ -390,6 +405,19 @@ pub(crate) async fn check_before_the_first_case(
             )),
         }
     }
+    let mut windows_courier = Vec::new();
+    if windows {
+        let path = WINDOWS.courier_binary();
+        match std::fs::read(&path) {
+            Ok(bytes) => windows_courier = bytes,
+            Err(e) => errors.push(format!(
+                "Windows containers need the courier at {}, relative to the directory panoramic runs in, which \
+                 ci/tooling/windows-integration-tests.ps1 builds: {}",
+                path.display(),
+                e
+            )),
+        }
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -397,6 +425,10 @@ pub(crate) async fn check_before_the_first_case(
     if containers {
         let backend = ContainerBackend::new(docker.clone(), &LINUX, courier.clone().into());
         backends.insert(Enclosure::LinuxContainer, Arc::new(backend));
+    }
+    if windows {
+        let backend = ContainerBackend::new(docker.clone(), &WINDOWS, windows_courier.into());
+        backends.insert(Enclosure::WindowsContainer, Arc::new(backend));
     }
     if pods {
         let images = pod_images.keys().map(|image| image.to_string()).collect();
