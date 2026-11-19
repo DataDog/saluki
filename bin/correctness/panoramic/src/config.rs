@@ -714,12 +714,11 @@ where
 /// Discover all test cases across one or more directories.
 ///
 /// A `config.yaml` found in a direct subdirectory is routed by its shape. One with a top-level `type` field is a
-/// legacy case, and no legacy case of type `"integration"`, `"correctness"`, or `"correctness_matrix"` runs any more:
+/// legacy case. Legacy cases of type `"integration"`, `"correctness"`, and `"correctness_matrix"` are not run:
 /// discovery fails with an error that names the file. A legacy file with an unknown `type` causes a panic. One without
 /// `type` is a participant case, loaded and planned for every OS it declares.
 ///
-/// `integration_runtime` and `image_overrides` are inputs of the legacy loaders, which no discovered case reaches any
-/// more.
+/// `integration_runtime` and `image_overrides` are inputs of the legacy loaders, which no discovered case reaches.
 ///
 /// Every participant case is included, for `subject_os`: a case that does not declare it is skipped when it runs. `set`
 /// holds the run's replacements of the images and host programs participant cases name.
