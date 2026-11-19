@@ -11,8 +11,8 @@ use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, 
 use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
-use crate::common::otlp::traces::transform::otlp_value_to_string;
 use crate::common::otlp::traces::translator::ContainerTagPromotion;
+use crate::common::otlp::value::otlp_value_to_string;
 
 // ============================================================================
 // Datadog attribute key constants shared across the encoder and translator
