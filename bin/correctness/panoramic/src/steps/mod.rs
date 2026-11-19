@@ -80,9 +80,9 @@ fn described(on: &str, process: Option<&str>) -> String {
 
 /// One participant, `app`, for the steps' failing-check tests: a process `main` observed through its container, a
 /// supervised process `job` with an exit record, a UDP endpoint `statsd`, and operations that answer with what a file
-/// holds: `dump` with [`DUMP_FILE`], `config_dump` with [`CONFIG_FILE`], `config_set` with [`CONFIG_SET_FILE`], and `dogstatsd_capture`, `dogstatsd_replay` and
-/// `dogstatsd_stats` with [`CAPTURE_FILE`], [`REPLAY_FILE`] and [`STATS_FILE`]. A second participant, `peer`, offers
-/// the same operations, for steps that read two.
+/// holds: `dump` with [`DUMP_FILE`], `config_dump` with [`CONFIG_FILE`], `config_set` with [`CONFIG_SET_FILE`], and
+/// `dogstatsd_capture`, `dogstatsd_replay` and `dogstatsd_stats` with [`CAPTURE_FILE`], [`REPLAY_FILE`] and
+/// [`STATS_FILE`]. A second participant, `peer`, offers the same operations, for steps that read two.
 #[cfg(test)]
 mod scripted {
     use std::collections::BTreeMap;
