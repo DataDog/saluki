@@ -18,11 +18,12 @@ Check the current `Makefile` recipes and `panoramic --help` before choosing a co
 
 Background:
 
-- `docs/development/testing.md`: test types, CI entry points, and how to read results
+- `docs/development/testing.md`: test types and CI entry points
+- `docs/development/panoramic.md`: the case format, the options of `panoramic`, and how to read results
 - `docs/development/testing-patterns.md`: conventions for Rust tests
 - `bin/correctness/README.md`: Panoramic and its supporting tools
 
-## Choose the suite and runtime
+## Choose the suite and subject OS
 
 Prefer the Make targets when test dependencies need rebuilding. Confirm their current recipes in the
 `Makefile`; the standard entry points are:
@@ -36,13 +37,15 @@ make test-integration
 `make test-integration-quick` skips image builds. Use it only after verifying that the local images
 match the working tree.
 
-`--runtime` scopes integration discovery. On macOS, assume the `linux` runtime through the local
-Docker setup unless the user explicitly requests native macOS tests; pass `--runtime linux` because
-the CLI defaults to `mac` there. Follow the current Make recipe for native macOS provisioning.
-Correctness cases choose their runtime from their case configuration.
+`--subject-os` scopes discovery to the cases that declare that OS, and defaults to the host's. On
+macOS, assume `linux`, through the local Docker setup, unless the user explicitly requests native
+macOS tests; pass `--subject-os linux` because the CLI defaults to `macos` there. Follow the current
+Make recipe for native macOS provisioning.
 
-Use `panoramic list` with the intended test directory and runtime to discover eligible case names
-before selecting them.
+Use `panoramic list` with the intended test directory and subject OS to discover eligible case names
+before selecting them. `panoramic plan <case-dir> --subject-os <os>` prints what a case does on that
+OS without starting anything, and checks it for every OS the case declares. Use it first when a case
+fails to load or plan.
 
 ## Run non-interactively
 
@@ -55,19 +58,19 @@ runs.
 make build-panoramic
 target/release/panoramic run \
   -d "$(pwd)/test/integration/cases" \
-  --runtime linux \
+  --subject-os linux \
   -t <case-name> \
   --no-tui -o json -l "$(pwd)/target/test-output/panoramic"
 ```
 
-Use comma-separated names with `-t` and `-p 1` when one case needs attributable output. Each run
+Use comma-separated names with `-t` and `-p 1` when one case needs attributable output. Cases with
+host processes always run one at a time. Each run
 creates a timestamped `panoramic-*` directory beneath the base. `make clean-test-logs` deletes the
 Panoramic directory under the shared test-output root; `make clean` includes that target. Stdout and
 `run.json` identify the directory for a run.
 
 ## Interpret the result
 
-Read "Reading panoramic results" and "Reading traffic artifacts" in `docs/development/testing.md`
-for exit codes, the `run.json` and `result.json` layout, and how to inspect traffic captures. For
-exit code 2, inspect the reported error, timeout, and interruption details before investigating
-assertion differences.
+Read "Results" and "Observation" in `docs/development/panoramic.md` for exit codes, the `run.json`,
+`result.json` and `plan.json` layout, and the files that a case collects. For exit code 2, inspect
+the reported error, timeout, and interruption details before investigating assertion differences.
