@@ -1,9 +1,11 @@
 import contextlib
+import datetime
 import hashlib
 import http.client
 import importlib.util
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -26,6 +28,10 @@ OLD_REVISION = "0123456789abcdef0123456789abcdef01234567"
 REVISION = "89abcdef0123456789abcdef0123456789abcdef"
 VERSION = "7.87.0-devel+git.50.89abcde.pipeline.99000"
 WINDOWS_OS = "10.0.20348.4529"
+# A later nightly of a later commit, for tests that need two builds.
+NEWER_REVISION = "fedcba9876543210fedcba9876543210fedcba98"
+NEWER_VERSION = "7.87.0-devel+git.60.fedcba9.pipeline.99200"
+NOW = datetime.datetime(2026, 11, 19, 12, 30, tzinfo=datetime.timezone.utc)
 HUB = "https://registry-1.docker.io/v2/datadog/agent-dev"
 DATADOG = "https://registry.datadoghq.com/v2/agent"
 GITHUB = "https://api.github.com/repos/DataDog/datadog-agent"
@@ -91,8 +97,12 @@ def labels(version, revision):
     return {subject.VERSION_LABEL: version, subject.REVISION_LABEL: revision}
 
 
-def publish_nightly(web, version=VERSION, revision=REVISION, linux_version=None, skip=(), on_main=True):
-    """Publish a nightly's Windows, Linux and package artifacts; return the Windows child digest."""
+def publish_nightly(web, version=VERSION, revision=REVISION, linux_version=None, skip=(), on_main=True, tag=True):
+    """Publish a nightly's Windows, Linux and package artifacts; return the Windows child digest.
+
+    With `tag`, the floating Windows tag points at this build. Without it, the Windows image exists only by digest, as
+    an older build does once the tag has moved.
+    """
     web.json(f"{GITHUB}/compare/{revision}...main", {"status": "ahead" if on_main else "diverged"})
     windows = web.image(HUB, "windows", "amd64", labels(version, revision), os_version=WINDOWS_OS)
     nanoserver = web.image(HUB, "windows", "amd64", labels(version, revision), os_version="10.0.17763.1")
@@ -102,7 +112,7 @@ def publish_nightly(web, version=VERSION, revision=REVISION, linux_version=None,
             (nanoserver, {"os": "windows", "architecture": "amd64", "os.version": "10.0.17763.1"}),
             (windows, {"os": "windows", "architecture": "amd64", "os.version": WINDOWS_OS}),
         ],
-        subject.WINDOWS_NIGHTLY_TAG,
+        *((subject.WINDOWS_NIGHTLY_TAG,) if tag else ()),
     )
     if "linux" not in skip:
         publish_linux(web, HUB, f"nightly-full-main-{revision[:8]}-jmx", linux_version or version, revision)
@@ -119,6 +129,17 @@ def publish_linux(web, base, tag, version, revision, windows_child=None):
     if windows_child:
         entries.append((windows_child, {"os": "windows", "architecture": "amd64", "os.version": WINDOWS_OS}))
     return web.index(base, entries, tag)
+
+
+def observation(windows_child, version=VERSION, revision=REVISION, first_observed_at="2026-11-18T12:30:00Z"):
+    """Return what an earlier run would have saved for a Windows build."""
+    return {
+        "windows_digest": windows_child,
+        "source_index_digest": None,
+        "version": version,
+        "git_revision": revision,
+        "first_observed_at": first_observed_at,
+    }
 
 
 def publish_packages(web, kind, version, skip=()):
@@ -153,9 +174,11 @@ class DiscoveryTest(unittest.TestCase):
         self.addCleanup(stderr.__exit__, None, None, None)
         self.addCleanup(stdout.__exit__, None, None, None)
 
-    def nightly(self, merged=None, windows_digest=None):
+    def nightly(self, merged=None, windows_digest=None, observed=()):
+        """Observe the floating Windows tag, or `windows_digest`, then discover from it and the `observed` builds."""
         hub = subject.Registry(self.http, subject.DOCKER_HUB, subject.NIGHTLY_REPOSITORY)
-        return subject.discover_nightly(hub, self.http, self.github, merged, windows_digest)
+        observations = [*observed, subject.observe_nightly(hub, windows_digest, NOW)]
+        return subject.discover_nightly(hub, self.http, self.github, merged, observations)
 
     def release(self, merged):
         registry = subject.Registry(self.http, subject.DATADOG_REGISTRY, subject.RELEASE_REPOSITORY)
@@ -317,6 +340,63 @@ class NightlyDiscoveryTest(DiscoveryTest):
         self.assertIsNone(version_file["integration"]["windows"]["source_index_digest"])
         self.assertEqual(version_file["integration"]["windows"]["image"], f"datadog/agent-dev@{windows_child}")
 
+    def test_falls_back_to_an_older_complete_build(self):
+        older = publish_nightly(self.web, tag=False)
+        publish_nightly(self.web, NEWER_VERSION, NEWER_REVISION, skip=("linux", "deb-amd64"))
+        self.web.json(f"{GITHUB}/compare/{OLD_REVISION}...{REVISION}", {"status": "ahead"})
+        self.web.json(f"{GITHUB}/compare/{OLD_REVISION}...{NEWER_REVISION}", {"status": "ahead"})
+
+        version_file = self.nightly(make_version_file(), observed=[observation(older)])
+
+        self.assertEqual(agent_version.validate_version_file(version_file), [])
+        self.assertEqual(version_file["integration"]["version"], VERSION)
+        self.assertEqual(version_file["integration"]["windows"]["image"], f"datadog/agent-dev@{older}")
+
+    def test_prefers_the_newest_complete_build(self):
+        older = publish_nightly(self.web, tag=False)
+        publish_nightly(self.web, NEWER_VERSION, NEWER_REVISION)
+
+        integration = self.nightly(observed=[observation(older)])["integration"]
+
+        self.assertEqual(integration["version"], NEWER_VERSION)
+        older_package = agent_version.macos_package_url("nightly", VERSION, "arm64")
+        self.assertNotIn(("HEAD", older_package), self.web.requests)
+
+    def test_reports_every_incomplete_build(self):
+        older = publish_nightly(self.web, skip=("linux", "deb-arm64"), tag=False)
+        publish_nightly(self.web, NEWER_VERSION, NEWER_REVISION, skip=("linux", "deb-amd64"))
+        with self.assertRaisesRegex(subject.Skip, "no newer complete nightly") as raised:
+            self.nightly(observed=[observation(older)])
+        reason = str(raised.exception)
+        self.assertLess(reason.index(NEWER_VERSION), reason.index(VERSION))
+        self.assertIn("_amd64.deb is not published", reason)
+        self.assertIn("_arm64.deb is not published", reason)
+
+    def test_skips_an_observed_build_the_registry_deleted(self):
+        publish_nightly(self.web, NEWER_VERSION, NEWER_REVISION, skip=("linux", "deb-amd64"))
+        self.web.json(f"{GITHUB}/compare/{REVISION}...main", {"status": "ahead"})
+        publish_packages(self.web, "nightly", VERSION)
+        deleted = "sha256:" + "1" * 64
+        expected = f"{re.escape(VERSION)}: Windows image datadog/agent-dev@{deleted} does not exist"
+        with self.assertRaisesRegex(subject.Skip, expected):
+            self.nightly(observed=[observation(deleted)])
+
+    def test_skips_an_observation_that_does_not_match_its_image(self):
+        newer = publish_nightly(self.web, NEWER_VERSION, NEWER_REVISION, skip=("linux", "deb-amd64"))
+        self.web.json(f"{GITHUB}/compare/{REVISION}...main", {"status": "ahead"})
+        publish_packages(self.web, "nightly", VERSION)
+        with self.assertRaisesRegex(subject.Skip, "not 7.87.0-devel.*as observed"):
+            self.nightly(observed=[observation(newer)])
+
+    def test_skips_a_release_build_on_the_floating_tag_but_checks_observed_builds(self):
+        older = publish_nightly(self.web, tag=False)
+        publish_nightly(self.web, version="7.86.2-rc.1", revision=NEWER_REVISION, skip=("linux",))
+        hub = subject.Registry(self.http, subject.DOCKER_HUB, subject.NIGHTLY_REPOSITORY)
+        with self.assertRaisesRegex(subject.Skip, "an Agent release build"):
+            subject.observe_nightly(hub, now=NOW)
+        version_file = subject.discover_nightly(hub, self.http, self.github, None, [observation(older)])
+        self.assertEqual(version_file["integration"]["version"], VERSION)
+
     def test_authenticates_with_the_registry_token_challenge(self):
         publish_nightly(self.web)
         tag_url = f"{HUB}/manifests/{subject.WINDOWS_NIGHTLY_TAG}"
@@ -419,6 +499,50 @@ class ReleaseDiscoveryTest(DiscoveryTest):
             self.release(make_version_file(target="7.87"))
 
 
+class ObservationTest(unittest.TestCase):
+    def setUp(self):
+        stdout = contextlib.redirect_stdout(io.StringIO())
+        stdout.__enter__()
+        self.addCleanup(stdout.__exit__, None, None, None)
+
+    def test_keeps_newer_recent_builds_newest_first(self):
+        merged = make_version_file()
+        current = observation(digest("1"), version="7.87.0-devel+git.40.0123456.pipeline.98765")
+        older = observation(digest("2"))
+        stale = observation(digest("3"), version="7.87.0-devel+git.55.89abcde.pipeline.99100",
+                            first_observed_at="2026-11-12T12:29:59Z")
+        newer = observation(digest("4"), NEWER_VERSION, NEWER_REVISION, first_observed_at="2026-11-19T12:30:00Z")
+
+        kept = subject.update_observations([current, older, stale], newer, merged, NOW, 7)
+
+        self.assertEqual([entry["windows_digest"] for entry in kept], [digest("4"), digest("2")])
+
+    def test_keeps_when_a_build_was_first_seen(self):
+        first = observation(digest("1"), first_observed_at="2026-11-18T03:45:00Z")
+        again = observation(digest("1"), first_observed_at="2026-11-19T12:30:00Z")
+        kept = subject.update_observations([first], again, None, NOW, 7)
+        self.assertEqual([entry["first_observed_at"] for entry in kept], ["2026-11-18T03:45:00Z"])
+
+    def test_ignores_an_unusable_file_and_drops_bad_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "observed.json"
+            self.assertEqual(subject.load_observations(path), [])
+            path.write_text("{not json", encoding="utf-8")
+            self.assertEqual(subject.load_observations(path), [])
+            path.write_text(json.dumps({"schema_version": 99, "observations": []}), encoding="utf-8")
+            self.assertEqual(subject.load_observations(path), [])
+
+            good = observation(digest("1"))
+            release = {**observation(digest("2")), "version": "7.86.2-rc.1"}
+            other_commit = {**observation(digest("4")), "git_revision": NEWER_REVISION}
+            subject.write_observations(path, [good, release, {"windows_digest": digest("3")}, other_commit])
+            self.assertEqual(subject.load_observations(path), [good])
+
+
+def digest(character):
+    return "sha256:" + character * 64
+
+
 class CommandTest(unittest.TestCase):
     def setUp(self):
         environment = unittest.mock.patch.dict(subject.os.environ)
@@ -433,7 +557,8 @@ class CommandTest(unittest.TestCase):
             output = Path(directory) / "out"
             arguments = subject.argparse.Namespace(
                 mode="nightly", merged_file=str(Path(directory) / "missing.json"), base_branch="main",
-                windows_digest=None, target=None, output_dir=output, budget_seconds=1,
+                windows_digest=None, target=None, output_dir=output, budget_seconds=1, observed_file=None,
+                observe_only=False, lookback_days=7,
             )
             publish_nightly(web, skip=("linux", "deb-arm64"))
             with contextlib.redirect_stdout(io.StringIO()):
@@ -447,7 +572,8 @@ class CommandTest(unittest.TestCase):
             output = Path(directory) / "out"
             arguments = subject.argparse.Namespace(
                 mode="nightly", merged_file=str(Path(directory) / "missing.json"), base_branch="main",
-                windows_digest=None, target=None, output_dir=output, budget_seconds=1,
+                windows_digest=None, target=None, output_dir=output, budget_seconds=1, observed_file=None,
+                observe_only=False, lookback_days=7,
             )
             stderr = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
@@ -469,7 +595,7 @@ class CommandTest(unittest.TestCase):
             output = Path(directory) / "out"
             arguments = subject.argparse.Namespace(
                 mode="nightly", merged_file=str(merged), base_branch="main", windows_digest=None, target=None,
-                output_dir=output, budget_seconds=1,
+                output_dir=output, budget_seconds=1, observed_file=None, observe_only=False, lookback_days=7,
             )
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(subject.run(arguments, subject.Http(web.transport)), 0)
@@ -480,6 +606,46 @@ class CommandTest(unittest.TestCase):
             self.assertIn("/-/pipelines/99000", body)
             self.assertIn(VERSION, (output / "pr-title.txt").read_text())
             self.assertEqual((output / "merged-datadog-agent-version.json").read_text(), merged.read_text())
+
+
+    def test_a_later_run_proposes_a_build_whose_packages_arrived_after_the_tag_moved(self):
+        web = FakeWeb()
+        with tempfile.TemporaryDirectory() as directory:
+            observed = Path(directory) / "cache" / "observed.json"
+
+            def run(**overrides):
+                output = Path(directory) / f"out-{len(list(Path(directory).iterdir()))}"
+                arguments = subject.argparse.Namespace(
+                    mode="nightly", merged_file=str(Path(directory) / "missing.json"), base_branch="main",
+                    windows_digest=None, target=None, output_dir=output, budget_seconds=1, observed_file=observed,
+                    observe_only=False, lookback_days=7,
+                )
+                vars(arguments).update(overrides)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(subject.run(arguments, subject.Http(web.transport)), 0)
+                return json.loads((output / "summary.json").read_text())
+
+            # The first build's Windows image is published, but its packages are late.
+            first = publish_nightly(web, skip=("linux", "deb-amd64"))
+            self.assertEqual(run(observe_only=True)["status"], "observed")
+            self.assertEqual(json.loads(observed.read_text())["observations"][0]["windows_digest"], first)
+
+            # The tag moves to an incomplete second build, and the first build's packages arrive.
+            web.routes.pop(("GET", f"{HUB}/manifests/{subject.WINDOWS_NIGHTLY_TAG}"))
+            publish_nightly(web, NEWER_VERSION, NEWER_REVISION, skip=("linux", "deb-amd64"))
+            publish_linux(web, HUB, f"nightly-full-main-{REVISION[:8]}-jmx", VERSION, REVISION)
+            web.package(agent_version.debug_deb_url("nightly", VERSION, "amd64"), b"late deb")
+
+            summary = run()
+
+            self.assertEqual((summary["status"], summary["candidate_version"]), ("candidate", VERSION))
+            saved = [entry["version"] for entry in json.loads(observed.read_text())["observations"]]
+            self.assertEqual(saved, [NEWER_VERSION, VERSION])
+
+    def test_observation_flags_need_nightly_mode(self):
+        for flag in (["--observe-only"], ["--observed-file", "x.json"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                subject.main(["release", "--output-dir", "out", *flag])
 
 
 if __name__ == "__main__":

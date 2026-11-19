@@ -199,6 +199,28 @@ class ProposeTest(unittest.TestCase):
         self.assertEqual(self.propose(api), "unchanged")
         self.assertEqual(api.writes, [])
 
+    def test_keeps_a_pull_request_that_proposes_a_later_nightly(self):
+        def nightly(pipeline_id):
+            integration = {"kind": "nightly", "version": f"pipeline.{pipeline_id}", "pipeline_id": pipeline_id}
+            return json.dumps({"schema_version": 1, "integration": integration})
+
+        api = FakeApi(open_pr=True, branch_version_file=nightly(99200))
+        with contextlib.redirect_stdout(io.StringIO()):
+            outcome = subject.propose(
+                api, REPOSITORY, "main", BRANCH, nightly(99000), "title", "body", ["automated"],
+                json.loads(OLD_VERSION_FILE),
+            )
+        self.assertEqual(outcome, "later")
+        self.assertEqual(api.writes, [])
+
+        api = FakeApi(open_pr=True, branch_version_file=nightly(98000))
+        with contextlib.redirect_stdout(io.StringIO()):
+            outcome = subject.propose(
+                api, REPOSITORY, "main", BRANCH, nightly(99000), "title", "body", ["automated"],
+                json.loads(OLD_VERSION_FILE),
+            )
+        self.assertEqual(outcome, "refreshed")
+
     def test_holds_a_pull_request_that_carries_an_adp_change(self):
         api = FakeApi(open_pr=True, files=(subject.VERSION_FILE, "lib/saluki-components/src/lib.rs"))
         self.assertEqual(self.propose(api), "held")

@@ -2,18 +2,21 @@ name: Update Agent Nightly
 
 # Proposes a newer Datadog Agent `main` nightly for `.datadog-agent-version.json` on saluki `main`.
 #
-# `discover` runs `ci/tooling/update-agent-version/discover_agent_version.py nightly` with a read-only token. It matches
-# the floating Windows nightly image to the Linux nightly built from the same commit and pipeline, then downloads and
-# hashes the macOS and debug packages. A failed or partial discovery never proposes a change. Every run reports the
-# current nightly's age, measured from its `built_at`.
+# `discover` runs `ci/tooling/update-agent-version/discover_agent_version.py nightly` with a read-only token. The Windows
+# nightly image is published only under a floating tag, so every run records the build that tag points at in a cache
+# entry. A full run then checks each recorded build newer than the current nightly, newest first: it matches the
+# Windows image to the Linux nightly built from the same commit and pipeline, then downloads and hashes the macOS and
+# debug packages. That way a build whose packages arrive after the tag has moved on is still found. A failed or partial
+# discovery never proposes a change. Every run reports the current nightly's age, measured from its `built_at`.
 #
 # `propose` alone exchanges an OIDC token for write access. It keeps one bot branch and at most one open pull request,
 # and refreshes that pull request only while it holds nothing but the bot's own update. While a pull request is open,
 # the bot branch moves only by fast-forward. See `ci/tooling/update-agent-version/propose_agent_version.py`.
 #
-# It runs daily at 12:30 UTC, after the Linux images and packages have usually been published, and on manual dispatch.
-# To recover a missed nightly, dispatch it with the ltsc2022 child digest from the upstream Windows build job's push
-# log.
+# The full run is daily at 12:30 UTC, after the Linux images and packages have usually been published, and on manual
+# dispatch. An hourly run only records the floating Windows tag, because it can move more than once a day. Losing the
+# cache entry only means older builds aren't checked. To recover a nightly that no run recorded, dispatch with the
+# ltsc2022 child digest from the upstream Windows build job's push log.
 #
 # A failed run usually means the Agent changed how it names or labels its nightly artifacts; the error names the
 # artifact and what was expected. Nothing else reports the failure, so watch this workflow from Slack through the GitHub
@@ -21,7 +24,10 @@ name: Update Agent Nightly
 
 on:
   schedule:
+    # Full discovery.
     - cron: "30 12 * * *"
+    # Records the floating Windows tag only. The discover step matches this string.
+    - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
       windows_digest:
@@ -56,20 +62,39 @@ jobs:
             echo "main has no .datadog-agent-version.json yet; discovery proposes the first version." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+      # The Windows builds earlier runs saw. Each run saves a new entry, and this restores the newest.
+      - name: Restore observed Windows nightlies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/observed
+          key: agent-nightly-observed-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: agent-nightly-observed-
+
       - name: Discover a newer complete nightly
         id: discover
         env:
           # Read-only; raises the GitHub API rate limit for the Agent commit comparison.
           GITHUB_TOKEN: ${{ github.token }}
           WINDOWS_DIGEST: ${{ inputs.windows_digest }}
+          OBSERVE_ONLY: ${{ github.event.schedule == '7 * * * *' && 'true' || '' }}
         run: |
           python3 ci/tooling/update-agent-version/discover_agent_version.py nightly \
             --merged-file .datadog-agent-version.json \
             --base-branch main \
             --output-dir "$RUNNER_TEMP/candidate" \
-            ${WINDOWS_DIGEST:+--windows-digest "$WINDOWS_DIGEST"}
+            --observed-file "$RUNNER_TEMP/observed/observed.json" \
+            ${WINDOWS_DIGEST:+--windows-digest "$WINDOWS_DIGEST"} \
+            ${OBSERVE_ONLY:+--observe-only}
           jq -r '"Discovery: \(.status)" + (if .reason then " (\(.reason))" else "" end)' \
             "$RUNNER_TEMP/candidate/summary.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Saved even when discovery fails, since the observations are written before any candidate is checked.
+      - name: Save observed Windows nightlies
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/observed
+          key: agent-nightly-observed-${{ github.run_id }}-${{ github.run_attempt }}
 
       - if: steps.discover.outputs.status == 'candidate'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

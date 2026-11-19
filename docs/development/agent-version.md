@@ -121,21 +121,28 @@ version, and a later run tries again.
 ### On `main`
 
 The **Update Agent Nightly** workflow (`.github/workflows/update-agent-nightly.yml`) looks for a newer Agent `main`
-nightly. It runs daily at 12:30 UTC and on manual dispatch. It resolves the floating Windows nightly image once, then
-requires the Linux nightly built from the same commit and pipeline, and all four packages. The candidate must have a
-higher pipeline ID than the current nightly and an Agent commit equal to or ahead of it.
+nightly. It runs daily at 12:30 UTC and on manual dispatch. For each candidate it requires the Linux nightly built from
+the same commit and pipeline as the Windows image, and all four packages. The candidate must have a higher pipeline ID
+than the current nightly and an Agent commit equal to or ahead of it.
+
+The Windows nightly is published only under a floating tag, which can move before a build's packages are published.
+So the workflow also runs hourly to record the build the tag points at, and keeps the recorded builds in a GitHub
+Actions cache entry. The daily run checks every recorded build newer than the current nightly, newest pipeline first,
+and proposes the first complete one. A build is checked again on later runs until 7 days after it was first recorded, or
+until a newer nightly merges. Losing the cache entry means only the floating tag's build is checked until the next runs record more.
 
 The workflow keeps one bot branch, `ci/update-agent-nightly`, and at most one open pull request. It refreshes that pull
 request only while the pull request holds nothing but the automated update. Each refresh is based on the current
 `main`, and it moves the bot branch only by fast-forward, so a push that arrives during a run makes the run fail rather
 than overwriting it. If the new Agent needs an ADP change, push it to the bot branch: the pull request then keeps its
-candidate, and the workflow proposes nothing newer until it merges or closes. After a pull request closes without
+candidate, and the workflow proposes nothing newer until it merges or closes. An open pull request also keeps its
+candidate when a run finds only an older complete nightly. After a pull request closes without
 merging, the next run restarts the bot branch from `main` and opens a new pull request. If `main`'s version file changes
 while a run is in progress, that run proposes nothing, and the next run discovers again.
 
-The Windows nightly is published under a floating tag, so a missed run can't find an older Windows build later. To
-bootstrap the file or recover a missed nightly, take the `ltsc2022` child digest from the upstream Windows build job's
-push log and pass it as the workflow's `windows_digest` input, or run the tool yourself:
+A build that no run recorded can't be found later from the floating tag. To bootstrap the file or recover such a
+nightly, take the `ltsc2022` child digest from the upstream Windows build job's push log and pass it as the workflow's
+`windows_digest` input, or run the tool yourself:
 
 ```shell
 python3 ci/tooling/update-agent-version/discover_agent_version.py nightly --output-dir /tmp/agent-version \
@@ -159,8 +166,8 @@ a new line.
 
 Discovery separates two outcomes:
 
-- A **skip** is normal. The newest build is incomplete, isn't newer, or came from an Agent release branch. The run
-  passes, says why in its summary, and changes nothing.
+- A **skip** is normal. No build is both newer and complete, or the only build came from an Agent release branch.
+  The run passes, says why in its summary, and changes nothing.
 - An **error** means something unexpected: a registry that keeps failing past the retry budget, a malformed response,
   or an artifact whose name, labels, or platforms don't match what the tooling knows. The run fails, and the error at
   the top of the run names the artifact, what it found, and what it expected.

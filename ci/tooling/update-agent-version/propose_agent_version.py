@@ -15,7 +15,8 @@ base branch. Its commits stay reachable from the closed pull request. The reset 
 at the commit the tool read, so a push after that, for example to a reopened pull request, makes the run fail instead.
 
 If the version file on the base branch changed after discovery read it, the candidate may be stale, so the tool
-proposes nothing and the next run discovers again.
+proposes nothing and the next run discovers again. Discovery can fall back to an older nightly when a newer one is
+incomplete, so an open pull request that already proposes a later nightly pipeline keeps it.
 
 Commits are created through GitHub's API without custom author information, so GitHub signs them as the app that
 owns the token. The token comes from `GITHUB_TOKEN`.
@@ -92,6 +93,15 @@ def foreign_changes(files, commits):
     return None
 
 
+def proposes_later_nightly(proposed, candidate):
+    """Return whether the version file `proposed` names a later nightly pipeline than `candidate`."""
+    old = (proposed or {}).get("integration") or {}
+    new = candidate.get("integration") or {}
+    if old.get("kind") != "nightly" or new.get("kind") != "nightly":
+        return False
+    return old.get("pipeline_id", 0) > new.get("pipeline_id", 0)
+
+
 def commit_parents(comparison, base_sha, head_sha):
     """Return the parents for a new commit on a bot branch at `head_sha`, given GitHub's comparison of base...head.
 
@@ -158,7 +168,7 @@ def propose(api, repository, base, branch, version_text, title, body, labels, me
     """Open, refresh or hold the bot pull request.
 
     `merged` is the version file discovery compared the candidate with, or `None` when there was none. Returns
-    `opened`, `refreshed`, `unchanged`, `held` or `stale`.
+    `opened`, `refreshed`, `unchanged`, `later`, `held` or `stale`.
     """
     owner = repository.split("/", 1)[0]
     base_sha = api.request("GET", f"/repos/{repository}/git/ref/heads/{base}")["object"]["sha"]
@@ -183,9 +193,15 @@ def propose(api, repository, base, branch, version_text, title, body, labels, me
         if problem:
             print(f"[*] Holding {pr['html_url']}: {problem}. Newer candidates wait until it merges or closes.")
             return "held"
-        if read_version_file_at(api, repository, head_sha) == json.loads(version_text):
+        proposed = read_version_file_at(api, repository, head_sha)
+        candidate = json.loads(version_text)
+        if proposed == candidate:
             print(f"[*] {pr['html_url']} already proposes this Agent version.")
             return "unchanged"
+        if proposes_later_nightly(proposed, candidate):
+            later, older = proposed["integration"]["version"], candidate["integration"]["version"]
+            print(f"[*] {pr['html_url']} already proposes {later}, a later nightly than {older}; keeping it.")
+            return "later"
         comparison = api.request("GET", f"/repos/{repository}/compare/{base_sha}...{head_sha}")
         parents = commit_parents(comparison, base_sha, head_sha)
         write_commit(api, repository, branch, base_sha, parents, version_text, title, exists=True)

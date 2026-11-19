@@ -2,13 +2,15 @@
 """Discover a complete Datadog Agent artifact set for `.datadog-agent-version.json`.
 
 `nightly` looks for an Agent `main` nightly whose Windows, Linux, macOS and debug-package artifacts all come from one
-commit and one upstream pipeline. `release` looks for the newest complete RC or stable release within a release
-line's target minor. Both read public registries and package buckets, hash every package, and compare the result with
-the version file on the branch being updated.
+commit and one upstream pipeline. The Windows nightly is published only under a floating tag, so with `--observed-file`
+the tool remembers each Windows build it sees and checks every remembered build newer than the current one, newest
+first, until one is complete. `--observe-only` records the floating tag's build and stops. `release` looks for the
+newest complete RC or stable release within a release line's target minor. Both read public registries and package
+buckets, hash every package, and compare the result with the version file on the branch being updated.
 
 The outcome is written to `--output-dir`:
 
-- `summary.json` always, with a `status` of `candidate`, `skipped` or `error`, and the reason.
+- `summary.json` always, with a `status` of `candidate`, `skipped`, `observed` or `error`, and the reason.
 - For a candidate, also `datadog-agent-version.json`, `pr-title.txt` and `pr-body.md`, plus
   `merged-datadog-agent-version.json`, a copy of the version file it was compared with, when there is one.
 
@@ -65,6 +67,8 @@ INDEX_MEDIA_TYPES = MANIFEST_MEDIA_TYPES[:2]
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 TRANSIENT_ERRORS = (urllib.error.URLError, http.client.HTTPException, socket.timeout, ConnectionError, TimeoutError)
 CHUNK_SIZE = 1 << 20
+OBSERVED_SCHEMA_VERSION = 1
+DEFAULT_LOOKBACK_DAYS = 7
 FAILURE_DOCS = "docs/development/agent-version.md#when-an-update-workflow-fails"
 
 
@@ -301,11 +305,14 @@ def normalize_created(created):
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def resolve_windows_child(registry, digest, source_index_digest, os_version=None):
-    """Return the Windows section and labels for an ltsc2022 child digest."""
+def resolve_windows_child(registry, digest, source_index_digest, os_version=None, missing=DiscoveryError):
+    """Return the Windows section and labels for an ltsc2022 child digest.
+
+    A missing image raises `missing`, with an explanation.
+    """
     resolved = registry.manifest(digest)
     if resolved is None:
-        raise DiscoveryError(f"Windows image {registry.reference(digest)} does not exist")
+        raise missing(f"Windows image {registry.reference(digest)} does not exist")
     if is_index(resolved[1]):
         raise DiscoveryError(f"{registry.reference(digest)} is an index; supply its amd64 ltsc2022 child digest")
     config = registry.config(resolved[1], digest)
@@ -464,11 +471,16 @@ def eligible_versions(versions, current_kind, current_version):
     return sorted(eligible, key=release_key, reverse=True)
 
 
-def discover_nightly(hub, http, github, merged, windows_digest=None):
-    """Return a new nightly version file, or raise Skip when no newer complete set exists."""
+def observe_nightly(hub, windows_digest=None, now=None):
+    """Return an observation of the floating Windows nightly, or of a supplied ltsc2022 child digest.
+
+    An observation is what a later run needs to check the build again: the Windows child digest, the index it came
+    from, the build's version and revision, and when it was first seen. Raises Skip for an Agent release build.
+    """
     if windows_digest:
         if not agent_version.DIGEST_RE.fullmatch(windows_digest):
             raise DiscoveryError(f"--windows-digest {windows_digest!r} is not a sha256 digest")
+        child_digest, index_digest = windows_digest, None
         windows, windows_labels = resolve_windows_child(hub, windows_digest, None)
     else:
         resolved = hub.manifest(WINDOWS_NIGHTLY_TAG)
@@ -482,8 +494,7 @@ def discover_nightly(hub, http, github, merged, windows_digest=None):
 
     version = windows_labels.get(VERSION_LABEL)
     revision = windows_labels.get(REVISION_LABEL)
-    match = agent_version.NIGHTLY_VERSION_RE.fullmatch(version or "")
-    if not match:
+    if not agent_version.NIGHTLY_VERSION_RE.fullmatch(version or ""):
         if agent_version.parse_agent_version(version) is not None:
             # Release-branch pipelines sometimes push the same floating tag. The next main nightly replaces it.
             raise Skip(f"the Windows image is {version}, an Agent release build, not an Agent main nightly")
@@ -494,8 +505,116 @@ def discover_nightly(hub, http, github, merged, windows_digest=None):
         )
     if not isinstance(revision, str) or not agent_version.REVISION_RE.fullmatch(revision):
         raise DiscoveryError(f"the Windows image has a malformed revision label {revision!r}")
-    pipeline_id = int(match.group(6))
     print(f"[*] Windows ltsc2022 image {windows['image']} is {version} at {revision}")
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return {
+        "windows_digest": child_digest,
+        "source_index_digest": index_digest,
+        "version": version,
+        "git_revision": revision,
+        "first_observed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def pipeline_of(observation):
+    return int(agent_version.NIGHTLY_VERSION_RE.fullmatch(observation["version"]).group(6))
+
+
+def observation_errors(observation):
+    """Return why an entry read from the observations file is unusable, or an empty list."""
+    errors = agent_version.check_keys(
+        observation, "observation",
+        ("windows_digest", "source_index_digest", "version", "git_revision", "first_observed_at"),
+    )
+    if errors:
+        return errors
+    if not agent_version.DIGEST_RE.fullmatch(str(observation["windows_digest"])):
+        errors.append(f"malformed windows_digest {observation['windows_digest']!r}")
+    index_digest = observation["source_index_digest"]
+    if index_digest is not None and not agent_version.DIGEST_RE.fullmatch(str(index_digest)):
+        errors.append(f"malformed source_index_digest {index_digest!r}")
+    match = agent_version.NIGHTLY_VERSION_RE.fullmatch(str(observation["version"]))
+    if not match:
+        errors.append(f"{observation['version']!r} is not a nightly version")
+    if not agent_version.REVISION_RE.fullmatch(str(observation["git_revision"])):
+        errors.append(f"malformed git_revision {observation['git_revision']!r}")
+    elif match and not observation["git_revision"].startswith(match.group(5)):
+        errors.append(f"git_revision {observation['git_revision']} is not the version's commit {match.group(5)}")
+    if not agent_version.BUILT_AT_RE.fullmatch(str(observation["first_observed_at"])):
+        errors.append(f"malformed first_observed_at {observation['first_observed_at']!r}")
+    return errors
+
+
+def load_observations(path):
+    """Return the observations saved by earlier runs, or an empty list.
+
+    The file is a cache, and a missing or unreadable one only means that older builds aren't checked. Bad entries are
+    reported and dropped.
+    """
+    if path is None or not Path(path).exists():
+        return []
+    try:
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        print(f"[*] Ignoring unreadable observations file {path}: {error}")
+        return []
+    if not isinstance(document, dict) or document.get("schema_version") != OBSERVED_SCHEMA_VERSION:
+        print(f"[*] Ignoring observations file {path}: not schema version {OBSERVED_SCHEMA_VERSION}")
+        return []
+    observations = []
+    for entry in document.get("observations") or []:
+        errors = observation_errors(entry)
+        if errors:
+            print(f"[*] Dropping a saved observation: {'; '.join(errors)}")
+        else:
+            observations.append(entry)
+    return observations
+
+
+def update_observations(observations, observation, merged, now, lookback_days):
+    """Add `observation` and drop what discovery no longer needs, newest pipeline first.
+
+    A build seen again keeps the time it was first seen. Builds at or below the current pipeline are dropped, and so
+    are builds first seen more than `lookback_days` ago.
+    """
+    by_digest = {entry["windows_digest"]: entry for entry in observations}
+    if observation is not None and observation["windows_digest"] not in by_digest:
+        by_digest[observation["windows_digest"]] = observation
+    merged_integration = merged["integration"] if merged else None
+    floor = merged_integration["pipeline_id"] if merged_integration and merged_integration["kind"] == "nightly" else 0
+    cutoff = now - datetime.timedelta(days=lookback_days)
+    kept = [
+        entry for entry in by_digest.values()
+        if pipeline_of(entry) > floor and agent_version.parse_built_at(entry["first_observed_at"]) >= cutoff
+    ]
+    return sorted(kept, key=pipeline_of, reverse=True)
+
+
+def write_observations(path, observations):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    document = {"schema_version": OBSERVED_SCHEMA_VERSION, "observations": observations}
+    Path(path).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
+def discover_nightly(hub, http, github, merged, observations):
+    """Return a version file for the newest complete observed nightly, or raise Skip when there is none."""
+    reasons = []
+    for observation in sorted(observations, key=pipeline_of, reverse=True):
+        try:
+            return check_nightly(hub, http, github, merged, observation)
+        except Skip as skip:
+            print(f"[*] Not using {observation['version']}: {skip}")
+            reasons.append(f"{observation['version']}: {skip}")
+    if not reasons:
+        raise Skip("no newer nightly has been observed")
+    raise Skip("no newer complete nightly; " + "; ".join(reasons))
+
+
+def check_nightly(hub, http, github, merged, observation):
+    """Return a version file for one observed nightly, or raise Skip when it is incomplete or not newer."""
+    version = observation["version"]
+    revision = observation["git_revision"]
+    pipeline_id = pipeline_of(observation)
 
     merged_integration = merged["integration"] if merged else None
     if merged_integration and merged_integration["kind"] == "nightly":
@@ -514,6 +633,17 @@ def discover_nightly(hub, http, github, merged, windows_digest=None):
     # The packages are published only after the whole upstream pipeline passes, and the Linux images well before that.
     # So once the packages exist, a missing Linux image means its tag name has changed.
     check_packages_published(http, "nightly", version)
+
+    # An observation from an earlier run names an untagged image, which the registry may have deleted since.
+    windows, windows_labels = resolve_windows_child(
+        hub, observation["windows_digest"], observation["source_index_digest"], missing=Skip
+    )
+    if windows_labels.get(VERSION_LABEL) != version or windows_labels.get(REVISION_LABEL) != revision:
+        raise Skip(
+            f"Windows image {windows['image']} is {windows_labels.get(VERSION_LABEL)} at "
+            f"{windows_labels.get(REVISION_LABEL)}, not {version} at {revision} as observed"
+        )
+
     linux_tag = LINUX_NIGHTLY_TAG.format(sha8=revision[:8])
 
     def linux_missing(message):
@@ -718,6 +848,22 @@ def report_failure(output_dir, error):
     write_outcome(output_dir, {"status": "error", "reason": str(error)})
 
 
+def observe(hub, merged, arguments):
+    """Record this run's Windows nightly with the saved observations, and return the builds left to check."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    observations = load_observations(arguments.observed_file)
+    try:
+        observation = observe_nightly(hub, arguments.windows_digest, now)
+    except Skip as skip:
+        print(f"[*] Not recording the Windows image: {skip}")
+        observation = None
+    observations = update_observations(observations, observation, merged, now, arguments.lookback_days)
+    if arguments.observed_file:
+        write_observations(arguments.observed_file, observations)
+    print(f"[*] {len(observations)} observed nightly builds are newer than the current one")
+    return observations
+
+
 def discover(arguments, http=None):
     http = http or Http(urllib_transport, arguments.budget_seconds)
     merged = load_merged_version_file(arguments.merged_file, arguments.target)
@@ -725,9 +871,13 @@ def discover(arguments, http=None):
     current = merged["integration"]["version"] if merged else None
     try:
         if arguments.mode == "nightly":
-            version_file = discover_nightly(
-                Registry(http, DOCKER_HUB, NIGHTLY_REPOSITORY), http, github, merged, arguments.windows_digest
-            )
+            hub = Registry(http, DOCKER_HUB, NIGHTLY_REPOSITORY)
+            observations = observe(hub, merged, arguments)
+            if arguments.observe_only:
+                summary = {"status": "observed", "current_version": current, "observed": len(observations)}
+                write_outcome(arguments.output_dir, summary)
+                return 0
+            version_file = discover_nightly(hub, http, github, merged, observations)
         else:
             version_file = discover_release(Registry(http, DATADOG_REGISTRY, RELEASE_REPOSITORY), http, github, merged)
     except Skip as skip:
@@ -755,12 +905,30 @@ def main(argv=None):
         "--base-branch", default="main", help="Branch the version file is proposed for, used in the PR body"
     )
     parser.add_argument("--windows-digest", help="ltsc2022 child digest from an upstream build log (nightly only)")
+    parser.add_argument(
+        "--observed-file", type=Path,
+        help="Windows nightly builds seen by earlier runs; read, then rewritten (nightly only)",
+    )
+    parser.add_argument(
+        "--observe-only", action="store_true", help="Record the floating Windows nightly and stop (nightly only)"
+    )
+    parser.add_argument(
+        "--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS,
+        help="Days an observed nightly build is checked again (nightly only)",
+    )
     parser.add_argument("--target", help="Target minor for a release cut, when the version file doesn't declare it yet")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--budget-seconds", type=int, default=900, help="Total time allowed for retries")
     arguments = parser.parse_args(argv)
-    if arguments.windows_digest and arguments.mode != "nightly":
-        parser.error("--windows-digest only applies to nightly discovery")
+    nightly_only = {
+        "--windows-digest": arguments.windows_digest, "--observed-file": arguments.observed_file,
+        "--observe-only": arguments.observe_only,
+    }
+    for flag, value in nightly_only.items():
+        if value and arguments.mode != "nightly":
+            parser.error(f"{flag} only applies to nightly discovery")
+    if arguments.lookback_days < 1:
+        parser.error("--lookback-days must be at least 1")
     if arguments.target and (arguments.mode != "release" or not agent_version.TARGET_RE.fullmatch(arguments.target)):
         parser.error("--target takes a major.minor such as 7.87, for release discovery")
     return run(arguments)
