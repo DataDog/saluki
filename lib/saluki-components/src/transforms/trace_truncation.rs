@@ -270,7 +270,7 @@ mod tests {
         while !s.is_empty() {
             if (1..=4)
                 .rev()
-                .any(|n| s.len() >= n && std::str::from_utf8(&s[s.len() - n..]).is_ok())
+                .any(|n| s.len() >= n && simdutf8::basic::from_utf8(&s[s.len() - n..]).is_ok())
             {
                 break;
             }
