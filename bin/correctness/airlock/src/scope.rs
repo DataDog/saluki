@@ -19,8 +19,8 @@ use tokio::time::{timeout_at, Instant};
 use tracing::debug;
 
 use crate::{
-    driver::with_transient_error_retry,
     removal::{bounded, is_not_found, Group, RequestError},
+    retry::with_transient_error_retry,
 };
 
 const CREATED_BY_LABEL: (&str, &str) = ("created_by", "airlock");
