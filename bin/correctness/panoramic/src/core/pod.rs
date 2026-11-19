@@ -117,11 +117,16 @@ impl PodBackend {
     /// Docker has no container for the node, or if the Kubernetes config file has no context for the cluster.
     pub(crate) async fn connect(cluster: &str, docker: Docker, courier: Bytes) -> Result<Self, GenericError> {
         let deadline = Instant::now() + CONNECT_TIME;
-        let nodes = Command::new("kind")
-            .args(["get", "nodes", "--name", cluster])
-            .output()
-            .await
-            .error_context("Failed to run 'kind get nodes'")?;
+        let nodes = timeout_at(
+            deadline,
+            Command::new("kind")
+                .args(["get", "nodes", "--name", cluster])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| generic_error!("'kind get nodes' did not answer within {:?}", CONNECT_TIME))?
+        .error_context("Failed to run 'kind get nodes'")?;
         let stdout = String::from_utf8_lossy(&nodes.stdout);
         let names: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
         let [node] = names[..] else {
