@@ -2265,9 +2265,10 @@ inventory:
     pipelines: [logs]
     description: "Org UUID enabling delegated auth for logs key"
     documentation: |-
-      In the core Agent's OTLP logs path: when non-empty, LoadDatadog registers a delegated-auth
-      instance for `logs_config.api_key`, which fetches the key from the cloud provider and writes it back
-      to the config; the logs endpoint then picks it up through the key-rotation callback.
+      In the core Agent's OTLP logs path: when this key isn't empty, the Agent registers a
+      delegated-auth instance for `logs_config.api_key`. The instance gets the key from the cloud
+      provider and writes it back to the configuration, and the logs endpoint picks it up through the
+      key-rotation callback.
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
@@ -2478,10 +2479,10 @@ inventory:
     pipelines: [logs]
     description: "Fail over between pipelines when blocked"
     documentation: |-
-      In the core Agent's OTLP logs path: when true NextPipelineChan returns a router channel whose
-      forwarder goroutine fails over to other pipelines when the primary one is blocked. Because the
-      OTLP exporter requests only one channel at startup, this is what makes OTLP logs use more than one
-      pipeline.
+      In the core Agent's OTLP logs path: when this key is `true`, the logs agent routes each message
+      through a router channel, which sends it to another pipeline when the primary pipeline is
+      blocked. The OTLP exporter requests only one channel at startup, so this key is the only way OTLP
+      logs use more than one pipeline.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
       configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
@@ -2628,9 +2629,9 @@ inventory:
     pipelines: [logs]
     description: "Seconds to wait for pipeline flush on stop"
     documentation: |-
-      In the core Agent's OTLP logs path: on shutdown, the pipeline is stopped serially; after this many
-      seconds destinations are forced to flush without sending and a further 5 seconds are allowed
-      before force close.
+      In the core Agent's OTLP logs path: on shutdown, the Agent stops the pipeline components one at a
+      time. After this many seconds, it makes destinations flush without sending, then waits 5 more
+      seconds and closes them.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
       configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
@@ -2675,8 +2676,8 @@ inventory:
     pipelines: [logs]
     description: "Force the HTTP transport"
     documentation: |-
-      In the core Agent's OTLP logs path: same as `force_use_http`: BuildEndpoints returns HTTP endpoints
-      without needing the connectivity check to pass and regardless of TCP triggers.
+      In the core Agent's OTLP logs path: same as `force_use_http`. The Agent uses HTTP endpoints even
+      when the connectivity check fails or a TCP setting is set.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
       itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
@@ -3200,8 +3201,8 @@ inventory:
     description: "Write infra tags as `ddtags` on OTLP logs"
     documentation: |-
       In the core Agent's OTLP logs path: when logs are enabled, sets `logs_tags_as_ddtags` on the
-      infraattributes processor so custom tagger tags (e.g. kube labels as tags) become the `ddtags` log
-      attribute instead of resource attributes.
+      infraattributes processor, so custom tagger tags, such as Kubernetes labels that the tagger adds
+      as tags, become the `ddtags` log attribute instead of resource attributes.
 
       ADP ignores this key. This only matters when ADP handles OTLP logs itself: in proxy mode, the core
       Agent processes the logs and applies this key.

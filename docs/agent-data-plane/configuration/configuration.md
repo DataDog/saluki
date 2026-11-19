@@ -364,9 +364,10 @@ deployment path, ADP does not implement `heroku_dyno`. See [#1753].
 
 ### `logs_config.delegated_auth.org_uuid`
 
-In the core Agent's OTLP logs path: when non-empty, LoadDatadog registers a delegated-auth
-instance for `logs_config.api_key`, which fetches the key from the cloud provider and writes it back
-to the config; the logs endpoint then picks it up through the key-rotation callback.
+In the core Agent's OTLP logs path: when this key isn't empty, the Agent registers a
+delegated-auth instance for `logs_config.api_key`. The instance gets the key from the cloud
+provider and writes it back to the configuration, and the logs endpoint picks it up through the
+key-rotation callback.
 
 ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
 `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
@@ -411,10 +412,10 @@ proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.pipeline_failover.enabled`
 
-In the core Agent's OTLP logs path: when true NextPipelineChan returns a router channel whose
-forwarder goroutine fails over to other pipelines when the primary one is blocked. Because the
-OTLP exporter requests only one channel at startup, this is what makes OTLP logs use more than one
-pipeline.
+In the core Agent's OTLP logs path: when this key is `true`, the logs agent routes each message
+through a router channel, which sends it to another pipeline when the primary pipeline is
+blocked. The OTLP exporter requests only one channel at startup, so this key is the only way OTLP
+logs use more than one pipeline.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
 configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
@@ -440,9 +441,9 @@ proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.stop_grace_period`
 
-In the core Agent's OTLP logs path: on shutdown, the pipeline is stopped serially; after this many
-seconds destinations are forced to flush without sending and a further 5 seconds are allowed
-before force close.
+In the core Agent's OTLP logs path: on shutdown, the Agent stops the pipeline components one at a
+time. After this many seconds, it makes destinations flush without sending, then waits 5 more
+seconds and closes them.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
 configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
