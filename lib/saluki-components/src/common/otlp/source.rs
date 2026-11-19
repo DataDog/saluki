@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
 use regex::Regex;
 
-use super::util::{gcp_hostname, get_string_attribute, hostname_from_attributes, Source, SourceKind};
+use super::util::{gcp_hostname, get_attribute_str, hostname_from_attributes, Source, SourceKind};
 
 const ATTRIBUTE_HOST: &str = "host";
 const ATTRIBUTE_DATADOG_HOSTNAME: &str = "datadog.host.name";
@@ -112,9 +112,9 @@ pub fn is_gcp_serverless(attributes: &[KeyValue]) -> bool {
     )
 }
 
-/// Returns a string attribute, or an empty string if it's missing or not a string.
+/// Returns the first attribute named `key` as a string, or an empty string if it's missing or not a string.
 fn attr<'a>(attributes: &'a [KeyValue], key: &str) -> &'a str {
-    get_string_attribute(attributes, key).unwrap_or_default()
+    get_attribute_str(attributes, key).unwrap_or_default()
 }
 
 fn source(kind: SourceKind, identifier: impl Into<String>) -> Option<Source> {
@@ -284,7 +284,7 @@ fn ecs_fargate_source(attributes: &[KeyValue]) -> Option<Source> {
     if !attr(attributes, AWS_ECS_LAUNCHTYPE).eq_ignore_ascii_case("fargate") {
         return None;
     }
-    let task_arn = get_string_attribute(attributes, AWS_ECS_TASK_ARN)?;
+    let task_arn = get_attribute_str(attributes, AWS_ECS_TASK_ARN)?;
     source(SourceKind::AwsEcsFargate, task_arn)
 }
 
@@ -699,5 +699,27 @@ mod tests {
             let source = resolve(&entries).expect("serverless source should resolve");
             assert_ne!(source.0, SourceKind::Hostname);
         }
+    }
+
+    #[test]
+    fn reads_the_first_attribute_even_when_it_is_not_a_string() {
+        let mut attributes = vec![KeyValue {
+            key: "cloud.platform".to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::IntValue(1)),
+            }),
+        }];
+        attributes.extend(attrs(&[
+            ("cloud.platform", "azure.functions"),
+            ("service.name", "app"),
+            ("cloud.account.id", "sub"),
+            ("azure.resource_group.name", "rg"),
+            ("host.name", "name"),
+        ]));
+
+        assert_eq!(
+            resolve_source_from_attributes(&attributes).map(|source| (source.kind, source.identifier)),
+            Some((SourceKind::Hostname, "name".to_string()))
+        );
     }
 }
