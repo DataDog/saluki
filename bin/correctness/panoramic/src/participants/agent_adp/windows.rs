@@ -7,9 +7,9 @@
 use std::collections::BTreeMap;
 
 use super::datadog_agent::{self, With};
-use super::{add_endpoints, own_ip, reject_adp_keys, DOGSTATSD_UDP_STARTED, OPERATIONS};
+use super::{add_endpoints, own_ip, program_command, reject_adp_keys, DOGSTATSD_UDP_STARTED, OPERATIONS};
 use crate::core::participant::SpecContext;
-use crate::core::spec::{CommandSpec, Evidence, FileSource, FileSpec, ParticipantSpec};
+use crate::core::spec::{Evidence, FileSource, FileSpec, ParticipantSpec};
 use crate::core::template::Template;
 
 /// The ADP-only image the Windows integration script builds.
@@ -69,13 +69,6 @@ pub(super) fn spec(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
         pattern: Template::parse(DOGSTATSD_UDP_STARTED)?,
         process: "adp".to_string(),
     };
-    let command = |program: &str| -> Result<CommandSpec, String> {
-        Ok(CommandSpec {
-            program: None,
-            argv: vec![Template::parse(program)?],
-            env: BTreeMap::new(),
-        })
-    };
     let mut files = BTreeMap::from([(
         ENTRYPOINT_PATH.to_string(),
         FileSpec {
@@ -106,8 +99,8 @@ pub(super) fn spec(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             datadog_agent::supervised_process("agent", "agent", "agent.log")?,
         ]),
         commands: BTreeMap::from([
-            ("adp".to_string(), command(ADP_COMMAND)?),
-            ("agent".to_string(), command(AGENT_COMMAND)?),
+            ("adp".to_string(), program_command(ADP_COMMAND)?),
+            ("agent".to_string(), program_command(AGENT_COMMAND)?),
         ]),
         operations: &OPERATIONS,
         ..ParticipantSpec::default()
