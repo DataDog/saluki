@@ -306,7 +306,6 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{each_outcome, step, NOT_RUN_KIND, PASS_ISSUE, TIMEOUT_CAUSE};
     use super::*;
-    use crate::assertions::AssertionStatus;
     use crate::collector::RunCollector;
     use crate::core::record::ActiveStep;
     use crate::core::result::{ErrorKind, Issue, IssueKind, StopCause, StoppedBy, TimeoutAttribution};
@@ -358,14 +357,6 @@ mod tests {
             TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(121), Vec::new())
                 .with_timeout_attribution(attribution)
         };
-        let assertions = |status| {
-            vec![AssertionResult {
-                name: "log_contains".to_string(),
-                status,
-                message: "message".to_string(),
-                duration: Duration::from_millis(1),
-            }]
-        };
         let cases = [
             (
                 timed_out(TimeoutAttribution::test_deadline(
@@ -406,19 +397,19 @@ mod tests {
                 vec!["Error: Failed to start container.", "No such image."],
             ),
             (
-                TestResult::from_assertions(
+                TestResult::from_steps(
                     "f",
                     Duration::from_secs(1),
-                    assertions(AssertionStatus::Failed),
+                    vec![step(0, "log_contains", StepStatus::Failed)],
                     Vec::new(),
                 ),
                 vec![],
             ),
             (
-                TestResult::from_assertions(
+                TestResult::from_steps(
                     "p",
                     Duration::from_secs(1),
-                    assertions(AssertionStatus::Passed),
+                    vec![step(0, "log_contains", StepStatus::Passed)],
                     Vec::new(),
                 ),
                 vec![],

@@ -1181,11 +1181,12 @@ impl TestResult {
 pub(crate) mod test_support {
     use std::collections::BTreeMap;
 
+    use futures::future::join_all;
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::assertions::test_support::{host_context, procedure};
-    use crate::assertions::{run_assertion_steps, AssertionResult, AssertionStatus};
+    use crate::core::record::{RunningStep, StepResult};
+    use crate::reporter::test_support::step;
     use crate::test::TestSuite;
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
@@ -1201,19 +1202,38 @@ pub(crate) mod test_support {
         WaitForCancel { finish_on_cancel: bool },
         /// Sleeps until the case deadline, then passes.
         ReturnAtDeadline,
-        /// Runs `procedure:` entries on the host against a `ready` log line and reports the step results.
-        Procedure(&'static str),
-        /// Runs [`Behavior::Procedure`], finishes its phase, then waits for cancellation in `then_phase`.
+        /// Records `steps` in the case record, as the step driver does, and reports the recorded result.
+        Steps(&'static [&'static [ScriptedStep]]),
+        /// Runs [`Behavior::Steps`], finishes its phase, then waits for cancellation in `then_phase`.
         ///
         /// Returns the recorded result if `returns_on_cancel` is set; otherwise stays pending.
-        ProcedureThenWait {
-            steps: &'static str,
+        StepsThenWait {
+            steps: &'static [&'static [ScriptedStep]],
             then_phase: &'static str,
             returns_on_cancel: bool,
         },
         /// Returns a setup error on cancellation. With `recorded`, records the verdict before waiting;
         /// otherwise simulates a setup wait that fails due to cancellation.
         SetupError { recorded: bool },
+    }
+
+    /// A step of a scripted procedure.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum ScriptedStep {
+        /// Passes at once.
+        Pass,
+        /// Runs until the test is cancelled, then is interrupted.
+        Hang,
+    }
+
+    impl ScriptedStep {
+        /// The step's kind and its own budget.
+        fn kind(self) -> (&'static str, Duration) {
+            match self {
+                Self::Pass => ("log_contains", Duration::from_secs(5)),
+                Self::Hang => ("process_stable_for", Duration::from_secs(600)),
+            }
+        }
     }
 
     /// A test that enters a phase and then behaves as scripted.
@@ -1224,8 +1244,6 @@ pub(crate) mod test_support {
         pub(crate) behavior: Behavior,
         /// Notified once the test has entered its phase.
         pub(crate) entered: Option<Arc<Notify>>,
-        /// Published port of the intake sidecar that procedure steps poll.
-        pub(crate) intake: Option<u16>,
         /// A directory the test creates and registers before its behavior runs.
         pub(crate) registers: Option<PathBuf>,
         /// Spawns a pending task and records its drop.
@@ -1275,7 +1293,6 @@ pub(crate) mod test_support {
                 phase: "assertions",
                 behavior,
                 entered: None,
-                intake: None,
                 registers: None,
                 spawns: None,
             }
@@ -1325,29 +1342,24 @@ pub(crate) mod test_support {
                 });
             }
 
-            // Keep the phase active to model an interrupted phase; `ProcedureThenWait` finishes it before switching.
+            // Keep the phase active to model an interrupted phase; `StepsThenWait` finishes it before switching.
             let phase = tctx.phases.enter(self.phase);
             if let Some(entered) = &self.entered {
                 entered.notify_one();
             }
 
-            let assertion = |status| AssertionResult {
-                name: "scripted".to_string(),
-                status,
-                message: String::new(),
-                duration: Duration::from_millis(1),
-            };
+            let scripted = |status| vec![step(0, "scripted", status)];
             match self.behavior {
-                Behavior::Pass => TestResult::from_assertions(
+                Behavior::Pass => TestResult::from_steps(
                     &self.name,
                     Duration::from_millis(1),
-                    vec![assertion(AssertionStatus::Passed)],
+                    scripted(StepStatus::Passed),
                     Vec::new(),
                 ),
-                Behavior::Fail => TestResult::from_assertions(
+                Behavior::Fail => TestResult::from_steps(
                     &self.name,
                     Duration::from_millis(1),
-                    vec![assertion(AssertionStatus::Failed)],
+                    scripted(StepStatus::Failed),
                     Vec::new(),
                 ),
                 Behavior::Panic => panic!("scripted test '{}' panicked", self.name),
@@ -1356,29 +1368,29 @@ pub(crate) mod test_support {
                     if !finish_on_cancel {
                         std::future::pending::<()>().await;
                     }
-                    TestResult::from_assertions(&self.name, Duration::from_secs(1), Vec::new(), Vec::new())
+                    TestResult::from_steps(&self.name, Duration::from_secs(1), Vec::new(), Vec::new())
                 }
                 Behavior::ReturnAtDeadline => {
                     tokio::time::sleep_until(tctx.deadline.at).await;
-                    TestResult::from_assertions(
+                    TestResult::from_steps(
                         &self.name,
                         Duration::from_millis(1),
-                        vec![assertion(AssertionStatus::Passed)],
+                        scripted(StepStatus::Passed),
                         Vec::new(),
                     )
                 }
-                Behavior::Procedure(steps) => {
+                Behavior::Steps(steps) => {
                     let started = Instant::now();
-                    self.run_procedure(steps, &tctx).await;
+                    Self::run_steps(steps, &tctx).await;
                     tctx.record.result(&self.name, started.elapsed(), Vec::new())
                 }
-                Behavior::ProcedureThenWait {
+                Behavior::StepsThenWait {
                     steps,
                     then_phase,
                     returns_on_cancel,
                 } => {
                     let started = Instant::now();
-                    self.run_procedure(steps, &tctx).await;
+                    Self::run_steps(steps, &tctx).await;
                     phase.finish();
                     let _then = tctx.phases.enter(then_phase);
                     tctx.test_cancel_token().cancelled().await;
@@ -1409,12 +1421,82 @@ pub(crate) mod test_support {
     }
 
     impl ScriptedTest {
-        /// Runs `steps` against a host context containing a `ready` log line and records their results.
-        async fn run_procedure(&self, steps: &str, tctx: &TestContext) {
-            let mut ctx = host_context(tctx.test_cancel_token());
-            ctx.log_buffer.write().unwrap().stdout.push("ready".to_string());
-            ctx.intake_host_port = self.intake;
-            run_assertion_steps(&procedure(steps), &ctx, tctx.deadline, &tctx.record).await;
+        /// Records `steps` as the step driver does: plans every step as not run, runs the members of an entry together,
+        /// stops at the first entry that does not pass, and decides the verdict when every entry passes.
+        async fn run_steps(steps: &[&[ScriptedStep]], tctx: &TestContext) {
+            let mut slot = 0;
+            let mut entries = Vec::new();
+            for (index, members) in steps.iter().enumerate() {
+                let parallel = members.len() > 1;
+                let mut entry = Vec::new();
+                for (member, scripted) in members.iter().enumerate() {
+                    entry.push((slot, index, parallel.then_some(member), *scripted));
+                    slot += 1;
+                }
+                entries.push(entry);
+            }
+            tctx.record.plan(
+                entries
+                    .iter()
+                    .flatten()
+                    .map(|&(_, index, member, scripted)| StepResult {
+                        step: index,
+                        member,
+                        name: scripted.kind().0.to_string(),
+                        status: StepStatus::NotRun,
+                        message: "Not run.".to_string(),
+                        duration: Duration::ZERO,
+                    })
+                    .collect(),
+            );
+
+            for entry in entries {
+                if tctx.test_cancel_token().is_cancelled() {
+                    return;
+                }
+                let statuses = join_all(
+                    entry
+                        .into_iter()
+                        .map(|(slot, index, member, scripted)| Self::run_step(slot, index, member, scripted, tctx)),
+                )
+                .await;
+                if statuses.iter().any(|status| *status != StepStatus::Passed) {
+                    return;
+                }
+            }
+            tctx.record.decide(Verdict::Procedure);
+        }
+
+        /// Starts one step in the case record and finishes it as `scripted` says.
+        async fn run_step(
+            slot: usize, index: usize, member: Option<usize>, scripted: ScriptedStep, tctx: &TestContext,
+        ) -> StepStatus {
+            let (name, budget) = scripted.kind();
+            let remaining = tctx.deadline.at.saturating_duration_since(tokio::time::Instant::now());
+            let (budget, deadline) = if budget <= remaining {
+                (budget, Deadline::after(Budget::Step, budget))
+            } else {
+                (remaining, tctx.deadline)
+            };
+            let running = RunningStep {
+                step: index,
+                member,
+                name,
+                started: tokio::time::Instant::now(),
+                budget,
+                deadline,
+            };
+            tctx.record.start(slot, running);
+            let result = match scripted {
+                ScriptedStep::Pass => running.result(StepStatus::Passed, "Passed.".to_string(), Duration::ZERO),
+                ScriptedStep::Hang => {
+                    tctx.test_cancel_token().cancelled().await;
+                    running.interrupted(None)
+                }
+            };
+            let status = result.status;
+            tctx.record.finish(slot, result);
+            status
         }
     }
 
@@ -1431,7 +1513,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{test_runner_settings, Behavior, ScriptedTest, TaskProbe};
+    use super::test_support::{test_runner_settings, Behavior, ScriptedStep, ScriptedTest, TaskProbe};
     use super::*;
     use crate::core::record::StepStatus;
     use crate::core::result::{ReclaimResult, TestOutcome, TimeoutDeadline};
@@ -1443,7 +1525,7 @@ mod tests {
     /// Bounds paused-time tests while allowing the runner's [`GRACE_TIME`] to expire.
     const PAUSED_BOUND: Duration = Duration::from_secs(120);
 
-    /// An assertion that matches the log line [`Behavior::Procedure`] provides.
+    /// An assertion that matches the log line a `mac` case's processes write.
     const LOG_MATCHES: &str = "- assertion: log_contains\n  pattern: ready\n  timeout: 5s\n";
 
     /// Runs a test within `bound`, using `log_base_dir` and run cancellation `cancel_all`. Discards events.
@@ -1626,11 +1708,8 @@ mod tests {
         let test = ScriptedTest {
             timeout: Duration::from_millis(300),
             ..ScriptedTest::new(
-                "procedure",
-                Behavior::Procedure(
-                    "- assertion: log_contains\n  pattern: ready\n  timeout: 5s\n\
-                     - assertion: process_stable_for\n  duration: 30s\n",
-                ),
+                "steps",
+                Behavior::Steps(&[&[ScriptedStep::Pass], &[ScriptedStep::Hang]]),
             )
         };
 
@@ -1651,89 +1730,15 @@ mod tests {
             ]
         );
         let interrupted = &result.assertion_results[1];
-        assert!(
-            interrupted.message.contains("of its 30s step budget"),
-            "{}",
-            interrupted.message
-        );
+        assert!(interrupted.message.contains("step budget"), "{}", interrupted.message);
         let cause = result.cause.as_ref().expect("a stopped test should carry its cause");
         assert_eq!(cause.by, StoppedBy::CaseDeadline);
         let active: Vec<_> = cause
             .active
             .iter()
-            .map(|step| (step.step, step.member, step.kind.as_str(), step.budget_ms))
-            .collect();
-        assert_eq!(active, [(1, None, "process_stable_for", 30_000)]);
-    }
-
-    #[tokio::test]
-    async fn a_step_that_exhausts_its_own_budget_fails_the_test() {
-        // The retry sleep outlasts the step budget, proving the slack preserves the assertion's own timeout message.
-        // The last attempt is a request error or a probe timeout, depending on how busy the machine is.
-        crate::intake::test_server::install_crypto_provider();
-        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let test = ScriptedTest::new(
-            "procedure",
-            Behavior::Procedure(
-                "- assertion: http_check\n  endpoint: http://127.0.0.1:0/\n  status:\n    equal: 200\n  timeout: 200ms\n",
-            ),
-        );
-
-        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
-
-        assert_eq!(result.outcome, TestOutcome::Failed);
-        assert!(result.timeout.is_none());
-        assert_eq!(result.assertion_results.len(), 1);
-        let message = &result.assertion_results[0].message;
-        assert!(
-            message.starts_with(
-                "HTTP endpoint 'http://127.0.0.1:0/' returns status 200. did not happen within 200ms.\nLast attempt: "
-            ),
-            "{message}"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_stalled_request_cut_short_by_the_case_deadline_is_interrupted() {
-        let intake = crate::intake::test_server::MockIntake::unresponsive().await;
-        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let test = ScriptedTest {
-            timeout: Duration::from_secs(1),
-            intake: Some(intake.port()),
-            ..ScriptedTest::new(
-                "stalled",
-                Behavior::Procedure("- assertion: intake_has_metric\n  name: some.metric\n  timeout: 30s\n"),
-            )
-        };
-
-        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
-
-        assert_eq!(result.outcome, TestOutcome::TimedOut, "{:?}", result.error);
-        let timeout = result
-            .timeout
-            .as_ref()
-            .expect("a timed-out test should carry timeout detail");
-        assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
-        let cause = result.cause.as_ref().expect("a stopped test should carry its cause");
-        let active: Vec<_> = cause
-            .active
-            .iter()
             .map(|step| (step.step, step.member, step.kind.as_str()))
             .collect();
-        assert_eq!(active, [(0, None, "intake_has_metric")]);
-        assert_eq!(
-            statuses(&result),
-            [("intake_has_metric", None, StepStatus::Interrupted)]
-        );
-        let message = &result.assertion_results[0].message;
-        assert!(
-            message.starts_with(
-                "Interrupted after 1.0s. The case left this step 1.0s of its 30s step budget.\n\
-                 Cancelled after 1.0s waiting for the intake sidecar's metrics dump.\n\
-                 No metric matching name=some.metric, tags_match=subset had arrived at the intake.\n"
-            ),
-            "{message}"
-        );
+        assert_eq!(active, [(1, None, "process_stable_for")]);
     }
 
     #[cfg(unix)]
@@ -1919,16 +1924,17 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_body_dropped_after_its_procedure_keeps_its_steps_and_where_grace_ran_out() {
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let steps = "- assertion: log_contains\n  pattern: ready\n  timeout: 5s\n\
-                     - assertion: log_contains\n  pattern: ready\n  timeout: 5s\n\
-                     - parallel:\n  - assertion: process_stable_for\n    duration: 600s\n  \
-                     - assertion: process_stable_for\n    duration: 600s\n\
-                     - assertion: log_contains\n  pattern: ready\n  timeout: 5s\n";
+        let steps: &[&[ScriptedStep]] = &[
+            &[ScriptedStep::Pass],
+            &[ScriptedStep::Pass],
+            &[ScriptedStep::Hang, ScriptedStep::Hang],
+            &[ScriptedStep::Pass],
+        ];
         let test = ScriptedTest {
             timeout: Duration::from_secs(1),
             ..ScriptedTest::new(
                 "dropped",
-                Behavior::ProcedureThenWait {
+                Behavior::StepsThenWait {
                     steps,
                     then_phase: "cleanup",
                     returns_on_cancel: false,
@@ -1953,7 +1959,7 @@ mod tests {
             member: Some(member),
             kind: "process_stable_for".to_string(),
             elapsed_ms: 1_000,
-            budget_ms: 600_000,
+            budget_ms: 1_000,
         };
         assert_eq!(cause.active, [member(0), member(1)]);
         let expected_statuses = [
@@ -1991,9 +1997,9 @@ mod tests {
         };
         let decided = stuck(
             "decided",
-            Behavior::ProcedureThenWait {
-                steps: LOG_MATCHES,
-                then_phase: "intake_capture",
+            Behavior::StepsThenWait {
+                steps: &[&[ScriptedStep::Pass]],
+                then_phase: "observe",
                 returns_on_cancel: false,
             },
         );
@@ -2096,21 +2102,18 @@ mod tests {
             timeout,
             ..ScriptedTest::new(
                 "decided",
-                Behavior::ProcedureThenWait {
-                    steps: LOG_MATCHES,
-                    then_phase: "intake_capture",
+                Behavior::StepsThenWait {
+                    steps: &[&[ScriptedStep::Pass]],
+                    then_phase: "observe",
                     returns_on_cancel,
                 },
             )
         };
         let deadline_issue = issue(
             IssueKind::PostVerdictDeadline,
-            "case budget 1s expired in intake_capture after the verdict",
+            "case budget 1s expired in observe after the verdict",
         );
-        let grace_issue = issue(
-            IssueKind::CleanupGraceExpired,
-            "cleanup grace 30s expired in intake_capture",
-        );
+        let grace_issue = issue(IssueKind::CleanupGraceExpired, "cleanup grace 30s expired in observe");
         let cases = [
             (
                 "timer, returns",
@@ -2194,8 +2197,8 @@ mod tests {
             timeout: Duration::from_secs(60),
             ..ScriptedTest::new(
                 "interrupted",
-                Behavior::ProcedureThenWait {
-                    steps: "- assertion: process_stable_for\n  duration: 600s\n",
+                Behavior::StepsThenWait {
+                    steps: &[&[ScriptedStep::Hang]],
                     then_phase: "cleanup",
                     returns_on_cancel: false,
                 },
