@@ -3,32 +3,9 @@ use std::time::Duration;
 
 use colored::Colorize as _;
 
-use crate::assertions::AssertionResult;
-use crate::core::record::{StepResult, StepStatus};
-use crate::core::result::{PhaseTiming, TestResult};
+use crate::core::record::StepStatus;
+use crate::core::result::TestResult;
 use crate::machine_output::{InterruptReason, RunReport, RunState, RUN_REPORT_FILE_NAME};
-
-impl TestResult {
-    /// Creates a result from sequential assertions, assigning step indices in order.
-    pub fn from_assertions(
-        name: impl Into<String>, duration: Duration, assertion_results: Vec<AssertionResult>,
-        phase_timings: Vec<PhaseTiming>,
-    ) -> Self {
-        let steps = assertion_results
-            .into_iter()
-            .enumerate()
-            .map(|(step, result)| StepResult {
-                step,
-                member: None,
-                name: result.name,
-                status: result.status.into(),
-                message: result.message,
-                duration: result.duration,
-            })
-            .collect();
-        Self::from_steps(name, duration, steps, phase_timings)
-    }
-}
 
 /// Output format for test results.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
@@ -225,6 +202,7 @@ pub fn run_unfinished_lines(report: &RunReport) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use crate::core::record::StepResult;
     use crate::core::result::{ErrorKind, Issue, IssueKind, StopCause, StoppedBy, TimeoutAttribution};
 
     /// Expected cause line for the timeout result in [`each_outcome`].

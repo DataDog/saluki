@@ -542,7 +542,7 @@ impl Case<'_> {
         let step = &planned.step;
         let case = self.run.deadline;
         let remaining = case.at.saturating_duration_since(Instant::now());
-        // On a tie the step's own budget is the one that runs out, as `Deadline::narrow` has it. A step that asks for
+        // On a tie the step's own budget is the one that runs out, so a step that gets its full allowance is limited by its own budget. A step that asks for
         // more than the case has left is recorded with what is left.
         let (budget, deadline) = if step.budget() <= remaining {
             (step.budget(), Deadline::after(Budget::Step, step.budget()))
