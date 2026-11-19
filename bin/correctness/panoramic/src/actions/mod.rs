@@ -10,6 +10,7 @@ mod target_cli;
 mod target_exec;
 #[cfg(test)]
 pub(crate) mod test_docker;
+pub(crate) mod windows_http;
 
 pub(crate) use target_exec::{docker_exec, execute_target_command, CommandDiagnostics, CommandError};
 
