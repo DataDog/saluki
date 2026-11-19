@@ -35,8 +35,8 @@ EOF
                 exit 1 ;;
         esac
 
-        # GitLab job names cannot contain '/'. CORRECTNESS_TEST_CASE keeps the
-        # case name as is, which panoramic receives as-is.
+        # GitLab job names cannot contain '/', so the job name replaces it with
+        # '-'. CORRECTNESS_TEST_CASE keeps the case name unchanged.
         job_name="${case//\//-}"
 
         cat <<EOF
