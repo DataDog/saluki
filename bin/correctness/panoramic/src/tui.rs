@@ -8,13 +8,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::Local;
 use colored::Colorize as _;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal, ExecutableCommand as _, QueueableCommand as _,
 };
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 
 use crate::core::record::StepStatus;
 use crate::core::result::TestResult;
@@ -48,7 +48,10 @@ struct FormattedLine {
 impl FormattedLine {
     fn new(text: impl Into<String>) -> Self {
         Self {
-            timestamp: Local::now().format("%H:%M:%S").to_string(),
+            timestamp: Timestamp::now().map_or_else(
+                |_| "--:--:--".to_string(),
+                |now| now.format(TimestampFormat::TimeOfDay(TimeZone::system())).to_string(),
+            ),
             prefix: None,
             text: text.into(),
         }
@@ -259,7 +262,7 @@ fn interrupt_key(key: &KeyEvent) -> Option<&'static str> {
 fn completed_test_lines(result: &TestResult, log_dir: &Path) -> Vec<FormattedLine> {
     let total_assertions = result.assertion_results.len();
 
-    if result.outcome.is_passed() {
+    if !result.outcome.is_failure() {
         let mut lines = vec![FormattedLine::with_prefix(
             result.label(),
             LineColor::Green,

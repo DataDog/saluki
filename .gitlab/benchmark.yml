@@ -11,8 +11,8 @@
   - export SMP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
 
-# Layer the ADP image at ${ADP_IMG} into the converged Datadog Agent image and push it as
-# ${SMP_IMG}. Both the baseline and comparison build jobs end with this.
+# Layer the ADP image at ${ADP_IMG} into the converged Datadog Agent image at ${SMP_AGENT_IMAGE}, and
+# push it as ${SMP_IMG}. Both the baseline and comparison build jobs end with this.
 #
 # SMP fixes one target image per job, and the tag filtering experiments need the Core Agent in the
 # picture: a `metric_tag_filterlist` is Agent configuration, and only reaches ADP over the config
@@ -22,7 +22,7 @@
   - docker buildx build
     --file ./docker/Dockerfile.datadog-agent
     --tag ${SMP_IMG}
-    --build-arg DD_AGENT_IMAGE=registry.datadoghq.com/agent:${PUBLIC_DD_AGENT_VERSION}
+    --build-arg DD_AGENT_IMAGE=${SMP_AGENT_IMAGE}
     --build-arg ADP_IMAGE=${ADP_IMG}
     --label git.repository=${CI_PROJECT_NAME}
     --label git.branch=${CI_COMMIT_REF_NAME}
@@ -60,6 +60,10 @@ build-adp-baseline-image:
     # ci/tooling/compute-smp-sha.sh.
     - export BASELINE_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh baseline)
     - export BASELINE_ADP_IMG="${ADP_IMG_BASE}-${BASELINE_ADP_SHA}"
+    # Both sides run the Agent from the pipeline commit's `.datadog-agent-version.json`, read before the switch, so
+    # the comparison measures only the ADP change. The baseline commit may predate the file.
+    - SMP_AGENT_IMAGE=$(jq -er '.integration.linux.image' .datadog-agent-version.json) || exit 1
+    - export SMP_AGENT_IMAGE
     - git switch --detach ${BASELINE_ADP_SHA}
     # Actually build, using the `optimized-release` profile we ship so that both SMP and the binary size
     # analysis measure the production binary. Debug assertions are covered by the correctness tests, which
@@ -120,6 +124,9 @@ build-adp-comparison-image:
     # ci/tooling/compute-smp-sha.sh.
     - export COMPARISON_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh comparison)
     - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
+    # The same Agent as the baseline: see build-adp-baseline-image.
+    - SMP_AGENT_IMAGE=$(jq -er '.integration.linux.image' .datadog-agent-version.json) || exit 1
+    - export SMP_AGENT_IMAGE
     - git switch --detach ${COMPARISON_ADP_SHA}
     # Actually build, using the `optimized-release` profile we ship so that both SMP and the binary size
     # analysis measure the production binary. Debug assertions are covered by the correctness tests, which

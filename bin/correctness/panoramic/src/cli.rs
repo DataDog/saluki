@@ -4,10 +4,12 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use airlock::driver::DEFAULT_ALPINE_IMAGE;
-use chrono::Local;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 
+use crate::config::{os_of_runtime, runtime_of};
 use crate::core::participant::Os;
+use crate::participant_case::Replacement;
 use crate::{image_override::ImageOverride, reporter::OutputFormat, test::RunnerSettings};
 
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
@@ -128,7 +130,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Run integration tests.
-    Run(RunCommand),
+    Run(Box<RunCommand>),
 
     /// List available integration tests.
     List(ListCommand),
@@ -155,9 +157,30 @@ pub struct RunCommand {
     /// or `windows`). Only integration tests whose `runtimes:` list contains this
     /// value are eligible to run. Defaults to the host's own runtime: `mac` on
     /// macOS, `windows` on Windows, and `linux` everywhere else. Correctness tests
-    /// are unaffected by this flag
+    /// are unaffected by this flag. It selects the same OS as `--subject-os`
     #[arg(long, verbatim_doc_comment)]
     pub runtime: Option<String>,
+
+    /// Subject OS to run participant cases for: `linux`, `macos` or `windows`. A
+    /// participant case that does not declare it is skipped. Defaults to the host's
+    /// OS. `--runtime mac` and `--subject-os macos` select the same OS
+    #[arg(long, value_parser = str::parse::<Os>, verbatim_doc_comment)]
+    pub subject_os: Option<Os>,
+
+    /// Image a participant case runs in place of one it names, as `<name>=<image>`,
+    /// where `<name>` is the image exactly as the case or its participant type writes
+    /// it. Repeat the flag for more than one image; the environment variable takes them
+    /// as one comma-separated list. A name given twice, or one no discovered case uses,
+    /// is an error. CI uses this to run the cases against the images built for the
+    /// commit
+    #[arg(
+        long = "set",
+        value_name = "NAME=IMAGE",
+        env = "PANORAMIC_SET",
+        value_delimiter = ',',
+        verbatim_doc_comment
+    )]
+    pub set: Vec<Replacement>,
 
     /// Number of tests to run in parallel.
     #[arg(short = 'p', long, default_value = "4")]
@@ -241,19 +264,34 @@ impl RunCommand {
             adp_binary_path: self.adp_binary_path.clone(),
             core_agent_binary_path: self.core_agent_binary_path.clone(),
             alpine_image: self.alpine_image.clone(),
+            containers: None,
         }
+    }
+
+    /// The subject OS of the run, and the runtime name of the same OS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `--runtime` names no OS, or names another OS than `--subject-os`.
+    pub(crate) fn selection(&self) -> Result<(Os, &'static str), String> {
+        selection(self.runtime.as_deref(), self.subject_os)
     }
 
     /// Gets the log directory for this run.
     ///
     /// The base comes from `--log-dir`/`PANORAMIC_LOG_DIR`, falling back to a temporary directory.
-    pub fn log_dir(&self) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system clock is out of range, since the directory is named after the current time.
+    pub fn log_dir(&self) -> Result<PathBuf, String> {
         let base = self.log_dir.clone().unwrap_or_else(std::env::temp_dir);
 
         // Always append a timestamped subdirectory so artifacts from separate runs never mix. The
         // reports name the directory they landed in.
-        let timestamp = Local::now().format("%Y%m%d-%H%M%S");
-        base.join(format!("panoramic-{}", timestamp))
+        let now = Timestamp::now().map_err(|e| e.to_string())?;
+        let timestamp = now.format(TimestampFormat::CompactDateTime(TimeZone::system()));
+        Ok(base.join(format!("panoramic-{}", timestamp)))
     }
 }
 
@@ -275,10 +313,56 @@ pub struct ListCommand {
     #[arg(long, verbatim_doc_comment)]
     pub runtime: Option<String>,
 
+    /// Subject OS to list participant cases for. Same semantics as on `run`: a
+    /// participant case that does not declare it is left out
+    #[arg(long, value_parser = str::parse::<Os>, verbatim_doc_comment)]
+    pub subject_os: Option<Os>,
+
     /// Output the discovered tests as json along with their image dependencies. A
     /// `ci` script depends on this for dynamic pipeline creation
     #[arg(long, verbatim_doc_comment)]
     pub json: bool,
+}
+
+impl ListCommand {
+    /// The subject OS to list for, and the runtime name of the same OS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `--runtime` names no OS, or names another OS than `--subject-os`.
+    pub(crate) fn selection(&self) -> Result<(Os, &'static str), String> {
+        selection(self.runtime.as_deref(), self.subject_os)
+    }
+}
+
+/// The OS `--runtime` and `--subject-os` select together, the host's when neither is given, and its runtime name.
+fn selection(runtime: Option<&str>, subject_os: Option<Os>) -> Result<(Os, &'static str), String> {
+    let from_runtime = runtime
+        .map(|runtime| {
+            os_of_runtime(runtime).ok_or_else(|| {
+                format!(
+                    "Unknown runtime '{}': expected {}, {} or {}.",
+                    runtime,
+                    runtime_of(Os::Linux),
+                    runtime_of(Os::Macos),
+                    runtime_of(Os::Windows)
+                )
+            })
+        })
+        .transpose()?;
+    let os = match (from_runtime, subject_os) {
+        (Some(from_runtime), Some(subject_os)) if from_runtime != subject_os => {
+            return Err(format!(
+                "--runtime {} selects subject OS {}, and --subject-os selects {}.",
+                runtime.unwrap_or_default(),
+                from_runtime,
+                subject_os
+            ))
+        }
+        (Some(os), _) | (None, Some(os)) => os,
+        (None, None) => Os::host(),
+    };
+    Ok((os, runtime_of(os)))
 }
 
 /// Print what a participant case does on one subject OS, without running anything.
@@ -299,6 +383,18 @@ pub struct PlanCommand {
     /// Print the plan in a format for people instead of JSON.
     #[arg(long)]
     pub text: bool,
+
+    /// Image the case runs in place of one it names, as `<name>=<image>`. Same
+    /// semantics as on `run`: the plan shows both, and a name the case does not use
+    /// is an error
+    #[arg(
+        long = "set",
+        value_name = "NAME=IMAGE",
+        env = "PANORAMIC_SET",
+        value_delimiter = ',',
+        verbatim_doc_comment
+    )]
+    pub set: Vec<Replacement>,
 }
 
 #[cfg(test)]
@@ -321,6 +417,7 @@ mod tests {
         ("alpine_image", "PANORAMIC_ALPINE_IMAGE"),
         ("log_dir", "PANORAMIC_LOG_DIR"),
         ("image_overrides", "PANORAMIC_IMAGE_OVERRIDES"),
+        ("set", "PANORAMIC_SET"),
     ];
 
     fn run_command_of(cli: &Cli) -> &RunCommand {
@@ -548,7 +645,10 @@ mod tests {
         assert_eq!(cmd.test_dirs, vec![PathBuf::from("test/correctness/cases")]);
         assert!(cmd.no_tui);
         assert_eq!(cmd.parallelism.get(), 1);
-        assert!(cmd.log_dir().starts_with("integration-logs"));
+        assert!(cmd
+            .log_dir()
+            .expect("log dir should resolve")
+            .starts_with("integration-logs"));
 
         // `-d` accumulates; `-t` takes the last value, matching the previous parser.
         let cli = Cli::try_parse_from([
@@ -689,7 +789,7 @@ mod tests {
     fn log_dir_appends_a_timestamped_subdirectory() {
         let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases", "-l", "/tmp/panoramic-test"])
             .expect("run with a log dir should parse");
-        let log_dir = run_command_of(&cli).log_dir();
+        let log_dir = run_command_of(&cli).log_dir().expect("log dir should resolve");
 
         let parent = log_dir.parent().expect("log dir should have a parent");
         assert_eq!(parent, Path::new("/tmp/panoramic-test"));

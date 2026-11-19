@@ -112,8 +112,20 @@ pub struct PayloadFields {
     pub hostname: MetaString,
     /// Application version string.
     pub app_version: MetaString,
+    /// Container tags resolved from the payload's source, as `key:value` tags.
+    ///
+    /// `None` when the source resolved none, in which case consumers derive them from [`Trace::attributes`]. A thin
+    /// pointer keeps this field to a single word, because `Trace` sizes every `Event`.
+    pub container_tags: Option<Arc<Vec<MetaString>>>,
     /// Per-chunk weight from `Datadog-Client-Dropped-P0-Traces` header. Zero if absent.
     pub client_dropped_p0s_weight: f64,
+}
+
+impl PayloadFields {
+    /// Returns the container tags the payload's source resolved, as `key:value` tags.
+    pub fn resolved_container_tags(&self) -> &[MetaString] {
+        self.container_tags.as_deref().map_or(&[], Vec::as_slice)
+    }
 }
 
 /// The protocol a trace chunk was ingested through.

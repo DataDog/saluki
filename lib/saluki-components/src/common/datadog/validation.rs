@@ -16,7 +16,10 @@ use tokio::{
 use tracing::{debug, warn};
 use url::Url;
 
-use super::{api_key::ApiKeyChanges, endpoints::RoutableEndpoint};
+use super::{
+    api_key::ApiKeyChanges,
+    endpoints::{endpoint_base_path, RoutableEndpoint},
+};
 
 const VALIDATE_PATH: &str = "/api/v1/validate";
 // TODO: Move the shared Datadog fake API key constant to `datadog-agent-commons`.
@@ -305,8 +308,11 @@ async fn validate_target(client: &mut HttpClient, target: &ValidationTarget) -> 
 }
 
 fn build_validation_request(target: &ValidationTarget) -> Result<Request<Empty<Bytes>>, GenericError> {
+    // Append the validation path to the base path of the endpoint, as the forwarder does for payloads. The base path is
+    // empty for official Datadog endpoints and for endpoints with no path, or only `/`.
     let mut url = target.validation_base_url.clone();
-    url.set_path(VALIDATE_PATH);
+    let path = format!("{}{}", endpoint_base_path(&url), VALIDATE_PATH);
+    url.set_path(&path);
     url.set_query(None);
     url.query_pairs_mut().append_pair("api_key", &target.api_key);
 
@@ -399,6 +405,45 @@ mod tests {
 
         for (case_name, raw_endpoint, expected_url) in cases {
             assert_eq!(validation_url_for(raw_endpoint), expected_url, "{case_name}");
+        }
+    }
+
+    #[test]
+    fn validation_request_keeps_endpoint_base_path() {
+        let cases = [
+            (
+                "datadog site",
+                "https://app.datadoghq.com",
+                "https://api.datadoghq.com/api/v1/validate?api_key=api-key",
+            ),
+            (
+                "custom endpoint without path",
+                "http://127.0.0.1:12345",
+                "http://127.0.0.1:12345/api/v1/validate?api_key=api-key",
+            ),
+            (
+                "custom endpoint with base path",
+                "https://proxy.example.com/prefix",
+                "https://proxy.example.com/prefix/api/v1/validate?api_key=api-key",
+            ),
+            (
+                "custom endpoint with base path and trailing slash",
+                "https://proxy.example.com/prefix/",
+                "https://proxy.example.com/prefix/api/v1/validate?api_key=api-key",
+            ),
+        ];
+
+        for (case_name, raw_endpoint, expected_uri) in cases {
+            let endpoint =
+                ResolvedEndpoint::from_raw_endpoint(raw_endpoint, "api-key").expect("endpoint should resolve");
+            let target = ValidationTarget {
+                endpoint: endpoint.endpoint().clone(),
+                validation_base_url: validation_base_url(endpoint.endpoint()),
+                api_key: "api-key".to_string(),
+            };
+
+            let request = build_validation_request(&target).expect("request should build");
+            assert_eq!(request.uri().to_string(), expected_uri, "{case_name}");
         }
     }
 

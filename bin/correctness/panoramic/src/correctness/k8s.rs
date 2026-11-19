@@ -25,13 +25,9 @@ use crate::{
     core::ledger::{random_id, ResourceLedger},
     core::result::{TestResult, UNKNOWN_PHASE},
     core::tasks::CaseTasks,
-    correctness::{
-        analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
-        case::CorrectnessTestCase,
-        config::TargetConfig,
-        runner::make_error_result,
-    },
-    intake::{CollectedData, IntakeClient},
+    correctness::{case::CorrectnessTestCase, config::TargetConfig, runner::make_error_result},
+    intake::IntakeClient,
+    steps::analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
     test::TestContext,
     traffic::{self, Side},
 };
@@ -298,10 +294,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
             let phase = phases.enter("collect_data");
             let (baseline_client, comparison_client) =
                 (IntakeClient::new(baseline_port), IntakeClient::new(comparison_port));
-            let collected = tokio::join!(
-                CollectedData::collect(&baseline_client),
-                CollectedData::collect(&comparison_client),
-            );
+            let collected = tokio::join!(baseline_client.collect(), comparison_client.collect());
             phase.finish();
 
             match collected {

@@ -6,16 +6,8 @@ the project and the tools and processes for developing it.
 
 ## Writing style
 
-We strive to use ASD-STE100, or "Simplified Technical English," when writing user-facing
-code comments and documentation. ASD-STE100 is a large, highly opinionated reference for
-technical writing, but can generally be summarized as having the following high-level
-aspects:
-
-- prefer using "active voice" ("The dog bit the postal carrier." instead of "The postal carrier was bitten by the dog.")
-- use short sentences (no more than 20-25 words per sentence) and short paragraphs (no more than 5-6 sentences per paragraph)
-- avoid synonyms where possible, preferring simple nouns and verbs used consistently throughout the codebase
-
-ASD-STE100 consists of two main parts -- the writing rules and the dictionary -- which are designed to be used together. We don't expect users to precisely follow the dictionary portion of ASD-STE100, but users are expected to write in a straightforward manner -- following the above rules, preferring consistent, simple wording -- whether by hand or through agentic help.
+We write all code comments and documentation in the style of ASD-STE100, also called Simplified Technical English.
+The rules are under [Writing style](./style-guide.md#writing-style) in the style guide.
 
 ## Requirement levels
 

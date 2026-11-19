@@ -10,8 +10,13 @@
 
 pub(crate) mod backend;
 pub(crate) mod case;
+pub(crate) mod container;
+pub(crate) mod courier;
 pub(crate) mod deadline;
+pub(crate) mod handle;
 pub(crate) mod ledger;
+pub(crate) mod lifecycle;
+pub(crate) mod observe;
 mod order;
 pub(crate) mod participant;
 pub(crate) mod plan;
@@ -26,3 +31,6 @@ pub(crate) mod step;
 pub(crate) mod tasks;
 pub(crate) mod template;
 pub(crate) mod wiring;
+
+#[cfg(test)]
+mod daemon_tests;
