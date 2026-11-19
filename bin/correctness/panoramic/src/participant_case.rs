@@ -247,8 +247,8 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 /// participants use, every image, pulled if the Docker daemon lacks it, the courier, and, for pods, a kind cluster that
 /// holds the images. `plans` holds the plan of each case that runs, by name.
 ///
-/// A kind cluster is made if it is missing, and a run with any pod sets it up once here, outside every case's timeout. Setup puts the cluster in `lifecycle` as soon as it exists, so the caller
-/// can remove it even when a later check fails.
+/// A kind cluster is made if it is missing, and a run with any pod sets it up once here, outside every case's timeout.
+/// When setup succeeds, `lifecycle` holds the cluster, so the caller can remove it even when connecting to it fails.
 ///
 /// Returns the backend of each realization the cases use.
 ///
