@@ -126,8 +126,9 @@ const LISTENERS: &[Listener] = &[
 /// ADP's line once its DogStatsD UDP listener is bound, whatever interface it binds.
 const DOGSTATSD_UDP_STARTED: &str = r#":{{ self.endpoints.dogstatsd_udp.port }}" | DogStatsD listener started."#;
 
-/// ADP's command line, the same in a container and in a pod.
+/// The command lines of ADP and the Agent, the same in a container and in a pod.
 const ADP_COMMAND: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
+const AGENT_COMMAND: &str = "/opt/datadog-agent/bin/agent/agent";
 
 /// ADP as `make build-adp-host` builds it. A run replaces it with `--set`.
 const ADP_PROGRAM: &str = "target/release/agent-data-plane";
@@ -182,14 +183,10 @@ impl ParticipantType for AgentAdp {
             processes: Some(processes),
             aliases: BTreeMap::from([(DATADOG_YAML, DATADOG_YAML_PATH)]),
             consumes: BTreeMap::from([("intake", INTAKE), ("dogstatsd_forward", DOGSTATSD_FORWARD)]),
-            commands: BTreeMap::from([(
-                "adp".to_string(),
-                CommandSpec {
-                    program: None,
-                    argv: vec![Template::parse(ADP_COMMAND)?],
-                    env: BTreeMap::new(),
-                },
-            )]),
+            commands: BTreeMap::from([
+                ("adp".to_string(), program_command(ADP_COMMAND)?),
+                ("agent".to_string(), program_command(AGENT_COMMAND)?),
+            ]),
             operations: &OPERATIONS,
             ..ParticipantSpec::default()
         };
@@ -294,20 +291,39 @@ fn host_processes(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             },
         )]),
         ready: BTreeMap::from([("dogstatsd_udp".to_string(), ready)]),
-        commands: BTreeMap::from([(
-            "adp".to_string(),
-            CommandSpec {
-                program: Some("adp".to_string()),
-                argv: vec![Template::parse("-c")?, Template::parse("{{ self.dir }}/datadog.yaml")?],
-                env: BTreeMap::new(),
-            },
-        )]),
+        commands: BTreeMap::from([
+            (
+                "adp".to_string(),
+                CommandSpec {
+                    program: Some("adp".to_string()),
+                    argv: vec![Template::parse("-c")?, Template::parse("{{ self.dir }}/datadog.yaml")?],
+                    env: BTreeMap::new(),
+                },
+            ),
+            (
+                "agent".to_string(),
+                CommandSpec {
+                    program: Some("agent".to_string()),
+                    argv: vec![Template::parse("-c")?, Template::parse("{{ self.dir }}")?],
+                    env: BTreeMap::new(),
+                },
+            ),
+        ]),
         operations: &OPERATIONS,
         ..ParticipantSpec::default()
     };
     add_endpoints(cx, &mut spec)?;
     datadog_agent::set_defaults(cx, true, &mut spec)?;
     Ok(spec)
+}
+
+/// A command that runs the program at `path` in the participant, with no arguments of its own.
+fn program_command(path: &str) -> Result<CommandSpec, String> {
+    Ok(CommandSpec {
+        program: None,
+        argv: vec![Template::parse(path)?],
+        env: BTreeMap::new(),
+    })
 }
 
 /// Rejects each `ADP_DD_` key the case's `env` sets, where `place` ("On macOS") has no image that gives the key to ADP

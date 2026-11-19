@@ -74,8 +74,6 @@ pub(crate) enum Need {
     /// A participant and one of its processes.
     Process(String, String),
     /// A participant and one of its named commands.
-    // TODO: remove the dead_code allowance once a step runs a named command.
-    #[allow(dead_code)]
     Command(String, String),
     /// A participant and one of its operations.
     Operation(String, String),
