@@ -1072,15 +1072,12 @@ cargo-preinstall: cargo-install-cargo-auditable
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 
+# Outside CI, a tool that is already installed is kept, whatever its version. In CI, a tool that cargo doesn't list at
+# its pinned version is installed again. This lets a version bump reach runners and images that keep their tools between
+# jobs.
 .PHONY: cargo-install-%
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
+cargo-install-%: override TOOL_INSTALLED = $(if $(findstring true,$(CI)),cargo install --list | grep -qxF "${TOOL} v$(CARGO_TOOL_VERSION_$(TOOL)):",test -f ${CARGO_BIN_DIR}/${TOOL})
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)
-
-# cargo-nextest is reinstalled when the installed version doesn't match the pinned one, so that runners which keep their
-# tools between jobs, such as the macOS ones, pick up a version bump.
-.PHONY: cargo-install-cargo-nextest
-cargo-install-cargo-nextest: override VERSIONED_TOOL = cargo-nextest@$(CARGO_TOOL_VERSION_cargo-nextest)
-cargo-install-cargo-nextest: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test "$$(cargo nextest --version 2>/dev/null | head -n1 | cut -d' ' -f2)" = "$(CARGO_TOOL_VERSION_cargo-nextest)" || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --force --quiet -y),)
+	@$(if $(findstring true,$(AUTOINSTALL)),${TOOL_INSTALLED} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --force --quiet -y),)
