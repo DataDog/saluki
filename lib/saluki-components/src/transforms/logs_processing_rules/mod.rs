@@ -12,10 +12,6 @@
 //!
 //! The first rule that drops a log stops the processing of that log.
 //!
-//! The other rule types are accepted and do nothing, since they only apply to logs that this transform doesn't
-//! receive. `exclude_truncated` applies to truncated logs, `remap_source` to structured logs, and `multi_line` to the
-//! aggregation of log lines before processing.
-//!
 //! Patterns and placeholders use the syntax of the `regex` crate, where `$1` and `${name}` refer to capture groups.
 //! The rules are expected to have been validated already: building the transform only fails when a pattern doesn't
 //! compile.
@@ -63,40 +59,6 @@ pub enum LogsProcessingRule {
         /// Replacement for each match, where `$1` and `${name}` refer to capture groups.
         replace_placeholder: String,
     },
-
-    /// Drops truncated logs. Does nothing, as no log reaching this transform is truncated.
-    ExcludeTruncated {
-        /// Name of the rule.
-        name: String,
-    },
-
-    /// Changes the source of structured logs with a matching attribute. Does nothing, as no log reaching this
-    /// transform is structured.
-    RemapSource {
-        /// Name of the rule.
-        name: String,
-        /// Attribute values to match, and the source each one maps to.
-        matching: Vec<LogsSourceMatch>,
-    },
-
-    /// Aggregates multi-line logs. Does nothing, as aggregation happens before processing.
-    MultiLine {
-        /// Name of the rule.
-        name: String,
-        /// Regular expression matching the start of a log.
-        pattern: String,
-    },
-}
-
-/// An attribute value that a `remap_source` rule maps to a new source.
-#[derive(Clone, Debug, PartialEq)]
-pub struct LogsSourceMatch {
-    /// Path of the attribute.
-    pub attribute: String,
-    /// Value the attribute must have.
-    pub value: String,
-    /// Source given to a log that matches.
-    pub new_source: String,
 }
 
 /// Logs processing rules transform configuration.
@@ -146,7 +108,7 @@ impl MemoryBounds for LogsProcessingRulesConfiguration {
     }
 }
 
-/// A rule that can change or drop a log.
+/// A rule with its pattern compiled.
 #[derive(Debug)]
 enum CompiledRule {
     Exclude(Regex),
@@ -154,7 +116,7 @@ enum CompiledRule {
     Mask { regex: Regex, placeholder: String },
 }
 
-/// Compiles the rules that can change or drop a log, in order.
+/// Compiles the rules, in order.
 ///
 /// # Errors
 ///
@@ -171,29 +133,21 @@ fn compile_rules(rules: &[LogsProcessingRule]) -> Result<Vec<CompiledRule>, Gene
         })
     };
 
-    let mut compiled = Vec::with_capacity(rules.len());
-    for rule in rules {
-        match rule {
-            LogsProcessingRule::ExcludeAtMatch { name, pattern } => {
-                compiled.push(CompiledRule::Exclude(compile(name, pattern)?));
-            }
-            LogsProcessingRule::IncludeAtMatch { name, pattern } => {
-                compiled.push(CompiledRule::Include(compile(name, pattern)?));
-            }
+    rules
+        .iter()
+        .map(|rule| match rule {
+            LogsProcessingRule::ExcludeAtMatch { name, pattern } => Ok(CompiledRule::Exclude(compile(name, pattern)?)),
+            LogsProcessingRule::IncludeAtMatch { name, pattern } => Ok(CompiledRule::Include(compile(name, pattern)?)),
             LogsProcessingRule::MaskSequences {
                 name,
                 pattern,
                 replace_placeholder,
-            } => compiled.push(CompiledRule::Mask {
+            } => Ok(CompiledRule::Mask {
                 regex: compile(name, pattern)?,
                 placeholder: replace_placeholder.clone(),
             }),
-            LogsProcessingRule::ExcludeTruncated { .. }
-            | LogsProcessingRule::RemapSource { .. }
-            | LogsProcessingRule::MultiLine { .. } => {}
-        }
-    }
-    Ok(compiled)
+        })
+        .collect()
 }
 
 /// Logs processing rules transform.

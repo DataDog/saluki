@@ -24,7 +24,7 @@ mod dogstatsd_mapper;
 pub use self::dogstatsd_mapper::{DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping};
 
 mod logs_processing_rules;
-pub use self::logs_processing_rules::{LogsProcessingRule, LogsProcessingRulesConfiguration, LogsSourceMatch};
+pub use self::logs_processing_rules::{LogsProcessingRule, LogsProcessingRulesConfiguration};
 
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;

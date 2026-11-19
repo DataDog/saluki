@@ -326,32 +326,6 @@ fn placeholder_expansion() {
 }
 
 #[test]
-fn rules_that_dont_apply_to_these_logs_do_nothing() {
-    let rules = [
-        LogsProcessingRule::ExcludeTruncated {
-            name: "truncated".to_string(),
-        },
-        LogsProcessingRule::RemapSource {
-            name: "remap".to_string(),
-            matching: vec![LogsSourceMatch {
-                attribute: "message".to_string(),
-                value: "hello".to_string(),
-                new_source: "remapped".to_string(),
-            }],
-        },
-        LogsProcessingRule::MultiLine {
-            name: "multi_line".to_string(),
-            pattern: "hello".to_string(),
-        },
-    ];
-    let mut log = Log::new("hello").with_source(Some(MetaString::from("original")));
-    let expected = log.clone();
-
-    assert!(transform(&rules).process(&mut log));
-    assert_eq!(log, expected);
-}
-
-#[test]
 fn a_mask_changes_only_the_message() {
     let mut log = Log::new("user=alice logged in")
         .with_status("warn")
@@ -477,16 +451,4 @@ async fn an_invalid_pattern_fails_the_build_naming_the_rule() {
         error.contains("Invalid pattern '(' for logs processing rule 'bad_mask'"),
         "unexpected error: {error}"
     );
-}
-
-#[tokio::test]
-async fn a_multi_line_pattern_isnt_compiled() {
-    let rules = vec![LogsProcessingRule::MultiLine {
-        name: "multi_line".to_string(),
-        pattern: "(".to_string(),
-    }];
-
-    let (output, _) = run(rules, vec![Event::Log(Log::new("a"))]).await;
-
-    assert_eq!(output, ["log:a"]);
 }

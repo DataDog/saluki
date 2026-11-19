@@ -1,37 +1,35 @@
 //! Inputs of the logs pipeline.
 
 use agent_data_plane_config::domains::logs::{self, ProcessingRule};
-use saluki_components::transforms::{LogsProcessingRule, LogsSourceMatch};
+use saluki_components::transforms::LogsProcessingRule;
 
-/// Builds the logs processing rules, in their configured order.
+/// Builds the logs processing rules that apply to check and OTLP logs, in their configured order.
+///
+/// The other rule types are left out, since they don't apply to these logs in the Agent either. `exclude_truncated`
+/// applies to truncated logs and `remap_source` to structured logs, and neither kind reaches this pipeline.
+/// `multi_line` applies to the aggregation of log lines, which happens before the processing rules.
 pub(crate) fn logs_processing_rules(logs: &logs::Domain) -> Vec<LogsProcessingRule> {
     logs.processing_rules
         .iter()
-        .map(|rule| match rule.clone() {
-            ProcessingRule::ExcludeAtMatch { name, pattern } => LogsProcessingRule::ExcludeAtMatch { name, pattern },
-            ProcessingRule::IncludeAtMatch { name, pattern } => LogsProcessingRule::IncludeAtMatch { name, pattern },
+        .filter_map(|rule| match rule.clone() {
+            ProcessingRule::ExcludeAtMatch { name, pattern } => {
+                Some(LogsProcessingRule::ExcludeAtMatch { name, pattern })
+            }
+            ProcessingRule::IncludeAtMatch { name, pattern } => {
+                Some(LogsProcessingRule::IncludeAtMatch { name, pattern })
+            }
             ProcessingRule::MaskSequences {
                 name,
                 pattern,
                 replace_placeholder,
-            } => LogsProcessingRule::MaskSequences {
+            } => Some(LogsProcessingRule::MaskSequences {
                 name,
                 pattern,
                 replace_placeholder,
-            },
-            ProcessingRule::ExcludeTruncated { name } => LogsProcessingRule::ExcludeTruncated { name },
-            ProcessingRule::RemapSource { name, matching } => LogsProcessingRule::RemapSource {
-                name,
-                matching: matching
-                    .into_iter()
-                    .map(|entry| LogsSourceMatch {
-                        attribute: entry.attribute,
-                        value: entry.value,
-                        new_source: entry.new_source,
-                    })
-                    .collect(),
-            },
-            ProcessingRule::MultiLine { name, pattern } => LogsProcessingRule::MultiLine { name, pattern },
+            }),
+            ProcessingRule::ExcludeTruncated { .. }
+            | ProcessingRule::RemapSource { .. }
+            | ProcessingRule::MultiLine { .. } => None,
         })
         .collect()
 }
@@ -43,12 +41,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn logs_processing_rules_copies_every_rule_in_order() {
+    fn logs_processing_rules_copies_the_rules_that_apply_in_order() {
         let domain = logs::Domain {
             processing_rules: vec![
                 ProcessingRule::ExcludeAtMatch {
                     name: "exclude-name".into(),
                     pattern: "exclude-pattern".into(),
+                },
+                ProcessingRule::ExcludeTruncated {
+                    name: "truncated-name".into(),
                 },
                 ProcessingRule::IncludeAtMatch {
                     name: "include-name".into(),
@@ -58,9 +59,6 @@ mod tests {
                     name: "mask-name".into(),
                     pattern: "mask-pattern".into(),
                     replace_placeholder: "mask-placeholder".into(),
-                },
-                ProcessingRule::ExcludeTruncated {
-                    name: "truncated-name".into(),
                 },
                 ProcessingRule::RemapSource {
                     name: "remap-name".into(),
@@ -94,21 +92,6 @@ mod tests {
                     name: "mask-name".into(),
                     pattern: "mask-pattern".into(),
                     replace_placeholder: "mask-placeholder".into(),
-                },
-                LogsProcessingRule::ExcludeTruncated {
-                    name: "truncated-name".into(),
-                },
-                LogsProcessingRule::RemapSource {
-                    name: "remap-name".into(),
-                    matching: vec![LogsSourceMatch {
-                        attribute: "remap-attribute".into(),
-                        value: "remap-value".into(),
-                        new_source: "remap-source".into(),
-                    }],
-                },
-                LogsProcessingRule::MultiLine {
-                    name: "multi-line-name".into(),
-                    pattern: "multi-line-pattern".into(),
                 },
             ]
         );

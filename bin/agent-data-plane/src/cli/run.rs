@@ -501,10 +501,10 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
 
 /// Returns the component that check and OTLP logs enter the logs pipeline through.
 ///
-/// Logs go through `logs_process` only when there are processing rules, so that they don't pay for an extra component
-/// otherwise.
+/// Logs go through `logs_process` only when there are processing rules that apply to them, so that they don't pay for
+/// an extra component otherwise.
 fn logs_pipeline_input(logs: &logs::Domain) -> &'static str {
-    if logs.processing_rules.is_empty() {
+    if logs_processing_rules(logs).is_empty() {
         "dd_logs_encode"
     } else {
         LOGS_PROCESS
@@ -1192,15 +1192,21 @@ mod tests {
     const CONTEXT_DUMP_ROUTE: &str = crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
     #[test]
-    fn logs_go_through_logs_process_only_when_there_are_processing_rules() {
-        let mut logs = agent_data_plane_config::domains::logs::Domain::default();
+    fn logs_go_through_logs_process_only_when_there_are_processing_rules_that_apply() {
+        use agent_data_plane_config::domains::logs::{Domain, ProcessingRule};
+
+        let mut logs = Domain::default();
         assert_eq!(super::logs_pipeline_input(&logs), "dd_logs_encode");
 
-        logs.processing_rules.push(
-            agent_data_plane_config::domains::logs::ProcessingRule::ExcludeTruncated {
-                name: "truncated".to_string(),
-            },
-        );
+        logs.processing_rules.push(ProcessingRule::ExcludeTruncated {
+            name: "truncated".to_string(),
+        });
+        assert_eq!(super::logs_pipeline_input(&logs), "dd_logs_encode");
+
+        logs.processing_rules.push(ProcessingRule::ExcludeAtMatch {
+            name: "exclude".to_string(),
+            pattern: "debug".to_string(),
+        });
         assert_eq!(super::logs_pipeline_input(&logs), super::LOGS_PROCESS);
     }
 
