@@ -397,8 +397,8 @@ mod tests {
 
     #[tokio::test]
     async fn windows_requests_do_not_use_curl() {
-        // `curl.exe` comes from the image's `System32`, so it can fail to start when the image's Windows build is newer
-        // than the host's.
+        // `curl.exe` comes from the image's `System32`. It failed to start (exit 126) in nightly Agent images whose
+        // Windows build is newer than the build of the pinned image.
         let action = CoreAgentConfigSetAction::new(
             "log_level".to_string(),
             Value::String("debug info".to_string()),

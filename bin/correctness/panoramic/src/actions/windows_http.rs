@@ -1,8 +1,9 @@
 //! HTTP requests sent from inside a Windows target container.
 //!
 //! The request runs in PowerShell with the .NET `HttpClient`, not with `curl.exe`. `curl.exe` comes from the image's
-//! `System32`, so it can fail to start when the image's Windows build is newer than the host's. PowerShell and .NET
-//! ship outside `System32` in the Datadog Agent images, so they do not have this problem.
+//! `System32`. It failed to start (exit 126) in nightly Agent images whose Windows build is newer than the build of the
+//! pinned image. PowerShell and .NET ship outside `System32` in the Datadog Agent images, and they continued to work in
+//! those images.
 
 use crate::core::probe::AttemptLimits;
 
