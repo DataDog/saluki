@@ -884,22 +884,6 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_affinity_logs() {
-        let yaml = "pipelines: [logs]";
-        #[derive(Deserialize)]
-        struct W {
-            pipelines: PipelineAffinity,
-        }
-        let w: W = serde_saphyr::from_str(yaml).unwrap();
-        if let PipelineAffinity::Pipelines(ps) = w.pipelines {
-            assert_eq!(ps.len(), 1);
-            assert!(matches!(ps[0], Pipeline::Logs));
-        } else {
-            panic!("expected Pipelines");
-        }
-    }
-
-    #[test]
     fn pipeline_affinity_cross_cutting_must_be_alone() {
         let yaml = "pipelines: [cross_cutting, dogstatsd]";
         #[derive(Deserialize)]

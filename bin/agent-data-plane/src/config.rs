@@ -472,6 +472,7 @@ mod tests {
         assert!(dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+        assert!(dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -485,6 +486,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
+        assert!(dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -515,6 +517,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+        assert!(!dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -530,6 +533,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
+        assert!(!dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -626,24 +630,6 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(!dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
-    }
-
-    #[test]
-    fn logs_pipeline_is_active_when_adp_handles_logs() {
-        let logs_active = |config: &SalukiConfiguration| {
-            DataPlaneConfiguration::from_configuration(config)
-                .active_pipelines()
-                .contains(&Pipeline::Logs)
-        };
-        let native = pipeline_configuration(false, false, true, Proxy::default());
-        let traces_proxied = pipeline_configuration(false, false, true, proxy(false, false, true));
-        let checks_only = pipeline_configuration(true, false, false, Proxy::default());
-
-        assert!(logs_active(&native));
-        // Proxying any signal proxies logs too, so ADP's logs pipeline doesn't run.
-        assert!(!logs_active(&traces_proxied));
-        // Check logs go through ADP's logs pipeline too.
-        assert!(logs_active(&checks_only));
     }
 
     #[test]

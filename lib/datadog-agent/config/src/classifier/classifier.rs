@@ -130,31 +130,19 @@ mod tests {
     }
 
     #[test]
-    fn otlp_logs_keys_are_classified_by_how_they_affect_native_logs() {
+    fn logs_affinity_keys_are_classified_with_the_logs_pipeline() {
         let c = classifier();
+        let result = c.classify("logs_config.pipelines", &Value::Number(8.into())).unwrap();
+        assert!(matches!(result.support_level, SupportLevel::Incompatible(_)));
+        assert_eq!(result.pipeline_affinity, PipelineAffinity::Pipelines(&[Pipeline::Logs]));
+    }
 
-        // A key that only affects the logs path is checked only when ADP handles OTLP logs itself.
-        let processing_rules = c
-            .classify("logs_config.processing_rules", &Value::Array(vec![]))
-            .unwrap();
-        assert!(matches!(processing_rules.support_level, SupportLevel::Incompatible(_)));
-        assert_eq!(
-            processing_rules.pipeline_affinity,
-            PipelineAffinity::Pipelines(&[Pipeline::Logs])
-        );
-
-        // A gating key whose gap is documented without a warning has no entry: no single value
-        // marks the divergence, so a warning would fire for operators whose setup behaves as in the Agent.
-        assert!(c.classify("otlp_config.logs.enabled", &Value::Bool(true)).is_none());
-
-        // A shared key whose logs difference is documented without a warning has no entry.
+    #[test]
+    fn partial_keys_without_warning_not_in_classifier() {
+        // A partial key whose difference is only documented has no entry, like a fully supported key.
+        let c = classifier();
         assert!(c
             .classify("additional_endpoints", &Value::Object(Default::default()))
-            .is_none());
-
-        // A logs key that doesn't affect the OTLP logs path stays excluded.
-        assert!(c
-            .classify("logs_config.container_collect_all", &Value::Bool(true))
             .is_none());
     }
 

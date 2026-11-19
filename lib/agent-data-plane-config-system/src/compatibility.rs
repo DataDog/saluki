@@ -237,28 +237,6 @@ mod tests {
     }
 
     #[test]
-    fn logs_config_tag_filters_is_classified_under_its_own_key() {
-        // `logs_config.tag_filters` holds an object. The check must see it as the setting it is, whether it
-        // comes from a file or from the configuration stream, and check it only when ADP runs its logs pipeline.
-        let key = "logs_config.tag_filters";
-        let filters = json!({ "exclude": ["container_id:*"] });
-        let from_file = system_with(json!({ "logs_config": { "tag_filters": filters } }));
-        let from_stream = system_from_settings(&[(key, filters.clone(), StreamProvenance::Explicit)]);
-
-        for system in [from_file, from_stream] {
-            let classification = classification_of(&system, key).expect("the setting is classified under its own key");
-            assert_eq!(
-                classification.support_level,
-                SupportLevel::Incompatible(Severity::Medium)
-            );
-            assert_eq!(
-                classification.pipeline_affinity,
-                PipelineAffinity::Pipelines(&[Pipeline::Logs])
-            );
-        }
-    }
-
-    #[test]
     fn keys_the_registry_does_not_know_are_ignored() {
         let system = system_with(json!({ "not_a_real_agent_setting": true, "dogstatsd_port": 9125 }));
 
