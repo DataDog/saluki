@@ -66,7 +66,7 @@ use crate::{
         metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
         otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings, ottl_error_mode,
         resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
-        trace_tag_replacer_configuration,
+        trace_tag_replacer_configuration, traces_forwarder_configuration,
     },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -183,15 +183,12 @@ async fn create_topology(
     //
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
     // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
-    // provisions metric and service-check output paths even for proxy-only topologies. The APM relay needs the
-    // forwarder alone, as it has nothing to feed the traces pipeline.
+    // provisions metric and service-check output paths even for proxy-only topologies.
     let mut routing_targets = None;
     if dp.metrics_pipeline_required()
         || dp.logs_pipeline_required()
         || dp.events_pipeline_required()
         || dp.service_checks_pipeline_required()
-        || dp.traces_pipeline_required()
-        || dp.apm_enabled()
     {
         // The forwarder and every metrics encoder that addresses its payloads to specific endpoints share one catalog,
         // so that both sides agree on what each routing target identifier means.
@@ -208,6 +205,17 @@ async fn create_topology(
         .with_routing_targets(Arc::clone(&catalog));
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
         routing_targets = Some(catalog);
+    }
+
+    // Traces and APM stats don't share `dd_out`, so routing them elsewhere never affects metrics, logs, or events.
+    if dp.traces_forwarder_required() {
+        let dd_traces_forwarder_config = DatadogForwarderConfiguration::new(
+            traces_forwarder_configuration(&shared),
+            config_system.live(|config| &config.shared.endpoints.api_key),
+            config_system.live(|config| &config.shared.endpoints.traces.additional_endpoints),
+            config_system.live(|config| &config.shared.secrets).map(Secrets::in_use),
+        );
+        blueprint.add_forwarder("dd_traces_out", dd_traces_forwarder_config)?;
     }
 
     if dp.metrics_pipeline_required() {
@@ -646,7 +654,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         // output, delivering the metrics through the metrics pipeline to the backend.
         .connect_components("trace_sampler.metrics", "metrics_enrich")?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
-        .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
+        .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_traces_out")?;
 
     Ok(())
 }
@@ -1021,8 +1029,8 @@ async fn add_apm_pipeline_to_blueprint(
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
         // The relay has no output path of its own, but a topology can't hold a component with no connections, so it
-        // connects to the forwarder, which is always created when APM is enabled.
-        .connect_components("dd_traces_relay.traces", "dd_out")?;
+        // connects to the traces forwarder, which is always created when APM is enabled.
+        .connect_components("dd_traces_relay.traces", "dd_traces_out")?;
     Ok(())
 }
 
@@ -1111,13 +1119,18 @@ async fn add_otlp_pipeline_to_blueprint(
         blueprint
             // Components.
             .add_source("otlp_in", otlp_config)?
-            // Metrics, logs, and traces.
+            // Metrics and logs.
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
-            .connect_components("otlp_in.logs", "dd_logs_encode")?
-            .connect_components("otlp_in.traces", "traces_enrich")?;
+            .connect_components("otlp_in.logs", "dd_logs_encode")?;
+
+        // Traces go to the traces pipeline, which only exists when OTLP traces are enabled. The source still declares
+        // its traces output, and leaving it unconnected is fine because it never emits a trace without them.
+        if dp.traces_pipeline_required() {
+            blueprint.connect_components("otlp_in.traces", "traces_enrich")?;
+        }
     }
     Ok(())
 }

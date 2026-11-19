@@ -159,6 +159,11 @@ inventory:
     pipelines: [cross_cutting]
     description: "API key for endpoint auth"
 
+  apm_config.additional_endpoints:
+    support: full
+    pipelines: [traces]
+    description: "Dual-ship traces and stats to extra endpoints"
+
   apm_config.analyzed_rate_by_service:
     support: full
     pipelines: [traces]
@@ -170,13 +175,9 @@ inventory:
     description: "Per service|operation APM event extraction rates"
 
   apm_config.apm_dd_url:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2419"
+    support: full
     pipelines: [traces]
     description: "APM intake URL override"
-    documentation: "ADP sends trace and stats payloads to the endpoints derived from `dd_url` or `site` and ignores this override."
 
   apm_config.apm_non_local_traffic:
     support: full
@@ -534,17 +535,9 @@ inventory:
       proxies tracer telemetry when this key is enabled.
 
   apm_config.traces_send_to_main_endpoint:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2419"
+    support: full
     pipelines: [traces]
     description: "Send traces and stats to the main endpoint"
-    documentation: |-
-      When `false`, the trace-agent sends traces and APM stats only to `apm_config.additional_endpoints`. ADP
-      sends the trace and stats payloads from its OTLP traces pipeline to the endpoints derived from `dd_url`
-      or `site` and `additional_endpoints`, whatever this key's value. Traces that ADP relays to the
-      trace-agent follow this key.
 
   auth_token_file_path:
     support: full
@@ -2316,6 +2309,16 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use V3 series for OPW"
 
+  observability_pipelines_worker.traces.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Route traces and stats to OPW"
+
+  observability_pipelines_worker.traces.url:
+    support: full
+    pipelines: [traces]
+    description: "OPW traces intake URL"
+
   origin_detection_unified:
     support: full
     pipelines: [dogstatsd]
@@ -3402,6 +3405,16 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use V3 series for Vector"
 
+  vector.traces.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Route traces to OPW (legacy alias)"
+
+  vector.traces.url:
+    support: full
+    pipelines: [traces]
+    description: "OPW traces intake URL (legacy alias)"
+
   vsock_addr:
     support: full
     pipelines: [cross_cutting]
@@ -3634,7 +3647,6 @@ excluded:
   anomaly_detection.storage.inactive_series_ttl: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.storage.max_series: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.storage.point_retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
-  apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
@@ -4865,8 +4877,6 @@ excluded:
   observability_pipelines_worker.logs.dual_ship_reliable: "2026-06-10 Logs-only OPW dual-ship backpressure; same exclusion rationale."
   observability_pipelines_worker.logs.enabled: "OPW logs routing out of scope for ADP"
   observability_pipelines_worker.logs.url: "OPW logs routing out of scope for ADP"
-  observability_pipelines_worker.traces.enabled: "OPW traces routing out of scope for ADP"
-  observability_pipelines_worker.traces.url: "OPW traces routing out of scope for ADP"
   ol_proxy_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   ol_proxy_config.api_key: "ignored in initial audit 2026-04-23"
   ol_proxy_config.api_version: "ignored in initial audit 2026-04-23"
@@ -5326,8 +5336,6 @@ excluded:
   vector.logs.dual_ship_reliable: "2026-06-10 Logs-only OPW dual-ship backpressure (legacy vector.* alias); same exclusion rationale."
   vector.logs.enabled: "OPW logs routing out of scope for ADP"
   vector.logs.url: "OPW logs routing out of scope for ADP"
-  vector.traces.enabled: "OPW traces routing out of scope for ADP"
-  vector.traces.url: "OPW traces routing out of scope for ADP"
   win_skip_com_init: "ignored in initial audit 2026-04-23"
   windows_counter_init_failure_limit: "ignored in initial audit 2026-04-23"
   windows_counter_refresh_interval: "ignored in initial audit 2026-04-23"
