@@ -3,167 +3,36 @@
 //! The runner sends progress and results to the run collector as events.
 
 use std::num::NonZeroUsize;
-use std::sync::RwLock;
 use std::{
-    collections::HashMap,
     io::Write as _,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails};
-use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use tokio::pin;
 use tokio::sync::{mpsc, Semaphore, SemaphorePermit};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::warn;
 
 use crate::core::deadline::{Budget, Deadline};
 use crate::core::ledger::RECLAIM_TIME;
-use crate::core::probe::probe;
-use crate::core::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
-use crate::core::tasks::TASK_STOP_TIME;
-use crate::test::{RunnerSettings, Test, TestContext};
-use crate::{
-    assertions::{AssertionContext, LogBuffer, TargetCommand},
-    config::{parse_file_spec, parse_port_spec},
-    core::result::{
-        ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
-        UNKNOWN_PHASE,
-    },
-    events::TestEvent,
-    intake::IntakeClient,
-    integration::IntegrationTestCase,
+use crate::core::record::{ActiveStep, CaseRecord, StepStatus};
+use crate::core::result::{
+    ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
+    UNKNOWN_PHASE,
 };
+use crate::core::tasks::TASK_STOP_TIME;
+use crate::events::TestEvent;
+use crate::test::{RunnerSettings, Test, TestContext};
 
 /// A sender that the `Runner` can use to send `TestEvent`s.
 pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 
 /// How long a cancelled or timed-out test has to return its result before the runner drops it.
 const GRACE_TIME: Duration = Duration::from_secs(30);
-
-/// The amount of time the intake sidecar has to report healthy before the test fails.
-const INTAKE_HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Time allowed to resolve the target's dynamic variables and read them back.
-const DYNAMIC_VARS_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// The amount of time the post-assertion intake capture has to collect from the intake sidecar.
-const INTAKE_CAPTURE_BUDGET: Duration = Duration::from_secs(10);
-
-/// Maps shared `DD_DATA_PLANE_*` test env keys to their Windows-image-native nested form.
-///
-/// ADP reads its own configuration as a nested object: a key like `data_plane.enabled` maps to
-/// the env var `DD_DATA_PLANE__ENABLED` (single underscore between path levels, double
-/// underscore separating the `data_plane` prefix from the inner path). The Core Agent's config
-/// loader uses single underscores throughout and exposes the same setting as
-/// `DD_DATA_PLANE_ENABLED`.
-///
-/// On the `linux` runtime the test target is the converged Datadog Agent image, where
-/// an s6 init script reads each `DD_DATA_PLANE_*` env var and re-exports it under the nested
-/// name before launching ADP. Tests therefore write the flat shape (`DD_DATA_PLANE_ENABLED`)
-/// in their YAML, which works on `linux` and `mac` (the Unix runner has its own translator).
-///
-/// On the Windows runtime the test target is an ADP-only image we build in this repository. There is
-/// no s6 entrypoint and ADP only reads the nested form, so we replay the same translation here
-/// before the env vars cross into the container. Keeping the table in the harness lets test
-/// YAML files stay portable across all three runtimes; only entries that are actually used
-/// today are listed, and any new shared `DD_DATA_PLANE_*` key needs a one-line addition here.
-const LINUX_ADP_CLI_BINARY_PATH: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
-const WINDOWS_ADP_CLI_BINARY_PATH: &str = r"C:\adp\agent-data-plane.exe";
-const LINUX_CORE_AGENT_CLI_BINARY_PATH: &str = "/opt/datadog-agent/bin/agent/agent";
-const WINDOWS_CORE_AGENT_CLI_BINARY_PATH: &str = r"C:\Program Files\Datadog\Datadog Agent\bin\agent.exe";
-
-const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
-    ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
-    ("DD_DATA_PLANE_STANDALONE_MODE", "DD_DATA_PLANE__STANDALONE_MODE"),
-    (
-        "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT",
-        "DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT",
-    ),
-    (
-        "DD_DATA_PLANE_REMOTE_AGENT_ENABLED",
-        "DD_DATA_PLANE__REMOTE_AGENT_ENABLED",
-    ),
-    ("DD_DATA_PLANE_DOGSTATSD_ENABLED", "DD_DATA_PLANE__DOGSTATSD__ENABLED"),
-    ("DD_DATA_PLANE_OTLP_ENABLED", "DD_DATA_PLANE__OTLP__ENABLED"),
-    (
-        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES",
-        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__TRACES",
-    ),
-    (
-        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS",
-        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__METRICS",
-    ),
-    (
-        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS",
-        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__LOGS",
-    ),
-    ("DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE"),
-];
-
-fn container_adp_cli_command(target_os: ContainerOs) -> TargetCommand {
-    let binary_path = match target_os {
-        ContainerOs::Linux => LINUX_ADP_CLI_BINARY_PATH,
-        ContainerOs::Windows => WINDOWS_ADP_CLI_BINARY_PATH,
-    };
-
-    TargetCommand::new(vec![binary_path.to_string()])
-}
-
-fn container_core_agent_cli_command(target_os: ContainerOs) -> TargetCommand {
-    let binary_path = match target_os {
-        ContainerOs::Linux => LINUX_CORE_AGENT_CLI_BINARY_PATH,
-        ContainerOs::Windows => WINDOWS_CORE_AGENT_CLI_BINARY_PATH,
-    };
-
-    TargetCommand::new(vec![binary_path.to_string()])
-}
-
-fn build_port_mappings_for_runtime(
-    runtime: &str, exposed_ports: &[String], details: &DriverDetails,
-) -> HashMap<String, u16> {
-    let mut mappings = HashMap::new();
-
-    for port_spec in exposed_ports {
-        if let Ok((port, protocol)) = parse_port_spec(port_spec) {
-            if runtime == crate::config::WINDOWS_RUNTIME {
-                mappings.insert(format!("{}/{}", port, protocol), port);
-            } else if let Some(host_port) = details.try_get_exposed_port(protocol, port) {
-                mappings.insert(format!("{}/{}", port, protocol), host_port);
-            }
-        }
-    }
-
-    mappings
-}
-
-fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) -> HashMap<String, String> {
-    if runtime == crate::config::WINDOWS_RUNTIME {
-        for (source, target) in WINDOWS_ENV_ALIASES {
-            if let Some(value) = env.get(*source).cloned() {
-                env.entry((*target).to_string()).or_insert(value);
-            }
-        }
-
-        // As of Agent 7.80, the Core Agent only honors `data_plane.enabled` on Linux (and later
-        // macOS); on every other platform `sanitizeDataPlaneConfig` installs an authoritative
-        // `data_plane.enabled=false` override unless `DD_DATA_PLANE_FORCE_ENABLE=true` is set. The
-        // Core Agent runs inside the Windows target container (started by the ADP entrypoint) and
-        // reads this flat env var, so without it the Agent streams `data_plane.enabled=false` to ADP
-        // and ADP exits with "Agent Data Plane is not enabled." Mirror the macOS host-process path
-        // (see `unix_runner::build_core_agent_forced_env`) and force-enable when ADP is requested.
-        if env.get("DD_DATA_PLANE_ENABLED").is_some_and(|value| value == "true") {
-            env.entry("DD_DATA_PLANE_FORCE_ENABLE".to_string())
-                .or_insert_with(|| "true".to_string());
-        }
-    }
-
-    env
-}
 
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
@@ -395,7 +264,6 @@ impl Runner {
         let phases = tctx.phases.clone();
         let record = tctx.record.clone();
         let ledger = tctx.ledger.clone();
-        let host_logs = tctx.host_logs.clone();
         let tasks = tctx.tasks.clone();
 
         let mut result = {
@@ -449,31 +317,12 @@ impl Runner {
         result.reclaim = reclaim;
         result.issues.extend(issues);
 
-        if let Some(logs) = host_logs.get().cloned() {
-            let phase = phases.enter("write_logs");
-            let dir = log_dir.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || logs.read().unwrap().write_to(&dir))
-                .await
-                .error_context("Failed to join the host log writer")
-                .and_then(|result| result)
-            {
-                warn!(test = %name, error = %e, "Failed to write captured logs to disk.");
-            }
-            result.phase_timings.push(phase.finish());
-            result.duration = started.elapsed();
-        }
-
         // The runner is the only place that knows both the test and where its artifacts landed, so
         // it stamps that provenance onto the result before anything reports on it.
         result.case_path = Some(test.case_path());
         result.log_dir = Some(log_dir.clone());
 
         write_result_log(&result, &log_dir);
-        // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk. A
-        // participant case's lifecycle applies what it keeps: retention is data.
-        if test.participant_case().is_none() {
-            crate::traffic::finalize(&log_dir, result.outcome);
-        }
         crate::machine_output::write_test_report(&result, &log_dir);
 
         let _ = event_sender.send(TestEvent::TestCompleted {
@@ -568,546 +417,6 @@ impl Stop {
     }
 }
 
-// ----------------------------------------------------------------------------
-// IntegrationRunner: single integration test case execution
-// ----------------------------------------------------------------------------
-
-/// Runner for a single integration test case.
-pub(crate) struct IntegrationRunner {
-    test_case: IntegrationTestCase,
-    isolation_group_id: String,
-    tctx: TestContext,
-    log_buffer: Arc<RwLock<LogBuffer>>,
-}
-
-impl IntegrationRunner {
-    /// Create a new test runner for the given test case.
-    pub(crate) fn new(test_case: IntegrationTestCase, tctx: TestContext) -> Self {
-        Self {
-            test_case,
-            isolation_group_id: tctx.ledger.isolation_group(),
-            tctx,
-            log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
-        }
-    }
-
-    /// Run the test case and return the result.
-    pub(crate) async fn run(&mut self) -> TestResult {
-        let started = Instant::now();
-        let test_name = self.test_case.config.name.clone();
-        let mut phase_timings = Vec::new();
-
-        info!(
-            test = %test_name,
-            isolation_group = %self.isolation_group_id,
-            "Starting test case."
-        );
-
-        // The intake sidecar is a Linux container, so it creates the isolation group's network with
-        // Docker's `bridge` driver. A Windows target needs a `nat` network and cannot join that one,
-        // so reject the combination up front instead of failing later inside Docker.
-        if self.test_case.config.intake.enabled && self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
-            return TestResult::errored(
-                test_name,
-                ErrorKind::Setup,
-                format!(
-                    "Intake sidecar is not supported on the '{}' runtime.",
-                    crate::config::WINDOWS_RUNTIME
-                ),
-                started.elapsed(),
-                phase_timings,
-            );
-        }
-
-        // Build the driver configuration.
-        debug!(test = %test_name, "Building driver configuration...");
-        let phase = self.tctx.phases.enter("driver_config_build");
-        let driver_config = match self.build_driver_config().await {
-            Ok(config) => config,
-            Err(e) => {
-                error!(test = %test_name, error = %e, "Failed to build driver configuration.");
-                phase_timings.push(phase.finish());
-                return TestResult::errored(
-                    test_name,
-                    ErrorKind::Setup,
-                    format!("Failed to build driver configuration: {}", e),
-                    started.elapsed(),
-                    phase_timings,
-                );
-            }
-        };
-        phase_timings.push(phase.finish());
-
-        // Start the intake sidecar first, so the target can flush to it from the moment it runs.
-        let mut intake_host_port = None;
-        let mut _intake_driver = None;
-        if self.test_case.config.intake.enabled {
-            let phase = self.tctx.phases.enter("intake_start");
-            info!(test = %test_name, "Starting intake sidecar...");
-            let outcome = self.start_intake().await;
-            phase_timings.push(phase.finish());
-
-            match outcome {
-                Ok((driver, host_port)) => {
-                    intake_host_port = Some(host_port);
-                    _intake_driver = Some(driver);
-                }
-                Err(e) => {
-                    error!(test = %test_name, error = %e, "Failed to start intake sidecar.");
-                    return self.fail_setup(format!("Failed to start intake sidecar: {}", e), started, phase_timings);
-                }
-            }
-        }
-
-        // Create and start the driver.
-        let phase = self.tctx.phases.enter("container_start");
-        debug!(test = %test_name, "Creating container driver...");
-        let driver = match Driver::from_config(self.isolation_group_id.clone(), driver_config) {
-            Ok(driver) => driver,
-            Err(e) => {
-                error!(test = %test_name, error = %e, "Failed to create container driver.");
-                phase_timings.push(phase.finish());
-                return self.fail_setup(format!("Failed to create driver: {}", e), started, phase_timings);
-            }
-        };
-
-        info!(test = %test_name, "Starting container...");
-        let details = match self
-            .tctx
-            .ledger
-            .start_container(&driver, &self.isolation_group_id, &self.tctx.test_cancel_token())
-            .await
-        {
-            Ok(details) => details,
-            Err(e) => {
-                error!(test = %test_name, error = %e, "Failed to start container.");
-                phase_timings.push(phase.finish());
-                return self.fail_setup(format!("Failed to start container: {}", e), started, phase_timings);
-            }
-        };
-        phase_timings.push(phase.finish());
-
-        info!(
-            test = %test_name,
-            container = %details.container_name(),
-            "Container started successfully."
-        );
-
-        // Start log capture in the background.
-        debug!(test = %test_name, "Starting log capture...");
-        if let Err(e) = self.start_log_capture(details.container_name()).await {
-            warn!(test = %test_name, error = %e, "Failed to start log capture.");
-        }
-
-        // Monitor container exit in the background. Uses its own token so that a normal
-        // container exit does not trigger the external cancel path.
-        let exit_token = CancellationToken::new();
-        let exit_signal = exit_token.clone();
-        let docker_exit_code: crate::assertions::DockerExitCodeCell = Arc::new(std::sync::OnceLock::new());
-        let docker_exit_code_for_exit = docker_exit_code.clone();
-        let container_name = details.container_name().to_string();
-        let container_name_for_exit = container_name.clone();
-        let exit_handle = tokio::spawn(async move {
-            let docker = match airlock::docker::connect() {
-                Ok(d) => d,
-                Err(_) => return,
-            };
-
-            let mut wait_stream = docker.wait_container(
-                &container_name_for_exit,
-                None::<bollard::query_parameters::WaitContainerOptions>,
-            );
-            if let Some(result) = wait_stream.next().await {
-                let exit_code = match result {
-                    Ok(response) => Some(response.status_code),
-                    Err(DockerError::DockerContainerWaitError { code, .. }) => Some(code),
-                    Err(_) => None,
-                };
-                if let Some(code) = exit_code {
-                    let _ = docker_exit_code_for_exit.set(code);
-                }
-                exit_signal.cancel();
-            }
-        });
-
-        // Build port mappings for assertions.
-        let port_mappings = self.build_port_mappings(&details);
-
-        // Resolve dynamic variables if any PANORAMIC_DYNAMIC_* env vars are defined.
-        if crate::dynamic_vars::has_dynamic_vars(&self.test_case.config) {
-            let phase = self.tctx.phases.enter("dynamic_vars");
-            debug!(test = %test_name, "Resolving dynamic variables...");
-
-            let resolved_vars = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
-                crate::dynamic_vars::resolve_windows_vars(&self.test_case.config, details.container_ip()).await
-            } else {
-                crate::dynamic_vars::read_resolved_vars(&driver, DYNAMIC_VARS_TIMEOUT, &self.tctx.test_cancel_token())
-                    .await
-            };
-
-            match resolved_vars {
-                Ok(vars) => {
-                    // Fail on empty values — indicates the init script command failed.
-                    for (key, value) in &vars {
-                        if value.is_empty() {
-                            error!(test = %test_name, key = key, "Dynamic variable resolved to empty string.");
-                            phase_timings.push(phase.finish());
-                            let message = format!(
-                                "Dynamic variable PANORAMIC_DYNAMIC_{} resolved to an empty string. \
-                                 The shell command in the test config likely failed.",
-                                key
-                            );
-                            return self.fail_setup(message, started, phase_timings);
-                        }
-                    }
-
-                    info!(
-                        test = %test_name,
-                        variable_count = vars.len(),
-                        "Resolved dynamic variables."
-                    );
-                    self.test_case.resolve_dynamic_vars(&vars);
-
-                    // Fail if any placeholders remain unresolved after substitution.
-                    let unresolved = self.test_case.unresolved_placeholders();
-                    if !unresolved.is_empty() {
-                        error!(test = %test_name, unresolved = ?unresolved, "Unresolved dynamic variable placeholders.");
-                        phase_timings.push(phase.finish());
-                        let message = format!(
-                            "Unresolved dynamic variable placeholders in assertions: {}. \
-                             Check that matching PANORAMIC_DYNAMIC_* env vars are defined.",
-                            unresolved.join(", ")
-                        );
-                        return self.fail_setup(message, started, phase_timings);
-                    }
-                }
-                Err(e) => {
-                    error!(test = %test_name, error = %e, "Failed to resolve dynamic variables.");
-                    phase_timings.push(phase.finish());
-                    return self.fail_setup(
-                        format!("Failed to resolve dynamic variables: {}", e),
-                        started,
-                        phase_timings,
-                    );
-                }
-            }
-
-            phase_timings.push(phase.finish());
-        }
-
-        // The step driver bounds each step and stops when the runner cancels the test.
-        info!(
-            test = %test_name,
-            assertion_count = self.test_case.total_assertion_count(),
-            "Running assertions..."
-        );
-
-        let phase = self.tctx.phases.enter("assertions");
-        let test_cancel = self.tctx.test_cancel_token();
-
-        self.run_assertions(
-            &port_mappings,
-            details.container_ip(),
-            &container_name,
-            &exit_token,
-            docker_exit_code,
-            intake_host_port,
-        )
-        .await;
-        phase_timings.push(phase.finish());
-
-        // Cancel the exit monitor.
-        exit_handle.abort();
-
-        // Keep what the intake holds now as diagnostic evidence; retention is decided once the verdict is final.
-        if let Some(intake_host_port) = intake_host_port {
-            let phase = self.tctx.phases.enter("intake_capture");
-            crate::traffic::capture_intake(
-                &crate::traffic::traffic_dir(self.tctx.log_dir()),
-                &IntakeClient::new(intake_host_port),
-                &test_cancel,
-                INTAKE_CAPTURE_BUDGET,
-            )
-            .await;
-            phase_timings.push(phase.finish());
-        }
-
-        // Write logs to disk if configured.
-        let phase = self.tctx.phases.enter("write_logs");
-        if let Err(e) = self.write_logs(&test_name).await {
-            warn!(test = %test_name, error = %e, "Failed to write container logs to disk.");
-        }
-        debug!(test = %test_name, "Wrote container logs to disk.");
-        phase_timings.push(phase.finish());
-
-        let result = self.tctx.record.result(&test_name, started.elapsed(), phase_timings);
-        info!(
-            test = %test_name,
-            outcome = %result.outcome,
-            duration = ?started.elapsed(),
-            "Test case completed."
-        );
-        result
-    }
-
-    /// Records and returns a setup failure.
-    fn fail_setup(&self, message: String, started: Instant, phase_timings: Vec<PhaseTiming>) -> TestResult {
-        let result = TestResult::errored(
-            self.test_case.config.name.clone(),
-            ErrorKind::Setup,
-            message,
-            started.elapsed(),
-            phase_timings,
-        );
-        self.tctx.record.decide(Verdict::SetupFailed(Box::new(result.clone())));
-        result
-    }
-
-    async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
-        let container = &self.test_case.config.container;
-
-        // Merge framework-level port-isolation env vars with the test's own env. Framework
-        // defaults are applied first so the test's `env` block takes precedence. Keeps the test
-        // surface consistent across the linux and `mac` runtimes — both see the same shifted
-        // port table.
-        let mut merged_env = crate::test_env::port_isolation_env();
-        for (k, v) in &self.test_case.config.env {
-            merged_env.insert(k.clone(), v.clone());
-        }
-        let merged_env = normalize_env_for_runtime(merged_env, &self.test_case.active_runtime);
-        let env_vars: Vec<String> = merged_env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
-
-        // Build the target config.
-        let container_os = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
-            ContainerOs::Windows
-        } else {
-            ContainerOs::Linux
-        };
-
-        let image = self
-            .test_case
-            .image(crate::config::TARGET_IMAGE_NAME)
-            .ok_or_else(|| {
-                generic_error!(
-                    "Runtime '{}' has no associated container image; integration tests are unsupported.",
-                    self.test_case.active_runtime
-                )
-            })?
-            .to_string();
-
-        let target_config = airlock::config::TargetConfig {
-            image,
-            entrypoint: container.entrypoint.clone(),
-            command: container.command.clone(),
-            additional_env_vars: env_vars,
-            container_os,
-            host_cgroup_namespace: container.host_cgroup_namespace,
-        };
-
-        let mut config = DriverConfig::target("target", target_config)
-            .await?
-            .with_alpine_image(&self.tctx.settings.alpine_image);
-
-        // Apply panoramic's read-only file overlays before any test-specific bind mounts. The
-        // overlays target Linux paths (such as /var/log/datadog) and don't apply to Windows
-        // containers, which use their own platform paths.
-        if self.test_case.active_runtime != crate::config::WINDOWS_RUNTIME {
-            config = crate::mounts::apply_target_mounts(config, self.tctx.mounts_dir())?;
-        }
-
-        // Add file mounts.
-        for file_spec in &container.files {
-            let (host_path, container_path) = parse_file_spec(file_spec)?;
-            let absolute_host_path = crate::test::resolve_case_path(&self.test_case.config.loaded_from, host_path);
-
-            // Verify the host path exists.
-            if !absolute_host_path.exists() {
-                return Err(generic_error!(
-                    "Host path does not exist: {}",
-                    absolute_host_path.display()
-                ));
-            }
-
-            config = config.with_bind_mount(absolute_host_path, Path::new(container_path));
-        }
-
-        // Add exposed ports.
-        for port_spec in &container.exposed_ports {
-            let (port, protocol) = parse_port_spec(port_spec)?;
-            // Protocol must be a static string for airlock API.
-            let protocol: &'static str = match protocol {
-                "tcp" => "tcp",
-                "udp" => "udp",
-                _ => return Err(generic_error!("Invalid protocol: {}.", protocol)),
-            };
-            config = config.with_exposed_port(protocol, port);
-        }
-
-        Ok(config)
-    }
-
-    /// Starts the Datadog intake sidecar in this test's isolation group.
-    ///
-    /// Sharing the isolation group puts the sidecar on the same Docker network as the target, which
-    /// reaches it by network alias. Returns the sidecar's driver and the host port that its HTTP
-    /// endpoint is published on.
-    async fn start_intake(&self) -> Result<(Driver, u16), GenericError> {
-        let intake_image = self
-            .test_case
-            .image(crate::config::INTAKE_IMAGE_NAME)
-            .ok_or_else(|| generic_error!("The intake sidecar is not enabled for this test case."))?
-            .to_string();
-
-        let config = DriverConfig::datadog_intake(airlock::config::DatadogIntakeConfig {
-            image: intake_image,
-            binary_path: None,
-        })
-        .await?
-        .with_network_alias(crate::config::INTAKE_NETWORK_ALIAS)
-        .with_alpine_image(&self.tctx.settings.alpine_image);
-
-        let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?
-            .with_logging(self.tctx.log_dir().to_path_buf());
-        let details = self
-            .tctx
-            .ledger
-            .start_container(&driver, &self.isolation_group_id, &self.tctx.test_cancel_token())
-            .await?;
-
-        // Bound the health wait and watch cancellation so an unhealthy sidecar releases the test promptly.
-        probe(
-            "the intake sidecar to report healthy",
-            INTAKE_HEALTH_TIMEOUT,
-            &self.tctx.test_cancel_token(),
-            driver.wait_for_container_healthy(),
-        )
-        .await?
-        .error_context("Intake sidecar failed its health check.")?;
-
-        let host_port = details
-            .try_get_exposed_port("tcp", crate::config::INTAKE_HTTP_PORT)
-            .ok_or_else(|| generic_error!("Intake container did not publish its HTTP port."))?;
-
-        Ok((driver, host_port))
-    }
-
-    fn build_port_mappings(&self, details: &DriverDetails) -> HashMap<String, u16> {
-        build_port_mappings_for_runtime(
-            &self.test_case.active_runtime,
-            &self.test_case.config.container.exposed_ports,
-            details,
-        )
-    }
-
-    async fn start_log_capture(&self, container_name: &str) -> Result<(), GenericError> {
-        let docker = airlock::docker::connect()?;
-        let log_buffer = self.log_buffer.clone();
-        let container_name = container_name.to_string();
-
-        let logs_options = bollard::query_parameters::LogsOptions {
-            follow: true,
-            stdout: true,
-            stderr: true,
-            ..Default::default()
-        };
-
-        let mut log_stream = docker.logs(&container_name, Some(logs_options));
-
-        tokio::spawn(async move {
-            while let Some(log_result) = log_stream.next().await {
-                match log_result {
-                    Ok(log) => {
-                        let mut buffer = log_buffer.write().unwrap();
-                        match log {
-                            LogOutput::StdOut { message } => {
-                                if let Ok(line) = String::from_utf8(message.to_vec()) {
-                                    for l in line.lines() {
-                                        buffer.stdout.push(l.to_string());
-                                    }
-                                }
-                            }
-                            LogOutput::StdErr { message } => {
-                                if let Ok(line) = String::from_utf8(message.to_vec()) {
-                                    for l in line.lines() {
-                                        buffer.stderr.push(l.to_string());
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    Err(e) => {
-                        debug!(error = %e, "Log stream ended or encountered an error.");
-                        break;
-                    }
-                }
-            }
-        });
-
-        Ok(())
-    }
-
-    async fn run_assertions(
-        &self, port_mappings: &HashMap<String, u16>, container_ip: Option<&str>, container_name: &str,
-        exit_token: &CancellationToken, docker_exit_code: crate::assertions::DockerExitCodeCell,
-        intake_host_port: Option<u16>,
-    ) {
-        let target_os = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
-            ContainerOs::Windows
-        } else {
-            ContainerOs::Linux
-        };
-        let ctx = AssertionContext {
-            log_buffer: self.log_buffer.clone(),
-            container_exit_token: exit_token.clone(),
-            cancel_token: self.tctx.test_cancel_token(),
-            port_mappings: port_mappings.clone(),
-            container_ip: container_ip.map(str::to_string),
-            target_os: Some(target_os),
-            container_name: container_name.to_string(),
-            is_host_process: false,
-            host_process_exit_code: None,
-            docker_container_exit_code: Some(docker_exit_code),
-            intake_host_port,
-            core_agent_auth_token_path: None,
-            adp_cli_command: container_adp_cli_command(target_os),
-            core_agent_cli_command: container_core_agent_cli_command(target_os),
-        };
-        crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline, &self.tctx.record).await
-    }
-
-    async fn write_logs(&self, test_name: &str) -> Result<(), GenericError> {
-        let log_dir = self.tctx.log_dir();
-
-        // Get the log buffer contents.
-        let buffer = self.log_buffer.read().unwrap();
-
-        // Write stdout.
-        let stdout_path = log_dir.join("stdout.log");
-        let mut stdout_file = std::fs::File::create(&stdout_path)
-            .error_context(format!("Failed to create stdout log file: {}", stdout_path.display()))?;
-        for line in &buffer.stdout {
-            writeln!(stdout_file, "{}", line).error_context("Failed to write to stdout log")?;
-        }
-
-        // Write stderr.
-        let stderr_path = log_dir.join("stderr.log");
-        let mut stderr_file = std::fs::File::create(&stderr_path)
-            .error_context(format!("Failed to create stderr log file: {}", stderr_path.display()))?;
-        for line in &buffer.stderr {
-            writeln!(stderr_file, "{}", line).error_context("Failed to write to stderr log")?;
-        }
-
-        debug!(
-            test = %test_name,
-            path = %log_dir.display(),
-            "Container logs written to disk."
-        );
-
-        Ok(())
-    }
-}
-
 fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
     let dir = dir.as_ref();
 
@@ -1179,13 +488,11 @@ impl TestResult {
 /// Scripted tests and settings for exercising [`Runner`].
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::collections::BTreeMap;
-
     use futures::future::join_all;
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::core::record::{RunningStep, StepResult};
+    use crate::core::record::{RunningStep, StepResult, Verdict};
     use crate::reporter::test_support::step;
     use crate::test::TestSuite;
 
@@ -1321,8 +628,8 @@ pub(crate) mod test_support {
             self.timeout
         }
 
-        fn images(&self) -> BTreeMap<&str, String> {
-            BTreeMap::new()
+        fn runtime(&self) -> String {
+            "linux".to_string()
         }
 
         async fn run(&self, tctx: TestContext) -> TestResult {
@@ -1500,12 +807,8 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) fn test_runner_settings(mounts_dir: &Path) -> RunnerSettings {
+    pub(crate) fn test_runner_settings() -> RunnerSettings {
         RunnerSettings {
-            mounts_dir: mounts_dir.to_path_buf(),
-            adp_binary_path: PathBuf::new(),
-            core_agent_binary_path: PathBuf::new(),
-            alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
             backends: crate::core::backend::Backends::default(),
         }
     }
@@ -1525,16 +828,11 @@ mod tests {
     /// Bounds paused-time tests while allowing the runner's [`GRACE_TIME`] to expire.
     const PAUSED_BOUND: Duration = Duration::from_secs(120);
 
-    /// An assertion that matches the log line a `mac` case's processes write.
-    const LOG_MATCHES: &str = "- assertion: log_contains\n  pattern: ready\n  timeout: 5s\n";
-
     /// Runs a test within `bound`, using `log_base_dir` and run cancellation `cancel_all`. Discards events.
     async fn run_scripted_test(
         test: &dyn Test, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
     ) -> TestResult {
-        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let settings = test_runner_settings(mounts_dir.path());
-        run_with_settings(test, settings, log_base_dir, cancel_all, bound).await
+        run_with_settings(test, test_runner_settings(), log_base_dir, cancel_all, bound).await
     }
 
     /// Runs a test with explicit settings and a timeout to catch hangs.
@@ -1616,7 +914,6 @@ mod tests {
         // created. Consumers that build the suite result from events have to see this failure, or
         // the run reports no test at all and exits zero.
         let occupied_base_dir = tempfile::NamedTempFile::new().expect("temp file should be creatable");
-        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let result = Runner::run_one(
@@ -1624,7 +921,7 @@ mod tests {
             &tx,
             &CancellationToken::new(),
             occupied_base_dir.path().to_path_buf(),
-            test_runner_settings(mounts_dir.path()),
+            test_runner_settings(),
         )
         .await;
 
@@ -1739,166 +1036,6 @@ mod tests {
             .map(|step| (step.step, step.member, step.kind.as_str()))
             .collect();
         assert_eq!(active, [(1, None, "process_stable_for")]);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cancelling_the_core_agent_ipc_wait_returns_at_once() {
-        // Both binaries exit at once, so the Core Agent never writes its IPC credentials. The case timeout leaves
-        // room to start both processes on a busy machine before the wait begins.
-        let case = MacCase::new(
-            &format!("name: ipc-wait\ntimeout: 3s\nprocedure:\n{LOG_MATCHES}"),
-            "echo core-stdout; echo core-stderr >&2; exit 0",
-            "exit 0",
-        );
-        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-
-        let result = case.run(log_base_dir.path(), 3 * BOUND).await;
-
-        assert_eq!(result.outcome, TestOutcome::TimedOut, "{:?}", result.error);
-        let timeout = result
-            .timeout
-            .as_ref()
-            .expect("a timed-out test should carry timeout detail");
-        assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
-        assert_eq!(timeout.active_phase, "core_agent_ipc_ready");
-        // Unix setup errors used to return before saving the log buffer. The runner retains it through reclaim.
-        let log_dir = result
-            .log_dir
-            .as_ref()
-            .expect("the runner should record the log directory");
-        assert_eq!(
-            std::fs::read_to_string(log_dir.join("stdout.log")).unwrap(),
-            "core-stdout\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(log_dir.join("stderr.log")).unwrap(),
-            "core-stderr\n"
-        );
-        let reclaimed = reclaimed(&result);
-        assert_eq!(reclaimed.len(), 2, "{reclaimed:?}");
-        let state_dir = state_dir(reclaimed[1].0);
-        assert!(!state_dir.exists(), "{} should be removed", state_dir.display());
-        assert_eq!(
-            reclaimed,
-            [
-                ("process:ipc-wait-core-agent", ReclaimResult::Reclaimed),
-                (reclaimed[1].0, ReclaimResult::Reclaimed),
-            ]
-        );
-        assert_eq!(
-            phase_names(&result),
-            ["core_agent_spawn", "core_agent_ipc_ready", "reclaim", "write_logs"]
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_mac_case_stops_adp_then_the_core_agent_and_then_removes_its_state_directory() {
-        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let marker = log_base_dir.path().join("marker");
-        let case = MacCase::new(
-            &marking_case("mac-reclaim", &marker),
-            &marking_script("agent", CORE_AGENT_IPC_FILES),
-            &marking_script("adp", "echo ready"),
-        );
-
-        let result = case.run(log_base_dir.path(), Duration::from_secs(10)).await;
-
-        assert_eq!(result.outcome, TestOutcome::Passed, "{:?}", result.error);
-        let marked = std::fs::read_to_string(&marker).expect("the processes should have written the marker");
-        assert_eq!(marked, "adp dir\nagent dir\n");
-        // Saving logs in the Unix test body lost SIGTERM output. Persist only after reclaim drains both pumps.
-        let log_dir = result
-            .log_dir
-            .as_ref()
-            .expect("the runner should record the log directory");
-        let stdout = std::fs::read_to_string(log_dir.join("stdout.log")).expect("stdout.log should exist");
-        let stderr = std::fs::read_to_string(log_dir.join("stderr.log")).expect("stderr.log should exist");
-        assert_eq!(stdout, "ready\nadp stopped\nagent stopped\n");
-        assert!(stderr.contains("adp shutdown diagnostic\n"), "{stderr}");
-        assert!(stderr.contains("agent shutdown diagnostic\n"), "{stderr}");
-        let reclaimed = reclaimed(&result);
-        assert_eq!(reclaimed.len(), 3, "{reclaimed:?}");
-        let state_dir = state_dir(reclaimed[2].0);
-        assert!(!state_dir.exists(), "{} should be removed", state_dir.display());
-        assert_eq!(
-            reclaimed,
-            [
-                ("process:mac-reclaim", ReclaimResult::Reclaimed),
-                ("process:mac-reclaim-core-agent", ReclaimResult::Reclaimed),
-                (reclaimed[2].0, ReclaimResult::Reclaimed),
-            ]
-        );
-        assert_eq!(
-            written_report(&result)["reclaim"],
-            serde_json::json!([
-                { "resource": "process:mac-reclaim", "result": "reclaimed" },
-                { "resource": "process:mac-reclaim-core-agent", "result": "reclaimed" },
-                { "resource": reclaimed[2].0, "result": "reclaimed" },
-            ])
-        );
-        assert_eq!(result.issues, []);
-        assert_eq!(
-            phase_names(&result),
-            [
-                "core_agent_spawn",
-                "core_agent_ipc_ready",
-                "spawn",
-                "assertions",
-                "reclaim",
-                "write_logs"
-            ]
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_process_that_does_not_confirm_its_exit_leaks_and_keeps_the_state_directory() {
-        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let marker = log_base_dir.path().join("marker");
-        // Printing `ready` after leaving ADP's process group ensures escape before cleanup starts. The subsequent
-        // `sleep` holds ADP's output pipes open until it exits on its own.
-        let case = MacCase::new(
-            &marking_case("mac-leak", &marker),
-            &marking_script("agent", CORE_AGENT_IPC_FILES),
-            &marking_script(
-                "adp",
-                r#"perl -e '$| = 1; setpgrp(0, 0); print "ready\n"; exec @ARGV' sleep 10 &"#,
-            ),
-        );
-
-        let result = case.run(log_base_dir.path(), Duration::from_secs(15)).await;
-
-        assert_eq!(result.outcome, TestOutcome::Passed, "{:?}", result.error);
-        let reclaimed = reclaimed(&result);
-        assert_eq!(reclaimed.len(), 3, "{reclaimed:?}");
-        let state_dir = state_dir(reclaimed[2].0);
-        let kept = state_dir.exists();
-        let _ = std::fs::remove_dir_all(state_dir);
-        assert!(kept, "{} should be kept", state_dir.display());
-        assert_eq!(
-            reclaimed,
-            [
-                ("process:mac-leak", ReclaimResult::Leaked),
-                ("process:mac-leak-core-agent", ReclaimResult::Reclaimed),
-                (reclaimed[2].0, ReclaimResult::Leaked),
-            ]
-        );
-        assert_eq!(
-            result.issues,
-            [
-                issue(
-                    IssueKind::ResourceLeaked,
-                    "process:mac-leak: 'mac-leak' exited, but a descendant outside its process group still holds its \
-                     output pipes"
-                ),
-                issue(
-                    IssueKind::ResourceLeaked,
-                    &format!("{}: kept because process:mac-leak was not reclaimed", reclaimed[2].0)
-                ),
-            ]
-        );
     }
 
     #[tokio::test]
@@ -2237,239 +1374,5 @@ mod tests {
             statuses(&result),
             [("process_stable_for", None, StepStatus::Interrupted)]
         );
-    }
-
-    /// A test case for the `mac` runtime using shell scripts as ADP and Core Agent binaries.
-    #[cfg(unix)]
-    struct MacCase {
-        test: IntegrationTestCase,
-        settings: RunnerSettings,
-        /// Holds the scripts until the case is dropped.
-        _scripts: tempfile::TempDir,
-    }
-
-    #[cfg(unix)]
-    impl MacCase {
-        /// Parses a `mac` case with the given Core Agent and ADP script bodies.
-        fn new(case: &str, core_agent: &str, adp: &str) -> Self {
-            use std::os::unix::fs::PermissionsExt as _;
-
-            use crate::config::MAC_RUNTIME;
-            use crate::image_override::ImageOverrides;
-            use crate::integration::IntegrationSettings;
-
-            let scripts = tempfile::tempdir().expect("temp dir should be creatable");
-            let script = |name: &str, body: &str| {
-                let path = scripts.path().join(name);
-                std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("the script should be writable");
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                    .expect("the script should be made executable");
-                path
-            };
-            let settings = RunnerSettings {
-                adp_binary_path: script("adp", adp),
-                core_agent_binary_path: script("core-agent", core_agent),
-                ..test_runner_settings(scripts.path())
-            };
-            let config = serde_saphyr::from_str(case).expect("the case should parse");
-            let test = IntegrationTestCase::new(
-                config,
-                &IntegrationSettings::new(MAC_RUNTIME, &ImageOverrides::new(&[])),
-            );
-            Self {
-                test,
-                settings,
-                _scripts: scripts,
-            }
-        }
-
-        /// Runs the case through the runner within `bound`.
-        async fn run(&self, log_base_dir: &Path, bound: Duration) -> TestResult {
-            run_with_settings(
-                &self.test,
-                self.settings.clone(),
-                log_base_dir,
-                &CancellationToken::new(),
-                bound,
-            )
-            .await
-        }
-    }
-
-    /// Creates empty IPC credential files so the runner's readiness check succeeds.
-    #[cfg(unix)]
-    const CORE_AGENT_IPC_FILES: &str = r#": > "$dir/auth_token"; : > "$dir/ipc_cert.pem""#;
-
-    /// A passing `mac` case whose processes record their stop order in `marker`.
-    #[cfg(unix)]
-    fn marking_case(name: &str, marker: &Path) -> String {
-        format!(
-            "name: {name}\ntimeout: 30s\nenv:\n  MARKER: \"{}\"\nprocedure:\n{LOG_MATCHES}",
-            marker.display()
-        )
-    }
-
-    /// A process script that runs `setup` with `$dir` set to the state directory, then runs until SIGTERM.
-    ///
-    /// On SIGTERM, appends `role` to `$MARKER`, plus ` dir` if the state directory exists. The trap uses built-in shell
-    /// commands to finish within the grace period before SIGKILL.
-    #[cfg(unix)]
-    fn marking_script(role: &str, setup: &str) -> String {
-        format!(
-            r#"dir=${{DD_AUTH_TOKEN_FILE_PATH%/*}}
-trap 'if [ -d "$dir" ]; then echo "{role} dir" >> "$MARKER"; else echo {role} >> "$MARKER"; fi; echo "{role} stopped"; echo "{role} shutdown diagnostic" >&2; exit 0' TERM
-{setup}
-while :; do sleep 1; done"#
-        )
-    }
-
-    /// Validates and extracts a `mac` state directory from a cleanup resource label.
-    #[cfg(unix)]
-    #[track_caller]
-    fn state_dir(resource: &str) -> &Path {
-        let temp_dir = std::env::temp_dir();
-        match resource.strip_prefix("directory:").map(Path::new) {
-            Some(path)
-                if path.parent() == Some(temp_dir.as_path())
-                    && path
-                        .file_name()
-                        .is_some_and(|name| name.to_string_lossy().starts_with("panoramic-unix-")) =>
-            {
-                path
-            }
-            _ => panic!("{resource} should name a mac state directory"),
-        }
-    }
-
-    #[test]
-    fn windows_runtime_adds_adp_native_env_aliases() {
-        let env = HashMap::from([
-            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
-            ("DD_DATA_PLANE_STANDALONE_MODE".to_string(), "true".to_string()),
-            ("DD_DATA_PLANE_DOGSTATSD_ENABLED".to_string(), "false".to_string()),
-            ("DD_DATA_PLANE_OTLP_ENABLED".to_string(), "true".to_string()),
-            (
-                "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS".to_string(),
-                "true".to_string(),
-            ),
-            (
-                "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES".to_string(),
-                "false".to_string(),
-            ),
-        ]);
-
-        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
-
-        assert_eq!(normalized.get("DD_DATA_PLANE__ENABLED"), Some(&"true".to_string()));
-        assert_eq!(
-            normalized.get("DD_DATA_PLANE__STANDALONE_MODE"),
-            Some(&"true".to_string())
-        );
-        assert_eq!(
-            normalized.get("DD_DATA_PLANE__DOGSTATSD__ENABLED"),
-            Some(&"false".to_string())
-        );
-        assert_eq!(
-            normalized.get("DD_DATA_PLANE__OTLP__ENABLED"),
-            Some(&"true".to_string())
-        );
-        assert_eq!(
-            normalized.get("DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__METRICS"),
-            Some(&"true".to_string())
-        );
-        assert_eq!(
-            normalized.get("DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__TRACES"),
-            Some(&"false".to_string())
-        );
-        // Without an explicit DD_DATA_PLANE_REMOTE_AGENT_ENABLED in the input, the normalized
-        // env should not contain a synthesized nested key either.
-        assert!(!normalized.contains_key("DD_DATA_PLANE__REMOTE_AGENT_ENABLED"));
-    }
-
-    #[test]
-    fn windows_runtime_preserves_explicit_adp_native_env_values() {
-        let env = HashMap::from([
-            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
-            ("DD_DATA_PLANE__ENABLED".to_string(), "false".to_string()),
-        ]);
-
-        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
-
-        assert_eq!(normalized.get("DD_DATA_PLANE__ENABLED"), Some(&"false".to_string()));
-    }
-
-    #[test]
-    fn linux_runtime_does_not_add_adp_native_env_aliases() {
-        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
-
-        let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
-
-        assert!(!normalized.contains_key("DD_DATA_PLANE__ENABLED"));
-    }
-
-    #[test]
-    fn windows_runtime_uses_identity_port_mappings_for_exposed_ports() {
-        let exposed_ports = vec!["45100/tcp".to_string(), "48125/udp".to_string()];
-
-        let mappings = build_port_mappings_for_runtime(
-            crate::config::WINDOWS_RUNTIME,
-            &exposed_ports,
-            &DriverDetails::default(),
-        );
-
-        assert_eq!(mappings.get("45100/tcp"), Some(&45100));
-        assert_eq!(mappings.get("48125/udp"), Some(&48125));
-    }
-
-    #[test]
-    fn linux_runtime_uses_docker_host_port_mappings_for_exposed_ports() {
-        let exposed_ports = vec!["45100/tcp".to_string()];
-
-        let mappings =
-            build_port_mappings_for_runtime(crate::config::LINUX_RUNTIME, &exposed_ports, &DriverDetails::default());
-
-        assert!(mappings.is_empty());
-    }
-
-    #[test]
-    fn windows_runtime_force_enables_adp_when_enabled() {
-        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
-
-        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
-
-        // The Core Agent in the Windows target container needs DD_DATA_PLANE_FORCE_ENABLE on
-        // non-Linux platforms (Agent 7.80+ `sanitizeDataPlaneConfig`), otherwise it streams
-        // data_plane.enabled=false to ADP and ADP exits.
-        assert_eq!(normalized.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"true".to_string()));
-    }
-
-    #[test]
-    fn windows_runtime_does_not_force_enable_adp_when_disabled() {
-        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "false".to_string())]);
-
-        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
-
-        assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
-    }
-
-    #[test]
-    fn windows_runtime_preserves_explicit_force_enable_value() {
-        let env = HashMap::from([
-            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
-            ("DD_DATA_PLANE_FORCE_ENABLE".to_string(), "false".to_string()),
-        ]);
-
-        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
-
-        assert_eq!(normalized.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"false".to_string()));
-    }
-
-    #[test]
-    fn linux_runtime_does_not_force_enable_adp() {
-        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
-
-        let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
-
-        assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
     }
 }

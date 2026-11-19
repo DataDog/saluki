@@ -77,7 +77,7 @@ pub struct RunReport {
     pub build_revision: String,
     /// Test-case directories the run discovered from.
     pub suite_dirs: Vec<PathBuf>,
-    /// Integration-test runtime the run was scoped to.
+    /// The runtime name of the run's subject OS: `linux`, `mac` or `windows`.
     pub runtime: String,
     /// The images participant cases run in place of those they name, by the name as written.
     pub(crate) set: BTreeMap<String, String>,
@@ -640,8 +640,8 @@ mod tests {
                 phase: "analysis".to_string(),
                 duration: Duration::from_millis(20),
             }],
-        )
-        .with_assertion_details(vec![vec!["one".to_string(), "two".to_string()]]);
+        );
+        result.assertion_details = vec![vec!["one".to_string(), "two".to_string()]];
         result.case_path = Some(PathBuf::from("/cases/dsd-plain"));
         result.log_dir = Some(PathBuf::from("/logs/correctness/dsd-plain"));
 
@@ -705,8 +705,8 @@ mod tests {
             Duration::from_secs(1),
             vec![step(0, "telemetry matches", StepStatus::Failed)],
             Vec::new(),
-        )
-        .with_assertion_details(vec![details]);
+        );
+        result.assertion_details = vec![details];
         result.log_dir = Some(log_dir.path().to_path_buf());
 
         let nested_log_dir = log_dir.path().join("comparison");

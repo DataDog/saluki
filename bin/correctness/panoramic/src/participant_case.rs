@@ -1,8 +1,8 @@
 //! Participant cases: cases written as participants and a procedure, which the runner runs through the lifecycle.
 //!
-//! Discovery sends a case file without a top-level `type` here. The case is loaded and planned for every OS it
-//! declares, so a mistake for any OS is an error on any host, and the plan for the run's subject OS is kept. A case
-//! that does not declare that OS is skipped, and the skip is recorded with its reason.
+//! Discovery loads each case directory here. The case is loaded and planned for every OS it declares, so a mistake for
+//! any OS is an error on any host, and the plan for the run's subject OS is kept. A case that does not declare that OS
+//! is skipped, and the skip is recorded with its reason.
 //!
 //! Before the first case, the run checks once what the selected cases need: each realization they use, a Docker daemon
 //! for containers and pods, every image they run, pulled once if the daemon lacks it, the courier they get for each
@@ -18,11 +18,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tracing::warn;
 
-use crate::config::{runtime_of, KIND_RUNTIME};
 use crate::core::backend::Backends;
 use crate::core::case::{self, CaseError};
 use crate::core::container::{ContainerBackend, LINUX, WINDOWS};
@@ -39,6 +39,18 @@ use crate::test::{Test, TestContext, TestSuite};
 
 /// The file in a case's log directory that holds its plan when it does not pass.
 const PLAN_FILE: &str = "plan.json";
+
+/// The runtime name of a case that runs participants in pods, which need a kind cluster.
+const KIND_RUNTIME: &str = "kubernetes_in_docker";
+
+/// The runtime name of the subject OS `os`, which `list --json` and `run.json` report.
+pub(crate) fn runtime_of(os: Os) -> &'static str {
+    match os {
+        Os::Linux => "linux",
+        Os::Macos => "mac",
+        Os::Windows => "windows",
+    }
+}
 
 /// How long pulling one image may take before the first case.
 const PULL_TIME: Duration = Duration::from_secs(15 * 60);
@@ -82,6 +94,64 @@ pub(crate) fn replacements(entries: &[Replacement]) -> Result<BTreeMap<String, S
         }
     }
     Ok(set)
+}
+
+/// Loads every case in the direct subdirectories of `dirs` that holds a `config.yaml`, for `subject_os`, sorted by name.
+///
+/// A case that does not declare `subject_os` is included and skipped when it runs. A disabled case is loaded and
+/// planned all the same, so it cannot rot, and is left out. `set` holds the run's replacements of the images and host
+/// programs the cases name.
+///
+/// # Errors
+///
+/// Returns an error if a directory cannot be read, a case does not load or plan, or `set` replaces an image or host
+/// program no case uses. A run reports every bad case at once.
+pub(crate) fn discover(
+    dirs: &[PathBuf], subject_os: Os, set: &BTreeMap<String, String>,
+) -> Result<Vec<Box<dyn Test>>, GenericError> {
+    let registry = crate::registry();
+    let mut tests: Vec<Box<dyn Test>> = Vec::new();
+    let mut case_errors = Vec::new();
+    let mut replaced = BTreeSet::new();
+
+    for base_path in dirs {
+        if !base_path.is_dir() {
+            return Err(generic_error!("Test directory does not exist: {}", base_path.display()));
+        }
+
+        let entries = std::fs::read_dir(base_path)
+            .error_context(format!("Failed to read test directory: {}", base_path.display()))?;
+        for entry in entries {
+            let path = entry.error_context("Failed to read directory entry")?.path();
+            if !path.is_dir() || !path.join(case::CASE_FILE).exists() {
+                continue;
+            }
+            match ParticipantCase::load(&path, subject_os, set, &registry) {
+                Ok((case, _)) if case.disabled => {}
+                Ok((case, references)) => {
+                    replaced.extend(references.into_iter().filter(|reference| set.contains_key(reference)));
+                    tests.push(Box::new(case));
+                }
+                Err(errors) => case_errors.extend(errors.iter().map(ToString::to_string)),
+            }
+        }
+    }
+
+    // `replaced` holds each `--set` name some discovered case uses. Only when every case loaded: a case that failed may
+    // be the one that uses the name, so `replaced` is incomplete then.
+    if case_errors.is_empty() {
+        case_errors.extend(
+            set.keys()
+                .filter(|name| !replaced.contains(*name))
+                .map(|name| format!("--set names '{}', which no discovered case uses.", name)),
+        );
+    }
+    if !case_errors.is_empty() {
+        return Err(generic_error!("{}", case_errors.join("\n")));
+    }
+
+    tests.sort_by_key(|test| test.name());
+    Ok(tests)
 }
 
 /// A participant case, planned for the run's subject OS.
@@ -180,11 +250,6 @@ impl Test for ParticipantCase {
 
     fn timeout(&self) -> Duration {
         self.timeout
-    }
-
-    /// None: a participant case names its images in its plan, and `--set` replaces them.
-    fn images(&self) -> BTreeMap<&str, String> {
-        BTreeMap::new()
     }
 
     fn runtime(&self) -> String {
@@ -457,4 +522,68 @@ pub(crate) async fn check_before_the_first_case(
         }
     }
     Ok(backends)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CASE: &str = "timeout: 1m\nsubject_os: [linux]\nparticipants:\n  app:\n    subject: true\n    image: alpine:3.20\nprocedure: []\n";
+
+    /// A directory of cases, each written as `(name, config.yaml)`.
+    fn cases(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir should be creatable");
+        for (name, config) in files {
+            let case = dir.path().join(name);
+            std::fs::create_dir(&case).expect("the case directory should be creatable");
+            std::fs::write(case.join(case::CASE_FILE), config).expect("the case file should be writable");
+        }
+        dir
+    }
+
+    fn names(tests: &[Box<dyn Test>]) -> Vec<String> {
+        tests.iter().map(|test| test.name()).collect()
+    }
+
+    #[test]
+    fn discovery_sorts_cases_and_leaves_out_disabled_ones_and_directories_without_a_case_file() {
+        let dir = cases(&[
+            ("b", CASE),
+            ("a", CASE),
+            ("off", &format!("disabled: true\n{CASE}")),
+            ("shared", ""),
+        ]);
+        std::fs::remove_file(dir.path().join("shared").join(case::CASE_FILE)).unwrap();
+
+        let tests = discover(&[dir.path().to_path_buf()], Os::Linux, &BTreeMap::new()).unwrap();
+
+        assert_eq!(names(&tests), ["a", "b"]);
+    }
+
+    #[test]
+    fn discovery_reports_every_bad_case_and_a_set_name_no_case_uses() {
+        let bad = cases(&[("one", "type: integration\n"), ("two", "nonsense: 1\n")]);
+        let error = discover(&[bad.path().to_path_buf()], Os::Linux, &BTreeMap::new())
+            .err()
+            .expect("two bad cases should fail discovery")
+            .to_string();
+        assert!(error.contains("case 'one'") && error.contains("case 'two'"), "{error}");
+
+        let good = cases(&[("a", CASE)]);
+        let set = BTreeMap::from([("alpine:3.20".to_string(), "mirror/alpine:3.20".to_string())]);
+        assert_eq!(
+            discover(&[good.path().to_path_buf()], Os::Linux, &set).unwrap().len(),
+            1
+        );
+
+        let set = BTreeMap::from([("postgres:16".to_string(), "mirror/postgres:16".to_string())]);
+        let error = discover(&[good.path().to_path_buf()], Os::Linux, &set)
+            .err()
+            .expect("a set name no case uses should fail discovery")
+            .to_string();
+        assert!(
+            error.contains("--set names 'postgres:16', which no discovered case uses"),
+            "{error}"
+        );
+    }
 }

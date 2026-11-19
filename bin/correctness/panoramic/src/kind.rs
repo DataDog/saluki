@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::events::TestEvent;
-use crate::utils::strip_ansi_codes;
 
 pub const DEFAULT_CLUSTER_NAME: &str = "saluki-correctness";
 
@@ -203,4 +202,23 @@ async fn load_images(
     }
 
     Ok(())
+}
+
+/// Removes ANSI escape sequences (`ESC[...letter`) from a byte slice.
+fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == 0x1b && input.get(i + 1) == Some(&b'[') {
+            i += 2;
+            while i < input.len() && !input[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            i += 1;
+        } else {
+            out.push(input[i]);
+            i += 1;
+        }
+    }
+    out
 }

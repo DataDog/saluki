@@ -343,7 +343,6 @@ mod tests {
     /// A spawned `Runner` with scripted tests, a collector, and a shared log directory.
     struct ScriptedRun {
         log_dir: tempfile::TempDir,
-        _mounts_dir: tempfile::TempDir,
         collector: RunCollector,
         cancel_all: CancellationToken,
         events: mpsc::UnboundedReceiver<TestEvent>,
@@ -354,7 +353,6 @@ mod tests {
         /// Spawns a sequential runner. On a current-thread runtime, it starts when the test yields.
         fn spawn(tests: Vec<ScriptedTest>, fail_fast: bool) -> Self {
             let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-            let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
             let selected = tests.iter().map(|t| t.name.clone()).collect();
             let report = RunReport::new(
                 Vec::new(),
@@ -365,7 +363,7 @@ mod tests {
             );
             let collector = RunCollector::start(report, fail_fast);
 
-            let mut runner = Runner::new(log_dir.path(), test_runner_settings(mounts_dir.path()));
+            let mut runner = Runner::new(log_dir.path(), test_runner_settings());
             for test in tests {
                 runner.register(Box::new(test)).expect("scripted test names are unique");
             }
@@ -376,7 +374,6 @@ mod tests {
 
             Self {
                 log_dir,
-                _mounts_dir: mounts_dir,
                 collector,
                 cancel_all,
                 events,
@@ -388,7 +385,6 @@ mod tests {
         async fn consume(self, interrupts: &mut Interrupts) -> (RunEnd, ConsumedReport) {
             let Self {
                 log_dir,
-                _mounts_dir,
                 mut collector,
                 cancel_all,
                 events,
