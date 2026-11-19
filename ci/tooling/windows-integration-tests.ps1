@@ -103,7 +103,6 @@ $PanoramicArgs = @(
     "run",
     "-d", $TestDir,
     "--runtime", "windows",
-    "--image-override", "container=$ImageTag",
     "--set", "saluki-images/agent-data-plane:testing-windows=$ImageTag",
     "--no-tui",
     "-p", "4",
