@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["get_coarse_unix_timestamp","get_unix_timestamp","get_unix_timestamp_nanos"]};
+window.SIDEBAR_ITEMS = {"enum":["TimestampFormat"],"fn":["get_coarse_unix_timestamp","get_unix_timestamp","get_unix_timestamp_nanos","parse_compact_utc_nanos"],"struct":["FormattedTimestamp","TimeZone","Timestamp"]};

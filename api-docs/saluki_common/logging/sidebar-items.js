@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["filter_from_env","parse_filter_directives"]};
+window.SIDEBAR_ITEMS = {"fn":["filter_from_env","parse_filter_directives"],"struct":["RollingFileWriter"]};
