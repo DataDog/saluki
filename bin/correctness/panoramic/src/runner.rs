@@ -19,6 +19,7 @@ use tracing::warn;
 
 use crate::core::deadline::{Budget, Deadline};
 use crate::core::ledger::RECLAIM_TIME;
+use crate::core::plan::CasePlan;
 use crate::core::record::{ActiveStep, CaseRecord, StepStatus};
 use crate::core::result::{
     ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
@@ -33,6 +34,9 @@ pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 
 /// How long a cancelled or timed-out test has to return its result before the runner drops it.
 const GRACE_TIME: Duration = Duration::from_secs(30);
+
+/// The file in a case's log directory that holds its plan when it does not pass.
+const PLAN_FILE: &str = "plan.json";
 
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
@@ -322,6 +326,11 @@ impl Runner {
         result.case_path = Some(test.case_path());
         result.log_dir = Some(log_dir.clone());
 
+        if let Some(plan) = test.participant_case().and_then(|case| case.plan.as_ref().ok()) {
+            if !result.outcome.is_passed() {
+                write_plan(plan, &log_dir);
+            }
+        }
         write_result_log(&result, &log_dir);
         crate::machine_output::write_test_report(&result, &log_dir);
 
@@ -417,6 +426,17 @@ impl Stop {
     }
 }
 
+/// Writes `plan` to the case's log directory `log_dir`, as `panoramic plan` prints it.
+fn write_plan(plan: &CasePlan, log_dir: &Path) {
+    let path = log_dir.join(PLAN_FILE);
+    let written = serde_json::to_string_pretty(plan)
+        .map_err(|e| e.to_string())
+        .and_then(|json| std::fs::write(&path, json + "\n").map_err(|e| e.to_string()));
+    if let Err(e) = written {
+        warn!(path = %path.display(), error = %e, "Failed to write the plan of a case that did not pass.");
+    }
+}
+
 fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
     let dir = dir.as_ref();
 
@@ -493,6 +513,7 @@ pub(crate) mod test_support {
 
     use super::*;
     use crate::core::record::{RunningStep, StepResult, Verdict};
+    use crate::participant_case::ParticipantCase;
     use crate::reporter::test_support::step;
     use crate::test::TestSuite;
 
@@ -555,6 +576,8 @@ pub(crate) mod test_support {
         pub(crate) registers: Option<PathBuf>,
         /// Spawns a pending task and records its drop.
         pub(crate) spawns: Option<TaskProbe>,
+        /// The participant case the test stands for, which the runner reads the plan of.
+        pub(crate) case: Option<ParticipantCase>,
     }
 
     /// Observes task shutdown for a [`ScriptedTest`].
@@ -602,6 +625,7 @@ pub(crate) mod test_support {
                 entered: None,
                 registers: None,
                 spawns: None,
+                case: None,
             }
         }
     }
@@ -630,6 +654,10 @@ pub(crate) mod test_support {
 
         fn runtime(&self) -> String {
             "linux".to_string()
+        }
+
+        fn participant_case(&self) -> Option<&ParticipantCase> {
+            self.case.as_ref()
         }
 
         async fn run(&self, tctx: TestContext) -> TestResult {
@@ -816,10 +844,14 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::test_support::{test_runner_settings, Behavior, ScriptedStep, ScriptedTest, TaskProbe};
     use super::*;
+    use crate::core::participant::Os;
     use crate::core::record::StepStatus;
     use crate::core::result::{ReclaimResult, TestOutcome, TimeoutDeadline};
+    use crate::participant_case::ParticipantCase;
     use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND};
 
     /// A bound for real-time tests.
@@ -1175,6 +1207,81 @@ mod tests {
             assert!(!dir.exists(), "{} should be removed", dir.display());
             assert_eq!(phase_names(result).last(), Some(&"reclaim"), "{}", result.name);
         }
+    }
+
+    /// Loads a participant case that plans for Linux, which needs no Linux host, from a directory under `cases`.
+    fn participant_case(cases: &Path) -> ParticipantCase {
+        let dir = cases.join("planned");
+        std::fs::create_dir_all(&dir).expect("the case directory should be creatable");
+        std::fs::write(
+            dir.join("config.yaml"),
+            "timeout: 1m\nsubject_os: [linux]\nparticipants:\n  app:\n    subject: true\n    image: alpine:3.20\nprocedure: []\n",
+        )
+        .expect("the case file should be writable");
+        ParticipantCase::load(&dir, Os::Linux, &BTreeMap::new(), &crate::registry())
+            .unwrap_or_else(|errors| panic!("{errors:?}"))
+            .0
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_case_dropped_after_grace_keeps_its_plan() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let cases = tempfile::tempdir().expect("temp dir should be creatable");
+        let test = ScriptedTest {
+            case: Some(participant_case(cases.path())),
+            ..ScriptedTest::new(
+                "planned",
+                Behavior::WaitForCancel {
+                    finish_on_cancel: false,
+                },
+            )
+        };
+
+        let result = run_scripted_test(
+            &test,
+            log_base_dir.path(),
+            &cancel_all_after(Duration::from_secs(1)),
+            PAUSED_BOUND,
+        )
+        .await;
+
+        assert_eq!(result.label(), "INTERRUPTED");
+        let log_dir = result
+            .log_dir
+            .as_ref()
+            .expect("the runner should record the log directory");
+        let plan = log_dir.join("plan.json");
+        assert!(plan.is_file(), "{} should exist", plan.display());
+        let report = written_report(&result);
+        let artifacts: Vec<&str> = report["artifacts"]
+            .as_array()
+            .expect("artifacts is an array")
+            .iter()
+            .map(|artifact| artifact.as_str().expect("an artifact is a path"))
+            .collect();
+        assert!(
+            artifacts.iter().any(|artifact| artifact.ends_with("plan.json")),
+            "{artifacts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_passing_case_writes_no_plan() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let cases = tempfile::tempdir().expect("temp dir should be creatable");
+        let test = ScriptedTest {
+            case: Some(participant_case(cases.path())),
+            ..ScriptedTest::new("planned", Behavior::Pass)
+        };
+
+        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
+
+        assert_eq!(result.outcome, TestOutcome::Passed);
+        let log_dir = result
+            .log_dir
+            .as_ref()
+            .expect("the runner should record the log directory");
+        assert!(!log_dir.join("plan.json").exists());
     }
 
     #[tokio::test(start_paused = true)]
