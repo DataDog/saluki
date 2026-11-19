@@ -30,7 +30,7 @@ fn is_transient_error(error: &GenericError) -> bool {
 /// Windows containers are networked through the Host Network Service, and HNS serializes poorly: when several
 /// containers create a NAT network or attach an endpoint at the same moment, the losing caller gets a 500 from the
 /// daemon carrying `hnsCall failed in Win32: The object already exists. (0x1392)`. The object in question is internal
-/// to HNS -- airlock names every network after a unique isolation group, so this is never a name conflict of ours --
+/// to HNS -- airlock names every network after a unique case ID, so this is never a name conflict of ours --
 /// and the conflict clears once the winning call completes.
 ///
 /// The predicate matches on the message rather than on the container OS because `hnsCall` has no analogue on Linux,
@@ -45,8 +45,8 @@ fn is_transient_hns_error(error: &GenericError) -> bool {
 
 /// Returns how long to wait before the given transient error retry attempt.
 ///
-/// `seed` keeps concurrent callers out of step with each other. Isolation group IDs are unique per
-/// test, so two drivers that collided at the same instant draw different jitter and don't line
+/// `seed` keeps concurrent callers out of step with each other. Case IDs and container names are
+/// unique, so two callers that collided at the same instant draw different jitter and don't line
 /// back up on the retry.
 fn transient_error_retry_backoff(attempt: u32, seed: &str) -> Duration {
     let mut hasher = DefaultHasher::new();
@@ -167,9 +167,9 @@ mod tests {
     }
 
     #[test]
-    fn transient_error_retry_backoff_differs_between_isolation_groups() {
+    fn transient_error_retry_backoff_differs_between_seeds() {
         // Racers that collided at the same instant must not retry on the same schedule, or they
-        // just collide again. Isolation group IDs are taken from real failing runs.
+        // just collide again. The IDs are taken from real failing runs.
         assert_ne!(
             transient_error_retry_backoff(1, "q9183x1a"),
             transient_error_retry_backoff(1, "fajekrvm")
