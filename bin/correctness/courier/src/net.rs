@@ -21,11 +21,15 @@ pub(crate) async fn within<T>(
     }
 }
 
+/// Resolves `host_port`, IPv4 addresses first. A participant's name can resolve to a link-local IPv6 address before its
+/// IPv4 one, as on a Windows `nat` network, where the software listens on IPv4 only. A datagram sent to the first
+/// address would be lost without an error.
 pub(crate) async fn resolve(host_port: &HostPort) -> Result<Vec<SocketAddr>, Error> {
-    let addrs: Vec<_> = tokio::net::lookup_host((host_port.host.as_str(), host_port.port))
+    let mut addrs: Vec<_> = tokio::net::lookup_host((host_port.host.as_str(), host_port.port))
         .await
         .context(ResolveSnafu { host: &host_port.host })?
         .collect();
+    addrs.sort_by_key(SocketAddr::is_ipv6);
     if addrs.is_empty() {
         return Err(io::Error::new(io::ErrorKind::NotFound, "no addresses"))
             .context(ResolveSnafu { host: &host_port.host });
@@ -56,4 +60,20 @@ pub(crate) fn open_pipe(name: &str) -> io::Result<tokio::net::windows::named_pip
     tokio::net::windows::named_pipe::ClientOptions::new()
         .read(false)
         .open(format!(r"\\.\pipe\{name}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn resolved_addresses_list_ipv4_before_ipv6() {
+        let host_port = HostPort {
+            host: "localhost".to_string(),
+            port: 9,
+        };
+        let addrs = resolve(&host_port).await.unwrap();
+        let first_ipv6 = addrs.iter().position(SocketAddr::is_ipv6).unwrap_or(addrs.len());
+        assert!(addrs[first_ipv6..].iter().all(SocketAddr::is_ipv6), "{addrs:?}");
+    }
 }
