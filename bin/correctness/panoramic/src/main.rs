@@ -452,7 +452,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
             test_map.insert(
                 test.name(),
                 serde_json::json!({
-                    "type": test.suite(),
+                    "suite": test.suite(),
                     "runtime": test.runtime(),
                     "timeout": test.timeout(),
                 }),
