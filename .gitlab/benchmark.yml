@@ -45,7 +45,8 @@ build-adp-baseline-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 15m
+  # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
+  timeout: 30m
   before_script:
     - *setup-smp-env
   script:
@@ -60,13 +61,15 @@ build-adp-baseline-image:
     - export BASELINE_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh baseline)
     - export BASELINE_ADP_IMG="${ADP_IMG_BASE}-${BASELINE_ADP_SHA}"
     - git switch --detach ${BASELINE_ADP_SHA}
-    # Actually build.
+    # Actually build, using the `optimized-release` profile we ship so that both SMP and the binary size
+    # analysis measure the production binary. Debug assertions are covered by the correctness tests, which
+    # build with `release`.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx create --name adp-builder --driver docker-container --use
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
-      --build-arg BUILD_PROFILE=release
+      --build-arg BUILD_PROFILE=optimized-release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
@@ -105,7 +108,8 @@ build-adp-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 15m
+  # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
+  timeout: 30m
   before_script:
     - *setup-smp-env
   script:
@@ -117,13 +121,15 @@ build-adp-comparison-image:
     - export COMPARISON_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh comparison)
     - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
     - git switch --detach ${COMPARISON_ADP_SHA}
-    # Actually build.
+    # Actually build, using the `optimized-release` profile we ship so that both SMP and the binary size
+    # analysis measure the production binary. Debug assertions are covered by the correctness tests, which
+    # build with `release`.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx create --name adp-builder --driver docker-container --use
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
-      --build-arg BUILD_PROFILE=release
+      --build-arg BUILD_PROFILE=optimized-release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
@@ -312,69 +318,6 @@ run-benchmarks-adp-full:
         cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane, full suite)"
       fi
 
-# Build the baseline or comparison ADP image with the `optimized-release` profile (fat LTO, one
-# codegen unit), which is what we actually ship. The SMP images above use `release` so benchmarks
-# keep debug assertions and build quickly, but that profile produces a noticeably larger binary, so
-# the size analysis builds its own images to report the size users actually get.
-#
-# Set `SMP_SHA_ROLE` to `baseline` or `comparison`; the job exports `<ROLE>_ADP_SHA` and
-# `<ROLE>_ADP_OPTIMIZED_IMG` for `binary-size-analysis`.
-.build-adp-optimized-image:
-  extends: .build-common-variables
-  stage: benchmark
-  tags: ["docker-in-docker:amd64"]
-  # Only binary size analysis needs these, so match its rules.
-  rules:
-    - if: !reference [.on_mq_branch, rules, if]
-      when: never
-    - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_SMP_CI_IMAGE}"
-  needs: []
-  retry: 2
-  # Fat LTO with a single codegen unit is considerably slower than the `release` profile.
-  timeout: 45m
-  before_script:
-    - *setup-smp-env
-  script:
-    - ./ci/tooling/configure-smp-aws-credentials.sh
-    - export ADP_SHA=$(./ci/tooling/compute-smp-sha.sh ${SMP_SHA_ROLE})
-    - export ADP_OPTIMIZED_IMG="${ADP_IMG_BASE}-${ADP_SHA}-optimized"
-    - git switch --detach ${ADP_SHA}
-    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    - docker buildx create --name adp-builder --driver docker-container --use
-    - docker buildx build
-      --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_OPTIMIZED_IMG}
-      --build-arg BUILD_PROFILE=optimized-release
-      --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
-      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
-      --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${ADP_SHA}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --push
-      .
-    - export ROLE_PREFIX=$(echo "${SMP_SHA_ROLE}" | tr '[:lower:]' '[:upper:]')
-    - echo "${ROLE_PREFIX}_ADP_SHA=${ADP_SHA}" >> size-vars.env
-    - echo "${ROLE_PREFIX}_ADP_OPTIMIZED_IMG=${ADP_OPTIMIZED_IMG}" >> size-vars.env
-  artifacts:
-    reports:
-      dotenv: size-vars.env
-
-build-adp-baseline-optimized-image:
-  extends: .build-adp-optimized-image
-  variables:
-    SMP_SHA_ROLE: baseline
-
-build-adp-comparison-optimized-image:
-  extends: .build-adp-optimized-image
-  variables:
-    SMP_SHA_ROLE: comparison
-
 binary-size-analysis:
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
@@ -385,8 +328,8 @@ binary-size-analysis:
     - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
-    - build-adp-baseline-optimized-image
-    - build-adp-comparison-optimized-image
+    - build-adp-baseline-image
+    - build-adp-comparison-image
   timeout: 10m
   before_script:
     - *setup-smp-env
@@ -404,12 +347,12 @@ binary-size-analysis:
 
     # Extract binaries from the container images.
     - mkdir -p binaries
-    - docker pull ${BASELINE_ADP_OPTIMIZED_IMG}
-    - docker create --name baseline-container ${BASELINE_ADP_OPTIMIZED_IMG}
+    - docker pull ${BASELINE_ADP_IMG}
+    - docker create --name baseline-container ${BASELINE_ADP_IMG}
     - docker cp baseline-container:/usr/local/bin/agent-data-plane binaries/baseline-adp
     - docker rm baseline-container
-    - docker pull ${COMPARISON_ADP_OPTIMIZED_IMG}
-    - docker create --name comparison-container ${COMPARISON_ADP_OPTIMIZED_IMG}
+    - docker pull ${COMPARISON_ADP_IMG}
+    - docker create --name comparison-container ${COMPARISON_ADP_IMG}
     - docker cp comparison-container:/usr/local/bin/agent-data-plane binaries/comparison-adp
     - docker rm comparison-container
 
