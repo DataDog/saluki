@@ -4,13 +4,14 @@ This directory contains a number of tools/utilities that are used in conjunction
 the metrics correctness testing framework we use to check Agent Data Plane's behavior against the Datadog Agent. It
 consists of the following components:
 
-- `airlock`: helper library for running containerized applications in "isolated" groups, to allow for spawning
-  supporting applications alongside a system under test (SUT) without colliding with other concurrent tests
+- `airlock`: helper library for running containers and host processes. Each case gets its own network and volume, so
+  concurrent cases don't collide
 - `courier`: a small static binary that `panoramic` runs inside containers to probe listeners, send bytes, make plain
   HTTP requests and follow log files from where the software runs
-- `panoramic`: unified test runner for both correctness tests and integration tests. For correctness tests, it drives
-  an identical, deterministic telemetry workload into a baseline and comparison target (for example, Datadog Agent vs
-  ADP), and compares the outputs they forward to their configured intake, highlighting any discrepancies
+- `panoramic`: unified test runner for both correctness tests and integration tests. A case is a directory of
+  participants and a procedure of steps. For correctness tests, a case drives an identical, deterministic telemetry
+  workload into a baseline and a comparison target (for example, Datadog Agent vs ADP), and compares the outputs they
+  forward to their intake, highlighting any discrepancies. See [Panoramic cases](../../docs/development/panoramic.md)
 - `datadog-intake`: a mock intake in the spirit of [`fakeintake`][fakeintake_gh] that provides a more ergonomic
   approach to dumping the captured data
 - `millstone`: a deterministic load generator, in the spirit of [Lading][lading_gh], that allow provides determinism
@@ -28,7 +29,8 @@ and `millstone` -- by running `make build-correctness-tools-image`.
 ## Running correctness tests
 
 Run all correctness tests with `make test-correctness`, or a single test case with
-`make test-correctness-case CASE=<test-name>`.
+`make test-correctness-case CASE=<test-name>`. The [Panoramic cases](../../docs/development/panoramic.md) guide
+covers writing and running cases.
 
 [fakeintake_gh]: https://github.com/DataDog/datadog-agent/tree/main/test/fakeintake
 [lading_gh]: https://github.com/DataDog/lading
