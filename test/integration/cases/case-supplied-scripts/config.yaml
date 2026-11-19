@@ -1,0 +1,53 @@
+description: "Runs scripts the case supplies, as a participant and as a step, on each OS's default realization"
+timeout: 120s
+subject_os: [linux, macos, windows]
+
+participants:
+  helper:
+    subject: true
+    env:
+      HELPER_DIR: "{{ self.dir }}"
+    os:
+      linux:
+        image: saluki-images/correctness-tools:latest
+        command: [sh, /helper/serve.sh]
+        files:
+          /helper/: helper/
+      # `sh` is found on the runner's PATH.
+      macos:
+        programs:
+          - {name: main, path: sh, args: [./serve.sh]}
+        files:
+          ./serve.sh: helper/serve.sh
+          ./check.sh: helper/check.sh
+      windows:
+        image: saluki-images/agent-data-plane:testing-windows
+        command: [pwsh, -NoProfile, -NonInteractive, -File, 'C:\helper\serve.ps1']
+        files:
+          "C:/helper/": helper-windows/
+
+procedure:
+  - step: log_contains
+    on: helper
+    pattern: "helper started in {{ helper.dir }}"
+    timeout: 30s
+  - step: exec
+    on: helper
+    env:
+      HELPER_DIR: "{{ helper.dir }}"
+    output_contains: checked
+    timeout: 30s
+    os:
+      linux:
+        command: [sh, /helper/check.sh]
+      macos:
+        command: [sh, ./check.sh]
+      windows:
+        command: [pwsh, -NoProfile, -NonInteractive, -File, 'C:\helper\check.ps1']
+  # The script wrote this file in the participant's own directory.
+  - step: file_contains
+    on: helper
+    path: "{{ helper.dir }}/checked"
+    pattern: checked
+    timeout: 10s
+  - {step: process_stable_for, on: helper, process: main, duration: 2s}
