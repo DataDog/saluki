@@ -3,8 +3,8 @@
 //! A [`CaseScope`] computes every name it uses from its ID without talking to Docker, so a caller can record the
 //! scope for reclaim before [`CaseScope::prepare`] creates anything.
 //!
-//! Every resource carries the label `airlock-case=<id>`, so reclaiming one case never removes another's containers.
-//! Names start with `airlock-case-`.
+//! Every resource carries the label `airlock-case=<id>`, so reclaiming one case never removes the containers of
+//! another case. Names start with `airlock-case-`.
 
 use std::collections::HashMap;
 
