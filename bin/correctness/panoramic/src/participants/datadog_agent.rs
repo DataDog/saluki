@@ -240,8 +240,9 @@ pub(super) fn s6_overlay(services: &[&str]) -> BTreeMap<String, FileSpec> {
         .collect()
 }
 
-/// A process of an s6 service, with its exit record and its log file.
-pub(super) fn s6_process(name: &str, record: &str, log: &str) -> Result<ProcessSpec, String> {
+/// A process a supervisor in the participant reports: s6 in a Linux container or pod, the entrypoint in a Windows
+/// container. It has an exit record and a log file.
+pub(super) fn supervised_process(name: &str, record: &str, log: &str) -> Result<ProcessSpec, String> {
     ProcessSpec::new(
         name,
         ExitChannel::Record {

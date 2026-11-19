@@ -1,5 +1,6 @@
-//! `agent-adp`: the Datadog Agent and ADP in one participant. In a container or pod they run as the Agent image runs
-//! them under s6. On macOS they are two host programs.
+//! `agent-adp`: the Datadog Agent and ADP in one participant, in one of three shapes. In a Linux container or pod they
+//! run as the Agent image runs them under s6. On macOS they are two host programs. In a Windows container an
+//! entrypoint of the harness's starts them, in [`windows`].
 //!
 //! Its default environment, the rules that withdraw it, and the host view are the Agent's, in [`super::datadog_agent`],
 //! with the entries that only ADP reads.
@@ -21,6 +22,8 @@ use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{CommandSpec, Evidence, FileSource, FileSpec, ParticipantSpec, Program, Protocol, Wiring};
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
+
+mod windows;
 
 const LISTENERS: &[Listener] = &[
     Listener {
@@ -151,16 +154,19 @@ impl ParticipantType for AgentAdp {
             (Os::Linux, Enclosure::LinuxContainer),
             (Os::Linux, Enclosure::KubernetesPod),
             (Os::Macos, Enclosure::HostProcessGroup),
+            (Os::Windows, Enclosure::WindowsContainer),
         ]
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
-        if cx.realization.enclosure == Enclosure::HostProcessGroup {
-            return host_processes(cx);
+        match cx.realization.enclosure {
+            Enclosure::HostProcessGroup => return host_processes(cx),
+            Enclosure::WindowsContainer => return windows::spec(cx),
+            Enclosure::LinuxContainer | Enclosure::KubernetesPod => {}
         }
         let processes = vec![
-            datadog_agent::s6_process("adp", "data-plane", "adp.log")?,
-            datadog_agent::s6_process("agent", "agent", "agent.log")?,
+            datadog_agent::supervised_process("adp", "data-plane", "adp.log")?,
+            datadog_agent::supervised_process("agent", "agent", "agent.log")?,
         ];
         let ready = Evidence::Output {
             pattern: Template::parse(DOGSTATSD_UDP_STARTED)?,
@@ -230,12 +236,7 @@ fn host_processes(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             "with.host_view mounts host paths into a container, and host processes already see the host".to_string(),
         );
     }
-    if let Some(key) = cx.case.env.keys().find(|key| key.starts_with("ADP_DD_")) {
-        return Err(format!(
-            "{} is set. On macOS ADP and the Agent read the same environment: write the DD_ form instead",
-            key
-        ));
-    }
+    reject_adp_keys(cx, "On macOS")?;
     let own_dir = Template::parse("{{ self.dir }}")?;
     let mut agent_env = BTreeMap::from([("DD_RUN_PATH".to_string(), own_dir.clone())]);
     // The Agent's darwin guard ignores `data_plane.enabled`, so only the force flag hands over to ADP.
@@ -300,6 +301,17 @@ fn host_processes(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
     add_endpoints(cx, &mut spec)?;
     datadog_agent::set_defaults(cx, true, &mut spec)?;
     Ok(spec)
+}
+
+/// Rejects each `ADP_DD_` key the case's `env` sets, where `place` ("On macOS") has no image that gives the key to ADP
+/// alone.
+fn reject_adp_keys(cx: &SpecContext<'_>, place: &str) -> Result<(), String> {
+    match cx.case.env.keys().find(|key| key.starts_with("ADP_DD_")) {
+        Some(key) => Err(format!(
+            "{key} is set. {place} ADP and the Agent read the same environment: write the DD_ form instead"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Which of ADP's two configuration views `config_dump` answers with.

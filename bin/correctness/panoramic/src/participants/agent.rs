@@ -111,7 +111,7 @@ impl ParticipantType for Agent {
             // No command: the image's own entrypoint starts s6.
             files: datadog_agent::s6_overlay(&["agent"]),
             ready: BTreeMap::from([("dogstatsd_udp".to_string(), ready)]),
-            processes: Some(vec![datadog_agent::s6_process("agent", "agent", "agent.log")?]),
+            processes: Some(vec![datadog_agent::supervised_process("agent", "agent", "agent.log")?]),
             aliases: BTreeMap::from([
                 (DATADOG_YAML, DATADOG_YAML_PATH),
                 (OTEL_CONFIG_YAML, OTEL_CONFIG_YAML_PATH),
