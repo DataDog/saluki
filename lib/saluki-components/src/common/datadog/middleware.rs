@@ -3,7 +3,7 @@ use http::{
     HeaderName, HeaderValue, Request, Uri,
 };
 
-use super::endpoints::ResolvedEndpoint;
+use super::endpoints::{endpoint_base_path, ResolvedEndpoint};
 
 static ALLOW_ARBITRARY_TAG_VALUE_HEADER: HeaderName = HeaderName::from_static("allow-arbitrary-tag-value");
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
@@ -21,9 +21,7 @@ pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
-    // Remove trailing slashes so that joining with the request path, which starts with `/`, gives a single `/`. An
-    // endpoint with no path, or only `/`, gives an empty base path.
-    let base_path = endpoint.endpoint().path().trim_end_matches('/').to_string();
+    let base_path = endpoint_base_path(endpoint.endpoint()).to_string();
     move |mut request| {
         let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
 

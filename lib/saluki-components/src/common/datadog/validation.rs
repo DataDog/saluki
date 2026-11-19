@@ -16,7 +16,10 @@ use tokio::{
 use tracing::{debug, warn};
 use url::Url;
 
-use super::{api_key::ApiKeyChanges, endpoints::RoutableEndpoint};
+use super::{
+    api_key::ApiKeyChanges,
+    endpoints::{endpoint_base_path, RoutableEndpoint},
+};
 
 const VALIDATE_PATH: &str = "/api/v1/validate";
 // TODO: Move the shared Datadog fake API key constant to `datadog-agent-commons`.
@@ -308,7 +311,7 @@ fn build_validation_request(target: &ValidationTarget) -> Result<Request<Empty<B
     // Append the validation path to the base path of the endpoint, as the forwarder does for payloads. The base path is
     // empty for official Datadog endpoints and for endpoints with no path, or only `/`.
     let mut url = target.validation_base_url.clone();
-    let path = format!("{}{}", url.path().trim_end_matches('/'), VALIDATE_PATH);
+    let path = format!("{}{}", endpoint_base_path(&url), VALIDATE_PATH);
     url.set_path(&path);
     url.set_query(None);
     url.query_pairs_mut().append_pair("api_key", &target.api_key);
