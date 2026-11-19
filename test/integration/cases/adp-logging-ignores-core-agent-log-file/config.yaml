@@ -1,6 +1,6 @@
 description: "Verifies ADP ignores the Core Agent's `log_file` setting and continues to use its own per-subagent log file path"
 timeout: 120s
-subject_os: [linux]
+subject_os: [linux, macos, windows]
 
 participants:
   adp:
@@ -12,16 +12,45 @@ participants:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
       DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-      DD_LOG_FILE: "/tmp/coreagent-only.log"
+    os:
+      # On Linux ADP's per-subagent default path is the one checked, so nothing sets it.
+      linux:
+        env:
+          DD_LOG_FILE: /tmp/coreagent-only.log
+      macos:
+        env:
+          DD_LOG_FILE: "{{ self.dir }}/coreagent-only-mac.log"
+          DD_DATA_PLANE_LOG_FILE: "{{ self.dir }}/adp-mac-ignores-core-agent-log-file.log"
+      windows:
+        env:
+          DD_LOG_FILE: 'C:\adp\coreagent-only.log'
+          DD_DATA_PLANE_LOG_FILE: 'C:\adp\adp-ignores-core-agent-log-file.log'
 
 procedure:
   # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
-  - {step: log_contains, on: adp, pattern: "Initial configuration received.", timeout: 30s}
+  - step: log_contains
+    on: adp
+    pattern: "Initial configuration received."
+    timeout: 30s
+    os:
+      windows: {timeout: 60s}
   # The Core Agent honored DD_LOG_FILE; its own log file has CORE entries.
-  - {step: file_contains, on: adp, path: /tmp/coreagent-only.log, pattern: CORE, timeout: 30s}
-  # ADP did NOT honor DD_LOG_FILE; it still wrote to its per-subagent default path.
   - step: file_contains
     on: adp
-    path: /var/log/datadog/agent-data-plane.log
+    pattern: CORE
+    timeout: 30s
+    os:
+      linux: {path: /tmp/coreagent-only.log}
+      macos: {path: "{{ adp.dir }}/coreagent-only-mac.log"}
+      windows: {path: 'C:\adp\coreagent-only.log', timeout: 60s}
+  # ADP did NOT honor DD_LOG_FILE; it wrote to its own per-subagent path.
+  - step: file_contains
+    on: adp
     pattern: DATAPLANE
     timeout: 30s
+    os:
+      linux: {path: /var/log/datadog/agent-data-plane.log}
+      macos: {path: "{{ adp.dir }}/adp-mac-ignores-core-agent-log-file.log"}
+      windows: {path: 'C:\adp\adp-ignores-core-agent-log-file.log', timeout: 60s}
+  # The log files outlive ADP, so check that it has not exited, as before the files were read.
+  - {step: process_stable_for, on: adp, process: adp, duration: 1s}
