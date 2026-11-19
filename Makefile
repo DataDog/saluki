@@ -716,13 +716,11 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 # linux flow builds and tests build-adp-image with whatever BUILD_PROFILE the pipeline sets.
 # panoramic stays at target/release/ unconditionally because it's the test harness, not the SUT;
 # build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
-# Participant cases take the two binaries with --set. The legacy cases still take the two flags.
+# Cases take the two binaries with --set.
 test-integration-macos-run: BUILD_PROFILE ?= release
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
 	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
-		--adp-binary-path "$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
-		--core-agent-binary-path "$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		--set "target/release/agent-data-plane=$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
 		--set "/tmp/saluki-dda/datadog-agent/bin/agent/agent=$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \

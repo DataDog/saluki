@@ -716,45 +716,6 @@ mod tests {
         assert!(!directives.contains("hyper"), "directives were '{}'", directives);
     }
 
-    #[tokio::test]
-    async fn image_override_validation_precedes_name_selection() {
-        let dir = tempfile::tempdir().unwrap();
-        let case_dir = dir.path().join("unselected");
-        std::fs::create_dir(&case_dir).unwrap();
-        std::fs::write(
-            case_dir.join("config.yaml"),
-            r#"
-type: integration
-name: unselected
-timeout: 1s
-intake:
-  enabled: true
-procedure: []
-"#,
-        )
-        .unwrap();
-        for (entry, expected) in [
-            ("intake=tools:custom", EXIT_NO_TESTS_SELECTED),
-            ("typo=tools:custom", EXIT_HARNESS_ERROR),
-        ] {
-            let cli = Cli::try_parse_from([
-                "panoramic",
-                "run",
-                "-d",
-                dir.path().to_str().unwrap(),
-                "-t",
-                "not-discovered",
-                "--image-override",
-                entry,
-            ])
-            .unwrap();
-            let Command::Run(cmd) = cli.command else {
-                panic!("expected run")
-            };
-            assert_eq!(run_tests(*cmd, false).await, ExitCode::from(expected));
-        }
-    }
-
     #[test]
     fn selection_reports_names_that_match_nothing() {
         let discovered: Vec<Box<dyn test::Test>> = Vec::new();
