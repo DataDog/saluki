@@ -1,5 +1,5 @@
 use http::{
-    uri::{Authority, Scheme},
+    uri::{Authority, PathAndQuery, Scheme},
     HeaderName, HeaderValue, Request, Uri,
 };
 
@@ -12,13 +12,17 @@ static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 /// Builds a middleware function that will update the request's URI to use the resolved endpoint's URI, and add the API
 /// key as a header.
 ///
-/// The request's URI must already container a relative path component. Any existing scheme, host, and port components
-/// will be overridden by the resolved endpoint's URI.
+/// The request's URI must already contain a relative path component. The resolved endpoint's URI replaces any
+/// existing scheme, host, and port components. If the endpoint has a base path, such as `https://proxy.example.com/prefix`,
+/// the request's path is appended to it, which gives `/prefix/api/v2/series`.
 pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B>) -> Request<B> + Clone {
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
+    // Remove trailing slashes so that joining with the request path, which starts with `/`, gives a single `/`. An
+    // endpoint with no path, or only `/`, gives an empty base path.
+    let base_path = endpoint.endpoint().path().trim_end_matches('/').to_string();
     move |mut request| {
         let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
 
@@ -37,7 +41,15 @@ pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B
         } else {
             new_uri_authority.clone()
         };
-        // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
+        // Select the authority from the request path alone, then prepend the endpoint's base path.
+        let path_and_query = if base_path.is_empty() {
+            path_and_query
+        } else {
+            PathAndQuery::try_from(format!("{}{}", base_path, path_and_query.as_str()))
+                .expect("should not fail to construct new path and query")
+        };
+
+        // Build an updated URI from the endpoint's scheme and the selected authority, plus the combined path and query.
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
             .authority(authority)
@@ -179,6 +191,92 @@ mod tests {
                 Some("custom.example.com"),
                 "{path}"
             );
+        }
+    }
+
+    #[test]
+    fn for_resolved_endpoint_prepends_endpoint_base_path() {
+        // An endpoint with a base path keeps that path, and the request path is appended to it. A trailing slash on the
+        // base path gives a single `/`.
+        for raw_endpoint in ["https://proxy.example.com/prefix", "https://proxy.example.com/prefix/"] {
+            let endpoint =
+                ResolvedEndpoint::from_raw_endpoint(raw_endpoint, "fake-api-key").expect("endpoint should resolve");
+            let middleware = for_resolved_endpoint(endpoint);
+
+            for path in ["/api/v2/series", "/api/v2/logs", "/api/v0.2/traces"] {
+                let request = Request::builder().uri(path).body(()).expect("request should build");
+                let request = middleware(request);
+
+                assert_eq!(
+                    request.uri().to_string(),
+                    format!("https://proxy.example.com/prefix{path}"),
+                    "{raw_endpoint} {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn for_resolved_endpoint_without_base_path_keeps_request_path() {
+        // An endpoint with no path, or only `/`, uses the request path unchanged, with no `//`.
+        for raw_endpoint in ["https://proxy.example.com", "https://proxy.example.com/"] {
+            let endpoint =
+                ResolvedEndpoint::from_raw_endpoint(raw_endpoint, "fake-api-key").expect("endpoint should resolve");
+            let middleware = for_resolved_endpoint(endpoint);
+
+            let request = Request::builder()
+                .uri("/api/v2/series")
+                .body(())
+                .expect("request should build");
+            let request = middleware(request);
+
+            assert_eq!(
+                request.uri().to_string(),
+                "https://proxy.example.com/api/v2/series",
+                "{raw_endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn for_resolved_endpoint_with_base_path_keeps_request_query() {
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://proxy.example.com/prefix", "fake-api-key")
+            .expect("endpoint should resolve");
+        let middleware = for_resolved_endpoint(endpoint);
+
+        let request = Request::builder()
+            .uri("/api/v1/check_run?foo=bar")
+            .body(())
+            .expect("request should build");
+        let request = middleware(request);
+
+        assert_eq!(request.uri().path(), "/prefix/api/v1/check_run");
+        assert_eq!(request.uri().query(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn for_resolved_endpoint_with_base_path_still_routes_to_intake_authorities() {
+        // The authority is selected from the request path, so a base path on an official Datadog endpoint doesn't
+        // prevent routing to the logs and traces intake hosts.
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com/prefix", "fake-api-key")
+            .expect("endpoint should resolve");
+        let middleware = for_resolved_endpoint(endpoint);
+
+        let cases = [
+            ("/api/v2/logs", "agent-http-intake.logs.datadoghq.com"),
+            ("/api/v0.2/traces", "trace.agent.datadoghq.com"),
+        ];
+
+        for (path, expected_authority) in cases {
+            let request = Request::builder().uri(path).body(()).expect("request should build");
+            let request = middleware(request);
+
+            assert_eq!(
+                request.uri().authority().map(|authority| authority.as_str()),
+                Some(expected_authority),
+                "{path}"
+            );
+            assert_eq!(request.uri().path(), format!("/prefix{path}"), "{path}");
         }
     }
 

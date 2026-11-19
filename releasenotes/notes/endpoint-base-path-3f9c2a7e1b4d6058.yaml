@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    Agent Data Plane now keeps the base path of a configured Datadog endpoint, as the Datadog Agent does. For
+    example, with ``dd_url: https://proxy.example.com/datadog``, metrics go to
+    ``https://proxy.example.com/datadog/api/v2/series`` instead of ``https://proxy.example.com/api/v2/series``.
+    This applies to ``dd_url``, ``additional_endpoints``, and the Observability Pipelines Worker and Vector
+    overrides.
