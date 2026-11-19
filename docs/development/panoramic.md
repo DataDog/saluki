@@ -146,8 +146,8 @@ errors.
 | `ready` | `{<endpoint>: <evidence>}`. How panoramic knows an endpoint is ready. |
 | `processes` | A list of `{name, exit, output}`: the processes that steps name, and how each is observed. See [Observation](#observation). |
 | `commands` | `{<name>: [<program>, <arg>, ...]}`, or `{program, argv, env}`. Command lines that `exec` and the operations run by name. `program` names a program of host processes. |
-| `mounts` | `{host, path, read_only}`. Host paths in a Linux container or pod. |
-| `collect` | `{path, name, keep}`. Files copied out after the procedure. |
+| `mounts` | A list of `{host, path, read_only}`. Host paths in a Linux container or pod. |
+| `collect` | A list of `{path, name, keep}`. Files copied out after the procedure. `keep` is `always` or `on_failure`. |
 
 The case's fields lie over the fields of the participant type. A map merges by key, and an entry of the case replaces
 the entry of the type with the same key. Every other field replaces the field below it. A case that sets `command`
@@ -167,7 +167,10 @@ that would fail without a message:
 ### Files
 
 A key that looks like a path is a destination. Any other key must be a name that the participant type declares, such
-as `datadog.yaml`.
+as `datadog.yaml`. A name belongs to some realizations only. `agent-adp` and `agent` declare `datadog.yaml`, and `agent`
+declares `otel-config.yaml`, in a Linux container or pod. On macOS and Windows, write a destination: `./datadog.yaml`
+for macOS host processes, and `C:/ProgramData/Datadog/datadog.yaml` for a Windows container. Planning checks every OS
+in `subject_os`, so a name that one of them does not declare is an error even when the case runs on another.
 
 | Realization | A destination is |
 | --- | --- |
@@ -186,7 +189,8 @@ are an error, and so is a path that panoramic reserves.
 A reference is a value that panoramic owns, written between double braces. It has one of these forms:
 
 - `{{ self.endpoints.api.port }}`: the `port`, `path` or `name` of an endpoint. `self` is the participant that holds
-  the text. A participant name replaces `self` to name another participant.
+  the text. In a step, a participant name replaces `self` to name another participant's endpoint. A participant cannot
+  do that: it declares `connect` and reads the endpoint through `self.connections`.
 - `{{ self.connections.intake.url }}`: the `url`, `host`, `port` or `path` of an endpoint that this participant
   connects to.
 - `{{ self.dir }}`: the directory of the participant. `ip`, `container_id` and `pod_uid` read the same way.
@@ -264,8 +268,8 @@ case sets `ADP_DD_<NAME>` for `DD_<NAME>`, or another name that the software rea
   one, and points the software at them. It is not for host processes or Windows. `own_ip: {env: [...], hosts: [...]}`
   sets each variable in `env` to the address of the participant, and maps each name in `hosts` to it. It is for
   `agent-adp` in a container.
-- *Files.* `datadog.yaml` is a name that stands for the file the software reads. `agent` also has
-  `otel-config.yaml`.
+- *Files.* In a Linux container or pod, `datadog.yaml` is a name that stands for the file the software reads. `agent`
+  also has `otel-config.yaml`. Other realizations take a destination. See [Files](#files).
 - *Processes.* `agent-adp` has `adp` and `agent`. `agent` has `agent`.
 - *Commands.* `agent-adp` names `adp` and `agent`.
 - *Operations.* `agent-adp` offers `config_dump`, `config_set`, `dogstatsd_capture`, `dogstatsd_replay` and
