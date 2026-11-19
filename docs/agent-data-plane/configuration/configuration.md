@@ -564,6 +564,8 @@ ADP recognizes these values:
 - `disable-convert-traces` makes the trace-agent decode trace payloads into its legacy span
   model. The native trace intake has no such model, so ADP ignores the feature for the traces
   it serves, with a warning at startup, and processes them as the trace-agent does by default.
+- `big_resource` raises the span resource limit from `apm_config.max_resource_len` to 15,000
+  bytes, as in the trace-agent. It doesn't change the resource limit of the OTLP translation.
 
 Every other value is ignored by ADP, without a warning: the flag inventory is not stable across
 agent versions, so unrecognized entries are inert rather than errors.
