@@ -70,7 +70,7 @@ export CARGO_TOOL_VERSION_cargo-binstall ?= 1.18.1
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.6
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
-export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
+export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.152
 export CARGO_TOOL_VERSION_cargo-xwin ?= 0.22.0
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
@@ -617,7 +617,7 @@ test-miri: ## Runs all Miri-specific unit tests
 	cargo +$(RUST_NIGHTLY_VERSION) miri test -p stringtheory
 
 .PHONY: test-loom
-test-loom: check-rust-build-tools
+test-loom: check-rust-build-tools cargo-install-cargo-nextest
 test-loom: ## Runs all Loom-specific unit tests
 	@echo "[*] Running Loom-specific unit tests..."
 	cargo nextest run --release --features loom -p stringtheory -p saluki-core loom_tests
@@ -1072,8 +1072,12 @@ cargo-preinstall: cargo-install-cargo-auditable
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 
+# Outside CI, a tool that is already installed is kept, whatever its version. In CI, a tool that cargo doesn't list at
+# its pinned version is installed again. This lets a version bump reach runners and images that keep their tools between
+# jobs.
 .PHONY: cargo-install-%
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
+cargo-install-%: override TOOL_INSTALLED = $(if $(findstring true,$(CI)),cargo install --list | grep -qxF "${TOOL} v$(CARGO_TOOL_VERSION_$(TOOL)):",test -f ${CARGO_BIN_DIR}/${TOOL})
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)
+	@$(if $(findstring true,$(AUTOINSTALL)),${TOOL_INSTALLED} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --force --quiet -y),)
