@@ -128,8 +128,9 @@ struct CaseFile {
 
 /// A participant as the case wrote it.
 ///
-/// The first fields place the participant in the case. The rest are its data, the fields of [`ParticipantSpec`]:
-/// serde cannot deny unknown fields and flatten at once, so both structs list them.
+/// The first fields place the participant in the case, and `os` holds what differs by subject OS. The rest are its
+/// data, the fields of [`ParticipantSpec`]: serde cannot deny unknown fields and flatten at once, so the entry, the
+/// overlay and the spec each list them.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ParticipantEntry {
@@ -143,6 +144,8 @@ struct ParticipantEntry {
     connect: BTreeMap<String, ConnectionTarget>,
     #[serde(default)]
     with: BTreeMap<String, Value>,
+    #[serde(default)]
+    os: BTreeMap<Os, OsOverlay>,
 
     #[serde(default, deserialize_with = "strict_optional_string")]
     image: Option<String>,
@@ -171,13 +174,14 @@ struct ParticipantEntry {
 }
 
 impl ParticipantEntry {
-    fn split(self) -> (Placement, ParticipantSpec) {
+    fn split(self) -> (Placement, BTreeMap<Os, Overlay>, ParticipantSpec) {
         let Self {
             participant_type,
             subject,
             realization,
             connect,
             with,
+            os,
             image,
             command,
             args,
@@ -216,7 +220,87 @@ impl ParticipantEntry {
             operations: &[],
             wiring: BTreeMap::new(),
         };
-        (placement, spec)
+        let overlays = os
+            .into_iter()
+            .map(|(os, overlay)| {
+                let (with, spec) = overlay.split();
+                (os, Overlay { with, spec })
+            })
+            .collect();
+        (placement, overlays, spec)
+    }
+}
+
+/// What a participant sets differently for one subject OS: `with` and the data fields, and nothing that places the
+/// participant in the case.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OsOverlay {
+    #[serde(default)]
+    with: BTreeMap<String, Value>,
+
+    #[serde(default, deserialize_with = "strict_optional_string")]
+    image: Option<String>,
+    #[serde(default)]
+    command: Option<Vec<Template>>,
+    #[serde(default)]
+    args: Option<Vec<Template>>,
+    #[serde(default)]
+    programs: Option<Vec<Program>>,
+    #[serde(default)]
+    env: BTreeMap<String, Template>,
+    #[serde(default)]
+    files: BTreeMap<String, FileSpec>,
+    #[serde(default)]
+    mounts: Option<Vec<HostMount>>,
+    #[serde(default)]
+    endpoints: BTreeMap<String, EndpointSpec>,
+    #[serde(default)]
+    ready: BTreeMap<String, Evidence>,
+    #[serde(default)]
+    processes: Option<Vec<ProcessSpec>>,
+    #[serde(default)]
+    commands: BTreeMap<String, CommandSpec>,
+    #[serde(default)]
+    collect: Option<Vec<CollectFile>>,
+}
+
+impl OsOverlay {
+    fn split(self) -> (BTreeMap<String, Value>, ParticipantSpec) {
+        let Self {
+            with,
+            image,
+            command,
+            args,
+            programs,
+            env,
+            files,
+            mounts,
+            endpoints,
+            ready,
+            processes,
+            commands,
+            collect,
+        } = self;
+        let spec = ParticipantSpec {
+            image,
+            command,
+            args,
+            programs,
+            env,
+            files,
+            mounts,
+            endpoints,
+            ready,
+            processes,
+            commands,
+            collect,
+            aliases: BTreeMap::new(),
+            consumes: BTreeMap::new(),
+            operations: &[],
+            wiring: BTreeMap::new(),
+        };
+        (with, spec)
     }
 }
 
@@ -244,6 +328,16 @@ pub(crate) struct RealizationRequest {
 pub(crate) struct LoadedParticipant {
     pub(crate) placement: Placement,
     /// The case's data fields: the case layer of the spec.
+    pub(crate) spec: ParticipantSpec,
+    /// What the case sets differently for a subject OS, laid over the case layer when planning for that OS.
+    pub(crate) overlays: BTreeMap<Os, Overlay>,
+}
+
+/// A participant's `os` fields for one subject OS.
+#[derive(Debug)]
+pub(crate) struct Overlay {
+    /// Laid over the placement's `with`, key by key.
+    pub(crate) with: BTreeMap<String, Value>,
     pub(crate) spec: ParticipantSpec,
 }
 
@@ -546,7 +640,7 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
                     .to_string(),
             );
         }
-        let (placement, spec) = entry.split();
+        let (placement, overlays, spec) = entry.split();
         match &placement.participant_type {
             Some(participant_type) if registry.participant_type(participant_type).is_none() => {
                 problem(format!("unknown participant type '{}'", participant_type))
@@ -579,29 +673,67 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
                 ));
             }
         }
-        for (field, text) in literal_fields(&spec) {
-            if text.contains("{{") {
-                problem(format!(
-                    "{} '{}' holds no references, so it cannot contain '{{{{'",
-                    field, text
-                ));
+        let layers = std::iter::once((None, &spec, &placement.with)).chain(
+            overlays
+                .iter()
+                .map(|(os, overlay)| (Some(os), &overlay.spec, &overlay.with)),
+        );
+        for (os, layer, with) in layers {
+            let prefix = os.map(|os| format!("os.{}.", os)).unwrap_or_default();
+            if let Some(os) = os {
+                if !case.subject_os.contains(os) {
+                    problem(format!("os.{}: the case does not declare subject OS {}", os, os));
+                }
+                if !with.is_empty() && placement.participant_type.is_none() {
+                    problem(format!(
+                        "os.{}.with holds a participant type's parameters, and this participant has no participant \
+                         type",
+                        os
+                    ));
+                }
             }
-        }
-        for (key, file) in &spec.files {
-            if let FileSource::Case { from, template } = &file.source {
-                if let Err(message) = sources.read(dir, &suite, from, *template) {
-                    problem(format!("files.{}: {}", key, message));
+            for (field, text) in literal_fields(layer) {
+                if text.contains("{{") {
+                    problem(format!(
+                        "{}{} '{}' holds no references, so it cannot contain '{{{{'",
+                        prefix, field, text
+                    ));
+                }
+            }
+            for (key, file) in &layer.files {
+                if let FileSource::Case { from, template } = &file.source {
+                    if let Err(message) = sources.read(dir, &suite, from, *template) {
+                        problem(format!("{}files.{}: {}", prefix, key, message));
+                    }
                 }
             }
         }
-        participants.insert(participant, LoadedParticipant { placement, spec });
+        participants.insert(
+            participant,
+            LoadedParticipant {
+                placement,
+                spec,
+                overlays,
+            },
+        );
     }
 
     let mut procedure = Vec::new();
     for (index, node) in case.procedure.into_iter().enumerate() {
+        let at = Some(format!("step {}", index + 1));
         match StepEntry::decode_node(node) {
-            Ok(node) => procedure.push(node),
-            Err(message) => errors.push(error(Some(format!("step {}", index + 1)), message)),
+            Ok(node) => {
+                for os in node.steps().iter().flat_map(|step| step.os.keys()) {
+                    if !case.subject_os.contains(os) {
+                        errors.push(error(
+                            at.clone(),
+                            format!("os.{}: the case does not declare subject OS {}", os, os),
+                        ));
+                    }
+                }
+                procedure.push(node);
+            }
+            Err(message) => errors.push(error(at, message)),
         }
     }
 
@@ -697,12 +829,17 @@ mod tests {
     }
 
     #[test]
-    fn participant_entry_lists_the_placement_fields_and_every_spec_field() {
-        let placement = BTreeSet::from(["type", "subject", "realization", "connect", "with"]);
+    fn participant_entry_and_overlay_list_their_fields_and_every_spec_field() {
+        let placement = BTreeSet::from(["type", "subject", "realization", "connect", "with", "os"]);
         let spec = field_names::<ParticipantSpec>();
         assert!(spec.contains("image") && spec.contains("collect"), "{:?}", spec);
         let expected: BTreeSet<_> = placement.union(&spec).copied().collect();
         assert_eq!(field_names::<ParticipantEntry>(), expected);
+
+        // An overlay holds `with` and the spec's fields, and nothing that places the participant.
+        let mut expected = spec;
+        expected.insert("with");
+        assert_eq!(field_names::<OsOverlay>(), expected);
     }
 
     // Not a case under `testdata/bad/`: a Windows checkout writes a committed symlink as a plain file.

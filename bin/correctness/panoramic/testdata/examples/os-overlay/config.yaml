@@ -1,0 +1,32 @@
+description: A participant with no participant type and a step whose command differ by subject OS.
+timeout: 2m
+subject_os: [linux, macos, windows]
+participants:
+  app:
+    subject: true
+    env:
+      GREETING: hello
+    os:
+      linux:
+        image: alpine:3.20
+        command: [sleep, "600"]
+      macos:
+        programs:
+          - {name: main, path: sleep, args: ["600"]}
+      windows:
+        image: mcr.microsoft.com/windows/nanoserver:ltsc2022
+        command: [ping, -t, localhost]
+procedure:
+  - step: exec
+    on: app
+    timeout: 30s
+    env: {SHARED: "1", REPLACED: "below"}
+    output_contains: hello
+    os:
+      linux:
+        command: [sh, -c, "echo $GREETING"]
+        env: {REPLACED: "linux"}
+      macos:
+        command: [sh, -c, "echo $GREETING"]
+      windows:
+        command: [cmd, /c, "echo %GREETING%"]

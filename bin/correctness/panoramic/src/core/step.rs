@@ -16,6 +16,7 @@ use tokio::time::Instant;
 
 use super::handle::{Handle, HandleError};
 use super::observe::Kept;
+use super::participant::Os;
 use super::record::StepStatus;
 use super::reference::Values;
 use super::spec::Keep;
@@ -186,6 +187,19 @@ impl StepFields {
         let fields = Value::Object(self.0.clone().into_iter().collect());
         serde_json::from_value(fields).map_err(|e| e.to_string())
     }
+
+    /// Lays `over` on top of these fields: a field that is a map on both sides merges by key, one level, and any
+    /// other field replaces.
+    pub(crate) fn lay(&mut self, over: StepFields) {
+        for (field, value) in over.0 {
+            match (self.0.get_mut(&field), value) {
+                (Some(Value::Object(below)), Value::Object(over)) => below.extend(over),
+                (_, value) => {
+                    self.0.insert(field, value);
+                }
+            }
+        }
+    }
 }
 
 /// One entry of a procedure: a step, or assertions that run together.
@@ -206,14 +220,24 @@ impl<T> ProcedureNode<T> {
     }
 }
 
-/// A step as the case wrote it: its name and its fields.
+/// A step as the case wrote it: its name, its fields, and the fields it sets differently for a subject OS.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct StepEntry {
     pub(crate) step: String,
     pub(crate) fields: StepFields,
+    pub(crate) os: BTreeMap<Os, StepFields>,
 }
 
 impl StepEntry {
+    /// The step's fields for subject OS `os`: its own, with that OS's fields laid over them.
+    pub(crate) fn fields_for(&self, os: Os) -> StepFields {
+        let mut fields = self.fields.clone();
+        if let Some(over) = self.os.get(&os) {
+            fields.lay(over.clone());
+        }
+        fields
+    }
+
     /// Decodes one procedure entry.
     ///
     /// # Errors
@@ -244,13 +268,77 @@ impl StepEntry {
         if map.contains_key("parallel") {
             return Err("a 'parallel' block cannot hold another".to_string());
         }
+        let os = match map.remove("os") {
+            Some(Value::Object(overlays)) => overlays
+                .into_iter()
+                .map(|(name, fields)| Self::decode_overlay(&name, fields))
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err("'os' holds a map from a subject OS to the step's fields for it".to_string()),
+            None => BTreeMap::new(),
+        };
         match map.remove("step") {
             Some(Value::String(step)) => Ok(Self {
                 step,
                 fields: StepFields(map.into_iter().collect()),
+                os,
             }),
             Some(other) => Err(format!("a step's name must be a string, not {}", other)),
             None => Err("a step needs a 'step' key that names it".to_string()),
+        }
+    }
+
+    fn decode_overlay(name: &str, fields: Value) -> Result<(Os, StepFields), String> {
+        let os: Os = serde_json::from_value(Value::String(name.to_string()))
+            .map_err(|_| format!("os.{}: not a subject OS: linux, macos or windows", name))?;
+        let Value::Object(fields) = fields else {
+            return Err(format!("os.{}: holds the step's fields for that OS, a map", name));
+        };
+        for key in ["step", "os", "parallel"] {
+            if fields.contains_key(key) {
+                return Err(format!("os.{}: '{}' cannot differ by OS", name, key));
+            }
+        }
+        Ok((os, StepFields(fields.into_iter().collect())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn fields(value: Value) -> StepFields {
+        let Value::Object(map) = value else { panic!("not a map") };
+        StepFields(map.into_iter().collect())
+    }
+
+    #[test]
+    fn laying_step_fields_merges_maps_by_key_and_replaces_the_rest() {
+        let mut below = fields(json!({"env": {"A": "1", "B": "2"}, "timeout": "10s", "command": ["x"]}));
+        below.lay(fields(json!({"env": {"B": "3", "C": "4"}, "timeout": "20s"})));
+        assert_eq!(
+            Value::Object(below.0.into_iter().collect()),
+            json!({"env": {"A": "1", "B": "3", "C": "4"}, "timeout": "20s", "command": ["x"]})
+        );
+    }
+
+    #[test]
+    fn a_step_overlay_holds_a_map_of_fields_for_a_subject_os() {
+        let decode = |step: Value| StepEntry::decode_node(step).map(|node| node.steps()[0].clone());
+        let entry = decode(json!({"step": "exec", "timeout": "1s", "os": {"linux": {"timeout": "2s"}}})).unwrap();
+        assert_eq!(entry.fields_for(Os::Linux).0["timeout"], json!("2s"));
+        assert_eq!(entry.fields_for(Os::Windows).0["timeout"], json!("1s"));
+
+        for (os, error) in [
+            (json!({"beos": {}}), "not a subject OS"),
+            (json!({"linux": ["a"]}), "a map"),
+            (json!({"linux": {"step": "x"}}), "'step' cannot differ"),
+            (json!({"linux": {"os": {}}}), "'os' cannot differ"),
+            (json!({"linux": {"parallel": []}}), "'parallel' cannot differ"),
+        ] {
+            let found = decode(json!({"step": "exec", "os": os})).unwrap_err();
+            assert!(found.contains(error), "{found}");
         }
     }
 }

@@ -254,6 +254,7 @@ pub(crate) fn plan(
             name,
             participant,
             realization,
+            subject_os: os,
             case,
             set,
             at: &mut at,
@@ -378,7 +379,8 @@ fn build_procedure(
                 continue;
             }
             let template_fields = factory.template_fields();
-            for (field, value) in &entry.fields.0 {
+            let fields = entry.fields_for(problems.os);
+            for (field, value) in &fields.0 {
                 let holds_reference = strings(value).iter().any(|text| text.contains("{{"));
                 if holds_reference && !template_fields.contains(&field.as_str()) {
                     problems.push(
@@ -390,7 +392,7 @@ fn build_procedure(
                     );
                 }
             }
-            let step = match factory.build(&entry.fields) {
+            let step = match factory.build(&fields) {
                 Ok(step) => step,
                 Err(message) => {
                     problems.push(Some(at), format!("{}: {}", entry.step, message));
@@ -401,7 +403,7 @@ fn build_procedure(
             if let (Some(participants), Some(values)) = (participants, &values) {
                 let mut found = check_needs(step.as_ref(), &at, participants, unwired, &mut reach);
                 for field in template_fields {
-                    for text in entry.fields.0.get(*field).map(strings).unwrap_or_default() {
+                    for text in fields.0.get(*field).map(strings).unwrap_or_default() {
                         match Template::parse(text) {
                             Ok(template) => found.extend(
                                 reference::check_step_template(values, &template)
@@ -418,7 +420,7 @@ fn build_procedure(
             }
             steps.push(PlannedStep {
                 name: entry.step.clone(),
-                fields: entry.fields.clone(),
+                fields,
                 needs: step.needs(),
                 reach,
                 step,
@@ -575,6 +577,8 @@ struct Planner<'c, 'p, 'a> {
     name: &'c str,
     participant: &'c LoadedParticipant,
     realization: Realization,
+    /// The subject OS the case is planned for, which keys the overlays.
+    subject_os: Os,
     case: &'c LoadedCase,
     /// The run's replacements.
     set: &'c BTreeMap<String, String>,
@@ -588,6 +592,11 @@ impl Planner<'_, '_, '_> {
     ) -> Option<(PlannedParticipant, BTreeMap<&'static str, Consumed>)> {
         let placement = &self.participant.placement;
         let mut case_layer = self.participant.spec.clone();
+        let mut with = placement.with.clone();
+        if let Some(overlay) = self.participant.overlays.get(&self.subject_os) {
+            case_layer.lay(overlay.spec.clone());
+            with.extend(overlay.with.clone());
+        }
         let (mut lower, type_name) = match &placement.participant_type {
             Some(name) => {
                 // Loading rejects an unknown participant type.
@@ -610,7 +619,7 @@ impl Planner<'_, '_, '_> {
                     options: &options,
                     case: &case_layer,
                     connect: &placement.connect,
-                    with: &placement.with,
+                    with: &with,
                     sources: &self.case.sources,
                 };
                 match participant_type.spec(&cx) {
