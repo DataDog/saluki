@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use super::datadog_agent::{self, With};
-use super::{add_endpoints, reject_adp_keys, DOGSTATSD_UDP_STARTED, OPERATIONS};
+use super::{add_endpoints, own_ip, reject_adp_keys, DOGSTATSD_UDP_STARTED, OPERATIONS};
 use crate::core::participant::SpecContext;
 use crate::core::spec::{CommandSpec, Evidence, FileSource, FileSpec, ParticipantSpec};
 use crate::core::template::Template;
@@ -76,6 +76,18 @@ pub(super) fn spec(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             env: BTreeMap::new(),
         })
     };
+    let mut files = BTreeMap::from([(
+        ENTRYPOINT_PATH.to_string(),
+        FileSpec {
+            source: FileSource::Bytes {
+                label: "windows entrypoint",
+                bytes: ENTRYPOINT,
+            },
+            mode: None,
+            supervises: true,
+        },
+    )]);
+    files.extend(own_ip::files(cx, with.own_ip.as_ref())?);
     let mut spec = ParticipantSpec {
         image: Some(IMAGE.to_string()),
         // The entrypoint overrides the one the image bakes in, and the arguments are ADP's.
@@ -87,17 +99,7 @@ pub(super) fn spec(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             ENTRYPOINT_PATH,
         ])?),
         args: Some(parse_all(&["-c", "C:\\ProgramData\\Datadog\\datadog.yaml", "run"])?),
-        files: BTreeMap::from([(
-            ENTRYPOINT_PATH.to_string(),
-            FileSpec {
-                source: FileSource::Bytes {
-                    label: "windows entrypoint",
-                    bytes: ENTRYPOINT,
-                },
-                mode: None,
-                supervises: true,
-            },
-        )]),
+        files,
         ready: BTreeMap::from([("dogstatsd_udp".to_string(), ready)]),
         processes: Some(vec![
             datadog_agent::supervised_process("adp", "data-plane", "adp.log")?,
