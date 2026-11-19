@@ -102,14 +102,16 @@
   // Package-manager-specific rules.
   packageRules: [
     // Development and CI tools get their own PR, so that a broken tool release
-    // doesn't hold back the weekly dependency PR. Use Cargo's semver
-    // interpretation for the Cargo tools, as for Cargo dependencies below.
+    // doesn't hold back the weekly dependency PR.
     {
       matchManagers: [
         "custom.regex",
       ],
       groupName: "development and CI tools",
     },
+    // A Cargo tool pin is one exact version. The `crate` datasource uses Cargo
+    // versioning by default, which reads a bare `0.9.152` as the range
+    // `^0.9.152` and doesn't propose newer versions inside that range.
     {
       matchManagers: [
         "custom.regex",
@@ -117,7 +119,7 @@
       matchDatasources: [
         "crate",
       ],
-      versioning: "cargo",
+      versioning: "semver",
     },
     // The Windows build installs cargo-auditable from a release zip that is
     // pinned by SHA256, which Renovate can't update.
