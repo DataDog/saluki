@@ -7,6 +7,7 @@ pub mod files;
 pub mod host;
 pub mod image;
 mod removal;
+mod retry;
 pub mod scope;
 pub mod unix;
 
