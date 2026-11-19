@@ -7,14 +7,19 @@ $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
 if (-not $env:CARGO_NEXTEST_VERSION) {
-    $env:CARGO_NEXTEST_VERSION = "0.9.99"
+    $env:CARGO_NEXTEST_VERSION = "0.9.152"
 }
 
 Initialize-RustEnvironment -RepoRoot $RepoRoot
 
-if (-not (Get-Command cargo-nextest -ErrorAction SilentlyContinue)) {
-    Write-Host "[*] cargo-nextest not found; installing cargo-nextest@$env:CARGO_NEXTEST_VERSION..."
-    Invoke-Native cargo install cargo-nextest --version $env:CARGO_NEXTEST_VERSION --locked
+# The Cargo home is cached between jobs, so reinstall cargo-nextest when the cached version doesn't match the pinned one.
+$InstalledNextestVersion = $null
+if (Get-Command cargo-nextest -ErrorAction SilentlyContinue) {
+    $InstalledNextestVersion = ((& cargo nextest --version | Select-Object -First 1) -split " ")[1]
+}
+if ($InstalledNextestVersion -ne $env:CARGO_NEXTEST_VERSION) {
+    Write-Host "[*] Installing cargo-nextest@$env:CARGO_NEXTEST_VERSION (found: $InstalledNextestVersion)..."
+    Invoke-Native cargo install cargo-nextest --version $env:CARGO_NEXTEST_VERSION --locked --force
 }
 Invoke-Native cargo nextest --version
 

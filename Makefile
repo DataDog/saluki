@@ -70,7 +70,7 @@ export CARGO_TOOL_VERSION_cargo-binstall ?= 1.18.1
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.6
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
-export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
+export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.152
 export CARGO_TOOL_VERSION_cargo-xwin ?= 0.22.0
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
@@ -1077,3 +1077,10 @@ cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
 	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)
+
+# cargo-nextest is reinstalled when the installed version doesn't match the pinned one, so that runners which keep their
+# tools between jobs, such as the macOS ones, pick up a version bump.
+.PHONY: cargo-install-cargo-nextest
+cargo-install-cargo-nextest: override VERSIONED_TOOL = cargo-nextest@$(CARGO_TOOL_VERSION_cargo-nextest)
+cargo-install-cargo-nextest: check-rust-build-tools
+	@$(if $(findstring true,$(AUTOINSTALL)),test "$$(cargo nextest --version 2>/dev/null | head -n1 | cut -d' ' -f2)" = "$(CARGO_TOOL_VERSION_cargo-nextest)" || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --force --quiet -y),)
