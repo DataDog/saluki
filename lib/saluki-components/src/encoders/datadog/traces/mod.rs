@@ -39,6 +39,7 @@ use tokio::{
 use tracing::{debug, error};
 
 use crate::common::datadog::{
+    get_tracer_hostname,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
@@ -48,8 +49,8 @@ use crate::common::datadog::{
 };
 use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::common::otlp::util::{
-    attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
-    SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
+    attributes_to_source, extract_trace_container_tags, Source as OtlpSource, SourceKind as OtlpSourceKind,
+    KEY_DATADOG_CONTAINER_TAGS,
 };
 use crate::config::AgentEnv;
 
@@ -611,8 +612,11 @@ impl TraceEndpointEncoder {
         };
 
         // Resolve computed metadata strings (may produce strings not directly present on trace fields).
-        let container_tags =
-            resolve_container_tags_from_attrs(&trace.attributes, source.as_ref(), self.ignore_missing_datadog_fields);
+        let container_tags = resolve_container_tags_from_attrs(
+            &trace.attributes,
+            trace.payload.resolved_container_tags(),
+            source.as_ref(),
+        );
         // The payload environment is normalized like any other tag value before it's interned.
         let payload_env: &str = if is_normalized_tag_value(&trace.payload.env) {
             &trace.payload.env
@@ -627,9 +631,9 @@ impl TraceEndpointEncoder {
         } else {
             None
         };
-        let hostname_str: Option<&str> = resolve_hostname_from_payload(
-            &trace.payload.hostname,
-            source.as_ref(),
+        let hostname_str: Option<&str> = resolve_hostname(
+            get_tracer_hostname(trace).map(|hostname| hostname.as_ref()),
+            matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. }),
             Some(self.default_hostname.as_ref()),
             self.ignore_missing_datadog_fields,
         );
@@ -638,7 +642,7 @@ impl TraceEndpointEncoder {
         // are gathered only when the version is missing.
         let version_tags = if trace.payload.app_version.is_empty() && !trace.payload.container_id.is_empty() {
             let mut tags = TagSet::default();
-            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            extract_trace_container_tags(trace.payload.resolved_container_tags(), &trace.attributes, &mut tags);
             if let Some(provider_tags) = self.container_tags.get(&trace.payload.container_id) {
                 tags.merge_shared(&provider_tags);
             }
@@ -946,67 +950,56 @@ fn encode_etp_attribute_value<S: ScratchBuffer>(
         .map(|_| ())
 }
 
-fn resolve_hostname_from_payload<'a>(
-    payload_hostname: &'a str, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
-    ignore_missing_fields: bool,
+/// Resolves the hostname to report for a trace.
+///
+/// `tracer_hostname` is the hostname the trace carries. Without one, OTLP traces report none: the translator already
+/// applied its source cascade, so an empty hostname means a serverless resource. Other traces fall back to
+/// `default_hostname`.
+fn resolve_hostname<'a>(
+    tracer_hostname: Option<&'a str>, is_otlp: bool, default_hostname: Option<&'a str>, ignore_missing_fields: bool,
 ) -> Option<&'a str> {
-    if !payload_hostname.is_empty() {
-        return Some(payload_hostname);
+    if let Some(hostname) = tracer_hostname {
+        return Some(hostname);
     }
-    if ignore_missing_fields {
+    if ignore_missing_fields || is_otlp {
         return Some("");
     }
-    match source {
-        Some(src) => match src.kind {
-            OtlpSourceKind::Hostname => Some(src.identifier.as_str()),
-            _ => Some(""),
-        },
-        None => default_hostname,
-    }
+    default_hostname
 }
 
 fn resolve_container_tags_from_attrs(
-    attributes: &FastHashMap<MetaString, AttributeValue>, source: Option<&OtlpSource>, ignore_missing_fields: bool,
+    attributes: &FastHashMap<MetaString, AttributeValue>, resolved_tags: &[MetaString], source: Option<&OtlpSource>,
 ) -> Option<MetaString> {
+    // An explicit, non-empty `datadog.container_tags` attribute is always emitted, with the tags the source resolved
+    // from the resource appended. Everything reaches the payload regardless of how missing Datadog fields are
+    // treated, matching the trace agent's receiver, which extracts container tags unconditionally.
+    let mut flattened = String::new();
     if let Some(AttributeValue::String(tags)) = attributes.get(KEY_DATADOG_CONTAINER_TAGS) {
         if !tags.is_empty() {
-            return Some(tags.clone());
+            flattened.push_str(tags.as_ref());
         }
     }
 
-    if ignore_missing_fields {
-        return None;
-    }
-    let mut container_tags = TagSet::default();
-    extract_container_tags_from_attributes_map(attributes, &mut container_tags);
     let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargate);
-    if container_tags.is_empty() && !is_fargate_source {
-        return None;
+    if resolved_tags.is_empty() {
+        let mut container_tags = TagSet::default();
+        extract_trace_container_tags(resolved_tags, attributes, &mut container_tags);
+        for tag in container_tags {
+            append_tags(&mut flattened, tag.as_str());
+        }
+    } else {
+        // The resolved tags are already deduplicated, so append them instead of copying them into a tag set.
+        for tag in resolved_tags {
+            append_tags(&mut flattened, tag.as_ref());
+        }
     }
-
-    let mut flattened = flatten_container_tag(container_tags);
     if is_fargate_source {
         if let Some(src) = source {
             append_tags(&mut flattened, &src.tag());
         }
     }
 
-    if flattened.is_empty() {
-        None
-    } else {
-        Some(MetaString::from(flattened))
-    }
-}
-
-fn flatten_container_tag(tags: TagSet) -> String {
-    let mut flattened = String::new();
-    for tag in tags {
-        if !flattened.is_empty() {
-            flattened.push(',');
-        }
-        flattened.push_str(tag.as_str());
-    }
-    flattened
+    (!flattened.is_empty()).then(|| MetaString::from(flattened))
 }
 
 fn append_tags(target: &mut String, tags: &str) {
@@ -1045,12 +1038,9 @@ mod tests {
 
     use datadog_protos::traces::{idx, AgentPayload};
     use protobuf::Message as _;
-    use saluki_core::data_model::{
-        event::{
-            trace::{Span as DdSpan, Trace, TraceIngestInfo},
-            Event,
-        },
-        tags::Tag,
+    use saluki_core::data_model::event::{
+        trace::{Span as DdSpan, Trace, TraceIngestInfo},
+        Event,
     };
     use saluki_env::workload::providers::TestWorkloadProvider;
     use saluki_metrics::test::TestRecorder;
@@ -1133,6 +1123,23 @@ mod tests {
             .iter()
             .map(|tp| resolve_ref(tp.strings(), tp.tracerVersionRef()).to_string())
             .collect()
+    }
+
+    /// Resolves the `hostnameRef` of every ETP tracer payload in an encoded `AgentPayload`.
+    fn decode_etp_hostnames(buf: &[u8]) -> Vec<String> {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
+            .iter()
+            .map(|tp| resolve_ref(tp.strings(), tp.hostnameRef()).to_string())
+            .collect()
+    }
+
+    fn encoded_hostname(trace: &Trace) -> String {
+        let mut encoder = make_encoder(false);
+        let mut buf = Vec::new();
+        encoder.encode(trace, &mut buf).expect("encode should succeed");
+        decode_etp_hostnames(&buf).remove(0)
     }
 
     // The APM sampler defaults: 10 target and error traces per second.
@@ -1398,42 +1405,55 @@ mod tests {
     }
 
     #[test]
-    fn resolve_hostname_from_payload_prefers_payload_then_source_then_default() {
-        let host_source = OtlpSource {
-            kind: OtlpSourceKind::Hostname,
-            identifier: "resolved-host".to_string(),
-        };
-        let fargate_source = OtlpSource {
-            kind: OtlpSourceKind::AwsEcsFargate,
-            identifier: "task-arn".to_string(),
+    fn resolve_hostname_prefers_the_trace_hostname_then_the_ingest_default() {
+        // A hostname carried by the trace always wins.
+        assert_eq!(
+            Some("tracer-host"),
+            resolve_hostname(Some("tracer-host"), true, Some("default"), true)
+        );
+        // Without one, OTLP traces and ignored missing fields report an empty hostname.
+        assert_eq!(Some(""), resolve_hostname(None, true, Some("default"), false));
+        assert_eq!(Some(""), resolve_hostname(None, false, Some("default"), true));
+        // Other traces fall back to the default hostname, which may itself be absent.
+        assert_eq!(Some("default"), resolve_hostname(None, false, Some("default"), false));
+        assert_eq!(None, resolve_hostname(None, false, None, false));
+    }
+
+    #[test]
+    fn encoded_hostname_comes_from_the_payload_then_the_root_span_then_the_ingest_default() {
+        let with_root_hostname = |payload_hostname: &str| {
+            let mut attributes = FastHashMap::default();
+            attributes.insert(
+                MetaString::from("_dd.hostname"),
+                AttributeValue::String(MetaString::from("root-host")),
+            );
+            let span = DdSpan::new("svc", "op", "res", "web", 1, 0, 0, 1000, 0).with_attributes(attributes);
+            let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+            trace.priority = Some(1);
+            trace.payload.hostname = MetaString::from(payload_hostname);
+            trace
         };
 
-        // A non-empty payload hostname always wins.
-        assert_eq!(
-            Some("payload-host"),
-            resolve_hostname_from_payload("payload-host", Some(&host_source), Some("default"), false)
-        );
-        // An empty payload plus `ignore_missing_fields` short-circuits to an empty hostname.
-        assert_eq!(
-            Some(""),
-            resolve_hostname_from_payload("", Some(&host_source), Some("default"), true)
-        );
-        // Honoring fields, a hostname-kind source supplies its identifier.
-        assert_eq!(
-            Some("resolved-host"),
-            resolve_hostname_from_payload("", Some(&host_source), Some("default"), false)
-        );
-        // A non-hostname (Fargate) source resolves to an empty hostname.
-        assert_eq!(
-            Some(""),
-            resolve_hostname_from_payload("", Some(&fargate_source), Some("default"), false)
-        );
-        // With no source, it falls back to the default hostname (which may itself be absent).
-        assert_eq!(
-            Some("default"),
-            resolve_hostname_from_payload("", None, Some("default"), false)
-        );
-        assert_eq!(None, resolve_hostname_from_payload("", None, None, false));
+        // The payload hostname beats the root span.
+        let trace = with_root_hostname("payload-host");
+        assert_eq!(encoded_hostname(&trace), "payload-host");
+
+        // The root span applies only when the payload hostname is empty.
+        let trace = with_root_hostname("");
+        assert_eq!(encoded_hostname(&trace), "root-host");
+    }
+
+    #[test]
+    fn encoded_hostname_is_empty_for_otlp_traces_without_one() {
+        // The translator leaves the hostname empty for serverless resources.
+        let trace = make_trace(TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        });
+        assert_eq!(encoded_hostname(&trace), "");
+
+        // Other traces fall back to the encoder's default hostname.
+        let trace = make_trace(TraceIngestInfo::Datadog);
+        assert_eq!(encoded_hostname(&trace), "test-host");
     }
 
     #[test]
@@ -1458,44 +1478,243 @@ mod tests {
     }
 
     #[test]
-    fn flatten_container_tag_comma_joins_the_tag_set() {
-        assert_eq!("", flatten_container_tag(TagSet::default()));
-
-        let single: TagSet = std::iter::once(Tag::from_static("image_name:web")).collect();
-        assert_eq!("image_name:web", flatten_container_tag(single));
-
-        let multiple: TagSet = ["image_name:web", "runtime:docker"]
-            .into_iter()
-            .map(Tag::from_static)
-            .collect();
-        let flattened = flatten_container_tag(multiple);
-        assert_eq!(
-            BTreeSet::from(["image_name:web", "runtime:docker"]),
-            flattened.split(',').collect::<BTreeSet<_>>()
-        );
-    }
-
-    #[test]
-    fn resolve_container_tags_prefers_explicit_container_tags_attribute() {
-        // An explicit, non-empty `datadog.container_tags` attribute is used verbatim.
+    fn resolve_container_tags_merges_explicit_and_extracted_tags() {
         let mut attributes = FastHashMap::default();
         attributes.insert(
             MetaString::from(KEY_DATADOG_CONTAINER_TAGS),
-            AttributeValue::String(MetaString::from("region:us,team:core")),
+            AttributeValue::String(MetaString::from("team:core")),
         );
+        attributes.insert(
+            MetaString::from("kube_namespace"),
+            AttributeValue::String(MetaString::from("payments")),
+        );
+
+        // An explicit, non-empty `datadog.container_tags` attribute is emitted, and the tags resolved from the
+        // resource are appended rather than replacing it.
+        let merged = resolve_container_tags_from_attrs(&attributes, &[], None).expect("container tags should resolve");
+        assert_eq!(merged.as_ref(), "team:core,kube_namespace:payments");
+
+        // The explicit attribute alone still resolves.
+        attributes.remove(&MetaString::from("kube_namespace"));
         assert_eq!(
-            Some(MetaString::from("region:us,team:core")),
-            resolve_container_tags_from_attrs(&attributes, None, false)
+            resolve_container_tags_from_attrs(&attributes, &[], None).map(|tags| tags.to_string()),
+            Some("team:core".to_string())
         );
     }
 
     #[test]
     fn resolve_container_tags_returns_none_without_container_attributes() {
+        // With no container attributes, resolved tags, or Fargate source there is nothing to emit.
         let attributes = FastHashMap::default();
-        // `ignore_missing_fields` skips the extraction path entirely.
-        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, true));
-        // Honoring fields but with no container attributes and no Fargate source still yields nothing.
-        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, false));
+        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, &[], None));
+    }
+
+    #[test]
+    fn resolve_container_tags_uses_the_tags_the_source_resolved() {
+        let resolved = [
+            MetaString::from("image_tag:v1"),
+            MetaString::from("kube_namespace:payments"),
+        ];
+        let attributes = FastHashMap::from_iter([(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("core")),
+        )]);
+
+        // The resolved tags stand in for the attributes, which would otherwise yield `team:core`.
+        let tags = resolve_container_tags_from_attrs(&attributes, &resolved, None).expect("tags");
+        assert_eq!(
+            BTreeSet::from(["image_tag:v1", "kube_namespace:payments"]),
+            tags.split(',').collect::<BTreeSet<_>>()
+        );
+
+        // An explicit `datadog.container_tags` attribute is emitted along with the resolved tags.
+        let explicit = FastHashMap::from_iter([(
+            MetaString::from(KEY_DATADOG_CONTAINER_TAGS),
+            AttributeValue::String(MetaString::from("region:us")),
+        )]);
+        let merged = resolve_container_tags_from_attrs(&explicit, &resolved, None).expect("tags");
+        assert_eq!(
+            BTreeSet::from(["region:us", "image_tag:v1", "kube_namespace:payments"]),
+            merged.split(',').collect::<BTreeSet<_>>()
+        );
+    }
+
+    /// Translates a single-span `ResourceSpans` with the given resource attributes, encodes the trace, and returns
+    /// the decoded string-valued tracer payload attributes and span attributes.
+    fn encode_translated_trace(
+        ignore_missing_fields: bool, encoder: TraceEndpointEncoder, resource_attrs: &[(&str, &str)],
+    ) -> (HashMap<String, String>, Vec<HashMap<String, String>>) {
+        use datadog_agent_apm::semantics::SemanticRegistryProvider;
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+
+        use crate::common::otlp::origin::OtlpOriginTagResolver;
+        use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesSettings, OtlpTracesTranslator};
+        use crate::common::otlp::Metrics;
+
+        let kv = |(key, value): (&str, &str)| KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+        };
+        let resource_spans = ResourceSpans {
+            resource: Some(Resource {
+                attributes: resource_attrs.iter().map(|pair| kv(*pair)).collect(),
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans: vec![OtlpSpan {
+                    trace_id: vec![1; 16],
+                    span_id: vec![1; 8],
+                    name: "span".to_owned(),
+                    end_time_unix_nano: 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let settings = OtlpTracesSettings {
+            ignore_missing_datadog_fields: ignore_missing_fields,
+            ..traces_settings()
+        };
+        let mut translator = OtlpTracesTranslator::new(
+            settings,
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let traces: Vec<Trace> = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .filter_map(Event::try_into_trace)
+            .collect();
+        assert_eq!(traces.len(), 1);
+
+        let mut buf = Vec::new();
+        let mut encoder = encoder;
+        encoder.encode(&traces[0], &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+
+        let payload_attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
+        let span_attrs = tracer_payload
+            .chunks()
+            .iter()
+            .flat_map(|chunk| chunk.spans().iter())
+            .map(|span| string_attrs(span.attributes(), tracer_payload.strings()))
+            .collect();
+        (payload_attrs, span_attrs)
+    }
+
+    #[test]
+    fn consumed_resource_keys_reach_the_payload_container_tags_with_explicit_tags() {
+        // An explicit `datadog.container_tags` on the resource emits that string, and the resolved container tags
+        // are appended instead of replacing it. Neither reaches span meta.
+        let (payload_attrs, span_attrs) = encode_translated_trace(
+            false,
+            make_encoder(false),
+            &[("datadog.container_tags", "team:core"), ("kube_namespace", "payments")],
+        );
+
+        let container_tags = &payload_attrs[CONTAINER_TAGS_META_KEY];
+        assert_eq!(container_tags, "team:core,kube_namespace:payments");
+        assert!(span_attrs
+            .iter()
+            .all(|attrs| !attrs.contains_key("kube_namespace") && !attrs.contains_key("datadog.container_tags")));
+    }
+
+    #[test]
+    fn consumed_resource_keys_reach_the_payload_container_tags_when_ignoring_missing_fields() {
+        // Container tags are resolved even when missing Datadog fields are ignored, as the trace agent's receiver
+        // does: the setting does not gate extraction there.
+        let encoder = TraceEndpointEncoder::new(
+            MetaString::from("test-host"),
+            "0.0.0".to_string(),
+            "none".to_string(),
+            DEFAULT_TARGET_TPS,
+            DEFAULT_ERRORS_PER_SECOND,
+            false,
+            true,
+        );
+        let (payload_attrs, span_attrs) = encode_translated_trace(true, encoder, &[("kube_namespace", "payments")]);
+
+        assert_eq!(payload_attrs[CONTAINER_TAGS_META_KEY], "kube_namespace:payments");
+        assert!(span_attrs.iter().all(|attrs| !attrs.contains_key("kube_namespace")));
+    }
+
+    #[test]
+    fn otlp_image_tags_array_reaches_the_encoded_payload_container_tags() {
+        use datadog_agent_apm::semantics::SemanticRegistryProvider;
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+        use saluki_core::data_model::event::Event;
+
+        use crate::common::otlp::origin::OtlpOriginTagResolver;
+        use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesTranslator};
+        use crate::common::otlp::Metrics;
+
+        let string_value = |value: &str| AnyValue {
+            value: Some(Value::StringValue(value.to_string())),
+        };
+        let resource_spans = ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![
+                    KeyValue {
+                        key: "container.image.tags".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::ArrayValue(ArrayValue {
+                                values: vec![string_value("v1"), string_value("latest")],
+                            })),
+                        }),
+                    },
+                    KeyValue {
+                        key: "container.name".to_string(),
+                        value: Some(string_value("web")),
+                    },
+                ],
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans: vec![OtlpSpan {
+                    trace_id: vec![1; 16],
+                    span_id: vec![2; 8],
+                    name: "span".to_string(),
+                    end_time_unix_nano: 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut translator = OtlpTracesTranslator::new(
+            traces_settings(),
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let trace = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .find_map(Event::try_into_trace)
+            .expect("the span should translate into a trace");
+
+        let mut buf = Vec::new();
+        make_encoder(false)
+            .encode(&trace, &mut buf)
+            .expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+        let attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
+        let container_tags = attrs
+            .get(CONTAINER_TAGS_META_KEY)
+            .expect("container tags should be emitted");
+        assert_eq!(
+            BTreeSet::from(["container_name:web", "image_tag:v1"]),
+            container_tags.split(',').collect::<BTreeSet<_>>()
+        );
     }
 
     #[test]

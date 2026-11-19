@@ -7,6 +7,9 @@ use airlock::driver::DEFAULT_ALPINE_IMAGE;
 use chrono::Local;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::config::{os_of_runtime, runtime_of};
+use crate::core::participant::Os;
+use crate::participant_case::Replacement;
 use crate::{image_override::ImageOverride, reporter::OutputFormat, test::RunnerSettings};
 
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
@@ -127,10 +130,13 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Run integration tests.
-    Run(RunCommand),
+    Run(Box<RunCommand>),
 
     /// List available integration tests.
     List(ListCommand),
+
+    /// Print what a participant case does on one subject OS, without running anything.
+    Plan(PlanCommand),
 }
 
 // We build clap without its `wrap_help` feature, so help text is never reflowed. Descriptions that
@@ -151,9 +157,30 @@ pub struct RunCommand {
     /// or `windows`). Only integration tests whose `runtimes:` list contains this
     /// value are eligible to run. Defaults to the host's own runtime: `mac` on
     /// macOS, `windows` on Windows, and `linux` everywhere else. Correctness tests
-    /// are unaffected by this flag
+    /// are unaffected by this flag. It selects the same OS as `--subject-os`
     #[arg(long, verbatim_doc_comment)]
     pub runtime: Option<String>,
+
+    /// Subject OS to run participant cases for: `linux`, `macos` or `windows`. A
+    /// participant case that does not declare it is skipped. Defaults to the host's
+    /// OS. `--runtime mac` and `--subject-os macos` select the same OS
+    #[arg(long, value_parser = str::parse::<Os>, verbatim_doc_comment)]
+    pub subject_os: Option<Os>,
+
+    /// Image a participant case runs in place of one it names, as `<name>=<image>`,
+    /// where `<name>` is the image exactly as the case or its participant type writes
+    /// it. Repeat the flag for more than one image; the environment variable takes them
+    /// as one comma-separated list. A name given twice, or one no discovered case uses,
+    /// is an error. CI uses this to run the cases against the images built for the
+    /// commit
+    #[arg(
+        long = "set",
+        value_name = "NAME=IMAGE",
+        env = "PANORAMIC_SET",
+        value_delimiter = ',',
+        verbatim_doc_comment
+    )]
+    pub set: Vec<Replacement>,
 
     /// Number of tests to run in parallel.
     #[arg(short = 'p', long, default_value = "4")]
@@ -237,7 +264,17 @@ impl RunCommand {
             adp_binary_path: self.adp_binary_path.clone(),
             core_agent_binary_path: self.core_agent_binary_path.clone(),
             alpine_image: self.alpine_image.clone(),
+            containers: None,
         }
+    }
+
+    /// The subject OS of the run, and the runtime name of the same OS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `--runtime` names no OS, or names another OS than `--subject-os`.
+    pub(crate) fn selection(&self) -> Result<(Os, &'static str), String> {
+        selection(self.runtime.as_deref(), self.subject_os)
     }
 
     /// Gets the log directory for this run.
@@ -271,10 +308,88 @@ pub struct ListCommand {
     #[arg(long, verbatim_doc_comment)]
     pub runtime: Option<String>,
 
+    /// Subject OS to list participant cases for. Same semantics as on `run`: a
+    /// participant case that does not declare it is left out
+    #[arg(long, value_parser = str::parse::<Os>, verbatim_doc_comment)]
+    pub subject_os: Option<Os>,
+
     /// Output the discovered tests as json along with their image dependencies. A
     /// `ci` script depends on this for dynamic pipeline creation
     #[arg(long, verbatim_doc_comment)]
     pub json: bool,
+}
+
+impl ListCommand {
+    /// The subject OS to list for, and the runtime name of the same OS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `--runtime` names no OS, or names another OS than `--subject-os`.
+    pub(crate) fn selection(&self) -> Result<(Os, &'static str), String> {
+        selection(self.runtime.as_deref(), self.subject_os)
+    }
+}
+
+/// The OS `--runtime` and `--subject-os` select together, the host's when neither is given, and its runtime name.
+fn selection(runtime: Option<&str>, subject_os: Option<Os>) -> Result<(Os, &'static str), String> {
+    let from_runtime = runtime
+        .map(|runtime| {
+            os_of_runtime(runtime).ok_or_else(|| {
+                format!(
+                    "Unknown runtime '{}': expected {}, {} or {}.",
+                    runtime,
+                    runtime_of(Os::Linux),
+                    runtime_of(Os::Macos),
+                    runtime_of(Os::Windows)
+                )
+            })
+        })
+        .transpose()?;
+    let os = match (from_runtime, subject_os) {
+        (Some(from_runtime), Some(subject_os)) if from_runtime != subject_os => {
+            return Err(format!(
+                "--runtime {} selects subject OS {}, and --subject-os selects {}.",
+                runtime.unwrap_or_default(),
+                from_runtime,
+                subject_os
+            ))
+        }
+        (Some(os), _) | (None, Some(os)) => os,
+        (None, None) => Os::host(),
+    };
+    Ok((os, runtime_of(os)))
+}
+
+/// Print what a participant case does on one subject OS, without running anything.
+///
+/// Loads the case and plans it for every OS it declares, so a mistake for any OS is an error on any host, then prints
+/// the plan for the selected one as JSON. Needs no Docker daemon.
+#[derive(Args)]
+#[command(args_override_self = true)]
+pub struct PlanCommand {
+    /// The case directory, holding its `config.yaml`.
+    pub case_dir: PathBuf,
+
+    /// The subject OS to print the plan for: `linux`, `macos` or `windows`.
+    /// Defaults to the host's OS
+    #[arg(long, value_parser = str::parse::<Os>, default_value_t = Os::host(), verbatim_doc_comment)]
+    pub subject_os: Os,
+
+    /// Print the plan in a format for people instead of JSON.
+    #[arg(long)]
+    pub text: bool,
+
+    /// Image the case runs in place of one it names, as `<name>=<image>`. Same
+    /// semantics as on `run`: the plan shows both, and a name the case does not use
+    /// is an error
+    #[arg(
+        long = "set",
+        value_name = "NAME=IMAGE",
+        env = "PANORAMIC_SET",
+        value_delimiter = ',',
+        verbatim_doc_comment
+    )]
+    pub set: Vec<Replacement>,
 }
 
 #[cfg(test)]
@@ -297,12 +412,13 @@ mod tests {
         ("alpine_image", "PANORAMIC_ALPINE_IMAGE"),
         ("log_dir", "PANORAMIC_LOG_DIR"),
         ("image_overrides", "PANORAMIC_IMAGE_OVERRIDES"),
+        ("set", "PANORAMIC_SET"),
     ];
 
     fn run_command_of(cli: &Cli) -> &RunCommand {
         match &cli.command {
             Command::Run(cmd) => cmd,
-            Command::List(_) => panic!("expected a `run` invocation"),
+            Command::List(_) | Command::Plan(_) => panic!("expected a `run` invocation"),
         }
     }
 
@@ -657,7 +773,7 @@ mod tests {
                 assert_eq!(cmd.test_dirs, vec![PathBuf::from("test/integration/cases")]);
                 assert!(cmd.json);
             }
-            Command::Run(_) => panic!("expected a `list` invocation"),
+            Command::Run(_) | Command::Plan(_) => panic!("expected a `list` invocation"),
         }
     }
 

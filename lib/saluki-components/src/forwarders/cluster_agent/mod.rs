@@ -191,7 +191,7 @@ fn cluster_agent_request_mapper<B>(
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
 
-    Box::new(move |mut request: Request<TransactionBody<B>>| {
+    std::sync::Arc::new(move |mut request: Request<TransactionBody<B>>| {
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
             .authority(new_uri_authority.clone())
@@ -229,7 +229,7 @@ mod tests {
         let auth_header_value = bearer_auth_header_value("secret-token").expect("auth header should be valid");
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://cluster-agent.example.com:5005", "secret-token")
             .expect("endpoint should resolve");
-        let mut mapper = cluster_agent_request_mapper::<()>(endpoint, auth_header_value);
+        let mapper = cluster_agent_request_mapper::<()>(endpoint, auth_header_value);
         let request = Request::builder()
             .method(Method::POST)
             .uri("/api/v2/series")

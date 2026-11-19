@@ -34,9 +34,10 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
+use crate::common::datadog::get_tracer_hostname;
 use crate::common::datadog::version_data::ContainerVersionData;
 use crate::common::otlp::traces::normalize::normalized_tag_value;
-use crate::common::otlp::util::extract_container_tags_from_attributes_map;
+use crate::common::otlp::util::extract_trace_container_tags;
 use crate::config::AgentEnv;
 
 mod aggregation;
@@ -44,7 +45,7 @@ pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
 
 mod peer_ip_quantize;
 
-mod peer_tags;
+pub(crate) mod peer_tags;
 
 mod span_concentrator;
 pub(crate) use self::span_concentrator::{InfraTags, SpanConcentrator};
@@ -206,7 +207,7 @@ impl ApmStats {
             TagSet::default()
         } else {
             let mut tags = TagSet::default();
-            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            extract_trace_container_tags(trace.payload.resolved_container_tags(), &trace.attributes, &mut tags);
             tags
         };
 
@@ -263,21 +264,9 @@ impl ApmStats {
                 }
             });
 
-        let hostname = root_span
-            .and_then(|s| {
-                s.attributes
-                    .get("_dd.hostname")
-                    .and_then(AttributeValue::as_string)
-                    .filter(|s| !s.is_empty())
-            })
+        let hostname = get_tracer_hostname(trace)
             .cloned()
-            .unwrap_or_else(|| {
-                if !trace.payload.hostname.is_empty() {
-                    trace.payload.hostname.clone()
-                } else {
-                    self.agent_hostname.clone()
-                }
-            });
+            .unwrap_or_else(|| self.agent_hostname.clone());
 
         // The root span's `version` attribute takes priority: for OTLP traces it already prefers the span's version
         // over the resource's. The payload's version comes next, then the container's `version` tag.
@@ -1792,6 +1781,84 @@ mod tests {
         );
     }
 
+    // Span conversion extracts no peer tag keys of its own, so a peer tag set only on the OTLP resource reaches span
+    // meta through the generic resource-attribute loop, and the concentrator reads it from there.
+    #[test]
+    fn peer_tag_set_only_on_otlp_resource_reaches_stats() {
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+        use otlp_protos::opentelemetry::proto::trace::v1::span::SpanKind;
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+        use saluki_core::data_model::event::Event;
+
+        use crate::common::otlp::origin::OtlpOriginTagResolver;
+        use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesTranslator};
+        use crate::common::otlp::Metrics;
+
+        let now = now_nanos();
+        let client_span = OtlpSpan {
+            trace_id: vec![1; 16],
+            span_id: vec![2; 8],
+            name: "SELECT ...".to_string(),
+            kind: SpanKind::Client as i32,
+            start_time_unix_nano: now - 1_000_000,
+            end_time_unix_nano: now,
+            ..Default::default()
+        };
+        let resource_spans = ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "db.instance".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("i-1234".to_string())),
+                    }),
+                }],
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans: vec![client_span],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut translator = OtlpTracesTranslator::new(
+            traces_settings(),
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let trace = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .find_map(Event::try_into_trace)
+            .expect("the client span should translate into a trace");
+        let span = &trace.spans()[0];
+        assert_eq!(
+            span.attributes.get("db.instance").and_then(AttributeValue::as_string),
+            Some(&MetaString::from("i-1234")),
+            "a resource-only peer tag must reach span meta"
+        );
+
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
+        let payload_key = PayloadAggregationKey {
+            env: MetaString::from("test"),
+            ..Default::default()
+        };
+        let stat_span = concentrator
+            .new_stat_span_from_span(span)
+            .expect("a client span with a peer tag should produce stats");
+        concentrator.add_span(&stat_span, 1.0, &payload_key, &InfraTags::default(), "");
+
+        let payloads = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
+        let peer_tags: Vec<String> = payloads
+            .iter()
+            .flat_map(|payload| payload.stats())
+            .flat_map(|bucket| bucket.stats())
+            .flat_map(|grouped| grouped.peer_tags().iter().map(|tag| tag.to_string()))
+            .collect();
+        assert_eq!(peer_tags, ["db.instance:i-1234"]);
+    }
+
     fn transform_with_workload_provider(workload_provider: Option<TestWorkloadProvider>) -> ApmStats {
         let now = now_nanos();
         ApmStats {
@@ -1904,6 +1971,68 @@ mod tests {
         // A payload env that normalizes to nothing falls back to the agent's.
         assert_eq!(key_for("!!!"), "none");
         assert_eq!(key_for(""), "none");
+    }
+
+    #[test]
+    fn hostname_prefers_payload_then_root_span_then_agent() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::from("agent-host"),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+        let trace_with = |payload_hostname: &str, root_hostname: Option<&str>| {
+            let mut attrs = FastHashMap::default();
+            if let Some(root_hostname) = root_hostname {
+                attrs.insert(
+                    MetaString::from("_dd.hostname"),
+                    AttributeValue::String(MetaString::from(root_hostname)),
+                );
+            }
+            let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
+            let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
+            trace.payload.hostname = MetaString::from(payload_hostname);
+            trace
+        };
+        let hostname = |trace: &Trace| {
+            transform
+                .build_payload_key(trace, "", ContainerVersionData::default())
+                .hostname
+                .to_string()
+        };
+
+        // The payload hostname beats the root span's `_dd.hostname`.
+        assert_eq!(hostname(&trace_with("payload-host", Some("root-host"))), "payload-host");
+        assert_eq!(hostname(&trace_with("", Some("root-host"))), "root-host");
+        assert_eq!(hostname(&trace_with("", None)), "agent-host");
+    }
+
+    #[test]
+    fn otlp_trace_without_a_hostname_is_attributed_to_the_configured_hostname() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::from("agent-host"),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+
+        // A serverless OTLP resource reports no hostname, so its stats use the configured one. The trace payload
+        // itself stays empty.
+        let span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0);
+        let trace = Trace::new(
+            vec![span],
+            TraceIngestInfo::Otlp {
+                receiver_sampling_rate: 1.0,
+            },
+        );
+        let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
+        assert_eq!(key.hostname.as_ref(), "agent-host");
     }
 
     proptest! {

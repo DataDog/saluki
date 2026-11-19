@@ -26,8 +26,9 @@ CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64
 ### Tests that need a Docker daemon
 
 Unit tests that create containers are ignored by default, so `make test` doesn't need Docker. Run them with
-`make test-container-daemon`, which needs a reachable Docker daemon. Their image comes from the internal registry.
-CI doesn't run them, so run them by hand when you change the container mechanisms.
+`make test-container-daemon`, which needs a reachable Docker daemon and builds the courier the tests copy into their
+containers. Their image comes from the internal registry. CI doesn't run them, so run them by hand when you change the
+container mechanisms, the container backend or the lifecycle.
 
 ### Architecture tests
 
@@ -153,6 +154,23 @@ Both suites run through the same `panoramic` binary.
 cargo run --release --bin panoramic -- --help
 ```
 
+`panoramic plan <case directory> --subject-os <os>` reads a case written in the participant case schema, the one
+without a top-level `type:` key, and prints what it does on that OS as JSON, without starting anything: each
+participant's realization, image, command, environment and files with their contents, each endpoint and connection
+with its address, and the order participants are created and started in, with what each one waits for. `--text` prints
+the same plan in a format for people. It plans the case for every OS in its `subject_os`, so a field that can't be
+honored on any of them is an error on any host. The rejected case files under
+`bin/correctness/panoramic/testdata/bad/` show a few of these errors.
+
+`panoramic list` and `panoramic run` read participant cases beside legacy ones, telling them apart by the top-level
+`type:` key. A run selects one subject OS with `--subject-os`, or `--runtime`, which names the same OS (`mac` is
+`macos`); both default to the host's, and a `--runtime` that names no OS is an error. A participant case that doesn't declare that OS is reported as `skipped`, with
+its reason. `--set <name>=<image>`, or `PANORAMIC_SET` as a comma-separated list, runs `<image>` wherever a case
+names `<name>`; `plan` takes it too and shows both. Before the first case, the run checks once that the selected
+participant cases can run: a Docker daemon for their Linux containers, every image they run, which it pulls if the
+daemon lacks it, and the courier, which `make build-courier` builds. A participant case that doesn't pass writes its
+plan as `plan.json` in its log directory.
+
 The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
 
 ### Reading panoramic results
@@ -169,7 +187,7 @@ Exit codes distinguish the run-level result:
 | 0 | Every test passed; run completed |
 | 1 | Assertion failure, unless code 2 applies |
 | 2 | Harness error, `timed_out` test, or interrupted run |
-| 3 | Empty selection or unmatched test name |
+| 3 | Empty selection, unmatched test name, or every test skipped |
 
 An `errored` step couldn't be evaluated. Inspect test `error`, `timeout`, `cause`, and step `message` fields.
 
@@ -241,6 +259,53 @@ reported to Slack) and on-demand as a manual job on a PR; it is for long-term tr
 You can run experiments locally with `smp local-run` to debug experiment configs without waiting for CI (single
 replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment—for normal
 development, lean on CI.
+
+## Reviewing test changes
+
+Reviewers check test changes against two checklists: one for the test tools, and one for the test cases.
+
+### Correctness tooling review checklist
+
+Reviewers check changes to the tools under `bin/correctness/` against these rules:
+
+<!-- review:correctness-tooling -->
+Apply these rules to files under `bin/correctness/`: `panoramic`, `millstone`, `airlock`, `stele`, `datadog-intake`,
+and `otlp-fixtures`. Look first for bugs that hang a run, crash it, leave processes or containers behind, or let a
+case pass when ADP is wrong.
+
+- Each wait, probe, and exec has a deadline, and each read has a deadline or an idle timeout. A target that stops
+  responding fails the case, and doesn't hang the job.
+- An analysis compares only output that the case controls. It removes the targets' own telemetry, as
+  `is_internal_telemetry` does in the metrics analysis, because that telemetry depends on timing and on the container.
+- Don't ask for edge cases that no current case can produce. An analysis that is too strict fails a case, so it
+  doesn't hide a regression. Flag analysis logic that can let a case pass when ADP is wrong, such as a filter or a
+  tolerance that also matches real output.
+- Make sure that a regression in the testing harness and libraries doesn't leave a formerly asserted invariant
+  unchecked.
+<!-- /review -->
+
+### Test case review checklist
+
+Reviewers check changes to the test cases under `test/` against these rules:
+
+<!-- review:test-cases -->
+Apply these rules to files under `test/`: correctness cases, integration cases, and SMP experiments.
+
+- A correctness case must fail when ADP is wrong.
+- The Core Agent and ADP can both run some pipelines, such as DogStatsD and OTLP. If ADP doesn't receive the traffic,
+  the Core Agent handles it, and the case compares the Agent with itself. When a case turns on such a pipeline in ADP,
+  ask what shows that ADP received the traffic. Don't ask when the case or the description already shows it.
+- With `DD_DATA_PLANE_STANDALONE_MODE` set to `"true"`, ADP uses only its local configuration and doesn't register
+  with the Core Agent. The value is `"false"` or unset in connected mode, which is the production mode. Ask for a
+  connected-mode case when a change affects how settings reach ADP. Examples are changes to the configuration stream,
+  registration, and environment translation.
+- The `baseline` and `comparison` targets differ only in the setting under test and in the settings that turn on ADP.
+  Settings that only ADP reads can also differ, such as `DD_AGGREGATE_CONTEXT_LIMIT` and `ADP_DD_` variables. Flag a
+  setting that the Datadog Agent also reads and that only one side sets, when no comment explains it.
+- Flag a setting in a case or an SMP experiment that ADP no longer reads, such as a removed or renamed key. ADP
+  ignores it without an error, so the case no longer tests it. For SMP, comment on
+  `test/smp/regression/adp/experiments.yaml`, not on the generated `experiment.yaml` files.
+<!-- /review -->
 
 ## Fuzzing
 

@@ -16,10 +16,11 @@ use crossterm::{
     terminal, ExecutableCommand as _, QueueableCommand as _,
 };
 
+use crate::core::record::StepStatus;
+use crate::core::result::TestResult;
 use crate::events::TestEvent;
 use crate::machine_output::RunReport;
-use crate::record::StepStatus;
-use crate::reporter::{run_counts, run_status_label, run_unfinished_lines, TestResult, RUN_PASSED_LABEL};
+use crate::reporter::{run_counts, run_status_label, run_unfinished_lines, RUN_PASSED_LABEL};
 
 /// Terminal UI state and rendering.
 pub struct Tui {
@@ -258,7 +259,7 @@ fn interrupt_key(key: &KeyEvent) -> Option<&'static str> {
 fn completed_test_lines(result: &TestResult, log_dir: &Path) -> Vec<FormattedLine> {
     let total_assertions = result.assertion_results.len();
 
-    if result.outcome.is_passed() {
+    if !result.outcome.is_failure() {
         let mut lines = vec![FormattedLine::with_prefix(
             result.label(),
             LineColor::Green,

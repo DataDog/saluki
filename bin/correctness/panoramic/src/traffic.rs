@@ -33,8 +33,9 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::intake::{CollectedData, IntakeClient};
-use crate::reporter::TestOutcome;
+use crate::core::result::TestOutcome;
+use crate::intake::IntakeClient;
+use crate::steps::intake::CollectedData;
 
 const TRAFFIC_DIR_NAME: &str = "traffic";
 
@@ -327,7 +328,7 @@ pub(crate) async fn capture_intake(dir: &Path, client: &IntakeClient, cancel: &C
         )
     } else {
         tokio::select! {
-            result = tokio::time::timeout(budget, CollectedData::collect(client)) => match result {
+            result = tokio::time::timeout(budget, client.collect()) => match result {
                 Ok(Ok(data)) => Ok(data),
                 Ok(Err(e)) => Err(format!("Failed to collect the post-assertion intake capture: {:#}", e)),
                 Err(_) => Err(format!(
@@ -924,9 +925,9 @@ mod tests {
 
         use super::super::{capture_intake, finalize, traffic_dir, Side, INTEGRATION_INPUT_UNAVAILABLE_REASON};
         use super::{read_json, read_manifest};
+        use crate::core::result::TestOutcome;
         use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
         use crate::intake::IntakeClient;
-        use crate::reporter::TestOutcome;
 
         /// Runs a capture into a fresh log directory, finalizes it as failed, and returns the merged manifest.
         async fn capture(port: u16, cancel: &CancellationToken, budget: Duration) -> serde_json::Value {

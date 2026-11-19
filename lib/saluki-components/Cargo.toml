@@ -17,6 +17,7 @@ test-util = []
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+backon = { workspace = true, features = ["tokio-sleep"] }
 base64 = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }
@@ -74,6 +75,7 @@ saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 simdutf8 = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }

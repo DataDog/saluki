@@ -14,10 +14,11 @@ use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::core::result::{DurationMs, TestOutcome};
 use crate::events::TestEvent;
 use crate::interrupts::Interrupts;
 use crate::machine_output::{self, InterruptReason, RunReport, RunState, RunTotals, TestReport};
-use crate::reporter::{run_counts, DurationMs, Reporter};
+use crate::reporter::{run_counts, Reporter};
 use crate::tui::Tui;
 
 /// Exit code for an assertion failure.
@@ -26,7 +27,7 @@ pub(crate) const EXIT_ASSERTION_FAILURE: u8 = 1;
 /// Exit code for a harness error, timeout, or interrupted run.
 pub(crate) const EXIT_HARNESS_ERROR: u8 = 2;
 
-/// Exit code for an empty selection or an unmatched test name.
+/// Exit code for an empty selection, an unmatched test name, or a run that skipped every test.
 pub(crate) const EXIT_NO_TESTS_SELECTED: u8 = 3;
 
 /// How often the TUI reads keys and redraws.
@@ -136,12 +137,15 @@ impl RunCollector {
     }
 }
 
-/// Chooses the exit code, giving interruptions and harness errors precedence over assertion failures.
+/// Chooses the exit code, giving interruptions and harness errors precedence over assertion failures. A run in which
+/// nothing ran, because every test was skipped, exits with [`EXIT_NO_TESTS_SELECTED`].
 pub(crate) fn exit_code(report: &RunReport) -> ExitCode {
     if report.state == RunState::Interrupted || report.tests.iter().any(|t| t.outcome.is_error()) {
         ExitCode::from(EXIT_HARNESS_ERROR)
-    } else if report.tests.iter().any(|t| !t.outcome.is_passed()) {
+    } else if report.tests.iter().any(|t| t.outcome.is_failure()) {
         ExitCode::from(EXIT_ASSERTION_FAILURE)
+    } else if report.tests.iter().all(|t| t.outcome == TestOutcome::Skipped) {
+        ExitCode::from(EXIT_NO_TESTS_SELECTED)
     } else {
         ExitCode::SUCCESS
     }
@@ -325,9 +329,10 @@ mod tests {
 
     use super::*;
     use crate::assertions::{AssertionResult, AssertionStatus};
+    use crate::core::result::{ErrorKind, TestResult};
     use crate::events::create_event_channel;
     use crate::machine_output::RUN_REPORT_FILE_NAME;
-    use crate::reporter::{ErrorKind, OutputFormat, TestResult};
+    use crate::reporter::OutputFormat;
     use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use crate::runner::{RunArgs, Runner};
 
@@ -514,7 +519,7 @@ mod tests {
         assert_eq!(on_disk["state"], "complete");
         assert_eq!(
             on_disk["totals"],
-            json!({"passed": 1, "failed": 1, "errored": 0, "timed_out": 0, "not_run": 0})
+            json!({"passed": 1, "failed": 1, "errored": 0, "timed_out": 0, "skipped": 0, "not_run": 0})
         );
         assert_eq!(
             exit_code(run.collector.report()),
@@ -693,6 +698,21 @@ mod tests {
             (
                 "pass",
                 vec![result("a", AssertionStatus::Passed)],
+                false,
+                ExitCode::SUCCESS,
+            ),
+            (
+                "skip",
+                vec![TestResult::skipped("s", "no such OS")],
+                false,
+                ExitCode::from(EXIT_NO_TESTS_SELECTED),
+            ),
+            (
+                "skip and pass",
+                vec![
+                    TestResult::skipped("s", "no such OS"),
+                    result("a", AssertionStatus::Passed),
+                ],
                 false,
                 ExitCode::SUCCESS,
             ),

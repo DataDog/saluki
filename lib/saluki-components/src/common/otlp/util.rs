@@ -11,6 +11,7 @@ use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, 
 use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
+use crate::common::otlp::traces::transform::otlp_value_to_string;
 use crate::common::otlp::traces::translator::ContainerTagPromotion;
 
 // ============================================================================
@@ -30,6 +31,22 @@ pub enum SourceKind {
     Hostname,
     /// AWS ECS Fargate source.
     AwsEcsFargate,
+    /// AWS Lambda source.
+    AwsLambda,
+    /// Azure Container Apps source.
+    AzureContainerApps,
+    /// Azure App Service source.
+    AzureAppService,
+    /// Azure Functions source.
+    AzureFunctions,
+    /// Google Cloud Run service source.
+    GcpCloudRun,
+    /// Google Cloud Functions (v2) source.
+    GcpCloudFunctions,
+    /// Google Cloud Run job source.
+    GcpCloudRunJobs,
+    /// GKE Autopilot source.
+    GkeAutopilot,
 }
 
 /// Represents the source of telemetry data.
@@ -53,6 +70,14 @@ impl SourceKind {
         match self {
             SourceKind::Hostname => "host",
             SourceKind::AwsEcsFargate => "task_arn",
+            SourceKind::AwsLambda => "aws_lambda",
+            SourceKind::AzureContainerApps => "azure_container_apps",
+            SourceKind::AzureAppService => "azure_app_service",
+            SourceKind::AzureFunctions => "azure_functions",
+            SourceKind::GcpCloudRun => "gcp_cloud_run",
+            SourceKind::GcpCloudFunctions => "gcp_cloud_functions",
+            SourceKind::GcpCloudRunJobs => "gcp_cloud_run_jobs",
+            SourceKind::GkeAutopilot => "gke_autopilot",
         }
     }
 }
@@ -146,8 +171,9 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
         let value = kv.value.as_ref().and_then(|v| v.value.as_ref());
 
         // Semantic conventions. `container.image.tags` is mapped here rather than in
-        // `CONTAINER_MAPPINGS`, which traces also use: trace resource arrays reach container-tag
-        // extraction as JSON strings, so traces can't read its first element.
+        // `CONTAINER_MAPPINGS`, which traces also use: the typed trace attributes stringify arrays,
+        // so traces resolve this key from the raw attributes in
+        // [`resolve_otlp_trace_container_tags`] instead.
         let mapped = match CONTAINER_MAPPINGS.get(kv.key.as_str()) {
             Some(datadog_key) => non_empty_string(value).map(|s_val| (*datadog_key, s_val)),
             None if kv.key == CONTAINER_IMAGE_TAGS => first_element_or_string(value).map(|s_val| ("image_tag", s_val)),
@@ -179,6 +205,93 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
 pub fn extract_container_tags_from_attributes_map(
     attributes: &FastHashMap<MetaString, AttributeValue>, tags: &mut TagSet,
 ) {
+    for (tag_key, (_, value)) in resolve_container_tags_from_attributes_map(attributes) {
+        tags.insert_tag(format!("{}:{}", tag_key, value));
+    }
+}
+
+/// Inserts the container tags of a trace into the provided TagSet.
+///
+/// A trace whose source already resolved its container tags carries them in `resolved`. Any other trace derives them
+/// from its attributes.
+pub fn extract_trace_container_tags(
+    resolved: &[MetaString], attributes: &FastHashMap<MetaString, AttributeValue>, tags: &mut TagSet,
+) {
+    if resolved.is_empty() {
+        extract_container_tags_from_attributes_map(attributes, tags);
+        return;
+    }
+    for tag in resolved {
+        tags.insert_tag(tag.as_ref());
+    }
+}
+
+/// Resolves the container tags of an OTLP trace resource, as `key:value` tags in a stable order.
+///
+/// `attributes` is the resource as the sender ordered it, and `typed_attributes` is the same resource after
+/// converting arrays to string representations and adding workload tags.
+///
+/// A tag's source and the order of the attributes decide its value: a semantic convention wins over a
+/// `datadog.container.tag.` attribute, which wins over a pre-mapped Datadog tag, and the first valid value wins among
+/// attributes of the same source, as the reference's consuming trace path does. The metrics and logs extractor,
+/// [`extract_container_tags_from_resource_attributes`], keeps the last semantic-convention value instead: the
+/// reference's non-consuming variant reads its attributes from an unordered map, so it defines no order for ties.
+/// The two rules are meant to differ, so don't align them. The typed map has lost the order and the arrays, so
+/// semantic conventions are resolved from `attributes`. Custom and pre-mapped tags can't tie across keys, because
+/// their key names the tag, so the typed map resolves them.
+pub fn resolve_otlp_trace_container_tags(
+    attributes: &[otlp_common::KeyValue], typed_attributes: &FastHashMap<MetaString, AttributeValue>,
+) -> Vec<MetaString> {
+    let mut resolved = resolve_container_tags_from_attributes_map(typed_attributes);
+
+    // The first valid semantic-convention value of each tag, in attribute order.
+    let mut semantic: FastHashMap<&str, &str> = FastHashMap::default();
+    for kv in attributes {
+        let value = kv.value.as_ref().and_then(|v| v.value.as_ref());
+        let (tag_key, tag_value) = match CONTAINER_MAPPINGS.get(kv.key.as_str()) {
+            Some(datadog_key) => (*datadog_key, non_empty_string(value)),
+            None if kv.key == CONTAINER_IMAGE_TAGS => ("image_tag", first_element_or_string(value)),
+            None => continue,
+        };
+
+        // The enrichment step can replace an attribute's value in the typed map, scalar or array. The replacement
+        // keeps the attribute's place in the order, so it takes the sender's value there, and the tags can't
+        // disagree with `Trace::attributes`. An unmodified attribute reaches the typed map as its stringified
+        // value, so a replacement is any non-empty string that differs from it.
+        let tag_value = match typed_attributes.get(kv.key.as_str()) {
+            Some(AttributeValue::String(typed)) if !typed.is_empty() => {
+                let unmodified = value
+                    .and_then(otlp_value_to_string)
+                    .is_some_and(|serialized| serialized == typed.as_ref());
+                if unmodified {
+                    tag_value
+                } else {
+                    Some(typed.as_ref())
+                }
+            }
+            _ => tag_value,
+        };
+
+        if let Some(tag_value) = tag_value {
+            semantic.entry(tag_key).or_insert(tag_value);
+        }
+    }
+    for (tag_key, tag_value) in semantic {
+        resolved.insert(tag_key, (TAG_SOURCE_SEMANTIC_CONVENTION, tag_value));
+    }
+
+    let mut tags: Vec<MetaString> = resolved
+        .into_iter()
+        .map(|(tag_key, (_, value))| MetaString::from(format!("{tag_key}:{value}")))
+        .collect();
+    tags.sort_unstable();
+    tags
+}
+
+/// Resolves the winning source and value of every container tag in a typed attributes map.
+fn resolve_container_tags_from_attributes_map(
+    attributes: &FastHashMap<MetaString, AttributeValue>,
+) -> FastHashMap<&str, (u8, &str)> {
     // One entry per resolved tag key: its source precedence and value.
     let mut resolved: FastHashMap<&str, (u8, &str)> = FastHashMap::default();
 
@@ -218,9 +331,7 @@ pub fn extract_container_tags_from_attributes_map(
         }
     }
 
-    for (tag_key, (_, value)) in resolved {
-        tags.insert_tag(format!("{}:{}", tag_key, value));
-    }
+    resolved
 }
 
 /// Returns a non-empty string value.
@@ -339,6 +450,20 @@ fn is_recognized_tag_key(key: &str) -> bool {
     CONTAINER_MAPPINGS.contains_key(key) || CONTAINER_DD_TAG_KEYS.contains(key)
 }
 
+/// Returns whether `attribute` is a non-empty, string-valued Datadog-convention container tag, such as
+/// `kube_namespace` or `pod_name`.
+///
+/// These are consumed as container tags before span conversion, so they never reach span meta. OTel convention keys
+/// such as `container.id` and `k8s.namespace.name` aren't Datadog-convention keys, so they still do. An empty value
+/// produces no container tag, so it stays where it is.
+pub fn is_datadog_container_tag_attribute(attribute: &otlp_common::KeyValue) -> bool {
+    let is_non_empty_string = matches!(
+        attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()),
+        Some(Value::StringValue(value)) if !value.is_empty()
+    );
+    is_non_empty_string && CONTAINER_DD_TAG_KEYS.contains(attribute.key.as_str())
+}
+
 const ATTRIBUTE_DATADOG_HOSTNAME: &str = "datadog.host.name";
 const ATTRIBUTE_HOST: &str = "host";
 const AZURE_RESOURCE_GROUP_NAME: &str = "azure.resourcegroup.name";
@@ -392,7 +517,7 @@ fn ec2_hostname(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
 }
 
 /// Resolves the hostname for a GCP resource.
-fn gcp_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+pub(super) fn gcp_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let host_name = get_string_attribute(attributes, HOST_NAME)?;
     let cloud_account_id = get_string_attribute(attributes, CLOUD_ACCOUNT_ID)?;
     let host_name = if host_name.matches('.').count() >= 3 {
@@ -442,7 +567,7 @@ fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) ->
 }
 
 /// Resolves a valid hostname from resource attributes.
-fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let hostname = unsanitized_hostname_from_attributes(attributes)?;
     (!INVALID_HOSTNAMES.contains(&hostname.as_str())).then_some(hostname)
 }

@@ -141,6 +141,21 @@ pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString>
     None
 }
 
+/// Returns the hostname a trace reports, if any.
+///
+/// The payload hostname wins. The root span's `_dd.hostname` applies only when the payload hostname is empty, which is
+/// how older tracers report it. Every consumer of a trace's hostname uses this function, so they all select the same
+/// root span.
+pub fn get_tracer_hostname(trace: &Trace) -> Option<&MetaString> {
+    if !trace.payload.hostname.is_empty() {
+        return Some(&trace.payload.hostname);
+    }
+    get_root_span_index(trace.spans())
+        .and_then(|idx| trace.spans().get(idx))
+        .and_then(|span| span.attributes.get("_dd.hostname").and_then(AttributeValue::as_string))
+        .filter(|hostname| !hostname.is_empty())
+}
+
 /// Finds the index of the root span within the given spans.
 ///
 /// Scans backwards for the first span with a zero parent ID (clients often report the root last),
@@ -208,5 +223,58 @@ pub fn compute_top_level(spans: &mut [Span]) {
         spans[i]
             .attributes
             .insert(MetaString::from_static(TOP_LEVEL_KEY), AttributeValue::Float(1.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_core::data_model::event::trace::TraceIngestInfo;
+
+    use super::*;
+
+    fn span(span_id: u64, parent_id: u64, hostname: Option<&str>) -> Span {
+        let mut attributes = FastHashMap::default();
+        if let Some(hostname) = hostname {
+            attributes.insert(
+                MetaString::from("_dd.hostname"),
+                AttributeValue::String(MetaString::from(hostname)),
+            );
+        }
+        Span::new("svc", "op", "res", "web", span_id, parent_id, 0, 1, 0).with_attributes(attributes)
+    }
+
+    fn tracer_hostname(trace: &Trace) -> Option<&str> {
+        get_tracer_hostname(trace).map(|hostname| hostname.as_ref())
+    }
+
+    #[test]
+    fn tracer_hostname_prefers_the_payload_then_the_root_span() {
+        let mut trace = Trace::new(vec![span(1, 0, Some("root-host"))], TraceIngestInfo::Datadog);
+        assert_eq!(tracer_hostname(&trace), Some("root-host"));
+
+        trace.payload.hostname = MetaString::from("payload-host");
+        assert_eq!(tracer_hostname(&trace), Some("payload-host"));
+    }
+
+    #[test]
+    fn tracer_hostname_is_absent_when_neither_the_payload_nor_the_root_span_has_one() {
+        let trace = Trace::new(
+            vec![span(1, 0, None), span(2, 1, Some("child-host"))],
+            TraceIngestInfo::Datadog,
+        );
+        assert_eq!(tracer_hostname(&trace), None);
+
+        let trace = Trace::new(vec![span(1, 0, Some(""))], TraceIngestInfo::Datadog);
+        assert_eq!(tracer_hostname(&trace), None);
+    }
+
+    #[test]
+    fn tracer_hostname_uses_the_local_root_of_a_fragment_without_a_zero_parent() {
+        // The first span is a child of the second, whose own parent is missing from the fragment.
+        let trace = Trace::new(
+            vec![span(1, 2, None), span(2, 99, Some("local-root-host"))],
+            TraceIngestInfo::Datadog,
+        );
+        assert_eq!(tracer_hostname(&trace), Some("local-root-host"));
     }
 }

@@ -20,11 +20,11 @@ use tracing::{debug, error};
 
 use crate::actions::Action;
 use crate::config::{AssertionConfig, AssertionStep, LogStream};
-use crate::deadline::{Budget, Deadline};
+use crate::core::deadline::{Budget, Deadline};
+use crate::core::probe::PROBE_TIMEOUT;
+use crate::core::record::{step_label, CaseRecord, RunningStep, StepResult, StepStatus, Verdict};
+use crate::core::result::{ErrorKind, TestResult};
 use crate::integration::IntegrationTestCase;
-use crate::probe::PROBE_TIMEOUT;
-use crate::record::{step_label, ActiveStep, CaseRecord, StepResult, StepStatus, Verdict};
-use crate::reporter::{DurationMs, ErrorKind, TestResult};
 
 mod adp_config_key_equals;
 mod adp_exits;
@@ -608,7 +608,7 @@ async fn run_step(record: &CaseRecord, member: &Member, case: Deadline, ctx: &As
         result = step => if result.status != AssertionStatus::Passed && ctx.cancel_token.is_cancelled() {
             running.interrupted(Some(result.message))
         } else {
-            running.returned(result)
+            running.result(result.status.into(), result.message, result.duration)
         },
         _ = ctx.cancel_token.cancelled() => running.interrupted(None),
         _ = tokio::time::sleep_until(running.deadline.at + STEP_SLACK) => match running.deadline.budget {
@@ -627,82 +627,6 @@ async fn run_step(record: &CaseRecord, member: &Member, case: Deadline, ctx: &As
     let status = result.status;
     record.finish(member.slot, result);
     status
-}
-
-/// Identity and timing of a running step, retained in the case record until it finishes.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RunningStep {
-    step: usize,
-    member: Option<usize>,
-    name: &'static str,
-    started: Instant,
-    /// The step's own budget.
-    budget: Duration,
-    /// The case deadline narrowed to `budget`.
-    deadline: Deadline,
-}
-
-impl RunningStep {
-    /// Captures the step's identity and timing for interruption reports.
-    pub(crate) fn active(&self) -> ActiveStep {
-        ActiveStep {
-            step: self.step,
-            member: self.member,
-            kind: self.name.to_string(),
-            elapsed_ms: DurationMs(self.started.elapsed()).as_millis(),
-            budget_ms: DurationMs(self.budget).as_millis(),
-        }
-    }
-
-    /// Returns an `interrupted` result, appending the step's own message if available.
-    ///
-    /// Reports elapsed time and any budget reduction imposed by the case deadline. The test result carries the
-    /// interruption cause.
-    pub(crate) fn interrupted(&self, step_message: Option<String>) -> StepResult {
-        let elapsed = self.started.elapsed();
-        let mut message = format!("Interrupted after {elapsed:.1?}.");
-        if self.deadline.budget == Budget::Case {
-            let left = self.deadline.at.saturating_duration_since(self.started);
-            message.push_str(&format!(
-                " The case left this step {left:.1?} of its {:?} step budget.",
-                self.budget
-            ));
-        }
-        if let Some(step_message) = step_message {
-            message.push('\n');
-            message.push_str(&step_message);
-        }
-        self.result(StepStatus::Interrupted, message, elapsed)
-    }
-
-    /// Returns an `errored` result for a step that exceeded its budget and [`STEP_SLACK`].
-    fn overran(&self) -> StepResult {
-        let elapsed = self.started.elapsed();
-        self.result(
-            StepStatus::Errored,
-            format!(
-                "Did not finish within its {:?} step budget; stopped after {elapsed:.1?}.",
-                self.budget
-            ),
-            elapsed,
-        )
-    }
-
-    /// Returns the result the step reported itself.
-    fn returned(&self, result: AssertionResult) -> StepResult {
-        self.result(result.status.into(), result.message, result.duration)
-    }
-
-    fn result(&self, status: StepStatus, message: String, duration: Duration) -> StepResult {
-        StepResult {
-            step: self.step,
-            member: self.member,
-            name: self.name.to_string(),
-            status,
-            message,
-            duration,
-        }
-    }
 }
 
 /// Fixtures for running a procedure through [`run_assertion_steps`] on the host.
@@ -748,8 +672,8 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{host_context, procedure};
     use super::*;
+    use crate::core::result::TestOutcome;
     use crate::intake::test_server::MockIntake;
-    use crate::reporter::TestOutcome;
 
     /// Shorter than the long-running test steps, so missed cancellation fails promptly.
     const BOUND: Duration = Duration::from_secs(120);

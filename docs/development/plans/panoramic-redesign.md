@@ -179,14 +179,16 @@ because a probe from outside cannot tell whether anything is listening.
 
 What runs, and where, follows from the case files. `panoramic run -d <dir>` selects every case in
 the directory for one subject OS, which defaults to the host's. A case whose `subject_os` leaves
-that OS out is reported as skipped. `panoramic plan <case> --subject-os <os>` prints, as JSON,
-everything a case would do on that OS, without running anything.
+that OS out is reported as skipped, and `panoramic list` leaves it out for that OS.
+`panoramic plan <case> --subject-os <os>` prints, as JSON, everything a case would do on that OS,
+without running anything.
 
 A case or a participant type names each image and host program by reference, and a run can replace
 any of them, which is how CI points cases at the images a pipeline built. Before any case starts,
-panoramic checks that each one exists and pulls an image the Docker daemon lacks. A case whose
-realization the host cannot provide, such as pods without a kind cluster (Kubernetes in Docker), is
-reported as errored before the run starts.
+panoramic checks that each one exists and pulls an image the Docker daemon lacks. A selected case
+whose realization the host cannot provide, such as pods without a kind cluster (Kubernetes in
+Docker), is a harness error that names the case, and the run stops with exit code 2 before any case
+starts.
 
 Cases in containers and pods run in parallel. Cases whose participants are host processes run one at
 a time, because they share the host's ports.
@@ -226,6 +228,7 @@ does not know is an error before anything starts.
 ```yaml
 description: <text>                    # optional
 timeout: <duration>                    # required, with a unit: 20m, 180s
+disabled: true                         # optional: planned, but no run includes the case
 subject_os: [linux, macos, windows]    # required, at least one
 participants:
   <name>: <participant>                # exactly one has subject: true
@@ -235,8 +238,9 @@ procedure:
 ```
 
 The directory names the case. A participant name is a lowercase DNS label, because it becomes a
-container name, a pod name and a host name. `localhost` and a name of only digits are errors, because a
-resolver answers them with an address that is not the container's.
+container name, a pod name and a host name. `localhost`, a name of only digits and a hexadecimal number
+written with `0x` are errors, because a resolver answers them with an address that is not the
+container's.
 
 **Participant fields.** An entry is flat. The first six fields say where the participant sits in the
 case. The rest are the participant's data, and a participant type fills in the same ones.
@@ -253,7 +257,7 @@ case. The rest are the participant's data, and a participant type fills in the s
 | `programs` | a list of `{name, path, args, env}` | What runs as host processes. Each program is one observed process. |
 | `env` | `{NAME: "text"}` | Environment of every process of the participant. |
 | `files` | `{<destination or name>: <source>}` | Files placed before start. |
-| `endpoints` | `{<name>: {<protocol>: <address>}}` | Where the participant listens. |
+| `endpoints` | `{<name>: {protocol: <protocol>, port \| path \| name: <address>}}` | Where the participant listens. |
 | `ready` | `{<endpoint>: <evidence>}` | Readiness evidence, where the default for the endpoint's protocol is not enough. |
 | `processes` | a list | The processes steps may name, and how each is observed. |
 | `commands` | `{<name>: [<program>, <arg>, ...]}` | Command lines of the participant's software, for `exec`. |
@@ -269,7 +273,7 @@ otherwise. A bare name is a host requirement.
 ```yaml
 realization: {enclosure: kubernetes-pod, options: {host_pid: true, cri_socket: true}}
 # enclosures: linux-container, windows-container, kubernetes-pod, host-process-group
-# options: host_cgroup_namespace on a Linux container; host_pid and cri_socket on a pod
+# options: host_pid and host_cgroup_namespace on a Linux container; host_pid and cri_socket on a pod
 
 with: {host_view: true}       # agent-adp, agent: mount the host's /proc, cgroup tree and container
                               # runtime socket, and point the Agent at them. This is the host view.
@@ -281,11 +285,11 @@ programs:
   - {name: main, path: python3, args: [./helper/serve.py], env: {PYTHONUNBUFFERED: "1"}}
 
 endpoints:
-  api:    {http: 8080}
-  secure: {http: 8443, tls: true}
-  stats:  {udp: 8125}
-  docker: {unix_stream: "{{ self.dir }}/docker.sock"}
-  pipe:   {named_pipe: my-pipe}
+  api:    {protocol: http, port: 8080}
+  secure: {protocol: http, port: 8443, tls: true}
+  stats:  {protocol: udp, port: 8125}
+  docker: {protocol: unix_stream, path: "{{ self.dir }}/docker.sock"}
+  pipe:   {protocol: named_pipe, name: my-pipe}
 
 ready:                        # accepts | exists | none | {http: <path>} | {output: <pattern>, process: <name>}
   api: {http: /ready}
@@ -411,10 +415,11 @@ pub struct ParticipantSpec {
     pub commands: BTreeMap<String, CommandSpec>,
     pub collect: Option<Vec<CollectFile>>,
 
-    // Only a participant type declares these three. A case uses them and cannot define them.
+    // Only a participant type declares these four. A case uses them and cannot define them.
     pub aliases: BTreeMap<&'static str, &'static str>,  // file names a case may write, one destination each
     pub consumes: BTreeMap<&'static str, Consumed>,     // connection names it knows, and what each delivers
     pub operations: &'static [&'static dyn Operation],  // capabilities steps call by name
+    pub wiring: BTreeMap<String, Wiring>,              // by endpoint: why a default was withdrawn, the line to write
 }
 
 pub struct Program {
@@ -526,7 +531,7 @@ fn linux_container(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
     if with.host_view {
         // three read-only host mounts and the environment that points the Agent at them
     }
-    withdraw_defaults(cx, &mut spec.env)?;  // two rules, under "Endpoints and wiring"
+    withdraw_defaults(cx, &mut spec.env)?;  // three rules, under "Endpoints and wiring"
     Ok(spec)
 }
 ```
@@ -662,7 +667,8 @@ to every use. A step field may reference any participant's endpoint.
 
 | Place | Fixed |
 | --- | --- |
-| `command`, `args`, `programs`, `env`, a socket path in `endpoints`, a pattern in `ready` | when the participant is created |
+| A socket path in `endpoints` | at plan; it may refer only to `self.dir`, because the address is built from it |
+| `command`, `args`, `programs`, `env`, a pattern in `ready` | when the participant is created |
 | A template file in a container or as host processes | when the participant is created |
 | A template file in a pod | when the pod is created, or after it starts if the file holds a value that exists only then |
 | `commands`, and the template fields of a step | when the step runs |
@@ -799,14 +805,16 @@ participants:
     command: [python3, /case/fake_docker.py, "{{ adp.container_id }}", "{{ self.endpoints.api.path }}"]
     files: {/case/: fixture/}
     endpoints:
-      api: {unix_stream: "{{ self.dir }}/docker.sock"}
+      api: {protocol: unix_stream, path: "{{ self.dir }}/docker.sock"}
   db:
     image: postgres:16
     endpoints:
-      sql: {tcp: 5432}          # the image listens here without being told
+      sql: {protocol: tcp, port: 5432}   # the image listens here without being told
 ```
 
-An entry is one protocol with its address, plus `tls: true` where an `http` listener serves TLS. A case
+An entry names its protocol and its address, plus `tls: true` where an `http` listener serves TLS. The
+address field is the part a reference reads: `port` for `tcp`, `udp`, `http` and `grpc`, `path` for the
+two Unix protocols and `name` for `named_pipe`. Any other field is an error, as is a port of 0. A case
 that restates an endpoint a participant type declares replaces the entry whole, and should do so
 only when that address is itself under test.
 
@@ -826,7 +834,8 @@ participant 'adp': endpoints 'agent_otlp_grpc' and 'api' share tcp port 45100.
 final configuration references it: its `env` after the merge and the withdraw rule, its `command`,
 `args` or `programs`, or a file it places with `template: true`. An endpoint the case declares is
 usable as declared, because the case is the authority for a command it supplies. Using an unwired
-endpoint in a `connect`, a step or a readiness gate is a plan error, and the error says why:
+endpoint in a `connect`, a step or a readiness gate is a plan error, and the error says why. The
+participant type's `wiring` gives the withdrawn default and the line to write:
 
 ```
 participant 'adp' (agent-adp, linux-container): endpoint 'dogstatsd_udp' is not wired.
@@ -852,7 +861,7 @@ Three things follow from "wired means referenced":
   A wired endpoint the software never opens fails when the case runs.
 
 **The withdraw rule.** The Agent and ADP let environment mask `datadog.yaml`, so a default
-environment value would override a key the case set in its file. Two rules withdraw defaults. Both
+environment value would override a key the case set in its file. Three rules withdraw defaults. All
 live in the `agent-adp` and `agent` participant types, look only at which keys the case sets, and
 never read an address.
 
@@ -866,6 +875,10 @@ never read an address.
    for every process in the container, so another process falls back to the software's own default
    for that key. The rule reads no switch of the software. An `ADP_DD_` key on Windows or macOS is a
    plan error raised by `agent-adp`'s `spec`.
+3. A default entry is withdrawn when the case's `env` sets another name the software reads for the
+   entry's setting (`DD_RECEIVER_PORT` for `DD_APM_RECEIVER_PORT`), or that name's `ADP_` form. The
+   software takes the first of a setting's names that is set, and the default's name comes first, so
+   the default would mask the case's value.
 
 A withdrawn default leaves its endpoint unwired unless the case's own line is a reference. That is
 the common path in the comparison cases, and the wired check's message covers it.
@@ -873,12 +886,13 @@ the common path in the comparison cases, and the wired check's message covers it
 **Readiness evidence** belongs to an endpoint, and only a consumer waits for it, within 60 seconds
 by default. Participant types override the protocol's default in four places. `datadog-intake` answers
 HTTP 200 at `/ready` on `api`, and its `dogstatsd_forward` waits for the intake's own log line that
-its DogStatsD listener is bound. The intake is a harness tool, so the line is ours to keep; `cmprest`,
-the first PR with a forwarding connection, adds it with the consumer. `agent-adp`'s `dogstatsd_udp` waits for ADP's "DogStatsD listener started"
-line for that port. `agent`'s `dogstatsd_udp` needs evidence that holds across Agent releases.
-`compare`, which writes the `agent` participant type, gives it one: a log line the Agent prints
-when the listener is bound, if one holds across the releases the cases use, and otherwise a gate
-on the Agent's own health check, as legacy waits for it today.
+its DogStatsD listener is bound ("DogStatsD forwarding capture started: listening on", printed after the bind).
+The intake is a harness tool, so the line is ours to keep. `agent-adp`'s `dogstatsd_udp` waits for ADP's "DogStatsD listener started"
+line for that port. `agent`'s `dogstatsd_udp` waits for the Agent's "dogstatsd-udp: starting to
+listen on" line, which the Agent prints once the listener is bound, in the releases the cases use
+(7.85.4 and the nightly `agent-dev` image). The line names the address with an interface the
+Agent's configuration chooses, so it is matched without the port; the Agent opens one UDP
+listener.
 
 **What is found only at run time.** The harness does not model the software, so some mistakes are
 not plan errors. A `connect` to a listener the software has switched off times out at its gate, and
@@ -918,8 +932,8 @@ in its spec (`consumes`).
 
 | Participant type | Name | Accepts | Sets |
 | --- | --- | --- | --- |
-| `agent-adp`, `agent` | `intake` | `http` | `DD_DD_URL` and `DD_APM_DD_URL`, both `{{ self.connections.intake.url }}` |
-| `agent-adp`, `agent` | `dogstatsd_forward` (Linux containers) | `udp` | `DD_STATSD_FORWARD_HOST` and `DD_STATSD_FORWARD_PORT` |
+| `agent-adp`, `agent` | `intake` | `http` | `DD_DD_URL` and `DD_APM_DD_URL`, and their `ADP_` forms, all `{{ self.connections.intake.url }}` |
+| `agent-adp`, `agent` | `dogstatsd_forward` (Linux containers) | `udp` | `DD_STATSD_FORWARD_HOST` and `DD_STATSD_FORWARD_PORT`, and their `ADP_` forms |
 | `millstone` | `comparison_target`, `baseline_target` (both required) | every protocol but `named_pipe` | nothing: the case's `millstone.yaml` references `{{ self.connections.comparison_target.url }}` |
 
 A declared name checks the endpoint's protocol and adds its environment entries to the consumer. The
@@ -932,6 +946,10 @@ works this way.
 A delivered key also wins over the same setting in the case's `datadog.yaml`, because environment
 masks the file. A stale line there, such as a `dd_url` that names a host of the legacy network, is
 dead, and a migrated case drops it.
+
+The `ADP_` forms carry the same value. The image gives ADP the value of `ADP_DD_<K>` in place of
+`DD_<K>`, so a case that set one would send ADP elsewhere. Delivering them lets the guard on
+delivered keys reject that case.
 
 **Routes between participants.** A route is chosen per endpoint protocol, consumer realization and
 server realization. The function keeps all three arguments, and the first version fills only the
@@ -980,7 +998,10 @@ runner. The way depends on what is done as well as on the protocol and the serve
 
 Two limits are plan errors: a send to a pod, and a request through the courier to an endpoint with
 `tls`. For `agent-adp`'s `otlp_http`, the participant type sets `tls` when the case sets the
-receiver's certificate and key.
+receiver's certificate and key. Until a case needs them, two more are plan errors: a request to a
+`grpc` endpoint, because the only request is an HTTP `GET`, and a request to an endpoint with `tls`,
+which `linuxrest` builds for `otlp-tls`. A send to an `http` or `grpc` endpoint writes its bytes over
+TCP.
 
 **Runner-host ports.** Every http and grpc endpoint of a Linux container is published on the
 runner's loopback address. Docker chooses each published port and the harness reads it back after
@@ -1024,7 +1045,7 @@ file, the subject OS and the participant or step.
 pub struct CasePlan {
     pub case: CaseInfo,                       // name, source file, description, timeout
     pub subject_os: Os,
-    pub scope: Scope,                         // names the case's directory, network and containers
+    pub scope: Scope,                         // per-case resources of each enclosure; names come from the run
     pub participants: BTreeMap<String, PlannedParticipant>,
     pub create_order: Vec<Vec<String>>,       // levels of independent participants
     pub start_order: Vec<Vec<String>>,
@@ -1052,7 +1073,8 @@ a step calls. The lifecycle hands each planned participant to its realization ba
 `serde::Serialize`, and its field names are theirs. Every map is ordered and every field keeps its
 declared order, so dumping one case twice gives identical output, and any two dumps diff line by
 line. A file appears with its contents, a template as written and, where planning filled it, as
-resolved, and an operation as its name and what it uses. Migration reviews read this JSON beside
+resolved, an operation as its name and what it uses, and a step as its fields, what it needs, and how the
+runner reaches each endpoint it uses, itself or through an operation. Migration reviews read this JSON beside
 the legacy file. A case that fails may also write its plan to its log directory.
 
 This is part of the plan for `dsd-plain`, trimmed:
@@ -1100,7 +1122,7 @@ $ panoramic plan test/correctness/cases/dsd-plain --subject-os linux
           "route": "by_name",
           "url": "http://intake-adp:2049",
           "reached": {"host": {"host": "intake-adp", "port": 2049}},
-          "delivers": ["DD_DD_URL", "DD_APM_DD_URL"]
+          "delivers": ["DD_DD_URL", "DD_APM_DD_URL", "ADP_DD_DD_URL", "ADP_DD_APM_DD_URL"]
         }
       },
       ...
@@ -1145,7 +1167,7 @@ adp       agent-adp            subject     linux-container
               ...
   endpoints   api            http           45100                                  ready: accepts
               dogstatsd_uds  unix-datagram  /airlock/adp/shared/dogstatsd_uds.sock ready: socket exists
-  connect     intake -> intake-adp.api   http://intake-adp:2049   delivers DD_DD_URL, DD_APM_DD_URL
+  connect     intake -> intake-adp.api   http://intake-adp:2049   delivers DD_DD_URL, DD_APM_DD_URL, ...
   processes   adp     exit: record data-plane   output: file adp.log
               agent   exit: record agent        output: file agent.log
   commands    adp  agent
@@ -1179,9 +1201,9 @@ One function runs one case from its plan. The runner in the binary schedules cas
 | --- | --- |
 | prepare | Each realization backend prepares its part of the case's scope: a network and a volume, a namespace, or a state directory. Every resource is entered in the ledger before it is made. |
 | create | In create order, each participant is created from its data. References whose values exist are resolved and files are placed. Nothing runs yet. |
-| start | Participants start level by level. A level starts once every endpoint its participants connect to shows its readiness evidence. A gate fails as soon as its server is seen to exit. |
+| start | Participants start level by level. A level starts once every endpoint its participants connect to shows its readiness evidence. The level fails as soon as the server of any of its gates is seen to exit, until the level starts. |
 | procedure | The steps run in order, and a `parallel` block runs its steps together. Each step has its own time budget inside the case's timeout. |
-| observe | Exited participants get a short grace to finish their output, then the files to collect are copied out. This also runs after a failed create or start, if anything started. |
+| observe | Exited participants get a short grace to finish their output. Then every capture takes what is left of its output, a running participant's too, and the files to collect are copied out. This also runs after a failed create or start, if anything started. |
 | reclaim | The ledger removes everything the case made, under its own budget, on every path: pass, failure, error, timeout and cancellation. Each resource is reported as reclaimed, leaked or unsettled. |
 
 - **Two orders.** Create order exists because one participant's data may need a value another
@@ -1251,22 +1273,23 @@ Every process a participant declares has one exit channel and one output channel
   `$PANORAMIC_EXIT_DIR/<name>`: `{"code": <code>, "signal": <signal>, "time": "<seconds>.<fraction>"}`,
   where the time is a Unix time with one to nine fractional digits. A normal exit has signal 0. A
   death by signal has code 256 and the signal number. The reader ignores other fields, so the format
-  can grow. The first line is final, so a restart never returns a process to running. A case can
-  declare supervised processes of its own, so this format is a contract and the user guide documents
-  it.
+  can grow. A line counts once its newline is written. The first line is final, so a restart never
+  returns a process to running. A case can declare supervised processes of its own, so this format
+  is a contract and the user guide documents it.
 - **Signals.** A container reports death by signal as code 128 + n, while a record and a waited
   child carry the signal separately. `exits_with` asserts a code, and no case asserts on death by
   signal today. Matching a signal the same way on every realization is added with the first case
   that needs it.
 - **Output.** Output is written under `<log dir>/<participant>/` as it arrives, and each line keeps
-  the name of its process.
+  the name of its process. A participant whose processes are all supervised also gets its container
+  log, which holds what the supervisor writes, as `_container.log`, a name no process log takes.
 - **Reports.** `run.json` and `result.json` keep today's shape and gain fields: the subject OS, the
   skipped outcome with its reason, each participant's realization, per-process exits and output
   paths, reclaim entries and collected files. Exit codes are 0 passed, 1 failed, 2 harness error,
   and 3 when nothing ran.
 - **Retention is data.** A file to collect, whether a participant's data lists it or a step writes
-  it, carries `keep: always` or `keep: on_failure`. The runner applies the rule and knows no file
-  names.
+  it, carries `keep: always` or `keep: on_failure`. The lifecycle applies the rule to the outcome it
+  records, and the runner knows no file names.
 
 ### Steps and operations
 
@@ -1395,7 +1418,7 @@ is added for this command. All three may hold references.
 | `config_key_equals` | assertion | `on`, `key`, `value`, `view`, `timeout` | operation `config_dump` |
 | `config_set` | action | `on`, `key`, `value`, `timeout` | operation `config_set` |
 | `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `capture_duration`, `stats_duration`, `expected_metrics`, `timeout` | three operations; the endpoint, to send |
-| `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `tag_patterns`, `max_age`, `timeout` | operation `dump` |
+| `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
 | `compare` | assertion | `telemetry`, `comparison`, `baseline`, and the options of each telemetry | operation `dump` on both participants |
 
 `timeout` is required wherever it is listed and has no default. `compare` has none: its budget is
@@ -1506,8 +1529,9 @@ the cases it turns over.
   `main` owns, the copy is checked against `main`'s version after every rebase, until one of the two
   is deleted. `agent-adp`'s default environment is a copy of what
   `bin/correctness/panoramic/src/test_env.rs` injects, and its s6 scripts are copies of
-  `docker/s6-services/`. The s6 scripts add exit records and log capture, so they are not byte
-  copies: their check fails when `main`'s versions change, and the change is ported by hand.
+  `docker/s6-services/`, the image's own. They sit beside them, in `docker/s6-services-panoramic/`,
+  and no image is built with them. The s6 scripts add exit records and log capture, so they are not
+  byte copies: their check fails when `main`'s versions change, and the change is ported by hand.
 - **The size of the whole.** The per-PR estimates sum to about 22k new non-test lines: about 12k of
   machinery (the Docker mechanisms, the courier, observation, the backends, the step bodies), about
   6k of the model (the case schema, the participant spec, planning, addresses and the participant
@@ -1667,10 +1691,11 @@ Why this order:
     and readiness evidence from connections. The planning half of the backend
     seam for Linux containers. `plan` now prints every address and connection.
   - `agent-adp` and `datadog-intake` for Linux containers, as definitions and nothing else: the
-    endpoint table, the default environment that references it, the two withdraw rules, the file
-    names, the processes, the s6 overlay, and the `with` parameters. Teaches the intake binary to
-    read its two listen variables and rebuilds the tools image. Adds the bad cases for the guards
-    and the wired check.
+    endpoint table, the default environment that references it, the three withdraw rules, the file
+    names, the processes, the s6 overlay, and `with: {host_view: true}`. `agent-adp`'s
+    `with: {own_ip: ...}` lands with `windows` and its `dogstatsd_forward` consumer with `cmprest`,
+    each with its first case. Teaches the intake binary to read its two listen variables and
+    rebuilds the tools image. Adds the bad cases for the guards and the wired check.
 - **Watch out:** this is the PR to get right.
   - Whether to keep harness-owned addresses or take the fallback is decided on a draft of the
     comparison PRs, before this PR is marked ready (see "Why this order").
@@ -1702,7 +1727,10 @@ Why this order:
 
 - **Builds:** exit observation with its three states, exit records, output capture, collection with
   retention as data, and the lifecycle: prepare, create in order, start behind readiness gates,
-  steps, observe. Reclaim stays with the scheduler.
+  the step driver with `parallel` blocks and per-step budgets, observe. Reclaim stays with the
+  scheduler. Three plan checks that observation needs: at most one process of a container is
+  observed through the container, `collect` names are plain file names, and mount paths are
+  absolute.
 - **Watch out:** the lifecycle reads only the plan. It does not call the participant type at create
   time or read the loaded case; only an operation a step calls runs participant type code. An
   undetermined exit is an error, never a pass. Only a consumer waits for readiness.
@@ -1712,8 +1740,8 @@ Why this order:
 - **Builds:** the route from a case file to a run. Discovery sends a file with no top-level `type:`
   to the new loader. A third `Test` runs a plan. `--subject-os`, a recorded skip, an unsatisfiable
   case as a harness error, the checks before the first case, and `--set` with `PANORAMIC_SET`
-  (moved here from `schema`). The step driver with
-  `log_contains`, `log_not_contains`, `process_stable_for`, `file_contains` and `parallel`. The test
+  (moved here from `schema`). The steps `log_contains`, `log_not_contains`,
+  `process_stable_for` and `file_contains`, which the lifecycle's step driver runs. The test
   that every real case compiles for every OS it declares. Migrates the Linux-only cases on
   `agent-adp` that need no other step, such as `adp-ipc-no-dns`, `adp-logging-default-path` and
   `adp-rar-disabled`.
@@ -1750,7 +1778,7 @@ Why this order:
 
 **9. `compare`: comparison cases begin**
 
-- **Builds:** the `compare` step over two participants that offer `dump`, the `wait` step, the
+- **Builds:** the `compare` step over two participants that offer `dump`, the
   `agent` and `millstone` participant types, Unix sockets shared between participants, and the first
   cases that ask for the host view. Moves the analyzers from
   `bin/correctness/panoramic/src/correctness/analysis/` under `steps`. Adds `PANORAMIC_SET` to the
@@ -1779,6 +1807,7 @@ Why this order:
     those lines as each file is migrated.
   - What a failed comparison leaves on disk must not shrink: the input capture and both intake
     dumps. They become collect entries. Say what happens to the merged traffic manifest.
+  - No migrated case uses `wait`, so it lands with the first case that does.
   - The `millstone` crate's own test parses every `millstone*.yaml` under `test/` and fails on a
     templated `target:` line, such as `{{ self.connections.comparison_target.url }}`. It changes in
     this PR.
@@ -1791,15 +1820,16 @@ Why this order:
 
 - **Builds:** what the remaining families of comparison cases need, each with its cases.
   - DogStatsD: `compare` of `events` and `service_checks`, UDP and stream targets, and the
-    forwarding connection. Migrates the DogStatsD cases that send events or service checks, or send
-    over UDP, a stream socket or the forwarding connection.
+    forwarding connection with `agent-adp`'s `dogstatsd_forward` consumer. Migrates the DogStatsD
+    cases that send events or service checks, or send over UDP, a stream socket or the forwarding
+    connection.
   - OTLP metrics: the OTLP endpoints on the baseline `agent`, and the references that replace the
     literals on both sides. Migrates the OTLP metrics cases.
   - Traces and logs: `compare` of `traces` and `logs`, the APM endpoints over TCP and a Unix
     socket, and the embedded collector's receiver endpoint on `agent` for the OTTL cases. Migrates
     the trace and log cases.
-  - The new schema has no `disabled` key, so a disabled case migrates with its family and moves to
-    `test/correctness/disabled`, which no job runs.
+  - A disabled case migrates with its family and keeps `disabled: true`, which the schema gains here.
+    Discovery still loads and plans it, so it cannot rot, and leaves it out of every run.
 - **Watch out:** most of this PR is case files. Keep one commit per family, so a family with a flaky
   case can be split off and the others can merge.
   - DogStatsD: `dsd-origin-detection` keeps the container environment it tests today. `dsd-udp`,
@@ -1814,8 +1844,10 @@ Why this order:
     the trace-agent and another key for ADP; it is the case the wiring rule was shaped around.
     `apm-trace-uds` needs the host view. Some trace cases name a `datadog_intake.config_path` file
     that does not exist and that legacy ignores. The strict loader rejects it, so the migration
-    drops it and says so. Consider delivering the logs intake keys through the `intake` connection
-    here, so the log cases stop wiring them by hand.
+    drops it and says so. The log cases write `logs_config.logs_dd_url` by reference to their
+    `intake` connection; delivering it through the connection would add a key to every case that
+    connects an intake. `apm-trace-uds` also keeps the host PID namespace: the trace-agent finds a
+    tracer's container from its socket peer's PID.
 
 **11. `pod`: the pod backend and the matrix**
 
@@ -1888,9 +1920,9 @@ Why this order:
 
 - **Builds:** the last backend table, then the cases that needed every backend.
   - The container backend's Windows table, `agent-adp` on Windows with its entrypoint script, named
-    pipe endpoints, and a participant's own address in its configuration and its hosts file. The
-    Windows CI script builds the Windows courier. Migrates the
-    cases that run on Windows, alone or with Linux.
+    pipe endpoints, and a participant's own address in its configuration and its hosts file
+    (`agent-adp`'s `with: {own_ip: ...}`). The Windows CI script builds the Windows courier. Migrates
+    the cases that run on Windows, alone or with Linux.
   - The cases that run on all three OSes. Those that read logs and exits need almost no Rust. Those
     that use endpoints and commands need `config_set` and `exec` of a command the participant type
     names, which replaces the legacy CLI actions.
@@ -1982,6 +2014,12 @@ host-process subject with containerized helpers.
 - Comparison loads no longer wait for every container's health check.
 - A Linux container no longer gets `/proc`, the cgroup tree and the Docker socket unless the case
   asks for the host view.
+- A Linux container no longer shares the runner's PID namespace. Legacy gave every one the host's,
+  for origin detection; a case that needs it sets the realization option `host_pid`, as
+  `dsd-origin-detection` and `apm-trace-uds` do on each of their containers.
+- `panoramic`'s mounts directory, whose init script resolves the legacy dynamic variables, is not
+  mounted into participant containers. A value known only at run time is a reference.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.
 - A load error exits 2 with no `run.json`, and a run where every case is skipped exits 3.
-- The merged traffic manifest may go, once retention is data.
+- The merged traffic manifest goes. A participant case writes none: its collected files, with their
+  retention, are listed in `result.json`.

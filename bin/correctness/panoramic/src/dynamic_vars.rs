@@ -66,7 +66,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::config::{ActionConfig, AssertionConfig, AssertionStep, IntegrationConfig};
-use crate::probe::probe;
+use crate::core::probe::probe;
 
 /// Prefix for dynamic variable env vars in the test config.
 pub const ENV_PREFIX: &str = "PANORAMIC_DYNAMIC_";

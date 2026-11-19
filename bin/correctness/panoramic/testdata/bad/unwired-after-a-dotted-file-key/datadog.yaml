@@ -1,0 +1,2 @@
+# A dotted key sets the nested setting, so it withdraws the default too.
+APM_CONFIG.receiver_port: 8127

@@ -19,3 +19,12 @@ lib/datadog-agent/config-recorder/agent_codegen.py -text
 lib/datadog-agent/config-recorder/regenerate.sh -text
 lib/datadog-agent/config-recorder/go/** -text
 lib/datadog-agent/config-recorder/cases/** -text
+
+# The scripts panoramic places in Linux containers. A carriage return in a script line breaks it, so a Windows checkout
+# must keep these as they are.
+docker/s6-services-panoramic/** text eol=lf
+bin/correctness/panoramic/src/participants/millstone/*.sh text eol=lf
+
+# Scripts integration cases place in Linux containers. A carriage return in a script line breaks it, so a Windows
+# checkout must keep these as they are.
+test/integration/cases/**/*.sh text eol=lf

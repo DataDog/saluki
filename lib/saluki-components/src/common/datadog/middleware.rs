@@ -14,7 +14,7 @@ static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 ///
 /// The request's URI must already container a relative path component. Any existing scheme, host, and port components
 /// will be overridden by the resolved endpoint's URI.
-pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
+pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B>) -> Request<B> + Clone {
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
@@ -116,7 +116,7 @@ mod tests {
         // the request's scheme/host/port are replaced with the endpoint's and the API key is attached.
         let endpoint = ResolvedEndpoint::from_raw_endpoint("http://proxy.example.com:8080", "secret-api-key")
             .expect("endpoint should resolve");
-        let mut middleware = for_resolved_endpoint(endpoint);
+        let middleware = for_resolved_endpoint(endpoint);
 
         let request = Request::builder()
             .uri("/api/v2/series")
@@ -139,7 +139,7 @@ mod tests {
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
             .expect("endpoint should resolve");
         let default_authority = endpoint.endpoint().authority().to_string();
-        let mut middleware = for_resolved_endpoint(endpoint);
+        let middleware = for_resolved_endpoint(endpoint);
 
         let cases = [
             ("/api/v2/logs", "agent-http-intake.logs.datadoghq.com"),
@@ -168,7 +168,7 @@ mod tests {
         // the endpoint's own authority instead of a derived intake host.
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://custom.example.com", "fake-api-key")
             .expect("endpoint should resolve");
-        let mut middleware = for_resolved_endpoint(endpoint);
+        let middleware = for_resolved_endpoint(endpoint);
 
         for path in ["/api/v2/logs", "/api/v0.2/traces"] {
             let request = Request::builder().uri(path).body(()).expect("request should build");

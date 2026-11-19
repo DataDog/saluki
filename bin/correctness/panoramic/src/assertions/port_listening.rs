@@ -6,7 +6,7 @@ use tracing::trace;
 
 use crate::actions::docker_exec;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
-use crate::probe::{probe, ProbeError, PROBE_TIMEOUT};
+use crate::core::probe::{probe, ProbeError, PROBE_TIMEOUT};
 
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 

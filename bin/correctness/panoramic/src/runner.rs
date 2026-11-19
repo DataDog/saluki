@@ -21,22 +21,22 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::deadline::{Budget, Deadline};
-use crate::ledger::RECLAIM_TIME;
-use crate::probe::probe;
-use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
-use crate::tasks::TASK_STOP_TIME;
+use crate::core::deadline::{Budget, Deadline};
+use crate::core::ledger::RECLAIM_TIME;
+use crate::core::probe::probe;
+use crate::core::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
+use crate::core::tasks::TASK_STOP_TIME;
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec},
-    events::TestEvent,
-    intake::IntakeClient,
-    integration::IntegrationTestCase,
-    reporter::{
+    core::result::{
         ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
         UNKNOWN_PHASE,
     },
+    events::TestEvent,
+    intake::IntakeClient,
+    integration::IntegrationTestCase,
 };
 
 /// A sender that the `Runner` can use to send `TestEvent`s.
@@ -302,7 +302,7 @@ impl Runner {
             )
             .await;
 
-            if !result.outcome.is_passed() {
+            if result.outcome.is_failure() {
                 break;
             }
         }
@@ -481,8 +481,11 @@ impl Runner {
         result.log_dir = Some(log_dir.clone());
 
         write_result_log(&result, &log_dir);
-        // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk.
-        crate::traffic::finalize(&log_dir, result.outcome);
+        // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk. A
+        // participant case's lifecycle applies what it keeps: retention is data.
+        if test.participant_case().is_none() {
+            crate::traffic::finalize(&log_dir, result.outcome);
+        }
         crate::machine_output::write_test_report(&result, &log_dir);
 
         let _ = event_sender.send(TestEvent::TestCompleted {
@@ -1433,6 +1436,7 @@ pub(crate) mod test_support {
             adp_binary_path: PathBuf::new(),
             core_agent_binary_path: PathBuf::new(),
             alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
+            containers: None,
         }
     }
 }
@@ -1441,9 +1445,9 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{test_runner_settings, Behavior, ScriptedTest, TaskProbe};
     use super::*;
-    use crate::record::StepStatus;
+    use crate::core::record::StepStatus;
+    use crate::core::result::{ReclaimResult, TestOutcome, TimeoutDeadline};
     use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND};
-    use crate::reporter::{ReclaimResult, TestOutcome, TimeoutDeadline};
 
     /// A bound for real-time tests.
     const BOUND: Duration = Duration::from_secs(5);

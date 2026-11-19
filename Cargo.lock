@@ -1390,8 +1390,11 @@ name = "datadog-agent-commons"
 version = "0.1.0"
 dependencies = [
  "backon",
+ "bytes",
  "datadog-protos",
  "futures",
+ "http",
+ "http-body-util",
  "pin-project-lite",
  "rcgen",
  "rustls",
@@ -1400,6 +1403,8 @@ dependencies = [
  "saluki-io",
  "saluki-metadata",
  "saluki-tls",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-rustls",
@@ -3858,7 +3863,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?rev=4dbacec20b11eff23e0edd7fcc91300124663157#4dbacec20b11eff23e0edd7fcc91300124663157"
+source = "git+https://github.com/DataDog/lading?rev=7b3d3f78ec60ccab474565fc3fd8aa027d50d5c0#7b3d3f78ec60ccab474565fc3fd8aa027d50d5c0"
 dependencies = [
  "byte-unit",
  "bytes",
@@ -4617,6 +4622,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bollard",
+ "bytes",
  "chrono",
  "clap",
  "colored",
@@ -4630,6 +4636,7 @@ dependencies = [
  "rustls",
  "rustls-cng-crypto",
  "saluki-common",
+ "saluki-config",
  "saluki-error",
  "serde",
  "serde-saphyr",
@@ -5802,6 +5809,7 @@ dependencies = [
  "async-compression",
  "async-trait",
  "axum",
+ "backon",
  "base64 0.23.1",
  "bytes",
  "bytesize",
@@ -5856,6 +5864,7 @@ dependencies = [
  "saluki-tls",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "simdutf8",
  "smallvec",
  "snafu",
