@@ -15,7 +15,13 @@ Initialize-RustEnvironment -RepoRoot $RepoRoot
 # The Cargo home is cached between jobs, so reinstall cargo-nextest when the cached version doesn't match the pinned one.
 $InstalledNextestVersion = $null
 if (Get-Command cargo-nextest -ErrorAction SilentlyContinue) {
-    $InstalledNextestVersion = ((& cargo nextest --version | Select-Object -First 1) -split " ")[1]
+    # A cached binary that fails to report its version is treated as missing.
+    try {
+        $NextestVersionLine = & cargo nextest --version | Select-Object -First 1
+        if ($NextestVersionLine -match '^cargo-nextest (\S+)') {
+            $InstalledNextestVersion = $Matches[1]
+        }
+    } catch {}
 }
 if ($InstalledNextestVersion -ne $env:CARGO_NEXTEST_VERSION) {
     Write-Host "[*] Installing cargo-nextest@$env:CARGO_NEXTEST_VERSION (found: $InstalledNextestVersion)..."
