@@ -22,7 +22,7 @@
 //!
 //! ```text
 //! courier --deadline <duration> probe <address>
-//! courier --deadline <duration> send <address>         < payload
+//! courier --deadline <duration> send <address> [--payload-hex <hex>] < payload
 //! courier --deadline <duration> http <address> [--path <path>]
 //! courier --deadline <duration> follow <path>
 //! ```
@@ -33,8 +33,8 @@
 //! output is being written.
 //!
 //! - `probe` writes nothing to standard output.
-//! - `send` reads its payload from standard input until end of file, then writes it. It writes nothing to standard
-//!   output.
+//! - `send` reads its payload from standard input until end of file, then writes it. With `--payload-hex`, the payload
+//!   is the bytes its digits spell, and standard input is not read. It writes nothing to standard output.
 //! - `http` requests `--path` (default `/`) and writes the status code on one line, then the body exactly as
 //!   received.
 //! - `follow` waits for the file to exist, then writes its contents from the start, as they arrive.
