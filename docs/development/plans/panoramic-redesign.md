@@ -773,10 +773,9 @@ on it is a plan error.
 For an opt-in endpoint the key is the case's choice. `ADP_DD_<key>` in a Linux container reaches ADP
 only, and the `datadog.yaml` spelling works wherever the case supplies that file.
 
-The addresses of the endpoints wired by default are the values
-`bin/correctness/panoramic/src/test_env.rs` injects on `main` today, all below 49152, and the
-default environment is a copy of that file's, checked against it after every rebase (see "How old
-and new coexist"). The opt-in ports are the ones integration cases write today.
+The addresses of the endpoints wired by default are the values the legacy `test_env.rs` injected, all below
+49152. `DEFAULT_ENV` in `bin/correctness/panoramic/src/participants/datadog_agent.rs` holds them
+now, and `rmlegacy` deleted the file it was copied from. The opt-in ports are the ones integration cases write.
 Comparison cases write different ones (54317 and 4317), and they move to the table's. A few case
 scripts hold these ports as literals. They keep working while addresses are fixed, and a script
 should take them from its `exec` step's `env` by reference before addresses are ever assigned.
@@ -790,7 +789,7 @@ The other participant types are smaller.
 | `millstone` | none |  |
 
 `agent` keeps the Agent's own ports for DogStatsD and APM while it runs only in its own container.
-Before `agent` runs as host processes, `hostproc` moves them off those ports, as `test_env.rs` does
+Before `agent` runs as host processes, `hostproc` moves them off those ports, as `DEFAULT_ENV` does
 for `agent-adp`, so it cannot collide with an Agent installed on the host.
 
 The intake binary hard-codes its two ports on `main` today. Reading these two variables is a small
@@ -1526,9 +1525,10 @@ run needs no flag.
 `NAME` is the reference exactly as written, and the run uses `REFERENCE` in its place wherever it
 was written. `panoramic plan` and `run.json` show both. A name given twice, or a name no discovered
 case uses, is an error before anything starts. This is how CI points cases at the images a pipeline
-built. A backend's constants are not `--set` names. A helper image a backend runs comes from
-`PANORAMIC_ALPINE_IMAGE`, as the legacy runner's does today, and the check before the first case
-covers it; the courier binary is built by `make build-courier`.
+built. A backend's constants are not `--set` names. No backend runs a helper image, so there is no
+`--alpine-image` and no `PANORAMIC_ALPINE_IMAGE`: `rmlegacy` deleted them with the legacy runners
+that read them. A backend that needs a helper image later gets a constant. The courier binary is
+built by `make build-courier`.
 
 **Before the first case**, once, after selection:
 
@@ -1542,9 +1542,8 @@ covers it; the courier binary is built by `make build-courier`.
    participant is created. A bare name is found on the runner's `PATH`, and any other path is
    relative to the directory panoramic runs in.
 4. For pod cases, the kind cluster exists and holds the images. The harness creates a missing
-   cluster, as the legacy runner does, so `kind` on the `PATH` is the host requirement, and the
-   cluster must have a single node. Setup blocks the run here, outside every case's timeout, where
-   the legacy runner set the cluster up in the background. Images are loaded with
+   cluster, so `kind` on the `PATH` is the host requirement, and the cluster must have a single
+   node. Setup blocks the run here, outside every case's timeout. Images are loaded with
    `kind load docker-image`, which needs a single-platform image.
 
 Pulling a missing image keeps "run a new container" a one-line change in a case, in CI as well as
@@ -1558,7 +1557,7 @@ The cases are the main test. A test of the harness alone covers what a passing c
 | --- | --- | --- | --- |
 | Bad cases | A bad case file is rejected, for a given subject OS, with a given message. A few cases, for the trickiest checks: the guards, the wired check, start order and when a reference has a value | Case files as data under `bin/correctness/panoramic/testdata/bad/`, with one driver test | Unit test jobs |
 | Failing checks | Each step fails when its condition is false, and errors when the mechanism fails or an exit is undetermined | Beside each step, against one scripted handle | Unit test jobs |
-| Cleanup, scheduler | Deadline, cancellation and reclaim leave nothing behind and record the outcome | With the runner, the ledger and tasks; most exist on `main` | Unit test jobs |
+| Cleanup, scheduler | Deadline, cancellation and reclaim leave nothing behind and record the outcome | With the runner, the ledger and tasks; a scripted test drives the case record, as the step driver does | Unit test jobs |
 | Cleanup, containers | A failed start and a cancelled case leave no container, network or volume | Ignored tests beside the container backend and in `airlock` | By hand, `make test-container-daemon` |
 | Cleanup, host processes | The same, for a process group and its directory | Unit tests beside the backend | Unit test jobs on Linux and macOS |
 | Cleanup, Windows containers | The same | Ignored tests; not built yet, because nobody has a Windows host to run them | By hand, on a Windows host with Docker |
@@ -1586,6 +1585,9 @@ the cases it turns over.
 
 **How old and new coexist**
 
+`rmlegacy` ended this. No legacy case file, runner, flag or routing is left, and a top-level `type:`
+key is an unknown field. The list below records how the two ran side by side until then.
+
 - **One crate.** The new code lives in the existing `panoramic` crate as three new modules, `core`,
   `participants` and `steps`, beside the legacy modules. New modules never import legacy modules;
   legacy modules may import new ones.
@@ -1606,15 +1608,12 @@ the cases it turns over.
   error, so each pair enters a CI job in the PR that migrates the first case that uses it.
 - **Copies of `main`'s data are checked.** Where the new path holds its own copy of something
   `main` owns, the copy is checked against `main`'s version after every rebase, until one of the two
-  is deleted. `agent-adp`'s default environment is a copy of what
-  `bin/correctness/panoramic/src/test_env.rs` injects, and its s6 scripts are copies of
-  `docker/s6-services/`, the image's own. They sit beside them, in `docker/s6-services-panoramic/`,
-  and no image is built with them. The s6 scripts add exit records and log capture, so they are not
-  byte copies: their check fails when `main`'s versions change, and the change is ported by hand.
-  The same holds for the Windows side: `ci/tooling/windows-adp-entrypoint-panoramic.ps1` is
-  `windows-adp-entrypoint.ps1` plus supervision, and `agent-adp`'s table of nested
-  `DD_DATA_PLANE__*` names is a copy of the legacy runner's `WINDOWS_ENV_ALIASES`. A change to
-  either original is ported by hand.
+  is deleted. `rmlegacy` deleted the originals of the default environment (`test_env.rs`), the
+  Windows entrypoint and the nested names table (`WINDOWS_ENV_ALIASES`), so those are no longer
+  copies. What remains is `agent-adp`'s s6 scripts, which are copies of `docker/s6-services/`, the
+  image's own. They sit beside them, in `docker/s6-services-panoramic/`, and no image is built with
+  them. The s6 scripts add exit records and log capture, so they are not byte copies: their check
+  fails when `main`'s versions change, and the change is ported by hand.
 - **The size of the whole.** The per-PR estimates sum to about 22k new non-test lines: about 12k of
   machinery (the Docker mechanisms, the courier, observation, the backends, the step bodies), about
   6k of the model (the case schema, the participant spec, planning, addresses and the participant
@@ -1679,7 +1678,7 @@ apart. The last column names what the migration rule sends to each PR.
 | 13 | `hostproc` | Host process backend; migrate the macOS and Unix cases that need nothing more | 12 | 1.35k / 0.22k as built | Cases on macOS, alone or with Linux, that need no step beyond the backend's |
 | 13b | `replay` | `dogstatsd_replay`; migrate `dogstatsd-replay-unix` | 13 | 0.39k / 0.07k as built | Cases on macOS that replay DogStatsD |
 | 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13, 13b | 0.8k / 0.05k as built, and 42 case files | Cases on Windows, alone or with Linux; cases on all three OSes |
-| 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above; no legacy case file is left | deletions, docs | none |
+| 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above; no legacy case file is left | 18.8k deleted; 0.19k / 0.40k as built, and 0.49k of docs | none |
 | 16 | `followups` | The os overlay, the intake on macOS and Windows, a case-supplied helper | 15 | 0.55k / 0.1k | Cases that differ only by OS merge; the intake cases gain macOS and Windows; one new case |
 
 The stages are foundations (1–2), the Linux slice (3–8), comparison cases (9–11), Linux-only cases
@@ -2113,13 +2112,13 @@ Why this order:
     `dogstatsd-top-windows` replace their UDP probe with ADP's listener line. `adp-no-pipelines-exit`
     gains no exit-code check, which would be new coverage.
   - The Windows script drops `--image-override`, and `test-integration-macos-run` drops the two
-    legacy binary flags. `-p 1` stays until `rmlegacy`.
+    legacy binary flags. `-p 1` stayed until `rmlegacy`, which dropped it.
   - No Windows container cleanup test is built, because nobody has a Windows host to run an ignored
     one.
 - **Watch out:** this job is the slowest CI loop. Start the first part early as a draft; it does not
   need `hostproc`. The three-OS cases are their own commits and wait for `hostproc` and `replay`.
-  - The CI image bakes in the legacy entrypoint script; a spec's own command overrides it, and the
-    baked one stays until `rmlegacy`.
+  - The CI image baked in the legacy entrypoint script; a spec's own command overrides it, and the
+    baked one stayed until `rmlegacy`, which dropped it.
   - Network creation collides under load on Windows; the legacy path retries it and so does the new
     one, for network creation and container start. Some lints fire only on Windows.
   - One red Windows row holds every case in the PR. If the three-OS cases stall, split them off as a
@@ -2127,17 +2126,51 @@ Why this order:
 
 **15. `rmlegacy`: delete the legacy runners and rewrite the testing guide**
 
-- **Builds:** no new code.
+- **Builds:** about 0.19k non-test lines, 0.40k test lines and 0.49k of docs, and deletes 18.8k lines.
   - Deletes the comparison runner under `bin/correctness/panoramic/src/correctness/` and the
-    comparison schemas. The baseline mixin and the generator's baseline branch go in `pod`.
+    comparison schemas. The baseline mixin and the generator's baseline branch went in `pod`.
   - Deletes the integration runners, the legacy schema, actions and assertions, `traffic.rs`, the
-    routing, `--runtime` and the other legacy flags, `image_override.rs`, airlock's legacy behaviour
-    and the temporary guard rule.
-  - Rewrites `docs/development/testing.md` and `test/integration/README.md` as a user guide of about
-    400 lines. It documents the exit record format, which is a contract for case authors.
-- **Watch out:** deletion and the guide only. It is ready when no legacy case file remains, and it
-  waits for a week of green nightly pipelines. After it, a top-level `type:` key is an unknown
-  field.
+    routing, `--runtime` and the other legacy flags, `image_override.rs`, `config.rs`, airlock's
+    `driver`, `config` and `unix` modules and the temporary guard rule.
+  - Adds `participant_case::discover`, which loads every case directory with `ParticipantCase::load`,
+    and `airlock/src/retry.rs`, which holds the transient-error retry moved out of the legacy driver.
+  - Adds `docs/development/panoramic.md`, the user guide for case authors, about 440 lines. It
+    documents the exit record format, which is a contract. `testing.md` keeps a short section for each
+    suite and both review regions.
+- **What was taken:**
+  - A top-level `type:` key is an unknown field. `core/case.rs` lost its own check, and the bad case
+    `testdata/bad/top-level-type` pins the error.
+  - The CLI keeps `--subject-os` only, and it defaults to the host's OS on `run` and `list`.
+    `--runtime`, `--image-override`, `--mounts-dir`, `--adp-binary-path`, `--core-agent-binary-path`
+    and `--alpine-image` are gone, with their environment variables.
+  - `list --json` names a case's suite `suite`, which is the name of the directory above its cases
+    directory, and has no `images`. `runtime` stays in `list --json` and `run.json`, with the same
+    values. `Test::suite` returns a string, and `TestSuite` is gone.
+  - The runner writes `plan.json` from the settled outcome, so a case that it cancels or drops after
+    the cleanup grace keeps its plan. The case no longer writes it.
+  - The scheduler tests drive the case record: `ScriptedTest` takes a list of `ScriptedStep` and
+    calls `record.plan`, `start` and `finish`, as the step driver does. The tests of the legacy step
+    budget and the legacy intake poll went with their code. The report tests build their steps with
+    `TestResult::from_steps`.
+  - The Windows test image has no baked entrypoint or `CMD`. `windows-adp-entrypoint.ps1` is deleted,
+    and `windows-adp-entrypoint-panoramic.ps1` keeps its name.
+  - The macOS target drops `-p 1`, because the host permit serializes host-process cases.
+  - The comparison and integration runners went in one commit, because the crate denies dead code
+    and each module held up another. That deletion also removed what only they used: the polling helpers of
+    `core/probe.rs`, `Deadline::narrow`, `TestResult::with_assertion_details`, the unused
+    `ActivePhase` methods, and the `snafu`, `socket2` and `zstd` dependencies.
+- **Deviations from the brief:**
+  - `--alpine-image` and `PANORAMIC_ALPINE_IMAGE` are deleted, because no backend runs a helper image.
+  - The guide is a new page, and `test/integration/README.md` is deleted rather than rewritten.
+  - `list --json` says `suite` and has no `images`.
+  - The runner, not the case, writes `plan.json`.
+  - The Windows image has no baked entrypoint.
+  - The step driver's overrun path (`RunningStep::overran`) has no unit test since the legacy one
+    went. Add a failing-check test for it with the next change to the step driver.
+- **Watch out:** it is ready when no legacy case file remains, and it waits for a week of green
+  nightly pipelines. `provision-macos-test-env` and its IPC bootstrap are untouched: whether the new
+  macOS path still needs the bootstrapped certificate is unverified, and only the macOS jobs can
+  show it.
 
 ### After the migration
 
@@ -2212,3 +2245,7 @@ host-process subject with containerized helpers.
 - A load error exits 2 with no `run.json`, and a run where every case is skipped exits 3.
 - The merged traffic manifest goes. A participant case writes none: its collected files, with their
   retention, are listed in `result.json`.
+- `rmlegacy`: a top-level `type:` key is an unknown field. `--runtime`, `--image-override`,
+  `--mounts-dir`, `--adp-binary-path`, `--core-agent-binary-path`, `--alpine-image` and their
+  environment variables are gone. `list --json` says `suite` and has no `images`. `plan.json` is kept
+  for interrupted cases. The Windows test image has no entrypoint of its own.
