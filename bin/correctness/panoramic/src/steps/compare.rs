@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::time::Instant;
 
-use super::analysis::{AnalysisMode, AnalysisRunner};
+use super::analysis::{AnalysisMode, AnalysisRunner, LogsAnalysisOptions, TracesAnalysisOptions};
 use super::intake::CollectedData;
 use super::stopped;
 use crate::core::handle::HandleError;
@@ -22,6 +22,8 @@ use crate::core::step::{Need, Step, StepContext, StepFactory, StepFields, StepRe
 
 /// The operation the step calls on both participants.
 const DUMP: &str = "dump";
+/// The key of a `dump` answer that holds the DogStatsD packets forwarded to it.
+const FORWARDED_PACKETS: &str = "dogstatsd_forwarded_packets";
 
 /// The names the step keeps each dump and the full list of differences under.
 const DUMP_FILE: &str = "dump.json";
@@ -42,43 +44,107 @@ impl StepFactory for CompareFactory {
             telemetry,
             comparison,
             baseline,
+            require_dogstatsd_forwarded_packets,
+            otlp_direct_analysis_mode,
+            additional_span_ignore_fields,
+            logs,
         } = fields.decode()?;
         if comparison == baseline {
             return Err(format!("'comparison' and 'baseline' are both '{}'", comparison));
         }
+        let only_for = |set: bool, option: &str, of: Telemetry| {
+            if set && telemetry != of {
+                Err(format!(
+                    "'{}' is an option for {}, not {}",
+                    option,
+                    of.name(),
+                    telemetry.name()
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        only_for(
+            otlp_direct_analysis_mode.is_some(),
+            "otlp_direct_analysis_mode",
+            Telemetry::Traces,
+        )?;
+        only_for(
+            additional_span_ignore_fields.is_some(),
+            "additional_span_ignore_fields",
+            Telemetry::Traces,
+        )?;
+        only_for(logs.is_some(), "logs", Telemetry::Logs)?;
         Ok(Box::new(Compare {
             telemetry,
             comparison,
             baseline,
+            require_dogstatsd_forwarded_packets,
+            otlp_direct_analysis_mode: otlp_direct_analysis_mode.unwrap_or_default(),
+            additional_span_ignore_fields: additional_span_ignore_fields.unwrap_or_default(),
+            logs: logs.unwrap_or_default(),
         }))
     }
 }
 
+/// The step's fields. The options are the legacy comparison case's keys of the same names.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fields {
     telemetry: Telemetry,
     comparison: String,
     baseline: String,
+    /// Fails unless the baseline and the comparison each forwarded at least one DogStatsD packet.
+    #[serde(default)]
+    require_dogstatsd_forwarded_packets: bool,
+    /// Traces only: the baseline is OpenTelemetry-based, so trace stats are not compared.
+    otlp_direct_analysis_mode: Option<bool>,
+    /// Traces only: more span fields to leave out of the comparison.
+    additional_span_ignore_fields: Option<Vec<String>>,
+    /// Logs only: how logs are paired and counted, and the differences expected.
+    logs: Option<LogsAnalysisOptions>,
 }
 
 /// The telemetry compared.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum Telemetry {
+    Events,
+    Logs,
     Metrics,
+    ServiceChecks,
+    Traces,
 }
 
 impl Telemetry {
+    /// The keys of a `dump` answer that hold this telemetry.
+    fn keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Events => &["events"],
+            Self::Logs => &["log_requests"],
+            Self::Metrics => &["metrics"],
+            Self::ServiceChecks => &["service_checks"],
+            Self::Traces => &["spans", "trace_stats"],
+        }
+    }
+
     fn mode(self) -> AnalysisMode {
         match self {
+            Self::Events => AnalysisMode::Events,
+            Self::Logs => AnalysisMode::Logs,
             Self::Metrics => AnalysisMode::Metrics,
+            Self::ServiceChecks => AnalysisMode::ServiceChecks,
+            Self::Traces => AnalysisMode::Traces,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Self::Events => "events",
+            Self::Logs => "logs",
             Self::Metrics => "metrics",
+            Self::ServiceChecks => "service_checks",
+            Self::Traces => "traces",
         }
     }
 }
@@ -89,6 +155,10 @@ struct Compare {
     telemetry: Telemetry,
     comparison: String,
     baseline: String,
+    require_dogstatsd_forwarded_packets: bool,
+    otlp_direct_analysis_mode: bool,
+    additional_span_ignore_fields: Vec<String>,
+    logs: LogsAnalysisOptions,
 }
 
 #[async_trait]
@@ -113,7 +183,13 @@ impl Step for Compare {
         let compared = async {
             let (comparison, baseline) =
                 tokio::try_join!(self.dump(cx, &self.comparison), self.dump(cx, &self.baseline))?;
-            let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, None);
+            let traces = TracesAnalysisOptions {
+                otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
+                additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
+            };
+            let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, Some(traces))
+                .with_logs_options(self.logs.clone())
+                .with_dogstatsd_forwarding_requirement(self.require_dogstatsd_forwarded_packets);
             let report = match runner.run_analysis() {
                 Ok(()) => StepReport {
                     status: StepStatus::Passed,
@@ -160,7 +236,11 @@ impl Compare {
     /// What `on` holds, as its `dump` answers it. The answer is kept in case the case fails.
     async fn dump(&self, cx: &StepContext<'_>, on: &str) -> Result<CollectedData, HandleError> {
         let limit = cx.deadline.saturating_duration_since(Instant::now());
-        let dump: Value = cx.handle(on)?.op(DUMP, Value::Null, limit).await?;
+        let mut keys = self.telemetry.keys().to_vec();
+        if self.require_dogstatsd_forwarded_packets {
+            keys.push(FORWARDED_PACKETS);
+        }
+        let dump: Value = cx.handle(on)?.op(DUMP, json!(keys), limit).await?;
         cx.keep(on, DUMP_FILE, dump.to_string().as_bytes(), Keep::OnFailure)
             .await;
         serde_json::from_value(dump)
@@ -174,6 +254,7 @@ mod tests {
 
     use super::super::scripted::{observation, run_with_peer, Scripted, DUMP_FILE};
     use super::*;
+    use crate::core::step::StepFields;
 
     const FIELDS: &str = "{telemetry: metrics, comparison: app, baseline: peer}";
 
@@ -206,5 +287,14 @@ mod tests {
         let report = run_with_peer(&CompareFactory, FIELDS, &holding(2.0), &unreachable, &observation()).await;
         assert_eq!(report.status, StepStatus::Errored, "{}", report.message);
         assert!(report.message.contains("Docker refused the exec"), "{}", report.message);
+    }
+
+    #[test]
+    fn an_option_for_other_telemetry_is_rejected() {
+        let fields = "{telemetry: metrics, comparison: app, baseline: peer, logs: {min_count: 1}}";
+        let error = CompareFactory
+            .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
+            .unwrap_err();
+        assert_eq!(error, "'logs' is an option for logs, not metrics");
     }
 }

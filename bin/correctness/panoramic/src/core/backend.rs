@@ -26,6 +26,9 @@ pub(crate) const EXIT_DIR_ENV: &str = "PANORAMIC_EXIT_DIR";
 /// The environment variable that names the participant's [`Facts::log_dir`].
 pub(crate) const LOG_DIR_ENV: &str = "PANORAMIC_LOG_DIR";
 
+/// The realization option that puts a Linux container in the host's PID namespace.
+pub(crate) const HOST_PID: &str = "host_pid";
+
 /// What planning knows of one realization backend.
 pub(crate) struct Facts {
     /// What the backend makes for each case.
@@ -97,7 +100,8 @@ const LINUX_CONTAINER: Facts = Facts {
     listens: ALL_BUT_PIPES,
     publishes: true,
     mounts: true,
-    options: &[],
+    // `host_pid`: the container shares the host's PID namespace.
+    options: &[HOST_PID],
 };
 
 const WINDOWS_CONTAINER: Facts = Facts {

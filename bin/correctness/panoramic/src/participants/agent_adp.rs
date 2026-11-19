@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use super::datadog_agent::{
-    self, ListenAt, Listener, DATADOG_YAML, DATADOG_YAML_PATH, EVERY_OS, IMAGE, INTAKE, NOT_WINDOWS,
+    self, ListenAt, Listener, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE, NOT_WINDOWS,
 };
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{Evidence, ParticipantSpec, Protocol, Wiring};
@@ -138,7 +138,7 @@ impl ParticipantType for AgentAdp {
             ready: BTreeMap::from([("dogstatsd_udp".to_string(), ready)]),
             processes: Some(processes),
             aliases: BTreeMap::from([(DATADOG_YAML, DATADOG_YAML_PATH)]),
-            consumes: BTreeMap::from([("intake", INTAKE)]),
+            consumes: BTreeMap::from([("intake", INTAKE), ("dogstatsd_forward", DOGSTATSD_FORWARD)]),
             ..ParticipantSpec::default()
         };
         datadog_agent::add_endpoints(cx, LISTENERS, &mut spec)?;

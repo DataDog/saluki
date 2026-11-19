@@ -1,37 +1,61 @@
+description: >-
+  ADP and the Agent's embedded collector each receive the same OTLP traces over gRPC and transform spans with the same
+  OTTL statement, and their intakes must hold the same spans.
+timeout: 8m
+subject_os: [linux]
 # E2E correctness test: DDOT (baseline) vs ADP (comparison), both with the same
 # OTTL transform statement. Millstone sends the same traces to both; we assert transformed outputs match.
 # Baseline uses the Datadog Distribution of OpenTelemetry (DDOT) from the agent -full image.
-type: correctness
-runtime: docker
-analysis_mode: traces
-# Baseline is OTel-based (DDOT); use OTLP-direct analysis (skip stats comparison, do not require baseline SSI).
-otlp_direct_analysis_mode: true
-# OTel baseline vs ADP: load/agent and pipeline add fields that differ or are absent in the other.
-additional_span_ignore_fields:
-  - agent_metadata.target_tps
-  - metrics._top_level
-  - metrics._dd.measured
-  - meta.http.status_code
-  - meta.error.msg
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - collector.yaml:/etc/datadog-agent/otel-config.yaml
-    - datadog_agent.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-    DD_OTELCOLLECTOR_ENABLED: "true"
-    DD_HOSTNAME: correctness-testing
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog_adp.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_OTLP_ENABLED: "true"
-    # ADP must bind the generator's `4317` target; container initialization moves the Core Agent.
-    # TODO(#2177): Replace this ADP-only override with the canonical schema-provided endpoint key
-    # once endpoint ownership prevents both processes from attempting to bind the same port.
-    ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:4317"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP binds its own receiver; container initialization moves the Core Agent's.
+      # TODO(#2177): Replace this ADP-only override with the canonical schema-provided endpoint key
+      # once endpoint ownership prevents both processes from attempting to bind the same port.
+      ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+    files:
+      datadog.yaml: {from: datadog_adp.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_OTELCOLLECTOR_ENABLED: "true"
+      DD_HOSTNAME: correctness-testing
+    files:
+      datadog.yaml: {from: datadog_agent.yaml, template: true}
+      otel-config.yaml: {from: collector.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.otel_otlp_grpc}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up.
+  - {step: process_stable_for, on: load, duration: 32s}
+  - step: compare
+    telemetry: traces
+    comparison: intake-adp
+    baseline: intake-agent
+    # Baseline is OTel-based (DDOT); use OTLP-direct analysis (skip stats comparison, do not require baseline SSI).
+    otlp_direct_analysis_mode: true
+    # OTel baseline vs ADP: load/agent and pipeline add fields that differ or are absent in the other.
+    additional_span_ignore_fields:
+      - agent_metadata.target_tps
+      - metrics._top_level
+      - metrics._dd.measured
+      - meta.http.status_code
+      - meta.error.msg

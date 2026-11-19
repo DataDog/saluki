@@ -6,6 +6,9 @@ participants:
   adp:
     type: agent-adp
     subject: true
+    # Origin detection is on, so each container runs in the host's PID namespace, where a sender's credentials
+    # resolve.
+    realization: {enclosure: linux-container, options: {host_pid: true}}
     image: saluki-images/datadog-agent:testing-release
     with: {host_view: true}
     env:
@@ -18,6 +21,7 @@ participants:
     connect: {intake: intake-adp.api}
   agent:
     type: agent
+    realization: {enclosure: linux-container, options: {host_pid: true}}
     image: saluki-images/datadog-agent:testing-release
     with: {host_view: true}
     env:
@@ -29,6 +33,7 @@ participants:
   intake-agent: {type: datadog-intake}
   load:
     type: millstone
+    realization: {enclosure: linux-container, options: {host_pid: true}}
     files:
       millstone.yaml: {from: millstone.yaml, template: true}
     connect: {comparison_target: adp.dogstatsd_uds, baseline_target: agent.dogstatsd_uds}

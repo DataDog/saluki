@@ -59,7 +59,7 @@ fn default_identity_fields() -> Vec<String> {
 }
 
 /// Options for logs analysis, set in the `logs` section of a correctness case.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LogsAnalysisOptions {
     /// Minimum number of logs each side must produce.
