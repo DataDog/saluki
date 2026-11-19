@@ -55,6 +55,7 @@ pin-project = { workspace = true }
 prometheus-exposition = { workspace = true }
 prost = { workspace = true }
 protobuf = { workspace = true }
+quick_cache = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true, features = ["unicode-perl"] }
 rmp = { workspace = true }

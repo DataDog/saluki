@@ -272,6 +272,8 @@ inventory:
       - `disable-convert-traces` makes the trace-agent decode trace payloads into its legacy span
         model. The native trace intake has no such model, so ADP ignores the feature for the traces
         it serves, with a warning at startup, and processes them as the trace-agent does by default.
+      - `big_resource` raises the span resource limit from `apm_config.max_resource_len` to 15,000
+        bytes, as in the trace-agent. It doesn't change the resource limit of the OTLP translation.
 
       Every other value is ignored by ADP, without a warning: the flag inventory is not stable across
       agent versions, so unrecognized entries are inert rather than errors.
@@ -364,6 +366,22 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Deprecated alias for target_traces_per_second"
+
+  apm_config.obfuscation.cache.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Cache obfuscated statements"
+    documentation: |-
+      ADP caches obfuscated SQL queries. Unlike the trace-agent, it doesn't cache obfuscated MongoDB
+      queries.
+
+  apm_config.obfuscation.cache.max_size:
+    support: partial
+    pipelines: [traces]
+    description: "Maximum size of the obfuscation cache, in bytes"
+    documentation: |-
+      ADP bounds its SQL obfuscation cache by this size. Unlike the trace-agent, it doesn't cache
+      obfuscated MongoDB queries.
 
   apm_config.obfuscation.credit_cards.enabled:
     support: full
@@ -2041,7 +2059,6 @@ inventory:
       log_level: warn,agent_data_plane=debug,hyper=warn
       ```
 
-
   log_payloads:
     support: full
     pipelines: [checks, dogstatsd, traces]
@@ -3710,8 +3727,6 @@ excluded:
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
   apm_config.max_sender_retries: "ignored in initial audit 2026-04-23"
   apm_config.mode: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan_normalize.keep_values: "ignored in initial audit 2026-04-23"

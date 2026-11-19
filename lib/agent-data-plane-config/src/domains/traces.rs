@@ -42,6 +42,9 @@ pub enum ApmFeature {
     /// tracer-provided name.
     Component2Name,
 
+    /// `big_resource`: span resources are truncated at 15,000 bytes, rather than at `apm_config.max_resource_len`.
+    BigResource,
+
     /// An unrecognized feature ID, carried verbatim.
     Other(String),
 }
@@ -57,6 +60,7 @@ impl ApmFeature {
             ApmFeature::TooManyRequests => "429",
             ApmFeature::DisableConvertTraces => "disable-convert-traces",
             ApmFeature::Component2Name => "component2name",
+            ApmFeature::BigResource => "big_resource",
             ApmFeature::Other(feature) => feature,
         }
     }
@@ -72,6 +76,7 @@ impl From<&str> for ApmFeature {
             "429" => ApmFeature::TooManyRequests,
             "disable-convert-traces" => ApmFeature::DisableConvertTraces,
             "component2name" => ApmFeature::Component2Name,
+            "big_resource" => ApmFeature::BigResource,
             other => ApmFeature::Other(other.to_owned()),
         }
     }
@@ -350,6 +355,9 @@ pub struct ProbabilisticSampler {
 /// Trace obfuscation, one group per supported subsystem.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Obfuscation {
+    /// Cache of obfuscated statements.
+    pub cache: ObfuscationCache,
+
     /// Credit-card obfuscation in span metadata.
     pub credit_cards: CreditCardObfuscation,
 
@@ -388,6 +396,16 @@ pub struct Obfuscation {
 
     /// Whether SQL execution plans are normalized (`apm_config.obfuscation.sql_exec_plan_normalize.enabled`).
     pub sql_exec_plan_normalize_enabled: bool,
+}
+
+/// Cache of obfuscated statements (`apm_config.obfuscation.cache`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ObfuscationCache {
+    /// Whether obfuscated statements are cached (`apm_config.obfuscation.cache.enabled`).
+    pub enabled: bool,
+
+    /// Maximum size of the cache, in bytes (`apm_config.obfuscation.cache.max_size`). Zero disables the cache.
+    pub max_size: u64,
 }
 
 /// SQL obfuscator mode.
@@ -589,6 +607,7 @@ mod tests {
             ("429", ApmFeature::TooManyRequests),
             ("disable-convert-traces", ApmFeature::DisableConvertTraces),
             ("component2name", ApmFeature::Component2Name),
+            ("big_resource", ApmFeature::BigResource),
         ] {
             assert_eq!(ApmFeature::from(id), feature, "{id}");
         }

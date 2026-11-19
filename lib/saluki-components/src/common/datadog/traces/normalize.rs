@@ -25,9 +25,10 @@ const MAX_START_PLUS_DURATION: u64 = i64::MAX as u64;
 /// year-2000 floor it exists to enforce.
 pub const YEAR_2000_NANOSEC_TS: u64 = 946_684_800_000_000_000;
 
-// Attribute key and value caps applied to every OTLP span.
+// Attribute key and value caps, from the trace-agent's truncator.
 pub const MAX_META_KEY_LEN: usize = 200;
 pub const MAX_META_VAL_LEN: usize = 25_000;
+pub const MAX_METRICS_KEY_LEN: usize = 200;
 const ELLIPSIS: &str = "...";
 
 // Structured meta tag suffixes, which also name the serialization format in use.

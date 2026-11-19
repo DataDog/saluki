@@ -466,6 +466,8 @@ default values.
 | `apm_config.max_cpu_percent`                                    | trace-agent CPU target, in percent              |
 | `apm_config.max_memory`                                         | trace-agent memory target, in bytes             |
 | `apm_config.max_payload_size`                                   | Maximum trace payload size, in bytes            |
+| `apm_config.obfuscation.cache.enabled`                          | Cache obfuscated statements                     |
+| `apm_config.obfuscation.cache.max_size`                         | Maximum size of the obfuscation cache, in bytes |
 | `apm_config.obfuscation.sql_exec_plan.enabled`                  | Obfuscate SQL execution plans                   |
 | `apm_config.obfuscation.sql_exec_plan_normalize.enabled`        | Normalize SQL execution plans                   |
 | `apm_config.receiver_timeout`                                   | APM receiver request timeout, in seconds        |
@@ -562,6 +564,8 @@ ADP recognizes these values:
 - `disable-convert-traces` makes the trace-agent decode trace payloads into its legacy span
   model. The native trace intake has no such model, so ADP ignores the feature for the traces
   it serves, with a warning at startup, and processes them as the trace-agent does by default.
+- `big_resource` raises the span resource limit from `apm_config.max_resource_len` to 15,000
+  bytes, as in the trace-agent. It doesn't change the resource limit of the OTLP translation.
 
 Every other value is ignored by ADP, without a warning: the flag inventory is not stable across
 agent versions, so unrecognized entries are inert rather than errors.
@@ -615,6 +619,16 @@ ADP reads this key to describe the trace-agent's configuration to tracers in the
 (`data_plane.experimental.apm.native_trace_intake`), ADP also rejects a trace payload it
 serves with `413 Payload Too Large` once it reaches the limit, as the trace-agent does. The
 trace-agent behind the relay enforces the limit on the requests ADP forwards to it.
+
+### `apm_config.obfuscation.cache.enabled`
+
+ADP caches obfuscated SQL queries. Unlike the trace-agent, it doesn't cache obfuscated MongoDB
+queries.
+
+### `apm_config.obfuscation.cache.max_size`
+
+ADP bounds its SQL obfuscation cache by this size. Unlike the trace-agent, it doesn't cache
+obfuscated MongoDB queries.
 
 ### `apm_config.obfuscation.sql_exec_plan.enabled`
 

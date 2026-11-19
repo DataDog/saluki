@@ -42,6 +42,8 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_max_memory(&mut self, value: f64);
     fn consume_apm_config_max_payload_size(&mut self, value: i64);
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64);
+    fn consume_apm_config_obfuscation_cache_enabled(&mut self, value: bool);
+    fn consume_apm_config_obfuscation_cache_max_size(&mut self, value: i64);
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_credit_cards_keep_values(&mut self, value: Vec<String>);
     fn consume_apm_config_obfuscation_credit_cards_luhn(&mut self, value: bool);
@@ -351,6 +353,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_max_memory(config.apm_config.max_memory.clone());
     consumer.consume_apm_config_max_payload_size(config.apm_config.max_payload_size.clone());
     consumer.consume_apm_config_max_traces_per_second(config.apm_config.max_traces_per_second.clone());
+    consumer.consume_apm_config_obfuscation_cache_enabled(config.apm_config.obfuscation.cache.enabled.clone());
+    consumer.consume_apm_config_obfuscation_cache_max_size(config.apm_config.obfuscation.cache.max_size.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_enabled(
         config.apm_config.obfuscation.credit_cards.enabled.clone(),
     );

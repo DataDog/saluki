@@ -519,6 +519,11 @@ impl Span {
         &self.resource
     }
 
+    /// Returns a mutable reference to the resource name.
+    pub fn resource_mut(&mut self) -> &mut MetaString {
+        &mut self.resource
+    }
+
     /// Sets the resource name.
     pub fn set_resource(&mut self, resource: impl Into<MetaString>) {
         self.resource = resource.into();

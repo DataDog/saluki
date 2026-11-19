@@ -52,7 +52,7 @@ use saluki_components::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
         ChainedConfiguration, DatadogTraceNormalizerConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        ServiceRates, TraceObfuscationConfiguration,
+        ServiceRates, TraceObfuscationConfiguration, TraceTruncationConfiguration,
     },
 };
 use saluki_core::{
@@ -67,11 +67,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     component_inputs::{
-        apm_source_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
-        metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
-        otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings, ottl_error_mode,
-        resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
-        trace_tag_replacer_configuration,
+        apm_source_configuration, apm_stats_configuration, datadog_metrics_configuration, effective_max_resource_len,
+        forwarder_configuration, metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration,
+        origin_tag_cardinality, otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
+        ottl_error_mode, resolve_static_tags, sql_obfuscation_cache_size, tag_filter_entries, tag_value_allowlist,
+        trace_configuration, trace_sampler_configuration, trace_tag_replacer_configuration,
     },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -606,14 +606,19 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         service_rates,
     );
 
-    let trace_obfuscation_config = TraceObfuscationConfiguration {
-        config: obfuscation_configuration(&config.domains.traces.obfuscation),
+    let trace_obfuscation_config = TraceObfuscationConfiguration::new(
+        obfuscation_configuration(&config.domains.traces.obfuscation),
+        sql_obfuscation_cache_size(&config.domains.traces.obfuscation),
+    );
+    let trace_truncation_config = TraceTruncationConfiguration {
+        max_resource_len: effective_max_resource_len(&config.domains.traces),
     };
     let trace_tag_replacer_config = trace_tag_replacer_configuration(&config.domains.traces);
 
-    // Both trace branches, OTLP and Datadog, merge here.
+    // Both trace branches, OTLP and Datadog, merge here. Truncation follows obfuscation, as in the trace-agent.
     let traces_process_config = ChainedConfiguration::default()
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
+        .with_transform_builder("trace_truncation", trace_truncation_config)
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
     let apm_onboarding_config =
         ChainedConfiguration::default().with_transform_builder("apm_onboarding", ApmOnboardingConfiguration);

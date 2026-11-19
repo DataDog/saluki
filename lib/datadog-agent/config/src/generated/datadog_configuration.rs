@@ -1029,6 +1029,9 @@ impl Default for ApmConfigFilterTagsRegex {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscation {
     #[serde(default)]
+    pub cache: ApmConfigObfuscationCache,
+
+    #[serde(default)]
     pub credit_cards: ApmConfigObfuscationCreditCards,
 
     #[serde(default)]
@@ -1066,6 +1069,7 @@ pub struct ApmConfigObfuscation {
 impl Default for ApmConfigObfuscation {
     fn default() -> Self {
         Self {
+            cache: Default::default(),
             credit_cards: Default::default(),
             elasticsearch: Default::default(),
             http: Default::default(),
@@ -1077,6 +1081,26 @@ impl Default for ApmConfigObfuscation {
             sql_exec_plan: Default::default(),
             sql_exec_plan_normalize: Default::default(),
             valkey: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ApmConfigObfuscationCache {
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+
+    #[serde(default = "defaults::default_u64::<i64, 5000000>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_size: i64,
+}
+
+impl Default for ApmConfigObfuscationCache {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+            max_size: defaults::default_u64::<i64, 5000000>(),
         }
     }
 }

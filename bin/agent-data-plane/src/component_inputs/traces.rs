@@ -101,6 +101,25 @@ pub(crate) fn trace_tag_replacer_configuration(traces: &traces::Domain) -> Trace
 }
 
 /// Builds the obfuscator settings.
+/// Returns the span resource limit: 15,000 bytes with the `big_resource` feature, as in the trace-agent's
+/// `comp/trace/config` setup, and `max_resource_len` otherwise.
+pub(crate) fn effective_max_resource_len(traces: &traces::Domain) -> usize {
+    if traces.features.contains(&traces::ApmFeature::BigResource) {
+        15_000
+    } else {
+        traces.max_resource_len
+    }
+}
+
+/// Returns the SQL obfuscation cache size in bytes, zero when the cache is disabled.
+pub(crate) fn sql_obfuscation_cache_size(obfuscation: &traces::Obfuscation) -> u64 {
+    if obfuscation.cache.enabled {
+        obfuscation.cache.max_size
+    } else {
+        0
+    }
+}
+
 pub(crate) fn obfuscation_configuration(obfuscation: &traces::Obfuscation) -> ObfuscationConfig {
     ObfuscationConfig {
         credit_cards: CreditCardObfuscationConfig {
@@ -161,6 +180,17 @@ pub(crate) fn ottl_error_mode(mode: traces::OttlErrorMode) -> ErrorMode {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    #[test]
+    fn big_resource_raises_the_resource_limit() {
+        let mut traces = traces::Domain {
+            max_resource_len: 1234,
+            ..Default::default()
+        };
+        assert_eq!(effective_max_resource_len(&traces), 1234);
+        traces.features.push(traces::ApmFeature::BigResource);
+        assert_eq!(effective_max_resource_len(&traces), 15_000);
+    }
 
     use agent_data_plane_config::{
         shared::{Compression, Endpoints, MetricsEncoding},

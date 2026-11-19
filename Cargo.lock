@@ -5850,6 +5850,7 @@ dependencies = [
  "proptest",
  "prost",
  "protobuf",
+ "quick_cache",
  "rand 0.10.3",
  "regex",
  "rmp",
