@@ -28,7 +28,7 @@ use saluki_core::{
     observability::ComponentMetricsExt as _,
     topology::EventsBuffer,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metrics::MetricsBuilder;
 
 /// A log processing rule.
@@ -123,14 +123,8 @@ enum CompiledRule {
 /// Returns an error naming the rule if a pattern doesn't compile.
 fn compile_rules(rules: &[LogsProcessingRule]) -> Result<Vec<CompiledRule>, GenericError> {
     let compile = |name: &str, pattern: &str| {
-        Regex::new(pattern).map_err(|e| {
-            generic_error!(
-                "Invalid pattern '{}' for logs processing rule '{}': {}",
-                pattern,
-                name,
-                e
-            )
-        })
+        Regex::new(pattern)
+            .with_error_context(|| format!("Invalid pattern '{pattern}' for logs processing rule '{name}'."))
     };
 
     rules

@@ -317,13 +317,16 @@ fn parse_processing_rules(key: &str, raw: Vec<serde_json::Value>) -> Result<Vec<
 
     let invalid =
         |message: String| TranslateError::new_with_message(key, format!("Invalid processing rules: {message}"));
+    let invalid_with_source = |message: String, error: Box<dyn std::error::Error + Send + Sync>| {
+        TranslateError::new_with_context(key, format!("Invalid processing rules: {message}"), error)
+    };
 
     let raw = raw
         .into_iter()
         .enumerate()
         .map(|(index, rule)| {
             serde_json::from_value::<RawRule>(rule)
-                .map_err(|error| invalid(format!("processing rule {index}: {error}")))
+                .map_err(|error| invalid_with_source(format!("processing rule {index}"), error.into()))
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -347,9 +350,10 @@ fn parse_processing_rules(key: &str, raw: Vec<serde_json::Value>) -> Result<Vec<
                 return Err(invalid(format!("no pattern provided for processing rule: {name}")));
             }
             if let Err(error) = regex::Regex::new(&pattern) {
-                return Err(invalid(format!(
-                    "invalid pattern {pattern} for processing rule: {name}: {error}"
-                )));
+                return Err(invalid_with_source(
+                    format!("invalid pattern {pattern} for processing rule: {name}"),
+                    error.into(),
+                ));
             }
         }
         let rule = match rule_type.as_str() {
