@@ -84,6 +84,7 @@ Use the `/panoramic` skill for correctness and integration testing.
 | [Code review](./code-review.md) | Checking a change against the review checklists, or changing the review guidelines |
 | [Testing](./testing.md) | Choosing which kind of test to write, and running test suites |
 | [Panoramic cases](./panoramic.md) | Writing, running, or debugging a panoramic case; reading its results |
+| [Working on panoramic](./panoramic-internals.md) | Changing panoramic itself: its modules, participant types, planning, backends and steps |
 | [Testing patterns](./testing-patterns.md) | Writing unit tests or property tests |
 | [Configuration system](./configuration-system.md) | Working on configuration, the schema overlay, or the configuration inventory |
 | [Datadog Agent version](./agent-version.md) | How we manage, update, and use the right version of the Datadog Agent |

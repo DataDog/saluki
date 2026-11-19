@@ -138,6 +138,7 @@ errors.
 | `realization` | `{enclosure, options}`. The enclosures are `linux-container`, `windows-container`, `kubernetes-pod` and `host-process-group`. |
 | `connect` | `{<name>: <participant>.<endpoint>}`: the endpoints this participant uses. |
 | `with` | Parameters of the participant type. It is an error without `type`. |
+| `os` | `{<subject OS>: {<fields>}}`. Fields that differ by subject OS. See [Fields that differ by OS](#fields-that-differ-by-os). |
 | `image`, `command`, `args` | What runs in a container or pod. `command` replaces the entrypoint of the image, and `args` replaces its arguments. |
 | `programs` | A list of `{name, path, args, env}`. What runs as host processes. |
 | `env` | `{NAME: "text"}`. The environment of every process. Quote each value. |
@@ -163,6 +164,42 @@ that would fail without a message:
 
 `realization.options` are booleans. A Linux container takes `host_pid` and `host_cgroup_namespace`. A pod takes
 `host_pid` and `cri_socket`.
+
+### Fields that differ by OS
+
+A participant and a step may carry an `os` block. Its keys are subject OSes, and each value holds the fields for
+that OS. Use it where one case runs on several OSes and only a command, a path or an image differs.
+
+```yaml
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    os:
+      linux:   {files: {/dogstatsd-top/: linux/}}
+      windows: {files: {"C:/dogstatsd-top/": windows/}}
+procedure:
+  - step: exec
+    on: adp
+    timeout: 90s
+    os:
+      linux:   {command: [/opt/datadog-agent/embedded/bin/python3, /dogstatsd-top/run_dogstatsd_top_test.py]}
+      windows: {command: [pwsh, -NoProfile, -NonInteractive, -File, 'C:\dogstatsd-top\run_dogstatsd_top_test.ps1']}
+```
+
+On a participant, the overlay holds `with` and the data fields. It does not hold `type`, `subject`, `realization`,
+`connect` or `os`. On a step, it holds any field except `step`, `os` and `parallel`. A key of `os` that is not in
+`subject_os` is an error, and so is a file source of any overlay that does not exist. Panoramic checks every overlay
+on every host.
+
+Panoramic lays the overlay for the subject OS over the other fields of the case, and then lays the case over the
+participant type. The guards see the result, so a file that an overlay places over a supervising file needs
+`processes` too. The rule is the one for the case's fields: a map merges by key, and every other field replaces
+the field below it. On a step, a field whose value is a map on both sides merges by key, and every other field
+replaces. Only `env` of `exec` is a map today, so write the whole list of `payloads` in each overlay.
+
+A case that has the same steps in the same order on each OS needs one case file. Keep a separate case when the steps
+differ.
 
 ### Files
 
@@ -248,7 +285,7 @@ listeners. Those fail at start, in `exec`, or at a readiness timeout, with the o
 | --- | --- | --- |
 | `agent-adp` | The Datadog Agent with ADP. | Linux container, pod, macOS host processes, Windows container |
 | `agent` | The Datadog Agent alone, as the baseline of a comparison. | Linux container, pod |
-| `datadog-intake` | The mock intake. It records what it receives. | Linux container, pod |
+| `datadog-intake` | The mock intake. It records what it receives. | Linux container, pod, macOS host processes, Windows container |
 | `millstone` | The load generator. | Linux container, pod |
 
 **`agent-adp` and `agent`.** The default image is `saluki-images/datadog-agent:testing-devel`, and a case writes
@@ -285,8 +322,19 @@ case sets `ADP_DD_<NAME>` for `DD_<NAME>`, or another name that the software rea
   restarts nothing. It keeps the container up after both exit, so panoramic can read what they left.
 
 **`datadog-intake`.** It takes no `with`. It has the endpoints `api` (HTTP) and `dogstatsd_forward` (UDP), and the
-operation `dump`. It runs from `saluki-images/correctness-tools:latest`. Connect an `agent-adp` or `agent` participant
-to its `api` endpoint as `intake`.
+operation `dump`. Connect an `agent-adp` or `agent` participant to its `api` endpoint as `intake`. Its endpoints
+are the same on every realization. What runs differs:
+
+| Realization | What runs |
+| --- | --- |
+| Linux container, pod | `/usr/local/bin/datadog-intake` in `saluki-images/correctness-tools:latest` |
+| macOS host processes | `target/release/datadog-intake`, which `make build-datadog-intake-host` builds. The program is `main`. |
+| Windows container | `C:\intake\datadog-intake.exe` in `saluki-images/datadog-intake:testing-windows`, which the CI script builds from the base of the ADP image |
+
+On macOS the intake binds the fixed ports 2049 and 9125 of the runner. Every other participant follows the subject,
+so a case needs no change to use the intake on another OS. On macOS and Windows `agent-adp` takes the connection
+`intake` and sets `DD_DD_URL` and `DD_APM_DD_URL`. It sets no `ADP_DD_` key, because ADP and the Agent read one
+environment there. `dogstatsd_forward` is for Linux only.
 
 **`millstone`.** It runs two senders in one container with the same seed, so each sends the same payloads. The case
 supplies `millstone.yaml` with `template: true`, and its target is a field of the `comparison_target` connection.
@@ -430,6 +478,56 @@ removal adds a `resource_leaked` issue, and an unconfirmed one adds `resource_un
 outcome.
 
 Send SIGINT or SIGTERM to stop a run with cleanup. A second signal can leave containers behind.
+
+## Writing a case that runs scripts it supplies
+
+::: v-pre
+
+A check that only one case needs is a script that the case supplies. Place it as a file, run it as the participant,
+or run it with `exec` in a running participant. `test/integration/cases/case-supplied-scripts` shows both. It tests
+the harness and not ADP, so its subject is a participant with no type. The participant gets the default realization
+of each OS, and the `os` overlay gives each OS its image or program, its files and its commands.
+
+```yaml
+participants:
+  helper:
+    subject: true
+    env:
+      HELPER_DIR: "{{ self.dir }}"
+    os:
+      linux:
+        image: saluki-images/correctness-tools:latest
+        command: [sh, /helper/serve.sh]
+        files: {/helper/: helper/}
+      macos:
+        programs: [{name: main, path: sh, args: [./serve.sh]}]
+        files: {./serve.sh: helper/serve.sh, ./check.sh: helper/check.sh}
+      windows:
+        image: saluki-images/agent-data-plane:testing-windows
+        command: [pwsh, -NoProfile, -NonInteractive, -File, 'C:\helper\serve.ps1']
+        files: {"C:/helper/": helper-windows/}
+procedure:
+  - {step: log_contains, on: helper, pattern: "helper started in {{ helper.dir }}", timeout: 30s}
+  - step: exec
+    on: helper
+    env: {HELPER_DIR: "{{ helper.dir }}"}
+    output_contains: checked
+    timeout: 30s
+    os:
+      linux: {command: [sh, /helper/check.sh]}
+      macos: {command: [sh, ./check.sh]}
+      windows: {command: [pwsh, -NoProfile, -NonInteractive, -File, 'C:\helper\check.ps1']}
+```
+
+- The scripts are files of the case. A directory source places every file under it. A file in a Linux container
+  needs the interpreter in the image, and a file on a Windows container needs `pwsh`, which the ADP test image has.
+- A script reaches its own directory through a reference, which the case puts in `env`. A step reads the same
+  directory as `{{ helper.dir }}`.
+- On macOS, `sh` is a bare name, so the program is found on the `PATH` of the runner. This is a requirement of the
+  host. A path that starts with `./` is a file of the participant instead.
+- Keep line endings in a script that runs on Unix. `.gitattributes` sets `eol=lf` for the `.sh` files of the cases.
+
+:::
 
 ## Writing a comparison case
 

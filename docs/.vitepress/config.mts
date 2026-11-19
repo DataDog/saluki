@@ -46,6 +46,7 @@ export default defineConfig({
                     { text: "Code Review", link: "/development/code-review" },
                     { text: "Testing", link: "/development/testing" },
                     { text: "Panoramic Cases", link: "/development/panoramic" },
+                    { text: "Working on Panoramic", link: "/development/panoramic-internals" },
                     { text: "Testing Patterns", link: "/development/testing-patterns" },
                     { text: "Configuration System", link: "/development/configuration-system" },
                     { text: "Datadog Agent Version", link: "/development/agent-version" },
