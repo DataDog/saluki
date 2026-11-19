@@ -280,7 +280,8 @@ fn non_empty_trimmed(s: String) -> Option<String> {
 /// (`comp/logs/agent/config/processing_rules.go`).
 ///
 /// Every rule is parsed before any is validated, and the rules are validated in order. The error is
-/// the Agent's message for the first problem found.
+/// the Agent's message for the first problem found. For an invalid pattern, the message also gives the
+/// reason, since a pattern that Go accepts can fail here.
 fn parse_processing_rules(key: &str, raw: Vec<serde_json::Value>) -> Result<Vec<ProcessingRule>> {
     // Like Go's decoders, read an explicit null, such as a YAML field with no value, as the field's zero value.
     fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
@@ -345,9 +346,9 @@ fn parse_processing_rules(key: &str, raw: Vec<serde_json::Value>) -> Result<Vec<
             if pattern.is_empty() {
                 return Err(invalid(format!("no pattern provided for processing rule: {name}")));
             }
-            if regex::Regex::new(&pattern).is_err() {
+            if let Err(error) = regex::Regex::new(&pattern) {
                 return Err(invalid(format!(
-                    "invalid pattern {pattern} for processing rule: {name}"
+                    "invalid pattern {pattern} for processing rule: {name}: {error}"
                 )));
             }
         }
@@ -3156,7 +3157,7 @@ mod tests {
             ),
             (
                 json!({ "type": "mask_sequences", "name": "bad_pattern", "pattern": "(" }),
-                "invalid pattern ( for processing rule: bad_pattern",
+                "invalid pattern ( for processing rule: bad_pattern: regex parse error",
             ),
             (
                 json!({ "type": "multi_line", "name": "bad_multi_line", "pattern": "[" }),
