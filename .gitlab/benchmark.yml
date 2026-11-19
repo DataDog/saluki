@@ -414,12 +414,13 @@ binary-size-analysis:
     - docker rm comparison-container
 
     # Extract debug info and strip binaries for accurate release size comparison.
-    # This gives us stripped binaries (reflecting actual release artifact size) while
-    # preserving symbol information in separate debug files for bloaty's analysis.
+    # The strip flags match what the Datadog Agent's packaging applies to ADP on Linux, so the
+    # stripped size reflects what actually ships, while the separate debug files preserve symbol
+    # information for bloaty's analysis.
     - objcopy --only-keep-debug binaries/baseline-adp binaries/baseline-adp.debug
     - objcopy --only-keep-debug binaries/comparison-adp binaries/comparison-adp.debug
-    - strip --strip-debug binaries/baseline-adp
-    - strip --strip-debug binaries/comparison-adp
+    - strip --strip-debug --strip-unneeded binaries/baseline-adp
+    - strip --strip-debug --strip-unneeded binaries/comparison-adp
 
     # Run the analysis script to generate bloaty output, markdown report, and check threshold.
     # The script exits with code 1 if size increased by more than 5%.
