@@ -617,7 +617,7 @@ test-miri: ## Runs all Miri-specific unit tests
 	cargo +$(RUST_NIGHTLY_VERSION) miri test -p stringtheory
 
 .PHONY: test-loom
-test-loom: check-rust-build-tools
+test-loom: check-rust-build-tools cargo-install-cargo-nextest
 test-loom: ## Runs all Loom-specific unit tests
 	@echo "[*] Running Loom-specific unit tests..."
 	cargo nextest run --release --features loom -p stringtheory -p saluki-core loom_tests
