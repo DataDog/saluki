@@ -10,6 +10,7 @@ pod-file-needs-a-command: {subject_os: linux, error: "the file holds a value tha
 reserved-path: {subject_os: linux, error: "is reserved by the harness"}
 socket-path-too-long: {subject_os: linux, error: "and a Unix socket path on linux holds at most 107"}
 supervising-file-replaced: {subject_os: linux, error: "the case replaces '/etc/services.d/agent/finish'"}
+top-level-type: {subject_os: linux, error: "unknown field `type`, expected one of description, timeout"}
 two-letter-cases-of-one-windows-path: {subject_os: windows, error: "two files land on"}
 two-processes-observed-through-the-container: {subject_os: linux, error: "processes 'main', 'helper' are observed through the container"}
 unwired-after-a-dotted-file-key: {subject_os: linux, error: "datadog.yaml sets 'apm_config.receiver_port', so the default DD_APM_RECEIVER_PORT was withdrawn, and nothing references the endpoint.\n  Write: receiver_port: \"{{ self.endpoints.apm_tcp.port }}\" under apm_config in datadog.yaml"}

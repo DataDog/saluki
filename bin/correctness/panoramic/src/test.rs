@@ -1,13 +1,10 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::assertions::LogBuffer;
 use crate::core::backend::Backends;
 use crate::core::deadline::Deadline;
 use crate::core::ledger::ResourceLedger;
@@ -27,22 +24,6 @@ pub(crate) enum TestSuite {
 /// Settings shared by every test in a run.
 #[derive(Debug, Clone)]
 pub(crate) struct RunnerSettings {
-    /// A directory from which files should be mounted into one or more of the domain-specific containers used in a
-    /// test.
-    // TODO: this is a hack introduced to support the PANORAMIC_DYNAMIC feature. Consider generalizing if needed.
-    // For example: this could become runtime_config: HashMap<String, String> for shuttling domain specific items from
-    // runtime to a test.
-    pub(crate) mounts_dir: PathBuf,
-
-    /// The `agent-data-plane` binary that host-process tests spawn.
-    pub(crate) adp_binary_path: PathBuf,
-
-    /// The Datadog Agent binary that converged host-process tests spawn.
-    pub(crate) core_agent_binary_path: PathBuf,
-
-    /// The Alpine image used for the short-lived shared-volume permission fix-up container.
-    pub(crate) alpine_image: String,
-
     /// Realizes the participants of participant cases, once the checks before the first case have passed.
     pub(crate) backends: Backends,
 }
@@ -73,9 +54,6 @@ pub(crate) struct TestContext {
     /// Test resources registered for cleanup by the runner.
     pub(crate) ledger: ResourceLedger,
 
-    /// Host-process logs retained for the runner to save after reclaim drains the log pumps.
-    pub(crate) host_logs: Arc<OnceLock<Arc<RwLock<LogBuffer>>>>,
-
     /// Explicitly tracked background work, given a bounded stop period before resource cleanup.
     pub(crate) tasks: CaseTasks,
 }
@@ -93,7 +71,6 @@ impl TestContext {
             phases: PhaseTracker::default(),
             record: CaseRecord::default(),
             ledger: ResourceLedger::default(),
-            host_logs: Arc::default(),
         }
     }
 
@@ -103,10 +80,6 @@ impl TestContext {
 
     pub(crate) fn log_dir(&self) -> &Path {
         &self.log_dir
-    }
-
-    pub(crate) fn mounts_dir(&self) -> &Path {
-        &self.settings.mounts_dir
     }
 }
 
@@ -127,18 +100,11 @@ pub(crate) trait Test: Send + Sync {
     /// How long the test should be allowed to run for before it's considered a failure.
     fn timeout(&self) -> Duration;
 
-    /// Returns the list of images that this test depends on as a map of `name -> image`.
+    /// The runtime name of the test: the name of the subject OS it runs on (`linux`, `mac` or `windows`), or
+    /// `kubernetes_in_docker` for a test that runs pods.
     ///
-    /// Panoramic depends on container images to be built and ready. Build processes need to be able to inspect these
-    /// so we offer a command by which a build process can see these.
-    fn images(&self) -> BTreeMap<&str, String>;
-
-    /// The runtime identifier for this test (for example, `"docker"`, `"kubernetes_in_docker"`).
-    ///
-    /// Used by the CI pipeline generator to select the appropriate job template. Defaults to `"docker"`.
-    fn runtime(&self) -> String {
-        "docker".to_string()
-    }
+    /// Used by the CI pipeline generator to select the appropriate job template.
+    fn runtime(&self) -> String;
 
     /// Whether the test runs host processes. Their ports are fixed, so the runner runs one such test at a time, however
     /// many tests run in parallel.
@@ -146,8 +112,8 @@ pub(crate) trait Test: Send + Sync {
         false
     }
 
-    /// The test as a participant case, which the run treats apart in three ways: the checks before the first case
-    /// read its plan, `list` leaves it out on a subject OS it skips, and the runner applies no traffic retention to it.
+    /// The test as a participant case: the checks before the first case read its plan, and `list` leaves it out on a
+    /// subject OS it skips.
     fn participant_case(&self) -> Option<&ParticipantCase> {
         None
     }
@@ -157,14 +123,4 @@ pub(crate) trait Test: Send + Sync {
     /// Watch the context's cancellation token and return when it fires. Register resources in its ledger for cleanup
     /// after the test ends. Use its `tasks` for runner-managed background work.
     async fn run(&self, tctx: TestContext) -> TestResult;
-}
-
-/// Resolves a file-relative path without requiring the destination to exist.
-pub(crate) fn resolve_case_path(loaded_from: &Path, path: impl AsRef<Path>) -> PathBuf {
-    let path = path.as_ref();
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        loaded_from.parent().unwrap_or(Path::new("")).join(path)
-    }
 }

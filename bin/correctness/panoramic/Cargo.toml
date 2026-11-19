@@ -34,7 +34,6 @@ saluki-error = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true }
 serde_json = { workspace = true }
-snafu = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true, features = ["compat", "rt"] }
@@ -48,7 +47,6 @@ tracing-subscriber = { workspace = true, features = [
   "tracing-log",
 ] }
 treediff = { workspace = true, features = ["with-serde-json"] }
-zstd = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 rustls = { workspace = true, features = ["aws_lc_rs"] }
@@ -58,6 +56,5 @@ rustls-cng-crypto = { workspace = true }
 
 [dev-dependencies]
 airlock = { path = "../airlock", features = ["test-util"] }
-socket2 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

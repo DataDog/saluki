@@ -4635,8 +4635,6 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
- "snafu",
- "socket2",
  "stele",
  "tempfile",
  "tokio",
@@ -4645,7 +4643,6 @@ dependencies = [
  "tracing-subscriber",
  "treediff",
  "vergen-gix",
- "zstd",
 ]
 
 [[package]]
