@@ -74,36 +74,49 @@ pub(crate) fn truncate_spans(spans: &mut [Span], max_resource_len: usize, legacy
 /// is truncated once and every span gets the same shared result.
 #[derive(Default)]
 pub(crate) struct Memo {
-    /// Results by the source string's address, length, and limit.
-    results: FastHashMap<(usize, usize, usize), MetaString>,
-    /// The replaced source strings, kept alive until the buffer is done so that no address is reused.
-    replaced: Vec<MetaString>,
+    /// Results by the source string's address, length, limit, and whether an ellipsis is appended.
+    results: FastHashMap<(usize, usize, usize, bool), MetaString>,
+    /// One source string per entry, kept alive until the buffer is done so that no address is reused.
+    sources: Vec<MetaString>,
 }
 
 /// Strings this short may be stored inline, at an address that isn't theirs alone, so they are never memoized.
 const MIN_MEMO_LEN: usize = 64;
 
 impl Memo {
-    /// Replaces `s` by `cut(s)`, sharing the result with every other copy of the same allocation.
-    fn replace(&mut self, s: &mut MetaString, limit: usize, cut: impl FnOnce(&str) -> String) {
+    /// Replaces `s` by its truncation to `limit` bytes, with an ellipsis when `ellipsis` is set, sharing the result
+    /// with every other copy of the same allocation.
+    fn replace(&mut self, s: &mut MetaString, limit: usize, ellipsis: bool) {
+        let cut = |s: &str| {
+            if ellipsis {
+                truncate_with_ellipses(s, limit).into_owned()
+            } else {
+                truncate_utf8_str(s, limit).to_owned()
+            }
+        };
         if s.len() < MIN_MEMO_LEN {
             *s = cut(s).into();
             return;
         }
-        let key = (s.as_ptr() as usize, s.len(), limit);
-        let result = self
-            .results
-            .entry(key)
-            .or_insert_with(|| {
-                let cut = cut(s);
-                if cut.is_empty() {
-                    MetaString::empty()
-                } else {
-                    MetaString::from(Arc::<str>::from(cut))
-                }
-            })
-            .clone();
-        self.replaced.push(std::mem::replace(s, result));
+        let key = (s.as_ptr() as usize, s.len(), limit, ellipsis);
+        if let Some(result) = self.results.get(&key) {
+            // The entry's source keeps this address alive, so this handle can go now.
+            *s = result.clone();
+            return;
+        }
+        let cut = cut(s);
+        let result = if cut.is_empty() {
+            MetaString::empty()
+        } else {
+            MetaString::from(Arc::<str>::from(cut))
+        };
+        self.results.insert(key, result.clone());
+        self.sources.push(std::mem::replace(s, result));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entries_and_sources(&self) -> (usize, usize) {
+        (self.results.len(), self.sources.len())
     }
 }
 
@@ -147,16 +160,10 @@ fn over(s: &str, limit: usize, legacy: bool) -> bool {
 
 const ELLIPSIS: &str = "...";
 
-fn cut_with_ellipsis(limit: usize) -> impl FnOnce(&str) -> String {
-    move |s| truncate_with_ellipses(s, limit).into_owned()
-}
-
 fn truncate_span(span: &mut Span, max_resource_len: usize, legacy: bool, memo: &mut Memo) {
     // The resource gets no ellipsis.
     if span.resource().len() > max_resource_len {
-        memo.replace(span.resource_mut(), max_resource_len, |s| {
-            truncate_utf8_str(s, max_resource_len).to_owned()
-        });
+        memo.replace(span.resource_mut(), max_resource_len, false);
     }
 
     let mut rekeyed = Vec::new();
@@ -167,7 +174,7 @@ fn truncate_span(span: &mut Span, max_resource_len: usize, legacy: bool, memo: &
         }
         if let AttributeValue::String(s) = value {
             if over(s, MAX_META_VAL_LEN, legacy) {
-                memo.replace(s, MAX_META_VAL_LEN, cut_with_ellipsis(MAX_META_VAL_LEN));
+                memo.replace(s, MAX_META_VAL_LEN, true);
             }
         }
         let max_key_len = if rule == Rule::Meta {
@@ -191,7 +198,7 @@ fn truncate_span(span: &mut Span, max_resource_len: usize, legacy: bool, memo: &
 
     for field in [&mut span.env, &mut span.component, &mut span.version] {
         if over(field, MAX_META_VAL_LEN, legacy) {
-            memo.replace(field, MAX_META_VAL_LEN, cut_with_ellipsis(MAX_META_VAL_LEN));
+            memo.replace(field, MAX_META_VAL_LEN, true);
         }
     }
 }

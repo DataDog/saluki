@@ -354,7 +354,10 @@ mod tests {
                 span
             })
             .collect();
-        truncate_spans(&mut spans, 5000, false, &mut Memo::default());
+        let mut memo = Memo::default();
+        truncate_spans(&mut spans, 5000, false, &mut memo);
+        // One entry per distinct (source, mode): the shared query as a resource, and as a meta value.
+        assert_eq!(memo.entries_and_sources(), (2, 2));
 
         let value = |s: &Span, k: &str| s.attributes.get(k).and_then(AttributeValue::as_string).unwrap().clone();
         let first_query = value(&spans[0], tags::SQL_QUERY);
@@ -364,6 +367,43 @@ mod tests {
             assert_eq!(span.resource().as_ptr(), spans[0].resource().as_ptr());
             assert_eq!(value(span, tags::SQL_QUERY).as_ptr(), first_query.as_ptr());
             assert_eq!(value(span, tags::DB_STATEMENT).as_ptr(), first_query.as_ptr());
+        }
+    }
+
+    // With a resource limit equal to the meta value limit, the shared query must still get the meta ellipsis: the
+    // resource and meta cuts of one source are distinct results.
+    #[test]
+    fn resource_and_meta_cuts_of_one_shared_query_stay_distinct() {
+        use crate::common::datadog::traces::normalize::MAX_META_VAL_LEN;
+        use crate::transforms::trace_truncation::{truncate_spans, Memo};
+
+        let query = format!("SELECT {} FROM t", "c".repeat(MAX_META_VAL_LEN + 1_000));
+        let mut cached = TraceObfuscation {
+            sql_cache: Some(SqlCache::new(5_000_000)),
+            ..transform(false, false)
+        };
+        let mut spans: Vec<Span> = (0..1_000)
+            .map(|_| {
+                let mut span = sql_span(&query);
+                cached.obfuscate_span(&mut span);
+                span
+            })
+            .collect();
+        assert!(sql_query(&spans[0]).len() > MAX_META_VAL_LEN);
+        let mut memo = Memo::default();
+        truncate_spans(&mut spans, MAX_META_VAL_LEN, false, &mut memo);
+        assert_eq!(memo.entries_and_sources(), (2, 2));
+
+        let value = |s: &Span, k: &str| s.attributes.get(k).and_then(AttributeValue::as_string).unwrap().clone();
+        let meta = value(&spans[0], tags::SQL_QUERY);
+        assert_eq!(meta.len(), MAX_META_VAL_LEN + 3);
+        assert!(meta.ends_with("..."));
+        assert_eq!(spans[0].resource().len(), MAX_META_VAL_LEN);
+        assert!(!spans[0].resource().ends_with("..."));
+        for span in &spans {
+            assert_eq!(span.resource().as_ptr(), spans[0].resource().as_ptr());
+            assert_eq!(value(span, tags::SQL_QUERY).as_ptr(), meta.as_ptr());
+            assert_eq!(value(span, tags::DB_STATEMENT).as_ptr(), meta.as_ptr());
         }
     }
 
