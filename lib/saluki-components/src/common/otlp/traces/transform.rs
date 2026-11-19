@@ -944,7 +944,7 @@ fn join_resource_parts(
 /// Keys longer than `MAX_META_KEY_LEN` and string values longer than `MAX_META_VAL_LEN` are
 /// truncated to the limit and suffixed with `...`. Structured meta keys
 /// (`_dd.*.{json,msgpack,protobuf}`) are exempt. Only oversized entries are rewritten.
-fn truncate_attributes(attrs: &mut FastHashMap<MetaString, AttributeValue>) {
+pub(crate) fn truncate_attributes(attrs: &mut FastHashMap<MetaString, AttributeValue>) {
     let oversized_keys: Vec<MetaString> = attrs
         .iter()
         .filter(|(key, value)| {
