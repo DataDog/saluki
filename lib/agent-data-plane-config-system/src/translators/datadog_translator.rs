@@ -705,6 +705,15 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.obfuscation.redis.remove_all_args = value;
     }
 
+    fn consume_apm_config_obfuscation_cache_enabled(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.cache.enabled = value;
+    }
+
+    fn consume_apm_config_obfuscation_cache_max_size(&mut self, value: i64) {
+        // A negative size can hold nothing, like a zero one.
+        self.config.domains.traces.obfuscation.cache.max_size = value.max(0) as u64;
+    }
+
     fn consume_apm_config_obfuscation_remove_stack_traces(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.remove_stack_traces = value;
     }
@@ -2200,6 +2209,25 @@ mod tests {
                 config.domains.traces.replace_tags.is_empty(),
                 "{rules} should apply no rules"
             );
+        }
+    }
+
+    #[test]
+    fn apm_config_obfuscation_cache_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        let cache = &config.domains.traces.obfuscation.cache;
+        assert!(cache.enabled);
+        assert_eq!(cache.max_size, 5_000_000);
+
+        for (max_size, expected) in [(1234, 1234), (-5, 0)] {
+            let (config, errors) = translate_explicit(json!({
+                "apm_config": { "obfuscation": { "cache": { "enabled": false, "max_size": max_size } } }
+            }));
+            assert!(errors.is_none(), "translation should succeed: {errors:?}");
+            let cache = &config.domains.traces.obfuscation.cache;
+            assert!(!cache.enabled);
+            assert_eq!(cache.max_size, expected);
         }
     }
 

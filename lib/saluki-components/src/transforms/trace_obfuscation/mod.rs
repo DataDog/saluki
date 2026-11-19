@@ -7,6 +7,7 @@ mod memcached;
 mod obfuscator;
 mod redis;
 mod sql;
+mod sql_cache;
 mod sql_filters;
 mod sql_tokenizer;
 
@@ -21,13 +22,25 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 
 pub use self::obfuscator::{tags, ObfuscationConfig, Obfuscator};
+use self::sql_cache::{shared, CachedSql, SqlCache};
 
 const TEXT_NON_PARSABLE_SQL: &str = "Non-parsable SQL query";
 
 /// Trace obfuscation configuration.
 pub struct TraceObfuscationConfiguration {
-    /// Obfuscator configuration.
-    pub config: ObfuscationConfig,
+    config: ObfuscationConfig,
+
+    /// The SQL result cache, shared by every transform built from this configuration.
+    sql_cache: Option<SqlCache>,
+}
+
+impl TraceObfuscationConfiguration {
+    /// Creates a configuration whose SQL results are cached in up to `sql_cache_max_size` bytes. Zero disables the
+    /// cache.
+    pub fn new(config: ObfuscationConfig, sql_cache_max_size: u64) -> Self {
+        let sql_cache = (sql_cache_max_size > 0).then(|| SqlCache::new(sql_cache_max_size));
+        Self { config, sql_cache }
+    }
 }
 
 #[async_trait]
@@ -35,6 +48,7 @@ impl SynchronousTransformBuilder for TraceObfuscationConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(TraceObfuscation {
             obfuscator: Obfuscator::new(self.config.clone()),
+            sql_cache: self.sql_cache.clone(),
         }))
     }
 }
@@ -44,12 +58,19 @@ impl MemoryBounds for TraceObfuscationConfiguration {
         builder
             .minimum()
             .with_single_value::<TraceObfuscation>("component struct");
+        if let Some(cache) = &self.sql_cache {
+            // Entry costs count their bytes plus a fixed overhead that covers the map slot.
+            builder
+                .firm()
+                .with_fixed_amount("SQL obfuscation cache", cache.max_size() as usize);
+        }
     }
 }
 
 /// The obfuscation transform that processes traces.
 pub struct TraceObfuscation {
     obfuscator: Obfuscator,
+    sql_cache: Option<SqlCache>,
 }
 
 impl TraceObfuscation {
@@ -98,14 +119,13 @@ impl TraceObfuscation {
     }
 
     fn obfuscate_sql_span(&mut self, span: &mut Span) {
-        let sql_query_owned: Option<String> = span
-            .attributes
+        let attrs = &span.attributes;
+        let sql_query: &str = match attrs
             .get(tags::DB_STATEMENT)
             .and_then(AttributeValue::as_string)
             .filter(|s| !s.is_empty())
-            .map(|s| s.as_ref().to_owned());
-        let sql_query: &str = match &sql_query_owned {
-            Some(s) => s.as_str(),
+        {
+            Some(s) => s,
             None => span.resource(),
         };
 
@@ -113,21 +133,30 @@ impl TraceObfuscation {
             return;
         }
 
-        let dbms_owned: Option<String> = span
-            .attributes
+        let dbms: &str = attrs
             .get(tags::DBMS)
             .and_then(AttributeValue::as_string)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.as_ref().to_owned());
+            .map_or("", |s| s);
 
-        let config = match &dbms_owned {
-            Some(d) => self.obfuscator.config.sql.with_dbms(d.clone()),
-            None => self.obfuscator.config.sql.clone(),
+        let obfuscate = || {
+            let config = if dbms.is_empty() {
+                self.obfuscator.config.sql.clone()
+            } else {
+                self.obfuscator.config.sql.with_dbms(dbms.to_owned())
+            };
+            sql::obfuscate_sql_string(sql_query, &config).map(|o| CachedSql {
+                query: shared(o.query),
+                table_names: shared(o.table_names),
+            })
+        };
+        let result = match &self.sql_cache {
+            Some(cache) => cache.get_or_obfuscate(sql_query, dbms, obfuscate),
+            None => obfuscate(),
         };
 
-        match sql::obfuscate_sql_string(sql_query, &config) {
+        match result {
             Ok(obfuscated) => {
-                let query: MetaString = obfuscated.query.into();
+                let query = obfuscated.query;
 
                 span.set_resource(query.clone());
                 span.attributes
@@ -139,10 +168,8 @@ impl TraceObfuscation {
                 }
 
                 if !obfuscated.table_names.is_empty() {
-                    span.attributes.insert(
-                        "sql.tables".into(),
-                        AttributeValue::String(obfuscated.table_names.into()),
-                    );
+                    span.attributes
+                        .insert("sql.tables".into(), AttributeValue::String(obfuscated.table_names));
                 }
             }
             Err(_) => {
@@ -288,6 +315,50 @@ mod tests {
 
         TraceObfuscation {
             obfuscator: Obfuscator::new(config),
+            sql_cache: None,
+        }
+    }
+
+    fn sql_span(query: &str) -> Span {
+        let mut span = Span::new("svc", "query", "r", "sql", 1, 0, 0, 0, 0);
+        span.attributes.insert(
+            tags::DB_STATEMENT.into(),
+            AttributeValue::String(query.to_owned().into()),
+        );
+        span
+    }
+
+    fn sql_query(span: &Span) -> &MetaString {
+        span.attributes
+            .get(tags::SQL_QUERY)
+            .and_then(AttributeValue::as_string)
+            .unwrap()
+    }
+
+    // Spans sharing a query share one obfuscated allocation, and cached output equals uncached output.
+    #[test]
+    fn cached_sql_results_are_shared_across_spans() {
+        let query = format!("SELECT * FROM users WHERE id IN ({})", "1, ".repeat(2_000));
+        let mut uncached = transform(false, false);
+        let mut cached = TraceObfuscation {
+            sql_cache: Some(SqlCache::new(5_000_000)),
+            ..transform(false, false)
+        };
+
+        let mut expected = sql_span(&query);
+        uncached.obfuscate_span(&mut expected);
+
+        let spans: Vec<Span> = (0..1_000)
+            .map(|_| {
+                let mut span = sql_span(&query);
+                cached.obfuscate_span(&mut span);
+                span
+            })
+            .collect();
+        for span in &spans {
+            assert_eq!(span, &expected);
+            assert_eq!(sql_query(span).as_ptr(), sql_query(&spans[0]).as_ptr());
+            assert_eq!(span.resource().as_ptr(), sql_query(&spans[0]).as_ptr());
         }
     }
 

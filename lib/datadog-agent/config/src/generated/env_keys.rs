@@ -153,6 +153,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_CACHE_ENABLED"],
+        path: &["apm_config", "obfuscation", "cache", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_CACHE_MAX_SIZE"],
+        path: &["apm_config", "obfuscation", "cache", "max_size"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_CREDIT_CARDS_ENABLED"],
         path: &["apm_config", "obfuscation", "credit_cards", "enabled"],
         decode: EnvDecode::Bool,
