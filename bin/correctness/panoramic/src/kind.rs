@@ -10,7 +10,7 @@ use crate::events::TestEvent;
 
 pub const DEFAULT_CLUSTER_NAME: &str = "saluki-correctness";
 
-/// Manages the lifecycle of a kind cluster used for kind-runtime correctness tests.
+/// Manages the lifecycle of a kind cluster used by the pod backend.
 ///
 /// On construction, ensures a cluster is running (creating one if needed) and loads
 /// all required images into it. On teardown, optionally deletes the cluster.

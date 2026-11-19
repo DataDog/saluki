@@ -191,12 +191,12 @@ pub struct RunCommand {
     #[arg(short = 'l', long, env = "PANORAMIC_LOG_DIR", verbatim_doc_comment)]
     log_dir: Option<PathBuf>,
 
-    /// Name of the kind cluster to create or reuse for kind-runtime tests.
+    /// Name of the kind cluster to create or reuse for pod-backend tests.
     #[arg(long, default_value = crate::kind::DEFAULT_CLUSTER_NAME)]
     pub kind_cluster_name: String,
 
-    /// Don't delete the kind cluster after kind-runtime tests complete (useful for
-    /// local iteration)
+    /// Don't delete the kind cluster after the run completes (useful for local
+    /// iteration)
     #[arg(long, verbatim_doc_comment)]
     pub no_delete_kind_cluster: bool,
 }
