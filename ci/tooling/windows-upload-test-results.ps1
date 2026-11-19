@@ -68,6 +68,11 @@ function Get-DatadogApiKey {
     }
 }
 
+# GitLab runs `after_script` even when a job is canceled. Cancellation stops nextest, which records the tests still
+# running as failures, so a report from a canceled job would show spurious failures.
+if ($env:CI_JOB_STATUS -eq "canceled") {
+    Exit-WithWarning "job was canceled"
+}
 if (-not (Test-Path $JUnitPath -PathType Leaf)) {
     Exit-WithWarning "JUnit report '${JUnitPath}' not found"
 }
