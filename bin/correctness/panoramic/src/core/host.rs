@@ -578,7 +578,8 @@ mod tests {
     const CASE_TIME: Duration = Duration::from_secs(30);
 
     /// A case with one participant, `app`, that runs `main`, which writes its PID to `pid_file` and sleeps, and, with
-    /// `broken`, `gone`, a file that is executable and not a program, so its start fails after `main` runs.
+    /// `broken`, `gone`, a script whose interpreter does not exist, so its start fails after `main` runs. A file with no
+    /// `#!` line is no good here: macOS starts it with `sh`, where Linux refuses to.
     fn planned(suite: &Path, pid_file: &Path, broken: bool) -> CasePlan {
         let dir = suite.join("case");
         fs::create_dir_all(&dir).unwrap();
@@ -604,7 +605,7 @@ participants:
       ./gone: {from: gone, mode: \"0755\"}
 ",
             );
-            fs::write(dir.join("gone"), "not a program").unwrap();
+            fs::write(dir.join("gone"), "#!/nonexistent/interpreter\n").unwrap();
         }
         config.push_str("procedure: []\n");
         fs::write(dir.join(CASE_FILE), config).unwrap();
