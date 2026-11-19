@@ -9,12 +9,15 @@ use std::{
     sync::Arc,
 };
 
-use quick_cache::{sync::Cache, Equivalent, Weighter};
+use quick_cache::{sync::Cache, Equivalent, OptionsBuilder, Weighter};
 use saluki_common::hash::FastBuildHasher;
 use stringtheory::MetaString;
 
 /// Fixed cost added to every entry, as in the trace-agent.
 const ENTRY_OVERHEAD: u64 = 320;
+
+/// Share of the entry estimate tracked as recently evicted (ghost) keys.
+const GHOST_ALLOCATION: f64 = 0.5;
 
 /// A cached obfuscation result.
 #[derive(Clone, Debug)]
@@ -72,19 +75,43 @@ pub struct SqlCache {
 impl SqlCache {
     /// Creates a cache holding at most `max_size` bytes of entries.
     ///
-    /// Every entry costs at least `ENTRY_OVERHEAD`, which bounds the entry count to `max_size / ENTRY_OVERHEAD`.
+    /// Every entry costs at least `ENTRY_OVERHEAD`, which bounds the resident entry count to
+    /// `max_size / ENTRY_OVERHEAD`. One shard with the whole budget as its hot allocation admits any entry up to
+    /// `max_size`: sharding or a smaller hot share would reject large entries the budget can hold.
     pub fn new(max_size: u64) -> Self {
-        let estimated_items = (max_size / ENTRY_OVERHEAD).max(1) as usize;
+        let options = OptionsBuilder::new()
+            .shards(1)
+            .hot_allocation(1.0)
+            .ghost_allocation(GHOST_ALLOCATION)
+            .estimated_items_capacity(Self::max_entries(max_size))
+            .weight_capacity(max_size.max(1))
+            .build()
+            .expect("all options set");
         Self {
-            inner: Arc::new(Cache::with(
-                estimated_items,
-                max_size.max(1),
+            // ponytail: one lock for every caller; shard by query hash if contention shows up.
+            inner: Arc::new(Cache::with_options(
+                options,
                 CostWeighter,
                 FastBuildHasher::default(),
                 Default::default(),
             )),
             max_size,
         }
+    }
+
+    fn max_entries(max_size: u64) -> usize {
+        (max_size / ENTRY_OVERHEAD).max(1) as usize
+    }
+
+    /// Upper bound of the memory the cache's bookkeeping may hold beyond its entries' cost, in bytes.
+    ///
+    /// The cache keeps at most `max_entries` resident entries and `GHOST_ALLOCATION` times as many ghost keys, each
+    /// in a slab slot with a hash table index. Slots are counted at the size of a full entry, and doubled for the
+    /// slab's and table's growth slack.
+    pub fn metadata_bound(&self) -> usize {
+        let slots = Self::max_entries(self.max_size) as f64 * (1.0 + GHOST_ALLOCATION);
+        let slot_size = std::mem::size_of::<(Key, CachedSql)>() + 64;
+        (slots.ceil() as usize) * slot_size * 2
     }
 
     /// Returns the cached result for `query` obfuscated for `dbms`, or computes it with `obfuscate` and caches it on
@@ -153,6 +180,42 @@ mod tests {
             assert!(cache.len() as u64 <= max_size / ENTRY_OVERHEAD);
         }
         assert!(cache.len() > 0);
+    }
+
+    #[test]
+    fn large_admissible_entries_are_cached() {
+        let max_size = 5_000_000;
+        let cache = SqlCache::new(max_size);
+        let big = "x".repeat(2_000_000);
+        let mut calls = 0;
+        for _ in 0..3 {
+            cache
+                .get_or_obfuscate(&big, "", || {
+                    calls += 1;
+                    ok(&big)
+                })
+                .unwrap();
+        }
+        assert_eq!(calls, 1, "a 4 MB entry under a 5 MB budget is cached");
+        assert!(cache.weight() <= max_size);
+    }
+
+    #[test]
+    fn small_entry_churn_then_large_entries_stays_bounded() {
+        let max_size = 100_000;
+        let cache = SqlCache::new(max_size);
+        for i in 0..50_000 {
+            let q = format!("SELECT {i}");
+            cache.get_or_obfuscate(&q, "", || ok(&q)).unwrap();
+            assert!(cache.len() <= SqlCache::max_entries(max_size));
+        }
+        for i in 0..20 {
+            let q = format!("{i}{}", "y".repeat(20_000));
+            cache.get_or_obfuscate(&q, "", || ok(&q)).unwrap();
+            assert!(cache.weight() <= max_size);
+            assert!(cache.len() <= SqlCache::max_entries(max_size));
+        }
+        assert!(cache.metadata_bound() > 0);
     }
 
     #[test]

@@ -59,10 +59,10 @@ impl MemoryBounds for TraceObfuscationConfiguration {
             .minimum()
             .with_single_value::<TraceObfuscation>("component struct");
         if let Some(cache) = &self.sql_cache {
-            // Entry costs count their bytes plus a fixed overhead that covers the map slot.
             builder
                 .firm()
-                .with_fixed_amount("SQL obfuscation cache", cache.max_size() as usize);
+                .with_fixed_amount("SQL obfuscation cache entries", cache.max_size() as usize)
+                .with_fixed_amount("SQL obfuscation cache bookkeeping", cache.metadata_bound());
         }
     }
 }
@@ -333,6 +333,38 @@ mod tests {
             .get(tags::SQL_QUERY)
             .and_then(AttributeValue::as_string)
             .unwrap()
+    }
+
+    // Obfuscation then truncation keeps one allocation per distinct value across 1,000 spans.
+    #[test]
+    fn obfuscated_then_truncated_spans_share_allocations() {
+        use crate::common::datadog::traces::normalize::MAX_META_VAL_LEN;
+        use crate::transforms::trace_truncation::{truncate_spans, Memo};
+
+        let ident = "c".repeat(MAX_META_VAL_LEN + 1_000);
+        let query = format!("SELECT {ident} FROM t WHERE x = 1");
+        let mut cached = TraceObfuscation {
+            sql_cache: Some(SqlCache::new(5_000_000)),
+            ..transform(false, false)
+        };
+        let mut spans: Vec<Span> = (0..1_000)
+            .map(|_| {
+                let mut span = sql_span(&query);
+                cached.obfuscate_span(&mut span);
+                span
+            })
+            .collect();
+        truncate_spans(&mut spans, 5000, false, &mut Memo::default());
+
+        let value = |s: &Span, k: &str| s.attributes.get(k).and_then(AttributeValue::as_string).unwrap().clone();
+        let first_query = value(&spans[0], tags::SQL_QUERY);
+        assert_eq!(first_query.len(), MAX_META_VAL_LEN + 3);
+        for span in &spans {
+            assert_eq!(span.resource().len(), 5000);
+            assert_eq!(span.resource().as_ptr(), spans[0].resource().as_ptr());
+            assert_eq!(value(span, tags::SQL_QUERY).as_ptr(), first_query.as_ptr());
+            assert_eq!(value(span, tags::DB_STATEMENT).as_ptr(), first_query.as_ptr());
+        }
     }
 
     // Spans sharing a query share one obfuscated allocation, and cached output equals uncached output.
