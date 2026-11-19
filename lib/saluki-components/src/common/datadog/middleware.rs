@@ -14,7 +14,8 @@ static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 ///
 /// The request's URI must already contain a relative path component. The resolved endpoint's URI replaces any
 /// existing scheme, host, and port components. If the endpoint has a base path, such as `https://proxy.example.com/prefix`,
-/// the request's path is appended to it, which gives `/prefix/api/v2/series`.
+/// the request's path is appended to it, which gives `/prefix/api/v2/series`. A request that goes to a derived logs or
+/// traces intake host doesn't get the base path.
 pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B>) -> Request<B> + Clone {
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
@@ -26,30 +27,31 @@ pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B
     move |mut request| {
         let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
 
-        let authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
-            endpoint
-                .logs_authority()
-                .cloned()
-                .unwrap_or_else(|| new_uri_authority.clone())
+        // Select the authority from the request path alone. A derived intake authority is used only for official
+        // Datadog endpoints.
+        let intake_authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
+            endpoint.logs_authority()
         } else if path_and_query.as_str().starts_with("/api/v0.2/traces")
             || path_and_query.as_str().starts_with("/api/v0.2/stats")
         {
-            endpoint
-                .traces_authority()
-                .cloned()
-                .unwrap_or_else(|| new_uri_authority.clone())
+            endpoint.traces_authority()
         } else {
-            new_uri_authority.clone()
-        };
-        // Select the authority from the request path alone, then prepend the endpoint's base path.
-        let path_and_query = if base_path.is_empty() {
-            path_and_query
-        } else {
-            PathAndQuery::try_from(format!("{}{}", base_path, path_and_query.as_str()))
-                .expect("should not fail to construct new path and query")
+            None
         };
 
-        // Build an updated URI from the endpoint's scheme and the selected authority, plus the combined path and query.
+        // Prepend the base path only when the request goes to the endpoint's own authority. The base path belongs to
+        // the configured endpoint, not to a derived intake host.
+        let (authority, path_and_query) = match intake_authority {
+            Some(intake_authority) => (intake_authority.clone(), path_and_query),
+            None if base_path.is_empty() => (new_uri_authority.clone(), path_and_query),
+            None => (
+                new_uri_authority.clone(),
+                PathAndQuery::try_from(format!("{}{}", base_path, path_and_query.as_str()))
+                    .expect("should not fail to construct new path and query"),
+            ),
+        };
+
+        // Build an updated URI from the endpoint's scheme and the selected authority, plus the path and query.
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
             .authority(authority)
@@ -255,19 +257,23 @@ mod tests {
     }
 
     #[test]
-    fn for_resolved_endpoint_with_base_path_still_routes_to_intake_authorities() {
+    fn for_resolved_endpoint_with_base_path_routes_to_intake_authorities_without_base_path() {
         // The authority is selected from the request path, so a base path on an official Datadog endpoint doesn't
-        // prevent routing to the logs and traces intake hosts.
+        // prevent routing to the logs and traces intake hosts. The base path belongs to the configured endpoint, so it
+        // isn't added to the path on a derived intake host. Other requests keep the base path.
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com/prefix", "fake-api-key")
             .expect("endpoint should resolve");
+        let endpoint_authority = endpoint.endpoint().authority().to_string();
         let middleware = for_resolved_endpoint(endpoint);
 
+        let default_authority = endpoint_authority.as_str();
         let cases = [
-            ("/api/v2/logs", "agent-http-intake.logs.datadoghq.com"),
-            ("/api/v0.2/traces", "trace.agent.datadoghq.com"),
+            ("/api/v2/logs", "agent-http-intake.logs.datadoghq.com", "/api/v2/logs"),
+            ("/api/v0.2/traces", "trace.agent.datadoghq.com", "/api/v0.2/traces"),
+            ("/api/v2/series", default_authority, "/prefix/api/v2/series"),
         ];
 
-        for (path, expected_authority) in cases {
+        for (path, expected_authority, expected_path) in cases {
             let request = Request::builder().uri(path).body(()).expect("request should build");
             let request = middleware(request);
 
@@ -276,7 +282,7 @@ mod tests {
                 Some(expected_authority),
                 "{path}"
             );
-            assert_eq!(request.uri().path(), format!("/prefix{path}"), "{path}");
+            assert_eq!(request.uri().path(), expected_path, "{path}");
         }
     }
 
