@@ -43,7 +43,7 @@ by an in-house writer. `lading-payload` is only used by millstone, and needs an 
 | 0 | `deny.toml` ignores for both advisories | Done |
 | 1 | Replace `tracing-rolling-file` with `RollingFileWriter` | Done |
 | 2 | Log timestamps on `jiff`; remove `chrono-tz` and `iana-time-zone` from saluki-app | Done |
-| 3 | Persisted retry queue file names in saluki-io | Planned |
+| 3 | Persisted retry queue file names in saluki-io | Done |
 | 4 | saluki-components (OTLP, logs encoder, DogStatsD debug log) and datadog-agent-runtime | Planned |
 | 5 | agent-data-plane CLI and panoramic; remove `chrono` from the workspace | Planned |
 | 6 | Bump lading once `lading-payload` no longer needs `chrono`; remove the last ignore | Waiting on lading |
