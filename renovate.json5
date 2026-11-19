@@ -56,8 +56,98 @@
   //     weekly non-major group)
   osvVulnerabilityAlerts: true,
 
+  // Versions that no built-in manager reads: the development and CI tools that
+  // the Makefile and the Windows CI scripts pin.
+  customManagers: [
+    // Cargo tools that `make cargo-install-<tool>` installs. The variable
+    // suffix is the crate name.
+    {
+      customType: "regex",
+      managerFilePatterns: [
+        "/^Makefile$/",
+      ],
+      matchStrings: [
+        "export CARGO_TOOL_VERSION_(?<depName>[A-Za-z0-9_-]+) \\?= (?<currentValue>\\S+)",
+      ],
+      datasourceTemplate: "crate",
+    },
+    // The Windows unit test job doesn't use the Makefile, so it pins
+    // cargo-nextest again. Renovate groups this with the Makefile pin.
+    {
+      customType: "regex",
+      managerFilePatterns: [
+        "/^\\.gitlab/windows\\.yml$/",
+        "/^ci/tooling/windows-unit-tests\\.ps1$/",
+      ],
+      matchStrings: [
+        "CARGO_NEXTEST_VERSION\\s*=\\s*\"(?<currentValue>[^\"]+)\"",
+      ],
+      depNameTemplate: "cargo-nextest",
+      datasourceTemplate: "crate",
+    },
+    // Other pins, marked by a `# renovate: datasource=<datasource>
+    // depName=<name>` comment on the line above.
+    {
+      customType: "regex",
+      managerFilePatterns: [
+        "/^Makefile$/",
+      ],
+      matchStrings: [
+        "#\\s*renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s*\\n[^\\n]*?=\\s*\"?(?<currentValue>[^\"\\s]+)\"?",
+      ],
+      extractVersionTemplate: "^v?(?<version>.+)$",
+    },
+  ],
+
   // Package-manager-specific rules.
   packageRules: [
+    // Development and CI tools get their own PR, so that a broken tool release
+    // doesn't hold back the weekly dependency PR.
+    {
+      matchManagers: [
+        "custom.regex",
+      ],
+      groupName: "development and CI tools",
+    },
+    // A Cargo tool pin is one exact version. The `crate` datasource uses Cargo
+    // versioning by default, which reads a bare `0.9.152` as the range
+    // `^0.9.152` and doesn't propose newer versions inside that range.
+    {
+      matchManagers: [
+        "custom.regex",
+      ],
+      matchDatasources: [
+        "crate",
+      ],
+      versioning: "semver",
+    },
+    // The Windows build installs cargo-auditable from a release zip that is
+    // pinned by SHA256, which Renovate can't update.
+    {
+      matchManagers: [
+        "custom.regex",
+      ],
+      matchPackageNames: [
+        "cargo-auditable",
+      ],
+      prBodyNotes: [
+        "**cargo-auditable** — Also update `$CargoAuditableVersion` and `$CargoAuditableSha256` in `ci/tooling/windows-build-adp.ps1`.",
+      ],
+    },
+    // A new version of a tool that the build CI image installs (`make
+    // cargo-preinstall`) is built from source in each CI job until the image
+    // is regenerated.
+    {
+      matchManagers: [
+        "custom.regex",
+      ],
+      matchDatasources: [
+        "crate",
+      ],
+      prBodyNotes: [
+        "**Cargo tool update** — After merging, run the `generate-build-ci-image` and `promote-build-ci-image` jobs, so that CI jobs stop building the new versions from source.",
+      ],
+    },
     // Use Cargo's semver interpretation for all Cargo dependencies. Cargo
     // treats `^0.x` as `>=0.x.0, <0.x+1.0`, so a bump from `0.9` to `0.10`
     // is a breaking (major) change. Without this, Renovate uses standard

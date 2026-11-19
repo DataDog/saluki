@@ -78,7 +78,9 @@ export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export CARGO_TOOL_VERSION_cargo-auditable ?= 0.7.4
+# renovate: datasource=github-releases depName=DataDog/ddprof
 export DDPROF_VERSION ?= 0.20.0
+# renovate: datasource=github-releases depName=DataDog/lading
 export LADING_VERSION ?= 0.33.0
 
 # Windows cross-compilation settings. These targets currently assume a local macOS host.
