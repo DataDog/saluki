@@ -242,8 +242,16 @@ serde_with = { version = "3.18.0", default-features = false, features = [
   "macros",
 ] }
 triomphe = { version = "0.1.15", default-features = false }
-chrono-tz = { version = "0.10", default-features = false }
-iana-time-zone = { version = "0.1", default-features = false }
+# `tzdb-bundle-always` keeps named time zones resolving on hosts without a time zone database. Leave `logging` off: jiff
+# would log through the `log` crate, which our logging subsystem captures, while detecting the zone for log timestamps.
+jiff = { version = "1.0.1", default-features = false, features = [
+  "perf-inline",
+  "std",
+  "tz-fat",
+  "tz-system",
+  "tzdb-bundle-always",
+  "tzdb-zoneinfo",
+] }
 backon = { version = "1", default-features = false }
 http-serde-ext = { version = "1", default-features = false }
 uuid = { version = "1.23", default-features = false }
