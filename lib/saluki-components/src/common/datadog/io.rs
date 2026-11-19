@@ -1135,14 +1135,19 @@ where
     }
 
     ServiceBuilder::new()
-        // Set the request's URI and endpoint-specific headers.
-        .map_request(move |request| endpoint_request_mapper(request))
         // Signal backend support for arbitrary tag values when configured.
         .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info())
         .concurrency_limit(config.effective_endpoint_concurrency())
         .layer(retry_circuit_breaker)
+        // Set the request's URI and endpoint-specific headers.
+        //
+        // This layer sits below the retry circuit breaker, so it maps each attempt from the original request. The circuit
+        // breaker keeps the unmapped request for a retry or a requeue, so a retried request, or one persisted to disk,
+        // keeps its relative path. Above the circuit breaker, a retried request would be mapped again, and the mapper
+        // would add the endpoint's base path a second time.
+        .map_request(move |request| endpoint_request_mapper(request))
         .layer(build_diagnostics_layer(emitter, endpoint_url))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(client)
@@ -3270,6 +3275,43 @@ mod tests {
             recorder.counter(component_metric_key("component_bytes_sent_total")),
             Some(12)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn forwarder_prepends_endpoint_base_path_once_across_retries() {
+        // Regression: the endpoint mapper sat above the retry circuit breaker, so a retried request went through it again
+        // and gained the base path a second time.
+        let (server_url, counter, mut requests) = start_recording_http_server_with_requests(vec![
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::OK,
+        ])
+        .await;
+        let endpoint_url = format!("{}/prefix", server_url.trim_end_matches('/'));
+        let (_, forwarder) = build_test_forwarder(&endpoint_url, Live::new_fixed(false)).await;
+
+        let supervisor = TestSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+
+        let observed = wait_for_count_at_least(&counter, 3, Duration::from_secs(3)).await;
+        drain_test_forwarder(supervisor, handle).await;
+        assert!(
+            observed >= 3,
+            "forwarder should dispatch two retries (saw {observed} requests)"
+        );
+
+        let mut request_lines = Vec::new();
+        while let Ok(request) = requests.try_recv() {
+            request_lines.push(request.lines().next().unwrap_or_default().to_string());
+        }
+        assert_eq!(request_lines.len(), observed);
+        for request_line in request_lines {
+            assert_eq!(request_line, "POST /prefix/api/v2/series HTTP/1.1");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
