@@ -12,7 +12,7 @@ use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
 use crate::common::otlp::traces::translator::ContainerTagPromotion;
-use crate::common::otlp::value::otlp_value_to_string;
+use crate::common::otlp::value::{otlp_value_as_string, otlp_value_to_string};
 
 // ============================================================================
 // Datadog attribute key constants shared across the encoder and translator
@@ -477,6 +477,27 @@ const INVALID_HOSTNAMES: [&str; 6] = [
     "ip6-localhost",
 ];
 
+/// Returns the value of the first attribute named `key`, like `Map.Get` in `pdata`.
+///
+/// The inner `Option` is `None` for an attribute that is present but has an empty value.
+pub(super) fn get_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
+    attributes
+        .iter()
+        .find(|kv| kv.key == key)
+        .map(|kv| kv.value.as_ref().and_then(|v| v.value.as_ref()))
+}
+
+/// Returns the first attribute named `key` as `Map.Get` followed by `Value.Str` in `pdata` would.
+///
+/// Unlike [`get_string_attribute`], a present attribute that isn't a string yields `Some("")`, so a
+/// presence check succeeds for it.
+pub(super) fn get_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
+    get_attribute(attributes, key).map(|value| match value {
+        Some(Value::StringValue(s_val)) => s_val.as_str(),
+        _ => "",
+    })
+}
+
 /// Resolves an AKS cluster name from an Azure managed resource group name.
 fn aks_cluster_name(resource_group_name: &str) -> Option<&str> {
     let segments: Vec<_> = resource_group_name.split('_').collect();
@@ -488,50 +509,55 @@ fn aks_cluster_name(resource_group_name: &str) -> Option<&str> {
 }
 
 /// Resolves an EKS cluster name from an EC2 Kubernetes cluster tag key.
+///
+/// The last matching key wins.
 fn ec2_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
     attributes
         .iter()
+        .rev()
         .find(|attribute| attribute.key.starts_with(EC2_CLUSTER_TAG_PREFIX))
         .and_then(|attribute| attribute.key.split('/').nth(2))
 }
 
 /// Resolves the Kubernetes cluster name from resource attributes.
 fn kubernetes_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    get_string_attribute(attributes, K8S_CLUSTER_NAME).or_else(|| {
-        match get_string_attribute(attributes, CLOUD_PROVIDER) {
-            Some("azure") => get_string_attribute(attributes, AZURE_RESOURCE_GROUP_NAME).and_then(aks_cluster_name),
-            Some("aws") => ec2_cluster_name(attributes),
-            _ => None,
-        }
-    })
+    if let Some(cluster_name) = get_attribute_str(attributes, K8S_CLUSTER_NAME) {
+        return Some(cluster_name);
+    }
+
+    match get_attribute_str(attributes, CLOUD_PROVIDER) {
+        Some("azure") => get_attribute_str(attributes, AZURE_RESOURCE_GROUP_NAME).and_then(aks_cluster_name),
+        Some("aws") => ec2_cluster_name(attributes),
+        _ => None,
+    }
 }
 
 /// Resolves the hostname for an Azure resource.
 fn azure_hostname(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    get_string_attribute(attributes, HOST_ID).or_else(|| get_string_attribute(attributes, HOST_NAME))
+    get_attribute_str(attributes, HOST_ID).or_else(|| get_attribute_str(attributes, HOST_NAME))
 }
 
 /// Resolves the hostname for an EC2 resource.
 fn ec2_hostname(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    get_string_attribute(attributes, HOST_ID)
+    get_attribute_str(attributes, HOST_ID)
 }
 
 /// Resolves the hostname for a GCP resource.
 pub(super) fn gcp_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
-    let host_name = get_string_attribute(attributes, HOST_NAME)?;
-    let cloud_account_id = get_string_attribute(attributes, CLOUD_ACCOUNT_ID)?;
+    let host_name = get_attribute_str(attributes, HOST_NAME)?;
     let host_name = if host_name.matches('.').count() >= 3 {
         host_name.split_once('.').map_or(host_name, |(name, _)| name)
     } else {
         host_name
     };
+    let cloud_account_id = get_attribute_str(attributes, CLOUD_ACCOUNT_ID)?;
 
     Some(format!("{host_name}.{cloud_account_id}"))
 }
 
 /// Resolves a Kubernetes hostname from resource attributes.
 fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
-    let node_name = get_string_attribute(attributes, K8S_NODE_NAME)?;
+    let node_name = get_attribute_str(attributes, K8S_NODE_NAME)?;
     let cluster_name = kubernetes_cluster_name(attributes);
 
     Some(match cluster_name {
@@ -541,20 +567,25 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
 }
 
 /// Resolves an unfiltered hostname from resource attributes.
+///
+/// Checks, in order: the literal `host` attribute, `datadog.host.name`, ECS Fargate (which has no
+/// hostname), the cloud provider's hostname, the Kubernetes node name, `host.id`, and `host.name`.
 fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
-    if let Some(hostname) = get_string_attribute(attributes, ATTRIBUTE_HOST) {
+    // A literal `host` of any type stops resolution, rendered as `Value.AsString` in `pdata` does. Only
+    // the JSON layout of arrays and maps is approximate.
+    if let Some(hostname) = get_attribute(attributes, ATTRIBUTE_HOST) {
+        return Some(otlp_value_as_string(hostname).into_owned());
+    }
+
+    if let Some(hostname) = get_attribute_str(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
         return Some(hostname.to_string());
     }
 
-    if let Some(hostname) = get_string_attribute(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
-        return Some(hostname.to_string());
-    }
-
-    if get_string_attribute(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
+    if get_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
         return None;
     }
 
-    match get_string_attribute(attributes, CLOUD_PROVIDER) {
+    match get_attribute_str(attributes, CLOUD_PROVIDER) {
         Some("aws") => return ec2_hostname(attributes).map(str::to_owned),
         Some("gcp") => return gcp_hostname(attributes),
         Some("azure") => return azure_hostname(attributes).map(str::to_owned),
@@ -562,11 +593,13 @@ fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) ->
     }
 
     kubernetes_hostname(attributes)
-        .or_else(|| get_string_attribute(attributes, HOST_ID).map(str::to_owned))
-        .or_else(|| get_string_attribute(attributes, HOST_NAME).map(str::to_owned))
+        .or_else(|| get_attribute_str(attributes, HOST_ID).map(str::to_owned))
+        .or_else(|| get_attribute_str(attributes, HOST_NAME).map(str::to_owned))
 }
 
 /// Resolves a valid hostname from resource attributes.
+///
+/// The hostname can be empty, for example when `datadog.host.name` isn't a string.
 pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let hostname = unsanitized_hostname_from_attributes(attributes)?;
     (!INVALID_HOSTNAMES.contains(&hostname.as_str())).then_some(hostname)
@@ -675,6 +708,7 @@ mod tests {
     use stringtheory::interning::GenericMapInterner;
 
     use super::*;
+    use crate::common::otlp::source::resolve_source_from_attributes;
 
     fn string_attribute(key: &str, value: &str) -> KeyValue {
         KeyValue {
@@ -1250,5 +1284,230 @@ mod tests {
         let metric_source = resource_to_metric_source(&resource).expect("metric source should resolve");
         assert_eq!(metric_source.kind, SourceKind::Hostname);
         assert_eq!(metric_source.identifier, "vm-id");
+    }
+
+    fn attribute_value(key: &str, value: Value) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: Some(value) }),
+        }
+    }
+
+    fn empty_attribute(key: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: None }),
+        }
+    }
+
+    /// A named source resolution case: the attributes and the expected kind and identifier.
+    type SourceCase = (&'static str, Vec<KeyValue>, Option<(SourceKind, String)>);
+
+    fn resolved_source(attributes: Vec<KeyValue>) -> Option<(SourceKind, String)> {
+        resolve_source_from_attributes(&attributes).map(|source| (source.kind, source.identifier))
+    }
+
+    fn host(identifier: &str) -> Option<(SourceKind, String)> {
+        Some((SourceKind::Hostname, identifier.to_string()))
+    }
+
+    #[test]
+    fn source_resolution_resolves_hostnames_in_agent_order() {
+        let s = string_attribute;
+        let cases: Vec<SourceCase> = vec![
+            (
+                "literal host beats datadog.host.name",
+                vec![s(ATTRIBUTE_DATADOG_HOSTNAME, "custom"), s(ATTRIBUTE_HOST, "literal")],
+                host("literal"),
+            ),
+            (
+                "integer literal host",
+                vec![
+                    attribute_value(ATTRIBUTE_HOST, Value::IntValue(5)),
+                    s(HOST_NAME, "name"),
+                ],
+                host("5"),
+            ),
+            (
+                "boolean literal host",
+                vec![attribute_value(ATTRIBUTE_HOST, Value::BoolValue(true))],
+                host("true"),
+            ),
+            (
+                "empty literal host",
+                vec![empty_attribute(ATTRIBUTE_HOST), s(HOST_NAME, "name")],
+                host(""),
+            ),
+            (
+                "double literal host",
+                vec![
+                    attribute_value(ATTRIBUTE_HOST, Value::DoubleValue(1.5)),
+                    s(HOST_NAME, "name"),
+                ],
+                host("1.5"),
+            ),
+            (
+                "bytes literal host",
+                vec![
+                    attribute_value(ATTRIBUTE_HOST, Value::BytesValue(vec![1, 2, 3])),
+                    s(HOST_NAME, "name"),
+                ],
+                host("AQID"),
+            ),
+            (
+                "array literal host",
+                vec![
+                    attribute_value(
+                        ATTRIBUTE_HOST,
+                        Value::ArrayValue(ArrayValue {
+                            values: vec![AnyValue {
+                                value: Some(Value::StringValue("a".to_string())),
+                            }],
+                        }),
+                    ),
+                    s(HOST_NAME, "name"),
+                ],
+                host(r#"["a"]"#),
+            ),
+            (
+                "invalid literal host doesn't fall through",
+                vec![s(ATTRIBUTE_HOST, "localhost"), s(HOST_NAME, "name")],
+                None,
+            ),
+            (
+                "datadog.host.name beats Fargate and cloud providers",
+                vec![
+                    s(AWS_ECS_LAUNCHTYPE, "fargate"),
+                    s(CLOUD_PROVIDER, "aws"),
+                    s(HOST_ID, "i-123"),
+                    s(ATTRIBUTE_DATADOG_HOSTNAME, "custom"),
+                ],
+                host("custom"),
+            ),
+            (
+                "non-string datadog.host.name is an empty host",
+                vec![
+                    attribute_value(ATTRIBUTE_DATADOG_HOSTNAME, Value::IntValue(1)),
+                    s(HOST_NAME, "name"),
+                ],
+                host(""),
+            ),
+            (
+                "Fargate task",
+                vec![
+                    s(AWS_ECS_LAUNCHTYPE, "fargate"),
+                    s(AWS_ECS_TASK_ARN, "arn"),
+                    s(HOST_NAME, "name"),
+                ],
+                Some((SourceKind::AwsEcsFargate, "arn".to_string())),
+            ),
+            (
+                "Fargate without a task ARN has no host",
+                vec![s(AWS_ECS_LAUNCHTYPE, "fargate"), s(HOST_NAME, "name")],
+                None,
+            ),
+            (
+                "AWS uses host.id",
+                vec![s(CLOUD_PROVIDER, "aws"), s(HOST_ID, "i-123"), s(HOST_NAME, "name")],
+                host("i-123"),
+            ),
+            (
+                "AWS without host.id doesn't fall back",
+                vec![s(CLOUD_PROVIDER, "aws"), s(K8S_NODE_NAME, "node"), s(HOST_NAME, "name")],
+                None,
+            ),
+            (
+                "GCP shortens a qualified host.name",
+                vec![
+                    s(CLOUD_PROVIDER, "gcp"),
+                    s(HOST_NAME, "vm.zone.c.project.internal"),
+                    s(CLOUD_ACCOUNT_ID, "project"),
+                ],
+                host("vm.project"),
+            ),
+            (
+                "GCP keeps a short host.name",
+                vec![
+                    s(CLOUD_PROVIDER, "gcp"),
+                    s(HOST_NAME, "vm.zone"),
+                    s(CLOUD_ACCOUNT_ID, "project"),
+                ],
+                host("vm.zone.project"),
+            ),
+            (
+                "GCP needs the project",
+                vec![s(CLOUD_PROVIDER, "gcp"), s(HOST_NAME, "vm")],
+                None,
+            ),
+            (
+                "Azure prefers host.id",
+                vec![s(CLOUD_PROVIDER, "azure"), s(HOST_NAME, "name"), s(HOST_ID, "vm-id")],
+                host("vm-id"),
+            ),
+            (
+                "Azure falls back to host.name",
+                vec![s(CLOUD_PROVIDER, "azure"), s(HOST_NAME, "name")],
+                host("name"),
+            ),
+            (
+                "Kubernetes node and cluster",
+                vec![
+                    s(K8S_CLUSTER_NAME, "cluster"),
+                    s(K8S_NODE_NAME, "node"),
+                    s(HOST_ID, "id"),
+                ],
+                host("node-cluster"),
+            ),
+            (
+                "Kubernetes node with an empty cluster name",
+                vec![s(K8S_NODE_NAME, "node"), s(K8S_CLUSTER_NAME, "")],
+                host("node-"),
+            ),
+            (
+                "Kubernetes node without a cluster",
+                vec![s(K8S_NODE_NAME, "node"), s(HOST_NAME, "name")],
+                host("node"),
+            ),
+            (
+                "host.id beats host.name",
+                vec![s(HOST_NAME, "name"), s(HOST_ID, "id")],
+                host("id"),
+            ),
+            ("host.name", vec![s(HOST_NAME, "name")], host("name")),
+            (
+                "first duplicate wins even when it isn't a string",
+                vec![attribute_value(HOST_NAME, Value::IntValue(1)), s(HOST_NAME, "name")],
+                host(""),
+            ),
+            ("localhost", vec![s(HOST_NAME, "localhost")], None),
+            ("0.0.0.0", vec![s(HOST_NAME, "0.0.0.0")], None),
+            ("127.0.0.1", vec![s(HOST_NAME, "127.0.0.1")], None),
+            (
+                "localhost.localdomain",
+                vec![s(HOST_NAME, "localhost.localdomain")],
+                None,
+            ),
+            (
+                "localhost6.localdomain6",
+                vec![s(HOST_NAME, "localhost6.localdomain6")],
+                None,
+            ),
+            ("ip6-localhost", vec![s(HOST_NAME, "ip6-localhost")], None),
+            ("no hostname attributes", vec![s("other", "value")], None),
+        ];
+
+        for (name, attributes, expected) in cases {
+            assert_eq!(resolved_source(attributes), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn ec2_cluster_name_uses_the_last_cluster_tag() {
+        let attributes = vec![
+            string_attribute("ec2.tag.kubernetes.io/cluster/first", "owned"),
+            string_attribute("ec2.tag.kubernetes.io/cluster/second", "owned"),
+        ];
+
+        assert_eq!(ec2_cluster_name(&attributes), Some("second"));
     }
 }
