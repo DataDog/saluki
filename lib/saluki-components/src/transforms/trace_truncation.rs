@@ -80,7 +80,7 @@ pub(crate) struct Memo {
     sources: Vec<MetaString>,
 }
 
-/// Strings this short may be stored inline, at an address that isn't theirs alone, so they are never memoized.
+/// Strings this short may be stored inline, at an address that isn't theirs alone, so their results are never shared.
 const MIN_MEMO_LEN: usize = 64;
 
 impl Memo {
@@ -133,7 +133,7 @@ enum Rule {
 
 /// Returns the rule for an attribute.
 ///
-/// `TruncateV1` (`legacy` off) truncates string attributes like Meta, skips bytes attributes (legacy meta_struct),
+/// `TruncateV1` (`legacy` off) truncates string attributes like Meta, skips bytes attributes (legacy `meta_struct`),
 /// and truncates the key of every other attribute without exempting structured keys. `Truncate` (`legacy` on, the
 /// path OTLP traces take in the trace-agent) sees integers and floats as Metrics and everything else as Meta, whose
 /// structured keys are exempt. ADP holds no string form of a non-string Meta value, so only its key is truncated.
@@ -152,7 +152,7 @@ fn rule(key: &str, value: &AttributeValue, legacy: bool) -> Rule {
 ///
 /// OTLP attributes were already truncated, with an ellipsis, when they were translated. Cutting them again would
 /// append a second ellipsis, so on OTLP spans a string within `limit + 3` bytes that ends in `...` is taken as already
-/// truncated. ponytail: this misreads an untruncated value of that exact shape; drop it once translation stops
+/// truncated. ponytail: this misreads a value of that exact shape that was never cut; drop it once translation stops
 /// truncating attributes itself.
 fn over(s: &str, limit: usize, legacy: bool) -> bool {
     s.len() > limit && !(legacy && s.len() <= limit + ELLIPSIS.len() && s.ends_with(ELLIPSIS))

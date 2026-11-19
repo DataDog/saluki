@@ -29,7 +29,7 @@ pub struct CachedSql {
 /// The cache key: the query and the DBMS it was obfuscated for.
 ///
 /// The trace-agent's key ignores the DBMS, so a query cached for one DBMS can be returned for another. Keying on it
-/// keeps the cached output equal to the uncached output. The rest of the SQL configuration is fixed per cache.
+/// keeps the cached output equal to the output computed without the cache. The rest of the SQL configuration is fixed per cache.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Key {
     query: MetaString,
@@ -77,7 +77,7 @@ impl SqlCache {
     ///
     /// Every entry costs at least `ENTRY_OVERHEAD`, which bounds the resident entry count to
     /// `max_size / ENTRY_OVERHEAD`. One shard with the whole budget as its hot allocation admits any entry up to
-    /// `max_size`: sharding or a smaller hot share would reject large entries the budget can hold.
+    /// `max_size`: several shards or a smaller hot share would reject large entries the budget can hold.
     pub fn new(max_size: u64) -> Self {
         let options = OptionsBuilder::new()
             .shards(1)
