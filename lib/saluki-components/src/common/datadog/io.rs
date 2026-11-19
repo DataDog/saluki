@@ -72,7 +72,7 @@ use tokio::{
     task::{JoinError, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
-use tower::{util::MapRequest, BoxError, Service, ServiceBuilder, ServiceExt as _};
+use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error, warn};
 use url::Url;
 
@@ -360,11 +360,11 @@ pub(crate) type EndpointRequestMapperFactory<B> =
 
 /// Maps requests for a resolved endpoint before they are sent.
 pub(crate) type EndpointRequestMapper<B> =
-    Box<dyn FnMut(Request<TransactionBody<B>>) -> Request<TransactionBody<B>> + Send>;
+    Arc<dyn Fn(Request<TransactionBody<B>>) -> Request<TransactionBody<B>> + Send + Sync>;
 
 fn default_endpoint_request_mapper<B: 'static>(endpoint: ResolvedEndpoint) -> EndpointRequestMapper<B> {
     let mapper = for_resolved_endpoint(endpoint);
-    Box::new(mapper)
+    Arc::new(mapper)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -982,7 +982,9 @@ async fn run_endpoint_io_loop<B>(
     if !config.stop_wait_for_inflight {
         retry_circuit_breaker = retry_circuit_breaker.with_cancellation(in_flight_shutdown.clone());
     }
-    let service = ServiceBuilder::new()
+    let mut service = ServiceBuilder::new()
+        // Set the request's URI and endpoint-specific headers.
+        .map_request(move |request| endpoint_request_mapper(request))
         // Signal backend support for arbitrary tag values when configured.
         .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
@@ -992,8 +994,6 @@ async fn run_endpoint_io_loop<B>(
         .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
-    // Set the request's URI and endpoint-specific headers.
-    let mut service = MapRequest::new(service, endpoint_request_mapper);
 
     let retry = &config.retry;
     let mut retry_queue = RetryQueue::new(queue_id.clone(), retry.queue_max_size_bytes)
