@@ -13,5 +13,6 @@ otlp_config:
   receiver:
     protocols:
       grpc:
-        endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"
+        # No endpoint here. A value in this file reaches ADP over the Agent's configuration stream and
+        # overrides the endpoint that the case sets in its environment.
         max_recv_msg_size_mib: 4

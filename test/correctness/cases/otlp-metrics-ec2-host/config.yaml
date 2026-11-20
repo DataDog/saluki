@@ -13,7 +13,7 @@ participants:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "true"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
-      ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      ADP_DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
       DD_AGGREGATE_CONTEXT_LIMIT: "500000"
     files:
       datadog.yaml: {from: datadog.yaml, template: true}
