@@ -16,7 +16,8 @@
 #   the build context, which includes the Dockerfile and the Rust toolchain. The build arguments
 #   include the build profile and target, and the base images resolved to digests, because their
 #   tags move. The script hash covers the rest of the build recipe.
-# - SMP key: the ADP key and the Agent image, which `.datadog-agent-version.json` pins by digest.
+# - SMP key: the ADP image digest and the Agent image, which `.datadog-agent-version.json` pins by
+#   digest.
 #
 # Some inputs are outside the key, for example the packages that `apt-get install` gets during the
 # build, and the BuildKit version. So the script reuses an image only while it is younger than
@@ -114,22 +115,14 @@ adp_build_args=(
     "APP_IMAGE=${app_image}"
     "APP_GIT_HASH=${adp_sha}"
 )
-smp_build_args=(
-    "DD_AGENT_IMAGE=${agent_image}"
-)
 
 if [[ "${reuse}" == "true" ]]; then
     adp_key="$(printf '%s\n' "v1" "${adp_sha}" "${adp_build_args[@]}" "${recipe_hash}" | sha256 | cut -c1-40)"
-    smp_key="$(printf '%s\n' "v1" "${adp_key}" "${smp_build_args[@]}" | sha256 | cut -c1-40)"
     adp_img="${image_repo}:adp-reuse-${adp_key}"
-    smp_img="${image_repo}:agent-adp-reuse-${smp_key}"
 else
     adp_key="none"
-    smp_key="none"
     adp_img="${ADP_IMG_BASE}-${adp_sha}"
-    smp_img="${SMP_IMG_BASE}-${adp_sha}"
 fi
-smp_build_args+=("ADP_IMAGE=${adp_img}")
 
 labels=("git.repository=${CI_PROJECT_NAME}" "git.commit=${adp_sha}")
 if [[ "${reuse}" != "true" ]]; then
@@ -137,74 +130,76 @@ if [[ "${reuse}" != "true" ]]; then
 fi
 
 log "${role}: ADP commit ${adp_sha}"
-for arg in "${adp_build_args[@]}" "${smp_build_args[@]}"; do
+for arg in "${adp_build_args[@]}"; do
     log "${role}: ${arg}"
 done
+log "${role}: Agent image ${agent_image}"
 log "${role}: ADP image ${adp_img}"
-log "${role}: SMP image ${smp_img}"
 
-need_adp=true
-need_smp=true
-if [[ "${reuse}" == "true" ]]; then
-    fresh_image_exists "${adp_img}" && need_adp=false
-    # Reuse a converged image only together with the ADP image that it contains.
-    if [[ "${need_adp}" == "false" ]] && fresh_image_exists "${smp_img}"; then
-        need_smp=false
-    fi
-fi
-
-if [[ "${need_adp}" == "true" || "${need_smp}" == "true" ]]; then
-    # Build from a separate worktree of the ADP commit, so that this script and the Agent version file
-    # stay at the pipeline commit.
+# Prepare a build, once. The build uses a separate worktree of the ADP commit, so that this script
+# and the Agent version file stay at the pipeline commit.
+src_dir=""
+prepare_build() {
+    [[ -z "${src_dir}" ]] || return 0
     src_dir="$(mktemp -d)/adp-src"
     git worktree add --detach "${src_dir}" "${adp_sha}" >&2
     docker buildx create --name adp-builder --driver docker-container --use >&2
+}
+
+# Run `docker buildx build` and push the image. Arguments: the Dockerfile, the tag, the image key, and
+# the build arguments.
+build_and_push() {
+    local dockerfile="$1" tag="$2" key="$3" arg label flags=()
+    shift 3
+    for arg in "$@"; do
+        flags+=(--build-arg "${arg}")
+    done
+    for label in "${labels[@]}" "smp.image_key=${key}"; do
+        flags+=(--label "${label}")
+    done
+    prepare_build
+    log "Building ${tag}..."
+    SECONDS=0
+    docker buildx build --file "${src_dir}/docker/${dockerfile}" --tag "${tag}" "${flags[@]}" --push "${src_dir}"
+    log "Built ${tag} in ${SECONDS}s."
+}
+
+if [[ "${reuse}" != "true" ]] || ! fresh_image_exists "${adp_img}"; then
+    build_and_push Dockerfile.agent-data-plane "${adp_img}" "${adp_key}" "${adp_build_args[@]}"
 fi
 
-if [[ "${need_adp}" == "true" ]]; then
-    log "Building ${adp_img}..."
-    SECONDS=0
-    adp_flags=()
-    for arg in "${adp_build_args[@]}"; do
-        adp_flags+=(--build-arg "${arg}")
-    done
-    for label in "${labels[@]}" "smp.image_key=${adp_key}"; do
-        adp_flags+=(--label "${label}")
-    done
-    docker buildx build \
-        --file "${src_dir}/docker/Dockerfile.agent-data-plane" \
-        --tag "${adp_img}" \
-        "${adp_flags[@]}" \
-        --push \
-        "${src_dir}"
-    log "Built ${adp_img} in ${SECONDS}s."
+# The converged image refers to the ADP image by digest, and the SMP key includes that digest. So a
+# rebuild of the ADP image under the same tag makes a new SMP key, and the downstream jobs get the
+# same ADP build.
+adp_ref="${adp_img}"
+if [[ "${reuse}" == "true" ]]; then
+    if adp_ref="$(pin_digest "${adp_img}")"; then
+        smp_build_args=("DD_AGENT_IMAGE=${agent_image}" "ADP_IMAGE=${adp_ref}")
+        smp_key="$(printf '%s\n' "v2" "${smp_build_args[@]}" | sha256 | cut -c1-40)"
+        smp_img="${image_repo}:agent-adp-reuse-${smp_key}"
+    else
+        log "Couldn't resolve ${adp_img} to a digest; not reusing the converged image."
+        adp_ref="${adp_img}"
+        reuse=false
+    fi
 fi
+if [[ "${reuse}" != "true" ]]; then
+    smp_build_args=("DD_AGENT_IMAGE=${agent_image}" "ADP_IMAGE=${adp_ref}")
+    smp_key="none"
+    smp_img="${SMP_IMG_BASE}-${adp_sha}"
+fi
+log "${role}: SMP image ${smp_img}, from ${adp_ref}"
 
 # SMP runs one target image in each job, and the tag filtering experiments need the Core Agent: a
 # `metric_tag_filterlist` is Agent configuration, and reaches ADP only over the config stream. So
 # every experiment runs against the converged image. The experiments that don't need the Core Agent
 # override the command to run ADP by itself.
-if [[ "${need_smp}" == "true" ]]; then
-    log "Building ${smp_img}..."
-    SECONDS=0
-    smp_flags=()
-    for arg in "${smp_build_args[@]}"; do
-        smp_flags+=(--build-arg "${arg}")
-    done
-    for label in "${labels[@]}" "smp.image_key=${smp_key}"; do
-        smp_flags+=(--label "${label}")
-    done
-    docker buildx build \
-        --file "${src_dir}/docker/Dockerfile.datadog-agent" \
-        --tag "${smp_img}" \
-        "${smp_flags[@]}" \
-        --push \
-        "${src_dir}"
-    log "Built ${smp_img} in ${SECONDS}s."
+if [[ "${reuse}" != "true" ]] || ! fresh_image_exists "${smp_img}"; then
+    build_and_push Dockerfile.datadog-agent "${smp_img}" "${smp_key}" "${smp_build_args[@]}"
 fi
 
 {
     echo "${role_upper}_ADP_SHA=${adp_sha}"
-    echo "${role_upper}_ADP_IMG=${adp_img}"
+    echo "${role_upper}_ADP_IMG=${adp_ref}"
     echo "${role_upper}_SMP_IMG=${smp_img}"
 } >> smp-vars.env
