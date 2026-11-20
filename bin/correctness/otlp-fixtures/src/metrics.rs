@@ -204,6 +204,7 @@ fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
             ]),
         ),
         ("gcp_cloud_run", with_host(gcp("gcp_cloud_run"))),
+        ("gcp_cloud_functions", with_host(gcp("gcp_cloud_functions"))),
         ("gcp_cloud_run_job", {
             let mut attributes = with_host(gcp("gcp_cloud_run"));
             attributes.push(kv("gcp.cloud_run.job.execution", string("job-1")));
