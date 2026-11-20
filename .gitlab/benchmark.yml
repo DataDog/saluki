@@ -55,8 +55,8 @@ build-adp-baseline-image:
     # Build on the same prepped build image as the shipped artifacts, with the shared compiler cache.
     BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
     BUILDCACHE_S3_REGION: "us-east-1"
-    # The build image is much larger than plain Ubuntu, so give DinD the same larger loopback volume as the main
-    # AMD64 builds (see `.build-amd64-variables`).
+    # The default 20G DinD loopback volume is too small for this build: with it, the final LTO link fails with "No
+    # space left on device". Use the same larger volume as the main AMD64 builds (see `.build-amd64-variables`).
     DOCKER_LOOPBACK_SIZE: "50G"
     DOCKER_LOOPBACK_PATH: "/var"
   before_script:
@@ -134,8 +134,8 @@ build-adp-comparison-image:
     # Build on the same prepped build image as the shipped artifacts, with the shared compiler cache.
     BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
     BUILDCACHE_S3_REGION: "us-east-1"
-    # The build image is much larger than plain Ubuntu, so give DinD the same larger loopback volume as the main
-    # AMD64 builds (see `.build-amd64-variables`).
+    # The default 20G DinD loopback volume is too small for this build: with it, the final LTO link fails with "No
+    # space left on device". Use the same larger volume as the main AMD64 builds (see `.build-amd64-variables`).
     DOCKER_LOOPBACK_SIZE: "50G"
     DOCKER_LOOPBACK_PATH: "/var"
   before_script:
