@@ -18,6 +18,8 @@ target:
     DD_OTLP_CONFIG: "{}"
     DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: localhost:4317
     DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: localhost:4318
+    DD_LOGS_ENABLED: "true"
+    DD_OTLP_CONFIG_LOGS_ENABLED: "true"
   profiling_environment:
     DD_SERVICE: agent-data-plane
     DD_PROFILING_NATIVE_PRESET: cpu_live_heap
