@@ -3386,7 +3386,6 @@ inventory:
       Address that ADP listens on for OTLP gRPC requests. Defaults to `localhost:4317`.
       An empty value in `datadog.yaml` or the Agent configuration stream disables the gRPC receiver. An empty
       environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
-      `data_plane.otlp.receiver_grpc_endpoint_temporary` overrides this value when it is set.
 
       ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
       doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols that
@@ -3731,7 +3730,6 @@ inventory:
       Address that ADP listens on for OTLP HTTP requests. Defaults to `localhost:4318`.
       An empty value in `datadog.yaml` or the Agent configuration stream disables the HTTP receiver. An empty
       environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
-      `data_plane.otlp.receiver_http_endpoint_temporary` overrides this value when it is set.
 
       ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
       doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols that

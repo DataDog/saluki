@@ -637,12 +637,10 @@ mod tests {
             "otlp_config:\n  receiver:\n    protocols:\n      grpc:\n        endpoint: \"\"\n",
         )
         .unwrap();
-        std::env::set_var("DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY", "");
         std::env::set_var("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT", "");
 
         let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
 
-        std::env::remove_var("DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY");
         std::env::remove_var("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT");
         std::fs::remove_file(&path).ok();
         let receiver = &loaded.local().domains.otlp.receiver;

@@ -235,8 +235,6 @@ pub struct DataPlane {
     pub standalone_mode: Option<bool>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
-    /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
-    pub otlp: DataPlaneOtlp,
     /// Unstable features (`data_plane.experimental.*`).
     pub experimental: DataPlaneExperimental,
 }
@@ -267,31 +265,6 @@ pub struct DataPlaneExperimentalApm {
     ///
     /// Defaults to `http://127.0.0.1:8127`.
     pub proxy_destination: Option<String>,
-}
-
-/// Temporary ADP-only OTLP receiver endpoint settings.
-///
-/// A setting overrides the matching `otlp_config.receiver.protocols.*.endpoint` value, so ADP and the Core Agent can
-/// bind different ports. The Core Agent does not read them.
-///
-/// TODO(#2177): Remove these keys when ADP uses only the canonical endpoint keys.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct DataPlaneOtlp {
-    /// gRPC receiver endpoint (`data_plane.otlp.receiver_grpc_endpoint_temporary`).
-    ///
-    /// Overrides `otlp_config.receiver.protocols.grpc.endpoint`. An empty value in `datadog.yaml` or the Agent
-    /// configuration stream disables the gRPC receiver. An empty environment variable counts as unset.
-    ///
-    /// Defaults to unset, so the canonical endpoint applies.
-    pub receiver_grpc_endpoint_temporary: Option<String>,
-    /// HTTP receiver endpoint (`data_plane.otlp.receiver_http_endpoint_temporary`).
-    ///
-    /// Overrides `otlp_config.receiver.protocols.http.endpoint`. An empty value in `datadog.yaml` or the Agent
-    /// configuration stream disables the HTTP receiver. An empty environment variable counts as unset.
-    ///
-    /// Defaults to unset, so the canonical endpoint applies.
-    pub receiver_http_endpoint_temporary: Option<String>,
 }
 
 /// `data_plane.checks.*`.
@@ -639,16 +612,6 @@ impl SalukiOnly {
         if let Some(v) = self.otlp_config.traces.ignore_missing_datadog_fields {
             otlp.traces.ignore_missing_datadog_fields = v;
         }
-        // A temporary key that is set replaces the endpoint that the Datadog translation wrote. This relies on
-        // `seed` running after that translation.
-        //
-        // TODO(#2177): Remove these overrides with the temporary keys.
-        if let Some(v) = self.data_plane.otlp.receiver_grpc_endpoint_temporary.clone() {
-            otlp.receiver.grpc.endpoint = v;
-        }
-        if let Some(v) = self.data_plane.otlp.receiver_http_endpoint_temporary.clone() {
-            otlp.receiver.http.endpoint = v;
-        }
 
         // domains.traces
         let traces = &mut config.domains.traces;
@@ -715,7 +678,7 @@ mod tests {
         MAX_STRING_INTERNER_SIZE_BYTES,
     };
     use agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction;
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     use super::*;
 
@@ -769,11 +732,6 @@ mod tests {
             "data_plane": {
                 "standalone_mode": true,
                 "checks": { "enabled": true },
-                // TODO(#2177): Remove this block and its endpoint assertions with the temporary keys.
-                "otlp": {
-                    "receiver_grpc_endpoint_temporary": "0.0.0.0:19317",
-                    "receiver_http_endpoint_temporary": "0.0.0.0:19318"
-                },
                 "experimental": {
                     "apm": {
                         "enabled": true,
@@ -861,8 +819,6 @@ mod tests {
         assert_eq!(otlp.contexts.cached_tagsets_limit, 222);
         assert_eq!(otlp.contexts.string_interner_size, 333);
         assert_eq!(otlp.receiver.http.transport, "tcp");
-        assert_eq!(otlp.receiver.grpc.endpoint, "0.0.0.0:19317");
-        assert_eq!(otlp.receiver.http.endpoint, "0.0.0.0:19318");
         assert_eq!(otlp.traces.string_interner_size.get(), 777);
         assert!(otlp.traces.enable_compute_top_level_by_span_kind);
         assert!(otlp.traces.ignore_missing_datadog_fields);
@@ -1109,39 +1065,6 @@ mod tests {
                 Some(expected)
             );
         }
-    }
-
-    /// A temporary endpoint key replaces the translated endpoint of its own protocol, and only when set.
-    ///
-    /// TODO(#2177): Remove this test with the temporary keys.
-    #[test]
-    fn temporary_otlp_endpoints_override_the_translated_endpoints_only_when_set() {
-        let seeded = |value: Value| {
-            let saluki_only: SalukiOnly = serde_json::from_value(value).expect("temporary endpoints deserialize");
-            let mut config = SalukiConfiguration::default();
-            config.domains.otlp.receiver.grpc.endpoint = "localhost:4317".to_string();
-            config.domains.otlp.receiver.http.endpoint = "localhost:4318".to_string();
-            saluki_only.seed(&mut config);
-            (
-                config.domains.otlp.receiver.grpc.endpoint,
-                config.domains.otlp.receiver.http.endpoint,
-            )
-        };
-
-        let (grpc, http) = seeded(json!({}));
-        assert_eq!((grpc.as_str(), http.as_str()), ("localhost:4317", "localhost:4318"));
-
-        let (grpc, http) =
-            seeded(json!({ "data_plane": { "otlp": { "receiver_grpc_endpoint_temporary": "0.0.0.0:6317" } } }));
-        assert_eq!((grpc.as_str(), http.as_str()), ("0.0.0.0:6317", "localhost:4318"));
-
-        let (grpc, http) =
-            seeded(json!({ "data_plane": { "otlp": { "receiver_http_endpoint_temporary": "0.0.0.0:6318" } } }));
-        assert_eq!((grpc.as_str(), http.as_str()), ("localhost:4317", "0.0.0.0:6318"));
-
-        // An empty override disables the protocol.
-        let (grpc, http) = seeded(json!({ "data_plane": { "otlp": { "receiver_grpc_endpoint_temporary": "" } } }));
-        assert_eq!((grpc.as_str(), http.as_str()), ("", "localhost:4318"));
     }
 
     #[test]

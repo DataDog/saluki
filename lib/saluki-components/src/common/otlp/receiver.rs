@@ -27,9 +27,7 @@ impl OtlpReceiver {
         if self.grpc.endpoint.is_empty() && self.http.endpoint.is_empty() {
             return Err(generic_error!(
                 "The OTLP gRPC and HTTP receiver endpoints are both empty, so no OTLP server can start. Set \
-                 `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`. \
-                 A `data_plane.otlp.receiver_{{grpc,http}}_endpoint_temporary` key that is set overrides its \
-                 `otlp_config` key."
+                 `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`."
             ));
         }
 

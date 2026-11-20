@@ -1122,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn otlp_receiver_endpoints_come_from_the_canonical_keys_unless_a_temporary_key_is_set() {
+    fn otlp_receiver_endpoints_come_from_the_canonical_keys() {
         let endpoints = |sources: Value| {
             let config =
                 translate_strict(&SourceTree::all_explicit(sources)).expect("OTLP receiver endpoints should translate");
@@ -1142,15 +1142,17 @@ mod tests {
         let (grpc, http) = endpoints(json!({}));
         assert_eq!((grpc.as_str(), http.as_str()), ("localhost:4317", "localhost:4318"));
 
-        // The canonical keys win while the temporary keys are unset.
         let (grpc, http) = endpoints(protocols("0.0.0.0:5317", "0.0.0.0:5318"));
         assert_eq!((grpc.as_str(), http.as_str()), ("0.0.0.0:5317", "0.0.0.0:5318"));
 
-        // A temporary key wins over its canonical key.
+        // The old `data_plane.otlp.receiver_*_endpoint_temporary` keys are unknown keys and have no effect.
         let mut sources = protocols("0.0.0.0:5317", "0.0.0.0:5318");
-        sources["data_plane"] = json!({ "otlp": { "receiver_grpc_endpoint_temporary": "0.0.0.0:6317" } });
+        sources["data_plane"] = json!({ "otlp": {
+            "receiver_grpc_endpoint_temporary": "0.0.0.0:6317",
+            "receiver_http_endpoint_temporary": "0.0.0.0:6318",
+        } });
         let (grpc, http) = endpoints(sources);
-        assert_eq!((grpc.as_str(), http.as_str()), ("0.0.0.0:6317", "0.0.0.0:5318"));
+        assert_eq!((grpc.as_str(), http.as_str()), ("0.0.0.0:5317", "0.0.0.0:5318"));
 
         // An empty canonical endpoint stays empty, which disables its protocol.
         let (grpc, http) = endpoints(protocols("", "0.0.0.0:5318"));

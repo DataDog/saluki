@@ -59,13 +59,10 @@ pub fn port_isolation_env() -> HashMap<String, String> {
             "DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR".to_string(),
             "tcp://0.0.0.0:45102".to_string(),
         ),
-        // ----- Core Agent OTLP receiver endpoints -----
+        // ----- OTLP receiver endpoints -----
         //
-        // ADP uses separate temporary endpoint settings, so these schema-backed keys configure
-        // only the Core Agent's ingress.
-        //
-        // TODO(#2177): Remove the ADP-only endpoint keys and restore the schema-provided
-        // `4317`/`4318` defaults when endpoint ownership prevents both processes from binding them.
+        // ADP and the Core Agent both read these schema-backed keys. A case overrides them to choose
+        // the ports ADP listens on.
         (
             "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".to_string(),
             "0.0.0.0:44317".to_string(),

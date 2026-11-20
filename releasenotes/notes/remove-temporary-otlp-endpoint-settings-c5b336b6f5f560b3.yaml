@@ -1,0 +1,7 @@
+---
+upgrade:
+  - |
+    ADP no longer reads ``data_plane.otlp.receiver_grpc_endpoint_temporary`` and
+    ``data_plane.otlp.receiver_http_endpoint_temporary``. ADP ignores them if they are set. To change the OTLP
+    listen addresses, set ``otlp_config.receiver.protocols.grpc.endpoint`` and
+    ``otlp_config.receiver.protocols.http.endpoint``.

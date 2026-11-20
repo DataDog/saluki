@@ -401,11 +401,6 @@ templates:
         DD_DATA_PLANE_OTLP_ENABLED: "true"
         DD_OTLP_CONFIG: "{}"
 
-        # The baseline build still listens on `6317`/`6318` by default. Remove these keys when both
-        # builds default to the canonical endpoints.
-        DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "localhost:4317"
-        DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "localhost:4318"
-
   # Base template for OTLP traces experiments at 5 MiB/s with a realistic service topology
   otlp_traces_5mb_base:
     extends: otlp_base

@@ -998,7 +998,7 @@ mod tests {
             .expect("source should fail to build without an endpoint");
         assert!(
             format!("{error:#}").contains("receiver endpoints are both empty")
-                && format!("{error:#}").contains("receiver_{grpc,http}_endpoint_temporary"),
+                && format!("{error:#}").contains("otlp_config.receiver.protocols.grpc.endpoint"),
             "unexpected error: {error:#}"
         );
     }

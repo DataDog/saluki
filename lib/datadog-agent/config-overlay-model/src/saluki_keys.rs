@@ -48,26 +48,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         documentation: None,
     },
     SalukiKey {
-        yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
-        description: "Override of the ADP OTLP gRPC listen endpoint",
-        default: "",
-        documentation: Some(
-            "Temporary development key that overrides `otlp_config.receiver.protocols.grpc.endpoint` for ADP only. \
-             When unset, ADP listens on the canonical endpoint. An empty value in `datadog.yaml` or the Agent \
-             configuration stream disables the gRPC receiver. An empty environment variable counts as unset.",
-        ),
-    },
-    SalukiKey {
-        yaml_path: "data_plane.otlp.receiver_http_endpoint_temporary",
-        description: "Override of the ADP OTLP HTTP listen endpoint",
-        default: "",
-        documentation: Some(
-            "Temporary development key that overrides `otlp_config.receiver.protocols.http.endpoint` for ADP only. \
-             When unset, ADP listens on the canonical endpoint. An empty value in `datadog.yaml` or the Agent \
-             configuration stream disables the HTTP receiver. An empty environment variable counts as unset.",
-        ),
-    },
-    SalukiKey {
         yaml_path: "dogstatsd_allow_context_heap_allocs",
         description: "Allow heap allocations for contexts",
         default: "true",
