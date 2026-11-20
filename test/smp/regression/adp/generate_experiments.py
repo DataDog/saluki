@@ -44,6 +44,17 @@ SUITES = {
     "quality-gates": lambda experiment: "checks" in experiment,
 }
 
+# Per-suite overrides deep-merged onto the shared config.yaml when it is written into a suite. A
+# suite without an entry gets config.yaml copied verbatim.
+#
+# The PR gate runs without profiling replicas. `ddprof_replicas` are extra replicates of every
+# experiment with `ddprof` loaded, run only to collect profiles; the bounds checks and the change
+# detection are computed from the unprofiled replicates. Dropping them shortens the gating run,
+# and anyone who needs profiles for a PR can run the full suite, which keeps them.
+SUITE_CONFIG_OVERRIDES = {
+    "quality-gates": {"target": {"ddprof_replicas": 0}},
+}
+
 # Suffix marking a target file `source:` as a Jinja template rather than a file to copy verbatim.
 JINJA_TEMPLATE_SUFFIX = ".j2"
 
@@ -656,11 +667,17 @@ def generate_experiments(
                 )
                 generated[suite].append(name)
 
-    # Copy the shared SMP config.yaml into each suite's target-config directory.
+    # Write the shared SMP config.yaml, with any suite overrides, into each suite's directory.
     for suite in SUITES:
         suite_dir = base_dir / suite
         suite_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(base_path / CONFIG_FILE.name, suite_dir / "config.yaml")
+        overrides = SUITE_CONFIG_OVERRIDES.get(suite)
+        if overrides is None:
+            shutil.copy2(base_path / CONFIG_FILE.name, suite_dir / "config.yaml")
+        else:
+            suite_config = deep_merge(load_config(base_path / CONFIG_FILE.name), overrides)
+            with open(suite_dir / "config.yaml", "w") as f:
+                yaml.dump(suite_config, f, default_flow_style=False, sort_keys=False)
 
     return generated
 

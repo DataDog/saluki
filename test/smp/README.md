@@ -26,14 +26,17 @@ An experiment picks how much of it to use through `target.command`:
   ADP-only key, so loading it directly avoids measuring the Core Agent in those experiments.
 
 Profiling is SMP's to arrange: the SMP experiment runner loads `ddprof` into the target with `LD_PRELOAD` on the
-replicas named by `ddprof_replicas` in `config.yaml`.
+replicas named by `ddprof_replicas` in `config.yaml`. The PR gate suite (`quality-gates/`) runs with no profiling
+replicas, to keep the gating run short: its bounds checks don't use profiles. To get profiles for a PR, run the full
+suite, which keeps them. The generator applies this per-suite override (`SUITE_CONFIG_OVERRIDES` in
+`generate_experiments.py`) when it writes each suite's `config.yaml`.
 
 ## Directory Structure
 
 ```
 test/smp/regression/adp/
 ├── experiments.yaml          # Experiment definitions (source of truth)
-├── config.yaml               # Shared SMP config (copied into each suite below)
+├── config.yaml               # Shared SMP config (written into each suite below, with per-suite overrides)
 ├── generate_experiments.py   # Script to generate the per-suite case directories
 ├── shared/                   # Files pulled into experiments at generation time: copied verbatim
 │                             # (cert.pem) or rendered if they are Jinja templates (*.j2)

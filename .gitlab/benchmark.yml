@@ -162,6 +162,35 @@ build-adp-comparison-image:
     reports:
       dotenv: smp-vars.env
 
+# TEMPORARY (experiment, remove before merge): dump the SMP CLI's help to the PR so we can see
+# which knobs affect run duration.
+smp-cli-help-debug:
+  stage: benchmark
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_development_branch, rules, if]
+  allow_failure: true
+  needs: []
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  timeout: 10m
+  before_script:
+    - *setup-smp-env
+  script:
+    - ./ci/tooling/configure-smp-aws-credentials.sh
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - |
+      {
+        echo '```'
+        for args in "--help" "job --help" "job submit --help" "job status --help" "job sync --help" "job result --help" "job submit-regression --help" "job submit-experimental-config-only --help"; do
+          echo "===== smp ${args}"
+          ./smp ${args} 2>&1 | sed -E 's/[0-9]{12}/<redacted>/g'
+        done
+        echo '```'
+      } > smp-help.md
+    - cat smp-help.md
+    - cat smp-help.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="TEMPORARY SMP CLI help"
+
 run-benchmarks-adp:
   stage: benchmark
   # PR gate: run only the quality-gates suite (the experiments with bounds). Runs on PRs
@@ -189,6 +218,9 @@ run-benchmarks-adp:
     - ./ci/tooling/configure-smp-aws-credentials.sh
     # Download the SMP binary.
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    # TEMPORARY (experiment): phase timestamps, posted to the PR by after_script.
+    - echo "job_started ${CI_JOB_STARTED_AT}" > outputs/phase-times.txt
+    - echo "submit_start $(date -u +%FT%TZ)" >> outputs/phase-times.txt
     # Trigger the SMP job run.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
@@ -199,12 +231,16 @@ run-benchmarks-adp:
       --comparison-sha ${COMPARISON_ADP_SHA}
       --target-config-dir ./test/smp/regression/adp/quality-gates/
       --submission-metadata submission_metadata
-    # Wait for job to complete.
+    - echo "status_wait_start $(date -u +%FT%TZ)" >> outputs/phase-times.txt
+    # Wait for job to complete. TEMPORARY (experiment): a shorter poll interval and timestamped
+    # output, so the PR comment shows when the job changed state.
+    - set -o pipefail
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job status
       --wait
-      --wait-delay-seconds 60
-      --submission-metadata submission_metadata
+      --wait-delay-seconds 20
+      --submission-metadata submission_metadata 2>&1 | while IFS= read -r line; do echo "$(date -u +%T) ${line}"; done | tee outputs/status.log
+    - echo "sync_start $(date -u +%FT%TZ)" >> outputs/phase-times.txt
     # Pull the analysis report and output it to stdout.
     #
     # The condensed PR comment is posted from the `report-benchmarks-adp`
@@ -214,10 +250,22 @@ run-benchmarks-adp:
       job sync
       --submission-metadata submission_metadata
       --output-path outputs
+    - echo "result_start $(date -u +%FT%TZ)" >> outputs/phase-times.txt
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
       --submission-metadata submission_metadata
+  # TEMPORARY (experiment): post the phase timestamps and the status log to the PR.
+  after_script:
+    - echo "end $(date -u +%FT%TZ)" >> outputs/phase-times.txt
+    - |
+      {
+        echo '```'
+        cat outputs/phase-times.txt
+        echo '-----'
+        sed -E 's/[0-9]{12}/<redacted>/g' outputs/status.log | tail -n 150
+        echo '```'
+      } | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="TEMPORARY SMP phase timings" || true
 
 report-benchmarks-adp:
   stage: benchmark
