@@ -323,6 +323,15 @@ mod tests {
             "tcp://127.0.0.1:4318"
         );
 
+        receiver.grpc.transport = GrpcTransport::Tcp;
+        receiver.grpc.endpoint = "not an address".to_string();
+        assert!(receiver.grpc.listen_address().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listen_addresses_combine_the_unix_transport_and_endpoint() {
+        let mut receiver = receiver();
         receiver.grpc.transport = GrpcTransport::Unix;
         receiver.grpc.endpoint = "/tmp/otlp-grpc.sock".to_string();
         receiver.http.transport = "unix".to_string();
@@ -335,9 +344,5 @@ mod tests {
             receiver.http.listen_address().unwrap().unwrap().to_string(),
             "unix:///tmp/otlp-http.sock"
         );
-
-        receiver.grpc.transport = GrpcTransport::Tcp;
-        receiver.grpc.endpoint = "not an address".to_string();
-        assert!(receiver.grpc.listen_address().is_err());
     }
 }

@@ -214,8 +214,7 @@ mod tests {
         let listen = |address: &str| ListenAddress::try_from(address).unwrap();
         let wildcard = listen("tcp://0.0.0.0:4319");
         let loopback = listen("tcp://127.0.0.1:4320");
-        let socket = listen("unix:///tmp/otlp.sock");
-        let listeners = [&wildcard, &loopback, &socket];
+        let listeners = [&wildcard, &loopback];
 
         assert_eq!(
             listener_reached_by(&tcp("127.0.0.1", 4319), listeners).await,
@@ -226,22 +225,32 @@ mod tests {
             Some(&loopback)
         );
         assert_eq!(listener_reached_by(&tcp("127.0.0.1", 4321), listeners).await, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listener_reached_by_matches_a_unix_socket_listener_only_by_path() {
+        let tcp = |host: &str, port| Destination::Tcp {
+            host: host.to_string(),
+            port,
+        };
+        let unix = |path: &str| Destination::Unix(PathBuf::from(path));
+        let listen = |address: &str| ListenAddress::try_from(address).unwrap();
+        let loopback = listen("tcp://127.0.0.1:4320");
+        let socket = listen("unix:///tmp/otlp.sock");
+        let listeners = [&loopback, &socket];
+
+        assert_eq!(
+            listener_reached_by(&unix("/tmp/otlp.sock"), listeners).await,
+            Some(&socket)
+        );
+        assert_eq!(listener_reached_by(&unix("/tmp/other.sock"), listeners).await, None);
         // A TCP destination never reaches a Unix domain socket listener, wherever it is in the list.
         assert_eq!(listener_reached_by(&tcp("127.0.0.1", 4320), [&socket]).await, None);
         assert_eq!(
             listener_reached_by(&tcp("127.0.0.1", 4320), [&socket, &loopback]).await,
             Some(&loopback)
         );
-
-        #[cfg(unix)]
-        {
-            let unix = |path: &str| Destination::Unix(PathBuf::from(path));
-            assert_eq!(
-                listener_reached_by(&unix("/tmp/otlp.sock"), listeners).await,
-                Some(&socket)
-            );
-            assert_eq!(listener_reached_by(&unix("/tmp/other.sock"), listeners).await, None);
-        }
     }
 
     #[test]
