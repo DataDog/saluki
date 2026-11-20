@@ -4,7 +4,8 @@ upgrade:
     ADP now listens for OTLP on the addresses in ``otlp_config.receiver.protocols.grpc.endpoint`` and
     ``otlp_config.receiver.protocols.http.endpoint``. Before, ADP ignored these settings. The defaults are
     ``localhost:4317`` and ``localhost:4318``, so the default OTLP ports change from ``localhost:6317`` and
-    ``localhost:6318``. An empty endpoint turns off the receiver for that protocol. To keep the old ports, set
-    ``data_plane.otlp.receiver_grpc_endpoint_temporary`` to ``localhost:6317`` and
-    ``data_plane.otlp.receiver_http_endpoint_temporary`` to ``localhost:6318``. These temporary settings override
-    the endpoint settings when they are set. A later release removes them.
+    ``localhost:6318``. An empty endpoint in ``datadog.yaml`` or the Agent configuration stream turns off the receiver
+    for that protocol. An empty environment variable counts as unset. If both endpoints are empty, ADP exits at
+    startup with an error. To keep the old ports, set ``data_plane.otlp.receiver_grpc_endpoint_temporary`` to
+    ``localhost:6317`` and ``data_plane.otlp.receiver_http_endpoint_temporary`` to ``localhost:6318``. These temporary
+    settings override the endpoint settings when they are set. A later release removes them.

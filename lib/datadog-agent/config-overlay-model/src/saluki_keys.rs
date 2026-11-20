@@ -53,7 +53,8 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         default: "",
         documentation: Some(
             "Temporary development key that overrides `otlp_config.receiver.protocols.grpc.endpoint` for ADP only. \
-             When unset, ADP listens on the canonical endpoint. An empty value disables the gRPC receiver.",
+             When unset, ADP listens on the canonical endpoint. An empty value in `datadog.yaml` or the Agent \
+             configuration stream disables the gRPC receiver. An empty environment variable counts as unset.",
         ),
     },
     SalukiKey {
@@ -62,7 +63,8 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         default: "",
         documentation: Some(
             "Temporary development key that overrides `otlp_config.receiver.protocols.http.endpoint` for ADP only. \
-             When unset, ADP listens on the canonical endpoint. An empty value disables the HTTP receiver.",
+             When unset, ADP listens on the canonical endpoint. An empty value in `datadog.yaml` or the Agent \
+             configuration stream disables the HTTP receiver. An empty environment variable counts as unset.",
         ),
     },
     SalukiKey {

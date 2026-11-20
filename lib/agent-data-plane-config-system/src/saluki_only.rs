@@ -280,13 +280,15 @@ pub struct DataPlaneExperimentalApm {
 pub struct DataPlaneOtlp {
     /// gRPC receiver endpoint (`data_plane.otlp.receiver_grpc_endpoint_temporary`).
     ///
-    /// Overrides `otlp_config.receiver.protocols.grpc.endpoint`. An empty value disables the gRPC receiver.
+    /// Overrides `otlp_config.receiver.protocols.grpc.endpoint`. An empty value in `datadog.yaml` or the Agent
+    /// configuration stream disables the gRPC receiver. An empty environment variable counts as unset.
     ///
     /// Defaults to unset, so the canonical endpoint applies.
     pub receiver_grpc_endpoint_temporary: Option<String>,
     /// HTTP receiver endpoint (`data_plane.otlp.receiver_http_endpoint_temporary`).
     ///
-    /// Overrides `otlp_config.receiver.protocols.http.endpoint`. An empty value disables the HTTP receiver.
+    /// Overrides `otlp_config.receiver.protocols.http.endpoint`. An empty value in `datadog.yaml` or the Agent
+    /// configuration stream disables the HTTP receiver. An empty environment variable counts as unset.
     ///
     /// Defaults to unset, so the canonical endpoint applies.
     pub receiver_http_endpoint_temporary: Option<String>,

@@ -1292,11 +1292,11 @@ Prefer an `http://` destination. Over a `unix://` destination, the trace-agent a
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 
-Temporary development key that overrides `otlp_config.receiver.protocols.grpc.endpoint` for ADP only. When unset, ADP listens on the canonical endpoint. An empty value disables the gRPC receiver.
+Temporary development key that overrides `otlp_config.receiver.protocols.grpc.endpoint` for ADP only. When unset, ADP listens on the canonical endpoint. An empty value in `datadog.yaml` or the Agent configuration stream disables the gRPC receiver. An empty environment variable counts as unset.
 
 ### `data_plane.otlp.receiver_http_endpoint_temporary`
 
-Temporary development key that overrides `otlp_config.receiver.protocols.http.endpoint` for ADP only. When unset, ADP listens on the canonical endpoint. An empty value disables the HTTP receiver.
+Temporary development key that overrides `otlp_config.receiver.protocols.http.endpoint` for ADP only. When unset, ADP listens on the canonical endpoint. An empty value in `datadog.yaml` or the Agent configuration stream disables the HTTP receiver. An empty environment variable counts as unset.
 
 ### `dogstatsd_minimum_sample_rate`
 
@@ -1840,7 +1840,8 @@ series are acceptable. Set it to `none` to disable entity and global tag enrichm
 ### `otlp_config.receiver.protocols.grpc.endpoint`
 
 Address that ADP listens on for OTLP gRPC requests. Defaults to `localhost:4317`.
-An empty value disables the gRPC receiver. If both receiver endpoints are empty, ADP fails to start OTLP ingest.
+An empty value in `datadog.yaml` or the Agent configuration stream disables the gRPC receiver. An empty
+environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
 `data_plane.otlp.receiver_grpc_endpoint_temporary` overrides this value when it is set.
 
 ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
@@ -1869,7 +1870,8 @@ ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.
 ### `otlp_config.receiver.protocols.http.endpoint`
 
 Address that ADP listens on for OTLP HTTP requests. Defaults to `localhost:4318`.
-An empty value disables the HTTP receiver. If both receiver endpoints are empty, ADP fails to start OTLP ingest.
+An empty value in `datadog.yaml` or the Agent configuration stream disables the HTTP receiver. An empty
+environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
 `data_plane.otlp.receiver_http_endpoint_temporary` overrides this value when it is set.
 
 ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration

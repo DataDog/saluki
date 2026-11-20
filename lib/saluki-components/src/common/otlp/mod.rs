@@ -36,7 +36,7 @@ use saluki_core::accounting::MemoryLimiter;
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::runtime;
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use saluki_io::net::server::http::{Http2Config, HttpServer};
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
@@ -406,18 +406,11 @@ impl OtlpServerConfiguration {
     ///
     /// # Errors
     ///
-    /// If neither endpoint is set, the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound,
-    /// or the TLS configuration is invalid, an error is returned.
+    /// If the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound, or the TLS
+    /// configuration is invalid, an error is returned.
     pub async fn build<H: OtlpHandler>(
         self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, worker_pool: &Handle,
     ) -> Result<(), GenericError> {
-        if self.grpc_endpoint.is_none() && self.http_endpoint.is_none() {
-            return Err(generic_error!(
-                "Both OTLP receiver endpoints are empty, so no OTLP server can start. Set \
-                 `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`."
-            ));
-        }
-
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
@@ -1213,32 +1206,6 @@ mod tests {
         bound_port(&supervisor, "grpc-only-grpc").await;
         assert_eq!(supervisor.active_children(), 2);
         assert_not_bound(&supervisor, "grpc-only-http");
-
-        supervisor
-            .shutdown()
-            .await
-            .expect("supervisor should shut down cleanly");
-    }
-
-    #[tokio::test]
-    async fn build_fails_without_any_endpoint() {
-        let supervisor = TestSupervisor::start("otlp-test").await;
-
-        let error = supervisor
-            .scope(OtlpServerConfiguration::new(None, None, 4 * 1024 * 1024).build(
-                NoopHandler,
-                MemoryLimiter::noop(),
-                Metrics::for_tests(),
-                &tokio::runtime::Handle::current(),
-            ))
-            .await
-            .expect_err("build should fail when both endpoints are empty");
-
-        assert!(
-            error.to_string().contains("Both OTLP receiver endpoints are empty"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(supervisor.active_children(), 0);
 
         supervisor
             .shutdown()

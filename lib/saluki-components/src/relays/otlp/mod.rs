@@ -71,6 +71,8 @@ impl RelayBuilder for OtlpRelayConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
+        self.receiver.check_endpoints()?;
+
         let http_tls_config = self.receiver.http.tls.build()?;
         let grpc_tls_config = self.receiver.grpc.tls.build()?;
 
@@ -308,6 +310,20 @@ mod tests {
 
         assert!(config.grpc_endpoint().is_none());
         assert!(config.http_endpoint().is_none());
+    }
+
+    #[tokio::test]
+    async fn build_fails_when_both_endpoints_are_empty() {
+        let config = OtlpRelayConfiguration::new(receiver());
+
+        let error = TestComponentDriver::relay(config)
+            .await
+            .err()
+            .expect("relay should fail to build without an endpoint");
+        assert!(
+            format!("{error:#}").contains("receiver endpoints are both empty"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]

@@ -158,6 +158,8 @@ impl SourceBuilder for OtlpConfiguration {
             ));
         }
 
+        self.receiver.check_endpoints()?;
+
         // An empty endpoint turns its server off.
         let grpc_endpoint = if self.receiver.grpc.endpoint.is_empty() {
             None
@@ -937,19 +939,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_fails_when_both_endpoints_are_empty() {
+    async fn build_fails_when_both_endpoints_are_empty() {
         let mut config = source_configuration();
         config.receiver.logs_enabled = true;
 
-        let (control, _outputs) = TestComponentDriver::source(config).await.expect("source should build");
-
-        let error = control
-            .wait()
+        let error = TestComponentDriver::source(config)
             .await
-            .expect_err("source should fail to start any server");
+            .err()
+            .expect("source should fail to build without an endpoint");
         assert!(
-            error.to_string().contains("Both OTLP receiver endpoints are empty"),
-            "unexpected error: {error}"
+            format!("{error:#}").contains("receiver endpoints are both empty")
+                && format!("{error:#}").contains("receiver_{grpc,http}_endpoint_temporary"),
+            "unexpected error: {error:#}"
         );
     }
 
