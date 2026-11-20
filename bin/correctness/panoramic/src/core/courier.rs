@@ -76,8 +76,10 @@ impl<'a> Courier<'a> {
         }
         if payload.len() > MAX_ARGUMENT_PAYLOAD {
             return Err(HandleError::Harness(format!(
-                "a send here carries at most {} bytes, because the payload is a command-line argument",
-                MAX_ARGUMENT_PAYLOAD
+                "a send here carries at most {} bytes, because the payload is a command-line argument, and this one is \
+                 {} bytes",
+                MAX_ARGUMENT_PAYLOAD,
+                payload.len()
             )));
         }
         let hex: String = payload.iter().map(|byte| format!("{byte:02x}")).collect();
