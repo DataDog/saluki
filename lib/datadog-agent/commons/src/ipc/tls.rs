@@ -11,8 +11,9 @@ use rustls::{
     crypto::CryptoProvider,
     pki_types::{CertificateDer, ServerName, UnixTime},
     server::danger::{ClientCertVerified, ClientCertVerifier},
-    version::TLS13,
+    version::{TLS12, TLS13},
     CertificateError, ClientConfig, DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureScheme,
+    SupportedProtocolVersion,
 };
 use rustls_pki_types::{pem::PemObject as _, PrivateKeyDer};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -20,6 +21,8 @@ use saluki_tls::{ensure_client_config_fips_compliant, ensure_server_config_fips_
 
 const DEFAULT_CERT_READ_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_CERT_READ_INTERVAL: Duration = Duration::from_millis(100);
+const IPC_TLS13_ONLY: &[&SupportedProtocolVersion] = &[&TLS13];
+const IPC_TLS12_ONLY: &[&SupportedProtocolVersion] = &[&TLS12];
 
 #[derive(Debug)]
 struct DatadogAgentServerCertVerifier {
@@ -135,29 +138,54 @@ pub async fn build_ipc_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
     )
     .await?;
 
-    // Create our custom certificate verifier to use the parsed certificate for server verification.
     let crypto_provider = rustls::crypto::CryptoProvider::get_default()
         .map(Arc::clone)
         .ok_or_else(|| generic_error!("Default cryptography provider not yet installed."))?;
+
+    build_ipc_client_tls_config_with_provider(parsed_cert, parsed_key, crypto_provider).with_error_context(|| {
+        format!(
+            "Failed to build client TLS configuration from certificate file '{}'.",
+            cert_path.as_ref().display()
+        )
+    })
+}
+
+/// Builds the IPC client configuration from a parsed identity and an explicit cryptography provider.
+fn build_ipc_client_tls_config_with_provider(
+    cert: CertificateDer<'static>, key: PrivateKeyDer<'static>, provider: Arc<CryptoProvider>,
+) -> Result<ClientConfig, GenericError> {
+    // Create our custom certificate verifier to use the parsed certificate for server verification.
     let agent_cert_verifier = Arc::new(DatadogAgentServerCertVerifier::from_certificate_and_provider(
-        parsed_cert.clone(),
-        crypto_provider,
+        cert.clone(),
+        Arc::clone(&provider),
     ));
 
-    let config = ClientConfig::builder_with_protocol_versions(&[&TLS13])
+    let protocol_versions = ipc_client_protocol_versions(&provider);
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(protocol_versions)
+        .map_err(|e| generic_error!("Failed to select TLS protocol versions: {}", e))?
         .dangerous()
         .with_custom_certificate_verifier(agent_cert_verifier)
-        .with_client_auth_cert(vec![parsed_cert], parsed_key)
-        .with_error_context(|| {
-            format!(
-                "Failed to build client TLS configuration from certificate file '{}'.",
-                cert_path.as_ref().display()
-            )
-        })?;
+        .with_client_auth_cert(vec![cert], key)
+        .map_err(|e| generic_error!("Failed to set the client certificate: {}", e))?;
 
     ensure_client_config_fips_compliant(&config)?;
 
     Ok(config)
+}
+
+/// Returns the TLS protocol versions that the IPC client offers with the given cryptography provider.
+///
+/// The client offers only TLS 1.3 when the provider has a TLS 1.3 cipher suite. Otherwise, it offers only TLS 1.2. For
+/// example, the Windows CNG provider in FIPS mode has no TLS 1.3 cipher suites on Windows Server 2016, because CNG
+/// there has no HKDF algorithm. Its TLS 1.2 cipher suites use the CNG TLS 1.2 key derivation function, which is
+/// available in FIPS mode. The Datadog Agent's IPC server accepts both versions.
+fn ipc_client_protocol_versions(provider: &CryptoProvider) -> &'static [&'static SupportedProtocolVersion] {
+    if provider.cipher_suites.iter().any(|suite| suite.tls13().is_some()) {
+        IPC_TLS13_ONLY
+    } else {
+        IPC_TLS12_ONLY
+    }
 }
 
 /// Builds an exact shared-certificate mTLS server configuration for Datadog Agent IPC.
@@ -261,14 +289,17 @@ mod tests {
     use rustls::{
         crypto::CryptoProvider,
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
-        version::TLS13,
-        ClientConfig, ServerConfig,
+        version::{TLS12, TLS13},
+        ClientConfig, ProtocolVersion, ServerConfig,
     };
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-    use super::{build_ipc_client_ipc_tls_config, build_ipc_server_tls_config, DatadogAgentServerCertVerifier};
+    use super::{
+        build_ipc_client_ipc_tls_config, build_ipc_client_tls_config_with_provider, build_ipc_server_tls_config,
+        ipc_client_protocol_versions, DatadogAgentServerCertVerifier,
+    };
 
     const APPLICATION_BYTE: u8 = 42;
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -373,6 +404,80 @@ mod tests {
                 .expect("server should accept the matching client identity"),
             APPLICATION_BYTE
         );
+    }
+
+    /// Returns the default provider without its TLS 1.3 cipher suites, like the Windows CNG provider in FIPS mode on a
+    /// host whose CNG has no HKDF algorithm.
+    fn provider_without_tls13_suites() -> Arc<CryptoProvider> {
+        let mut provider = CryptoProvider::get_default()
+            .map(|provider| provider.as_ref().clone())
+            .expect("default crypto provider should be installed");
+        provider.cipher_suites.retain(|suite| suite.tls13().is_none());
+        assert!(
+            !provider.cipher_suites.is_empty(),
+            "default crypto provider should have TLS 1.2 cipher suites"
+        );
+        Arc::new(provider)
+    }
+
+    #[test]
+    fn ipc_client_offers_only_tls13_when_provider_has_tls13_suites() {
+        initialize_crypto_provider();
+        let provider = CryptoProvider::get_default().expect("default crypto provider should be installed");
+
+        assert_eq!(ipc_client_protocol_versions(provider), &[&TLS13]);
+    }
+
+    #[test]
+    fn ipc_client_offers_only_tls12_when_provider_has_no_tls13_suites() {
+        initialize_crypto_provider();
+
+        assert_eq!(
+            ipc_client_protocol_versions(&provider_without_tls13_suites()),
+            &[&TLS12]
+        );
+    }
+
+    #[tokio::test]
+    async fn ipc_client_without_tls13_suites_completes_mtls_over_tls12() {
+        initialize_crypto_provider();
+        let identity = TestIdentity::localhost();
+        let server_config = build_ipc_server_tls_config(&identity.cert_path)
+            .await
+            .expect("production server TLS config should build");
+        let client_config = build_ipc_client_tls_config_with_provider(
+            identity.cert_der.clone(),
+            identity.private_key(),
+            provider_without_tls13_suites(),
+        )
+        .expect("client TLS config should build without TLS 1.3 cipher suites");
+
+        let negotiated = tokio::time::timeout(TEST_TIMEOUT, async move {
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let client = async move {
+                let connector = TlsConnector::from(Arc::new(client_config));
+                let server_name = ServerName::try_from("localhost").expect("localhost should be a valid server name");
+                let mut stream = connector.connect(server_name, client_io).await?;
+                stream.write_u8(APPLICATION_BYTE).await?;
+                Ok::<_, io::Error>(stream.get_ref().1.protocol_version())
+            };
+            let server = async move {
+                let acceptor = TlsAcceptor::from(Arc::new(server_config));
+                let mut stream = acceptor.accept(server_io).await?;
+                stream.read_u8().await
+            };
+
+            let (client_result, server_result) = tokio::join!(client, server);
+            assert_eq!(
+                server_result.expect("server should accept the client over TLS 1.2"),
+                APPLICATION_BYTE
+            );
+            client_result.expect("client should connect over TLS 1.2")
+        })
+        .await
+        .expect("TLS handshake should not time out");
+
+        assert_eq!(negotiated, Some(ProtocolVersion::TLSv1_2));
     }
 
     #[tokio::test]
