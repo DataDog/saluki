@@ -1214,6 +1214,33 @@ mod tests {
         assert!(loaded.yaml_fallback_error.is_none());
     }
 
+    // This test pins intended behavior, not a gap: a null or empty `tls` section never counts as receiver TLS,
+    // while the Agent's own check rejects it. The translator test
+    // `otlp_receiver_tls_is_not_configured_by_an_empty_section` gives the reason. A null section is dropped
+    // while the file loads, so only this test can cover it.
+    #[tokio::test]
+    async fn empty_otlp_receiver_tls_sections_are_not_configured() {
+        let proxy = "data_plane:\n  experimental:\n    otlp:\n      proxy:\n        logs: true\n";
+        let receiver =
+            |tls: &str| format!("{proxy}otlp_config:\n  receiver:\n    protocols:\n      grpc:\n        {tls}\n");
+
+        for (index, (tls, expected)) in [
+            ("tls:", false),
+            ("tls: ~", false),
+            ("tls: {}", false),
+            ("tls: { cert_file: /etc/cert.pem }", true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let loaded = load_from_file(&format!("receiver_tls_{index}"), &receiver(tls)).await;
+
+            let proxy = &loaded.local().domains.otlp.proxy;
+            assert!(proxy.enabled(), "{tls:?}");
+            assert_eq!(proxy.tls_configured, expected, "{tls:?}");
+        }
+    }
+
     #[test]
     fn datadog_key_spellings_resolve_to_one_canonical_base() {
         let cases = [
