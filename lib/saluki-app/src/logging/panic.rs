@@ -30,17 +30,13 @@ fn log_panic(info: &PanicHookInfo<'_>) {
     let location = info
         .location()
         .map_or_else(|| "<unknown>".to_string(), ToString::to_string);
-    let message = panic_message(info);
+    let message = info.payload_as_str().unwrap_or("<non-string panic payload>");
 
     // `capture` follows `RUST_BACKTRACE` and `RUST_LIB_BACKTRACE`, like the default hook.
     let backtrace = Backtrace::capture();
     if backtrace.status() == BacktraceStatus::Captured {
-        error!(thread = thread_name, %location, %backtrace, "Panicked: {}", message);
+        error!(thread = thread_name, %location, %backtrace, panic_message = message, "Application panicked.");
     } else {
-        error!(thread = thread_name, %location, "Panicked: {}", message);
+        error!(thread = thread_name, %location, panic_message = message, "Application panicked.");
     }
-}
-
-fn panic_message<'a>(info: &'a PanicHookInfo<'_>) -> &'a str {
-    info.payload_as_str().unwrap_or("<non-string panic payload>")
 }
