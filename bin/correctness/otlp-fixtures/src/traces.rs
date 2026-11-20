@@ -49,7 +49,7 @@ fn span(seed: u32, number: u32) -> Span {
     }
 }
 
-/// One trace of `span_count` spans from `service`.
+/// Builds one trace of `span_count` spans from `service`.
 ///
 /// The trace ID and span IDs derive from `seed`, so give each fixture that can reach the same destination its own seed.
 /// The seed must not be zero, because an all-zero trace ID is invalid. The timestamps are fixed, so the same arguments
