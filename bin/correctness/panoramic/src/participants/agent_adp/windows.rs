@@ -23,11 +23,11 @@ const ENTRYPOINT: &[u8] = include_bytes!("../../../../../../ci/tooling/windows-a
 const ADP_COMMAND: &str = "C:\\adp\\agent-data-plane.exe";
 const AGENT_COMMAND: &str = "C:\\Program Files\\Datadog\\Datadog Agent\\bin\\agent.exe";
 
-/// The flat name of each `DD_DATA_PLANE_` setting a case writes, and the nested name ADP reads in this image.
+/// The flat name of each `DD_DATA_PLANE_` setting a case writes, and the nested name added beside it.
 ///
-/// The Windows image gives ADP only the nested form, which puts a double underscore between path levels. The table
-/// copies the legacy runner's `WINDOWS_ENV_ALIASES`, so a case's `env` works on every OS. Only the names a case uses
-/// are listed: a new shared `DD_DATA_PLANE_` key needs a line here.
+/// ADP reads the flat names, such as `DD_DATA_PLANE_API_LISTEN_ADDRESS` and `DD_DATA_PLANE_ENABLED`, and they stay set.
+/// Its environment reader binds no nested name, which has a double underscore between path levels. The table copies the
+/// legacy runner's `WINDOWS_ENV_ALIASES`, and lists only the names a case uses.
 const DATA_PLANE_NESTED_NAMES: &[(&str, &str)] = &[
     ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
     ("DD_DATA_PLANE_STANDALONE_MODE", "DD_DATA_PLANE__STANDALONE_MODE"),
