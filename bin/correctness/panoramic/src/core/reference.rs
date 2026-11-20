@@ -22,6 +22,7 @@ use std::fmt;
 
 use serde::Serialize;
 
+use super::backend::Identities;
 use super::participant::{Enclosure, Realization};
 use super::plan::{Launch, PlannedParticipant, Problems};
 use super::spec::{Contents, Evidence, Protocol};
@@ -185,17 +186,16 @@ impl Values {
         Self { participants }
     }
 
-    /// Records the container ID `participant` got when it was created.
-    pub(crate) fn created(&mut self, participant: &str, container_id: &str) {
-        if let Some(known) = self.participants.get_mut(participant) {
-            known.container_id = Some(container_id.to_string());
+    /// Records what is known of `participant`'s identity, as it is created or has started.
+    pub(crate) fn identify(&mut self, participant: &str, identities: &Identities) {
+        let Some(known) = self.participants.get_mut(participant) else {
+            return;
+        };
+        if let Some(container_id) = &identities.container_id {
+            known.container_id = Some(container_id.clone());
         }
-    }
-
-    /// Records the address `participant` has on the case's network once it has started.
-    pub(crate) fn started(&mut self, participant: &str, ip: &str) {
-        if let Some(known) = self.participants.get_mut(participant) {
-            known.ip = Some(ip.to_string());
+        if let Some(ip) = &identities.ip {
+            known.ip = Some(ip.clone());
         }
     }
 
