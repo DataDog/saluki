@@ -98,10 +98,12 @@ Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
 
 ### Static fixtures
 
-Some cases send a fixed request through a `static_base64` payload in their `millstone.yaml`.
-`bin/correctness/otlp-fixtures` builds that request, with a module for each OTLP signal that has static payloads: edit
-the fixture there, then run `make generate-correctness-fixtures` to rewrite the payloads. Don't edit the payloads by
-hand. The `check-correctness-fixtures` CI job runs the same target and fails if it changes any committed payload.
+Some cases send a fixed request through a `static_base64` payload in a sender config, such as a correctness case's
+`millstone.yaml`. `bin/correctness/otlp-fixtures` builds that request, with a module for each OTLP signal that has
+static payloads: edit the fixture there, then run `make generate-correctness-fixtures` to rewrite the payloads. Don't
+edit the payloads by hand. To add a fixture, create the sender config with a `static_base64: ""` placeholder, then add
+a table entry in `main.rs` with the config's path from the repository root. The `check-correctness-fixtures` CI job
+runs the same target and fails if it changes any committed payload.
 
 ## Integration tests (panoramic)
 
