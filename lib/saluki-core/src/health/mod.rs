@@ -85,8 +85,8 @@ impl Health {
     /// downstream channel. Without it, the component can't answer probes until the `.await` completes, and the
     /// registry marks it as not live, even though it only waits on backpressure.
     ///
-    /// Probes go first, so that a waiting probe is seen on every wakeup, even when `fut` uses up the cooperative budget
-    /// of the task.
+    /// Probes go first, so that each time the task wakes, a waiting probe is seen, even when `fut` uses up the
+    /// cooperative budget of the task.
     pub async fn keep_live_during<F: Future>(&mut self, fut: F) -> F::Output {
         pin!(fut);
 
