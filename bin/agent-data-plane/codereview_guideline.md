@@ -24,7 +24,9 @@ Apply these rules to files under `bin/agent-data-plane`.
 
 ### Component run loops
 
-- Flag a component loop that isn't a `loop { select! { ... } }` with a `health.live()` arm, such as a `while let` loop
-  over input.
-- Flag a `select!` arm that awaits work whose duration grows with buffered state, such as a whole flush. (A slow flush
-  in one arm made `/live` fail on CPU-starved pods: #2726.)
+- Don't ask for a `health.live()` arm in a topology component. The topology answers liveness probes around the run
+  future of each component, so a component that waits on backpressure stays live.
+- Flag code in a component that blocks the thread, such as synchronous I/O or a long CPU-bound loop that doesn't yield.
+  The task can't answer liveness probes while it blocks.
+- Flag a task that holds a `Health` handle outside a topology, such as a workload collector, if its loop isn't a
+  `loop { select! { ... } }` with a `health.live()` arm.
