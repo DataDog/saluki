@@ -4,6 +4,7 @@ use std::{
 };
 
 use base64::Engine as _;
+use hyper::header::HeaderValue;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
@@ -152,6 +153,10 @@ impl Payload {
     /// The first header is always `Content-Type`.
     pub fn http_headers(&self) -> &'static [(&'static str, &'static str)] {
         match self {
+            // OTLP/HTTP receivers reject protobuf bodies that are not labeled as such.
+            Self::OpenTelemetryMetrics(_) | Self::OpenTelemetryTraces(_) | Self::OpenTelemetryLogs(_) => {
+                &[("content-type", "application/x-protobuf")]
+            }
             // Mimic a tracing library: the trace-agent reads the tracer's language and version from these headers.
             Self::DatadogTraces(_) => &[
                 ("content-type", "application/msgpack"),
@@ -254,6 +259,13 @@ pub struct Config {
     #[serde(default)]
     pub http_path: Option<String>,
 
+    /// `Content-Type` to send with each payload over an HTTP target, instead of the one the payload type implies.
+    ///
+    /// Needed for payloads that millstone can't tell the encoding of, such as OTLP bytes in a `static_base64`
+    /// payload. Only valid with an HTTP target.
+    #[serde(default)]
+    pub content_type: Option<String>,
+
     /// Output volume.
     ///
     /// This controls the number of payloads to send. If this number is larger than the corpus size, then the entire
@@ -307,23 +319,51 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// If `http_path` is set without a `unix://` target, or doesn't start with `/`, an error is returned.
+    /// If `http_path` is set without a `unix://` target, or doesn't start with `/`, an error is returned. The same
+    /// goes for a `content_type` that isn't a valid header value, or that is set without an HTTP target.
     pub fn validate(&self) -> Result<(), GenericError> {
-        let Some(http_path) = &self.http_path else {
-            return Ok(());
-        };
-
-        if !matches!(self.target, TargetAddress::Unix(_)) {
-            return Err(generic_error!(
-                "`http_path` is only supported with a `unix://` target, not a `{}://` target.",
-                self.target.kind()
-            ));
+        if let Some(http_path) = &self.http_path {
+            if !matches!(self.target, TargetAddress::Unix(_)) {
+                return Err(generic_error!(
+                    "`http_path` is only supported with a `unix://` target, not a `{}://` target.",
+                    self.target.kind()
+                ));
+            }
+            if !http_path.starts_with('/') {
+                return Err(generic_error!("`http_path` must start with '/', got '{}'.", http_path));
+            }
         }
-        if !http_path.starts_with('/') {
-            return Err(generic_error!("`http_path` must start with '/', got '{}'.", http_path));
+
+        if let Some(content_type) = &self.content_type {
+            if !matches!(self.target_kind(), "http" | "http+unix") {
+                return Err(generic_error!(
+                    "`content_type` is only supported with an HTTP target, not a `{}://` target.",
+                    self.target.kind()
+                ));
+            }
+            HeaderValue::from_str(content_type)
+                .with_error_context(|| format!("`content_type` '{}' is not a valid header value.", content_type))?;
         }
 
         Ok(())
+    }
+
+    /// Returns the headers to send along with each payload when the target is HTTP.
+    ///
+    /// These are the payload type's headers, with `Content-Type` replaced by `content_type` when that is set.
+    pub fn http_headers(&self) -> Vec<(String, String)> {
+        self.corpus
+            .payload
+            .http_headers()
+            .iter()
+            .map(|&(name, value)| {
+                let value = match &self.content_type {
+                    Some(content_type) if name == "content-type" => content_type.as_str(),
+                    _ => value,
+                };
+                (name.to_string(), value.to_string())
+            })
+            .collect()
     }
 
     /// Returns the name of the transport payloads are sent over.
@@ -455,14 +495,23 @@ corpus:
     }
 
     fn config_with_target(target: &str, http_path: Option<&str>) -> Config {
+        config_with_target_and_content_type(target, http_path, None)
+    }
+
+    fn config_with_target_and_content_type(
+        target: &str, http_path: Option<&str>, content_type: Option<&str>,
+    ) -> Config {
         let http_path = http_path
             .map(|path| format!("http_path: \"{path}\"\n"))
+            .unwrap_or_default();
+        let content_type = content_type
+            .map(|content_type| format!("content_type: \"{content_type}\"\n"))
             .unwrap_or_default();
         serde_saphyr::from_str(&format!(
             r#"
 seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 target: "{target}"
-{http_path}volume: 10
+{http_path}{content_type}volume: 10
 corpus:
   size: 10
   payload:
@@ -507,6 +556,75 @@ corpus:
     #[test]
     fn rejects_a_relative_http_path() {
         let config = config_with_target("unix:///tmp/apm.socket", Some("v0.4/traces"));
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn http_headers_default_to_the_payload_type() {
+        let config = config_with_target("http://baseline:8126/v1/metrics", None);
+
+        assert_eq!(
+            config.http_headers(),
+            [("content-type".to_string(), "application/octet-stream".to_string())]
+        );
+    }
+
+    #[test]
+    fn content_type_replaces_the_payload_type_default() {
+        let config = config_with_target_and_content_type(
+            "http://baseline:4318/v1/metrics",
+            None,
+            Some("application/x-protobuf"),
+        );
+
+        config.validate().unwrap();
+        assert_eq!(
+            config.http_headers(),
+            [("content-type".to_string(), "application/x-protobuf".to_string())]
+        );
+    }
+
+    #[test]
+    fn content_type_keeps_the_other_headers_of_the_payload_type() {
+        let mut config =
+            config_with_target_and_content_type("http://baseline:8126/v0.4/traces", None, Some("text/plain"));
+        config.corpus.payload = Payload::DatadogTraces(Default::default());
+
+        let headers = config.http_headers();
+
+        assert_eq!(headers[0], ("content-type".to_string(), "text/plain".to_string()));
+        assert!(headers.contains(&("datadog-meta-lang".to_string(), "millstone".to_string())));
+    }
+
+    #[test]
+    fn accepts_a_content_type_with_an_http_over_unix_target() {
+        let config =
+            config_with_target_and_content_type("unix:///tmp/apm.socket", Some("/v1/traces"), Some("text/plain"));
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_a_content_type_without_an_http_target() {
+        for target in [
+            "tcp://baseline:8126",
+            "unix:///tmp/metrics.sock",
+            "unixgram:///tmp/dsd.sock",
+            "grpc://baseline:4317/test.Service/Call",
+        ] {
+            let config = config_with_target_and_content_type(target, None, Some("application/x-protobuf"));
+            assert!(
+                config.validate().is_err(),
+                "`content_type` should be rejected for '{target}'"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_content_type_that_is_not_a_header_value() {
+        let config =
+            config_with_target_and_content_type("http://baseline:4318/v1/metrics", None, Some(r"text/plain\n"));
 
         assert!(config.validate().is_err());
     }
