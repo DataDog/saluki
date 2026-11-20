@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -18,13 +19,14 @@ use tokio::time::Instant;
 use tracing::warn;
 
 use crate::config::runtime_of;
+use crate::core::backend::Backends;
 use crate::core::case::{self, CaseError};
 use crate::core::container::{ContainerBackend, LINUX};
 use crate::core::lifecycle::{self, CaseRun};
 use crate::core::participant::{Enclosure, Os};
 use crate::core::plan::{self, CasePlan, Launch};
 use crate::core::registry::Registry;
-use crate::core::result::{ErrorKind, TestResult};
+use crate::core::result::TestResult;
 use crate::test::{Test, TestContext, TestSuite};
 
 /// The file in a case's log directory that holds its plan when it does not pass.
@@ -186,18 +188,9 @@ impl Test for ParticipantCase {
             Ok(plan) => plan,
             Err(reason) => return TestResult::skipped(&self.name, reason),
         };
-        let Some(containers) = &tctx.settings.containers else {
-            return TestResult::errored(
-                &self.name,
-                ErrorKind::Setup,
-                "The run has no container backend: the checks before the first case did not run.",
-                Duration::ZERO,
-                Vec::new(),
-            );
-        };
         let cancel = tctx.test_cancel_token();
         let run = CaseRun {
-            containers,
+            backends: &tctx.settings.backends,
             ledger: &tctx.ledger,
             tasks: &tctx.tasks,
             cancel: &cancel,
@@ -229,15 +222,13 @@ fn write_plan(plan: &CasePlan, log_dir: &Path) {
 /// participants use, every image, pulled if the Docker daemon lacks it, and the courier. `plans` holds the plan of each
 /// case that runs, by name.
 ///
-/// Returns the backend that realizes the cases' Linux containers, if they have any.
+/// Returns the backend of each realization the cases use.
 ///
 /// # Errors
 ///
 /// Returns every problem found: a realization the runner host cannot provide, an image that cannot be pulled, with the
 /// cases that use it, or a missing courier.
-pub(crate) async fn check_before_the_first_case(
-    plans: &[(String, &CasePlan)],
-) -> Result<Option<ContainerBackend>, Vec<String>> {
+pub(crate) async fn check_before_the_first_case(plans: &[(String, &CasePlan)]) -> Result<Backends, Vec<String>> {
     let mut errors = Vec::new();
     let mut images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut containers = false;
@@ -257,7 +248,11 @@ pub(crate) async fn check_before_the_first_case(
         }
     }
     if !containers || !errors.is_empty() {
-        return if errors.is_empty() { Ok(None) } else { Err(errors) };
+        return if errors.is_empty() {
+            Ok(Backends::default())
+        } else {
+            Err(errors)
+        };
     }
 
     let docker = match airlock::docker::connect() {
@@ -292,7 +287,14 @@ pub(crate) async fn check_before_the_first_case(
         }
     };
     match courier {
-        Some(courier) if errors.is_empty() => Ok(Some(ContainerBackend::new(docker, &LINUX, courier.into()))),
+        Some(courier) if errors.is_empty() => {
+            let mut backends = Backends::default();
+            backends.insert(
+                Enclosure::LinuxContainer,
+                Arc::new(ContainerBackend::new(docker, &LINUX, courier.into())),
+            );
+            Ok(backends)
+        }
         _ => Err(errors),
     }
 }

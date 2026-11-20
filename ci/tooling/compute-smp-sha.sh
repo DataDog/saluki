@@ -22,12 +22,12 @@
 #   If a day had no commits, --before falls back to the latest earlier commit; if that makes
 #   baseline == comparison the run is simply a no-op delta.
 #
-# All cases except the PR comparison need git history, and the benchmark jobs use a shallow
-# checkout (see `.smp-checkout` in .gitlab/benchmark.yml). We cannot deepen the checkout: the CI
-# git mirror ignores `git fetch --deepen` and `git fetch --unshallow` for a ref that the checkout
-# has already. So this script fetches the full history of main and of the branch into a separate
-# repository, and resolves the commit there. A full fetch from the mirror takes some seconds,
-# but a full checkout takes about a minute.
+# All cases except the PR comparison need git history, but the benchmark jobs use a shallow
+# checkout. We cannot deepen the checkout: the CI git mirror ignores `git fetch --deepen` and
+# `git fetch --unshallow` for a ref that the checkout has already. So this script fetches the
+# full history of main and of the branch into a separate repository, and resolves the commit
+# there. A full fetch from the mirror takes some seconds, but a full checkout takes about a
+# minute.
 #
 # The script then adds the objects of that repository to the checkout as alternates, so that the
 # job can check out the resolved commit.

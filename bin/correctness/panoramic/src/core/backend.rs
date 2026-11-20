@@ -6,20 +6,30 @@
 //!
 //! Planning happens before any backend runs, so the fixed answers of every backend are kept here as data, one
 //! [`Facts`] row per enclosure, such as where a participant's own directory is and which protocols it can listen on.
-//! Once a participant has started, its backend hands steps a [`Realized`], which runs commands in it and reads its
-//! files.
+//! At run time, a backend prepares the scope of a case, creates each participant in it from its plan, and starts it.
+//! A started participant is [`Running`]: it reports its exit and output to the lifecycle, and, as [`Realized`], runs
+//! commands in the participant and reads its files for steps.
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use saluki_error::{generic_error, GenericError};
 use tokio::io::AsyncWrite;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use super::handle::HandleError;
+use super::ledger::ResourceLedger;
+use super::observe::Sink;
 use super::participant::Enclosure;
-use super::spec::Protocol;
+use super::plan::PlannedParticipant;
+use super::reference::Values;
+use super::spec::{ProcessSpec, Protocol};
+use super::tasks::CaseTasks;
 
 /// The environment variable that names the participant's [`Facts::exit_dir`].
 pub(crate) const EXIT_DIR_ENV: &str = "PANORAMIC_EXIT_DIR";
@@ -196,4 +206,126 @@ pub(crate) trait Realized: fmt::Debug + Send + Sync {
     /// The runner host's port for the participant's published `endpoint`, or `None` if it has none. A participant that
     /// exited before its ports were read back has none.
     fn host_port(&self, endpoint: &str) -> Option<u16>;
+}
+
+/// The runtime identities a backend learns of a participant: some when it creates the participant, the rest when it
+/// starts it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Identities {
+    pub(crate) container_id: Option<String>,
+    // TODO: remove the dead_code allowance once `Values` records a pod's UID.
+    #[allow(dead_code)]
+    pub(crate) pod_uid: Option<String>,
+    /// The participant's address on the case's network.
+    pub(crate) ip: Option<String>,
+}
+
+/// What a backend gets to prepare the scope of one case.
+pub(crate) struct Preparing<'a> {
+    /// Takes every resource of the scope before it is made.
+    pub(crate) ledger: &'a ResourceLedger,
+    /// Where background work of the case runs. The runner stops it before reclaim.
+    // TODO: remove the dead_code allowance once a backend runs background work for a case.
+    #[allow(dead_code)]
+    pub(crate) tasks: &'a CaseTasks,
+    /// Fires when the runner stops the case.
+    pub(crate) cancel: &'a CancellationToken,
+    pub(crate) deadline: Instant,
+}
+
+/// Realizes the participants of one enclosure.
+#[async_trait]
+pub(crate) trait Backend: fmt::Debug + Send + Sync {
+    /// Prepares the scope of one case, with each resource entered in the ledger before it is made.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scope cannot be made, if the case is cancelled first, or if the deadline passes first.
+    async fn prepare(&self, cx: &Preparing<'_>) -> Result<Box<dyn Scope>, GenericError>;
+}
+
+/// The part of one case that a backend realizes.
+#[async_trait]
+pub(crate) trait Scope: Send + Sync {
+    /// Creates participant `name` from its plan, with everything it needs placed. Nothing runs yet.
+    ///
+    /// `values` fills every reference left in the plan, so each participant whose container ID `name` refers to must be
+    /// created, and recorded in `values`, first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the plan holds something this backend cannot honor or a reference with no value yet, if the
+    /// participant or its files cannot be made, for example because the image is missing, if `cancel` fires first, or
+    /// if `deadline` passes first.
+    async fn create(
+        &self, name: &str, planned: &PlannedParticipant, values: &Values, cancel: &CancellationToken, deadline: Instant,
+    ) -> Result<Box<dyn Created>, GenericError>;
+}
+
+/// A participant that exists and has not started.
+#[async_trait]
+pub(crate) trait Created: Send + Sync {
+    /// What is known of the participant now that it exists.
+    fn identities(&self) -> Identities;
+
+    /// Starts the participant, and reads back what only a started participant has.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the participant cannot be started, if `cancel` fires first, or if `deadline` passes first.
+    async fn start(
+        self: Box<Self>, values: &Values, cancel: &CancellationToken, deadline: Instant,
+    ) -> Result<Arc<dyn Running>, GenericError>;
+}
+
+/// A started participant, with what the lifecycle observes of it.
+#[async_trait]
+pub(crate) trait Running: Realized {
+    /// What is known of the participant now that it has started.
+    fn identities(&self) -> Identities;
+
+    /// Waits until the participant exits, and returns its exit code, or why none can be had.
+    async fn wait(&self, deadline: Instant) -> Result<i64, GenericError>;
+
+    /// The participant's exit code if it has exited, or `None` while it runs, or why that cannot be told.
+    async fn exit_now(&self, deadline: Instant) -> Result<Option<i64>, GenericError>;
+
+    /// Whether the output of `process` of `participant` can be captured, and if not, why.
+    ///
+    /// # Errors
+    ///
+    /// When the participant's enclosure has no way to capture the output of `process`.
+    fn check_capture(&self, participant: &str, process: &ProcessSpec) -> Result<(), GenericError>;
+
+    /// Captures the output of `process` of `participant` into `sink`, for `limit` or until `finish` fires.
+    async fn capture(
+        &self, participant: &str, process: &ProcessSpec, sink: Sink, limit: Duration, finish: CancellationToken,
+    );
+
+    /// Captures the participant's own log into `sink`, until `finish` fires.
+    async fn capture_log(&self, sink: Sink, finish: CancellationToken);
+}
+
+/// The backends of a run, by the enclosure each realizes.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Backends(BTreeMap<Enclosure, Arc<dyn Backend>>);
+
+impl Backends {
+    pub(crate) fn insert(&mut self, enclosure: Enclosure, backend: Arc<dyn Backend>) {
+        self.0.insert(enclosure, backend);
+    }
+
+    /// The backend of `enclosure`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the enclosure if the run has no backend for it.
+    pub(crate) fn get(&self, enclosure: Enclosure) -> Result<&Arc<dyn Backend>, GenericError> {
+        self.0.get(&enclosure).ok_or_else(|| {
+            generic_error!(
+                "The run has no backend for a {}: the checks before the first case did not provide one.",
+                enclosure
+            )
+        })
+    }
 }

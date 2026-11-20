@@ -622,7 +622,7 @@ test-miri: ## Runs all Miri-specific unit tests
 test-loom: check-rust-build-tools cargo-install-cargo-nextest
 test-loom: ## Runs all Loom-specific unit tests
 	@echo "[*] Running Loom-specific unit tests..."
-	cargo nextest run --release --features loom -p stringtheory -p saluki-core loom_tests
+	cargo nextest run --release --features loom -p stringtheory -p saluki-core -p saluki-metrics loom_tests
 
 .PHONY: test-all
 test-all: ## Test everything
