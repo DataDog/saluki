@@ -1,7 +1,9 @@
-//! ADP's `dogstatsd` commands as operations: `dogstatsd_capture`, `dogstatsd_replay` and `dogstatsd_stats`.
+//! `agent-adp`'s operations on ADP's `dogstatsd` commands: `dogstatsd_capture`, `dogstatsd_replay` and
+//! `dogstatsd_stats`.
 //!
-//! Each runs the participant's command `adp` and answers with what it parsed from the output. A step decides whether
-//! the answer is right. The output of a failed command is not quoted, because it can hold secrets.
+//! Each runs the participant's command `adp` once and answers with what it parsed from the output. The step
+//! `dogstatsd_replay` runs all three, and decides whether the answers are right. The output of a failed command is not
+//! quoted, because it can hold secrets.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
