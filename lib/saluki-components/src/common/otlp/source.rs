@@ -80,7 +80,7 @@ pub fn resolve_source_from_attributes(attributes: &[KeyValue]) -> Option<Source>
 ///
 /// Uses the same precedence as [`resolve_source_from_attributes`], but other kinds of source resolve to `None`, and
 /// the hostname is only allocated when it has to be built.
-pub fn hostname_from_source_attributes(attributes: &[KeyValue]) -> Option<Cow<'_, str>> {
+pub(crate) fn hostname_from_source_attributes(attributes: &[KeyValue]) -> Option<Cow<'_, str>> {
     match resolve_source_ref(attributes)? {
         SourceRef::Host(hostname) => Some(hostname),
         SourceRef::Other(..) => None,
