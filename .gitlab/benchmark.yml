@@ -119,6 +119,9 @@ build-adp-baseline-image:
     # Actually build.
     # Temporary credentials (from the runner's own IAM role, not the SMP profile) for the shared build cache.
     - ci/tooling/get-temporary-aws-credentials.sh
+    # We don't pass `APP_GIT_HASH`. `saluki-metadata` embeds it, so a new value on each commit invalidates that crate
+    # and every crate that depends on it in the build cache, including `saluki-components`. The binary then reports
+    # an unknown Git hash. The image tag still identifies the built commit.
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
@@ -131,7 +134,6 @@ build-adp-baseline-image:
       --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -187,6 +189,7 @@ build-adp-comparison-image:
     # Actually build.
     # Temporary credentials (from the runner's own IAM role, not the SMP profile) for the shared build cache.
     - ci/tooling/get-temporary-aws-credentials.sh
+    # We don't pass `APP_GIT_HASH`, to keep the build cache warm: see build-adp-baseline-image.
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
@@ -199,7 +202,6 @@ build-adp-comparison-image:
       --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
