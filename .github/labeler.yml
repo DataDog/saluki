@@ -59,12 +59,6 @@
       - any-glob-to-any-file:
           - "test/**/*"
 
-# Decoders.
-"decoders/otlp":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "lib/saluki-components/src/decoders/otlp/**/*"
-
 # Destinations.
 "destination/blackhole":
   - changed-files:
@@ -122,17 +116,6 @@
   - changed-files:
       - any-glob-to-any-file:
           - "lib/saluki-components/src/forwarders/datadog/**/*"
-
-"forwarder/otlp":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "lib/saluki-components/src/forwarders/otlp/**/*"
-
-# Relays.
-"relay/otlp":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "lib/saluki-components/src/relays/otlp/**/*"
 
 # Sources.
 "source/checks":
