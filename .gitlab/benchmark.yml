@@ -269,7 +269,7 @@ run-benchmarks-adp:
         echo '```'
         cat outputs/phase-times.txt
         echo '-----'
-        sed -E 's/[0-9]{12}/<redacted>/g' outputs/status.log | tail -n 150
+        sed -E 's/[0-9]{12}/<redacted>/g' outputs/status.log | awk '/job_status:/ { if (blk != prev) printf "%s", out; prev = blk; blk = ""; out = "" } { blk = blk substr($0, 10) "\n"; out = out $0 "\n" } END { if (blk != prev) printf "%s", out }' | head -n 200
         echo '```'
       } | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="TEMPORARY SMP phase timings" || true
 
