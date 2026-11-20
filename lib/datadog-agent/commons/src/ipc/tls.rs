@@ -452,6 +452,19 @@ mod tests {
         )
         .expect("client TLS config should build without TLS 1.3 cipher suites");
 
+        // FIPS 140-3 requires the Extended Master Secret extension for TLS 1.2. Rustls requires it whenever the
+        // provider reports FIPS, and the FIPS check that the builder runs depends on it.
+        assert_eq!(
+            client_config.require_ems,
+            client_config.crypto_provider().fips(),
+            "client should require Extended Master Secret exactly when the provider is FIPS"
+        );
+        assert_eq!(
+            server_config.require_ems,
+            server_config.crypto_provider().fips(),
+            "server should require Extended Master Secret exactly when the provider is FIPS"
+        );
+
         let negotiated = tokio::time::timeout(TEST_TIMEOUT, async move {
             let (client_io, server_io) = tokio::io::duplex(4096);
             let client = async move {
