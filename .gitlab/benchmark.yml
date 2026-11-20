@@ -78,7 +78,11 @@ build-adp-baseline-image:
     # we benchmark against the base of the stack, not a mid-stack PR — an acceptable tradeoff).
     # On the nightly schedule it is the date-anchored "previous nightly". See
     # ci/tooling/compute-smp-sha.sh.
-    - export BASELINE_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh baseline)
+    #
+    # The assignment and the export are separate commands. `export` would hide the exit code of
+    # the script, and the job would then build the pipeline commit as the baseline.
+    - BASELINE_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh baseline)
+    - export BASELINE_ADP_SHA
     - export BASELINE_ADP_IMG="${ADP_IMG_BASE}-${BASELINE_ADP_SHA}"
     # Both sides run the Agent from the pipeline commit's `.datadog-agent-version.json`, read before the switch, so
     # the comparison measures only the ADP change. The baseline commit may predate the file.
@@ -140,7 +144,10 @@ build-adp-comparison-image:
     # Resolve the comparison commit and define the relevant variables: the current commit on
     # PRs, or the date-anchored "current nightly" on the schedule. See
     # ci/tooling/compute-smp-sha.sh.
-    - export COMPARISON_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh comparison)
+    #
+    # The assignment and the export are separate commands, as in build-adp-baseline-image.
+    - COMPARISON_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh comparison)
+    - export COMPARISON_ADP_SHA
     - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
     # The same Agent as the baseline: see build-adp-baseline-image.
     - SMP_AGENT_IMAGE=$(jq -er '.integration.linux.image' .datadog-agent-version.json) || exit 1

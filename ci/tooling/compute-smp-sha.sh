@@ -50,7 +50,13 @@ history_refspecs() {
 fetch_history() {
     local refspecs
     mapfile -t refspecs < <(history_refspecs)
-    git fetch --quiet --deepen="${history_depth}" origin "${refspecs[@]}" >&2
+    # TEMPORARY diagnostics.
+    echo "compute-smp-sha: before fetch: shallow=$(git rev-parse --is-shallow-repository) count=$(git rev-list --count HEAD) refs:" >&2
+    git for-each-ref >&2
+    git config --list --show-origin | grep -iv "token\|auth\|header" >&2 || true
+    git fetch --verbose --deepen="${history_depth}" origin "${refspecs[@]}" >&2
+    echo "compute-smp-sha: after fetch: shallow=$(git rev-parse --is-shallow-repository) count=$(git rev-list --count HEAD) main=$(git rev-list --count origin/main || true)" >&2
+    git for-each-ref >&2
 }
 
 # Fetch the full history. Returns 1 if the repository has the full history already.
@@ -61,7 +67,9 @@ fetch_full_history() {
     fi
     echo "compute-smp-sha: the commit is not in the last ${history_depth} commits, fetching the full history" >&2
     mapfile -t refspecs < <(history_refspecs)
-    git fetch --quiet --unshallow origin "${refspecs[@]}" >&2
+    git fetch --verbose --unshallow origin "${refspecs[@]}" >&2
+    # TEMPORARY diagnostics.
+    echo "compute-smp-sha: after unshallow: shallow=$(git rev-parse --is-shallow-repository) count=$(git rev-list --count HEAD) main=$(git rev-list --count origin/main || true)" >&2
 }
 
 # Most recent origin/main commit committed strictly before 00:00:00 UTC of the given
