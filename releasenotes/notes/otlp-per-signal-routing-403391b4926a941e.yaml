@@ -25,3 +25,8 @@ fixes:
   - |
     ADP no longer proxies OTLP requests to itself. If a signal is proxied and a proxy endpoint reaches one of ADP's
     own OTLP listeners, ADP logs an error and starts no OTLP ingest. The other pipelines keep running.
+  - |
+    ADP's OTLP/HTTP listener now follows ``otlp_config.receiver.protocols.http.transport``, and so does the proxy
+    destination ``data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint``. Before, ADP always listened for
+    OTLP/HTTP over TCP. With ``transport: unix``, ADP now listens on a Unix domain socket at
+    ``otlp_config.receiver.protocols.http.endpoint``, even when it processes every OTLP signal itself.
