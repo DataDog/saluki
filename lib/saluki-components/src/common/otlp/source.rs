@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
 use regex::Regex;
 
-use super::util::{gcp_hostname, get_attribute_str, hostname_from_attributes, Source, SourceKind};
+use super::util::{first_attribute_str, gcp_hostname, hostname_from_attributes, Source, SourceKind};
 
 const ATTRIBUTE_HOST: &str = "host";
 const ATTRIBUTE_DATADOG_HOSTNAME: &str = "datadog.host.name";
@@ -114,7 +114,7 @@ pub fn is_gcp_serverless(attributes: &[KeyValue]) -> bool {
 
 /// Returns the first attribute named `key` as a string, or an empty string if it's missing or not a string.
 fn attr<'a>(attributes: &'a [KeyValue], key: &str) -> &'a str {
-    get_attribute_str(attributes, key).unwrap_or_default()
+    first_attribute_str(attributes, key).unwrap_or_default()
 }
 
 fn source(kind: SourceKind, identifier: impl Into<String>) -> Option<Source> {
@@ -284,7 +284,7 @@ fn ecs_fargate_source(attributes: &[KeyValue]) -> Option<Source> {
     if !attr(attributes, AWS_ECS_LAUNCHTYPE).eq_ignore_ascii_case("fargate") {
         return None;
     }
-    let task_arn = get_attribute_str(attributes, AWS_ECS_TASK_ARN)?;
+    let task_arn = first_attribute_str(attributes, AWS_ECS_TASK_ARN)?;
     source(SourceKind::AwsEcsFargate, task_arn)
 }
 
