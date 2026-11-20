@@ -58,7 +58,7 @@ impl Step for PortListening {
                 let limit = ATTEMPT.min(cx.deadline.saturating_duration_since(Instant::now()));
                 let refused = match handle.probe(&self.endpoint, limit).await {
                     Ok(()) => {
-                        let message = format!("endpoint '{}' of '{}' accepts connections.", self.endpoint, self.on);
+                        let message = format!("Endpoint '{}' of '{}' accepts connections.", self.endpoint, self.on);
                         return Ok(StepReport {
                             status: StepStatus::Passed,
                             message,
@@ -73,7 +73,7 @@ impl Step for PortListening {
                 sleep_until((Instant::now() + POLL).min(cx.deadline)).await;
             };
             let message = format!(
-                "endpoint '{}' of '{}' did not accept a connection within {}: {}",
+                "Endpoint '{}' of '{}' did not accept a connection within {}: {}",
                 self.endpoint, self.on, self.timeout.text, last
             );
             Ok::<_, HandleError>(StepReport {
