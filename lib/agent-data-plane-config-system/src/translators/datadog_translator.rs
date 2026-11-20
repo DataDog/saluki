@@ -81,6 +81,7 @@ impl<'a> DatadogTranslator<'a> {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
         self.apply_deprecated_max_tps_alias();
+        self.detect_receiver_tls();
         self.resolve_v3_sketch_payload_limits();
         self.drop_regex_tag_filters_shadowed_by_exact_ones();
         (self.config, errors)
@@ -111,6 +112,24 @@ impl<'a> DatadogTranslator<'a> {
             return;
         }
         self.config.domains.traces.target_traces_per_second = self.max_traces_per_second;
+    }
+
+    /// Records whether an input explicitly set any `tls` value of the OTLP gRPC or HTTP receiver.
+    ///
+    /// This reads the merged sources, not the typed TLS fields. Those fields omit some `tls` keys, and
+    /// they hold an explicit empty value as the default.
+    fn detect_receiver_tls(&mut self) {
+        // ADP detects receiver TLS only from explicitly set `tls.<field>` leaves. That is intentionally
+        // narrower than the Agent's `ValidateDataPlaneProxy`
+        // (comp/otelcol/otlp/configcheck/configcheck_common.go), which also rejects `tls:`, `tls: null`, and
+        // `tls: {}`: those shapes never reach ADP, because configuration arrives as leaves and empty or null
+        // sections carry none. Missing them is safe. The Agent rejects them, so its OTLP ingest and relocated
+        // listeners don't start and proxied requests fail back to the client instead of succeeding, and an
+        // empty TLS section never configured TLS, so nothing is downgraded.
+        self.config.domains.otlp.proxy.tls_configured = ["grpc", "http"].iter().any(|protocol| {
+            self.sources
+                .has_explicit_under(&format!("otlp_config.receiver.protocols.{protocol}.tls"))
+        });
     }
 
     /// Drops each `filter_tags_regex` rule whose key a `filter_tags` rule in the same list already has.
@@ -2098,7 +2117,7 @@ mod tests {
     };
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
-    use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
+    use datadog_agent_config::{apply_datadog_env_vars, DatadogConfiguration, TranslateErrors};
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use serde_json::{json, Value};
 
@@ -2326,6 +2345,94 @@ mod tests {
         assert!(!proxy.traces_enabled);
         assert!(!proxy.enabled());
         assert_eq!(proxy.grpc_endpoint, "127.0.0.1:4319");
+    }
+
+    #[test]
+    fn otlp_receiver_tls_is_configured_by_an_explicit_value_in_a_local_file() {
+        // `cert_file` has a model field and `client_ca_file` has none, but either sets TLS up.
+        for protocol in ["grpc", "http"] {
+            for field in ["cert_file", "client_ca_file"] {
+                let (config, errors) = translate_explicit(json!({
+                    "otlp_config": { "receiver": { "protocols": { protocol: { "tls": { field: "/etc/tls.pem" } } } } }
+                }));
+                assert!(errors.is_none(), "translation should succeed: {errors:?}");
+                assert!(
+                    config.domains.otlp.proxy.tls_configured,
+                    "{protocol} {field} should configure TLS"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn otlp_receiver_tls_is_configured_by_an_environment_variable() {
+        let vars = [(
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE".to_string(),
+            "/etc/cert.pem".to_string(),
+        )];
+        let mut base = json!({});
+        apply_datadog_env_vars(&mut base, vars, true).expect("environment variables decode");
+
+        let (config, errors) = translate_explicit(base);
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(config.domains.otlp.proxy.tls_configured);
+    }
+
+    #[test]
+    fn otlp_receiver_tls_is_configured_by_an_agent_setting_from_a_file() {
+        // The Agent reports `source: file` for a value its configuration file set.
+        let (config, errors) = translate_stream(&[(
+            "otlp_config.receiver.protocols.http.tls.key_file",
+            json!("/etc/key.pem"),
+            StreamProvenance::Explicit,
+        )]);
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(config.domains.otlp.proxy.tls_configured);
+    }
+
+    #[test]
+    fn otlp_receiver_tls_is_not_configured_by_defaults() {
+        // The Agent streams every key it knows, so its defaults must not count.
+        let (config, errors) = translate_stream(&[
+            (
+                "otlp_config.receiver.protocols.grpc.tls.cert_file",
+                json!(""),
+                StreamProvenance::Default,
+            ),
+            (
+                "otlp_config.receiver.protocols.http.tls.key_file",
+                json!(""),
+                StreamProvenance::Default,
+            ),
+        ]);
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(!config.domains.otlp.proxy.tls_configured);
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(!config.domains.otlp.proxy.tls_configured);
+    }
+
+    // This test pins intended behavior, not a gap. The guard is narrower than the Agent's
+    // `ValidateDataPlaneProxy` (comp/otelcol/otlp/configcheck/configcheck_common.go), which also rejects
+    // `tls:`, `tls: null`, and `tls: {}`. Those shapes never reach ADP, because configuration arrives as
+    // leaves and empty or null sections carry none. Missing them is safe. The Agent rejects them, so its OTLP
+    // ingest and relocated listeners don't start and proxied requests fail back to the client instead of
+    // succeeding, and an empty TLS section never configured TLS, so nothing is downgraded. A null section is
+    // dropped while the local file loads: see `empty_otlp_receiver_tls_sections_are_not_configured` in
+    // `loaded.rs`.
+    #[test]
+    fn otlp_receiver_tls_is_not_configured_by_an_empty_section() {
+        let (config, errors) = translate_explicit(json!({
+            "data_plane": { "experimental": { "otlp": { "proxy": { "logs": true } } } },
+            "otlp_config": { "receiver": { "protocols": {
+                "grpc": { "tls": {} },
+                "http": { "tls": {} },
+            } } }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(config.domains.otlp.proxy.enabled());
+        assert!(!config.domains.otlp.proxy.tls_configured);
     }
 
     #[test]

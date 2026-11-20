@@ -137,14 +137,31 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns `true` if the OTLP pipeline is enabled.
     ///
     /// The pipeline needs at least one OTLP signal. Like the Agent, ADP treats OTLP as disabled when none is enabled,
-    /// instead of failing startup.
+    /// instead of failing startup. It is also disabled when [`otlp_blocked`](Self::otlp_blocked) is `true`.
     pub const fn otlp_enabled(&self) -> bool {
-        self.config.control.otlp && self.otlp_signals_enabled()
+        self.config.control.otlp && !self.otlp_blocked() && self.otlp_signals_enabled()
     }
 
     /// Returns `true` if the OTLP pipeline is enabled but every OTLP signal (metrics, logs, and traces) is disabled.
+    ///
+    /// It is `false` when [`otlp_blocked`](Self::otlp_blocked) is `true`, so a blocked pipeline gets one error.
     pub const fn otlp_enabled_without_signals(&self) -> bool {
-        self.config.control.otlp && !self.otlp_signals_enabled()
+        self.config.control.otlp && !self.otlp_blocked() && !self.otlp_signals_enabled()
+    }
+
+    /// Returns `true` if OTLP ingest is enabled with receiver TLS while OTLP proxy mode is on.
+    ///
+    /// ADP doesn't secure the proxied connection to the Agent, so it starts no OTLP ingest instead of proxying
+    /// plaintext. Proxy mode counts any proxy flag, even one for a disabled signal, as the Agent does.
+    ///
+    /// ADP detects receiver TLS only from explicitly set `tls.<field>` leaves. That is intentionally narrower than
+    /// the Agent's `ValidateDataPlaneProxy` (`comp/otelcol/otlp/configcheck/configcheck_common.go`), which also
+    /// rejects `tls:`, `tls: null`, and `tls: {}`: those shapes never reach ADP, because configuration arrives as
+    /// leaves and empty or null sections carry none. Missing them is safe. The Agent rejects them, so its OTLP
+    /// ingest and relocated listeners don't start and proxied requests fail back to the client instead of
+    /// succeeding, and an empty TLS section never configured TLS, so nothing is downgraded.
+    pub const fn otlp_blocked(&self) -> bool {
+        self.config.control.otlp && self.otlp_proxy_enabled() && self.config.domains.otlp.proxy.tls_configured
     }
 
     /// Returns `true` if at least one OTLP signal (metrics, logs, or traces) is enabled.
@@ -630,6 +647,62 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(!dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+    }
+
+    /// Returns a configuration that enables OTLP and DogStatsD, proxies the given signals, and sets receiver TLS.
+    fn tls_configuration(logs: bool, metrics: bool, traces: bool) -> SalukiConfiguration {
+        let mut config = pipeline_configuration(false, true, true, proxy(logs, metrics, traces));
+        config.domains.otlp.proxy.tls_configured = true;
+        config
+    }
+
+    #[test]
+    fn receiver_tls_with_any_proxy_flag_blocks_otlp_ingest() {
+        // The proxy flag for the enabled metrics signal, and the flags for the disabled logs and traces signals.
+        for (logs, metrics, traces) in [(false, true, false), (true, false, false), (false, false, true)] {
+            let config = tls_configuration(logs, metrics, traces);
+            let dp = DataPlaneConfiguration::from_configuration(&config);
+
+            assert!(dp.otlp_blocked(), "{:?}", (logs, metrics, traces));
+            assert!(!dp.otlp_enabled());
+            assert!(!dp.otlp_enabled_without_signals());
+            assert!(!dp.logs_pipeline_required());
+            assert!(!dp.traces_pipeline_required());
+            // DogStatsD is unaffected.
+            assert!(dp.data_pipelines_enabled());
+            assert_eq!(dp.active_pipelines(), HashSet::from([Pipeline::DogStatsD]));
+        }
+    }
+
+    #[test]
+    fn receiver_tls_without_a_proxy_flag_allows_otlp_ingest() {
+        // With every flag false, ADP handles every signal itself, so the TLS is not proxied.
+        let config = tls_configuration(false, false, false);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.otlp_blocked());
+        assert!(dp.otlp_enabled());
+        assert!(dp.active_pipelines().contains(&Pipeline::Otlp));
+    }
+
+    #[test]
+    fn receiver_tls_blocks_nothing_while_otlp_is_off() {
+        let mut config = tls_configuration(true, true, true);
+        config.control.otlp = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.otlp_blocked());
+        assert!(!dp.otlp_enabled());
+    }
+
+    #[test]
+    fn a_blocked_otlp_pipeline_reports_no_missing_signals() {
+        let mut config = tls_configuration(true, false, false);
+        config.domains.otlp.receiver.metrics_enabled = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.otlp_blocked());
+        assert!(!dp.otlp_enabled_without_signals());
     }
 
     #[test]

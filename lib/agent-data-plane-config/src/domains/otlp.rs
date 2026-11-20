@@ -593,6 +593,14 @@ pub struct Proxy {
 
     /// Address of the Agent's relocated OTLP/gRPC listener, which the proxy forwards to.
     pub grpc_endpoint: String,
+
+    /// Whether an input explicitly set any `tls` value of the OTLP gRPC or HTTP receiver. (not in
+    /// Datadog Agent config schema)
+    ///
+    /// The translator derives this from the merged sources, not from the typed TLS fields. ADP doesn't
+    /// secure the proxied connection to the Agent, so this value blocks OTLP ingest while the proxy is
+    /// enabled.
+    pub tls_configured: bool,
 }
 
 impl Proxy {

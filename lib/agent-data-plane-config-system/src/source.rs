@@ -198,6 +198,14 @@ impl SourceTree {
             Some(Node::Section(_)) | None => Provenance::Default,
         }
     }
+
+    /// Returns `true` if an input explicitly set any value at or beneath the dotted `prefix`.
+    ///
+    /// The value can be a key no model describes. An absent `prefix`, and a section that holds only
+    /// defaulted values, report `false`.
+    pub(crate) fn has_explicit_under(&self, prefix: &str) -> bool {
+        self.root.get(prefix.split('.')).is_some_and(Node::has_explicit)
+    }
 }
 
 impl Node {
@@ -413,6 +421,72 @@ mod tests {
         // A section is not a setting, so querying one reports the same as querying a key nothing
         // supplied.
         assert_eq!(tree.provenance("apm_config"), Provenance::Default);
+    }
+
+    #[test]
+    fn has_explicit_under_finds_an_explicit_value_at_or_beneath_a_prefix() {
+        const TLS: &str = "otlp_config.receiver.protocols.grpc.tls";
+        let tree = SourceTree::all_explicit(json!({
+            "otlp_config": { "receiver": { "protocols": { "grpc": { "tls": { "cert_file": "/etc/cert.pem" } } } } }
+        }));
+
+        // An explicit leaf, directly beneath the prefix and at a level above it.
+        assert!(tree.has_explicit_under(TLS));
+        assert!(tree.has_explicit_under("otlp_config.receiver.protocols"));
+        // The prefix is itself the leaf.
+        assert!(tree.has_explicit_under("otlp_config.receiver.protocols.grpc.tls.cert_file"));
+        // A sibling subtree holds nothing, and so does a prefix nothing supplied.
+        assert!(!tree.has_explicit_under("otlp_config.receiver.protocols.http.tls"));
+        assert!(!tree.has_explicit_under("otlp_config.receiver.protocols.grpc.tls.key_file"));
+        assert!(!tree.has_explicit_under("not_a_datadog_key"));
+    }
+
+    #[test]
+    fn has_explicit_under_counts_a_key_no_model_describes() {
+        // `client_ca_file` has no model field, but it still sets TLS up. Both the nested form from a file and
+        // the flat key from the Agent's stream must count.
+        const TLS: &str = "otlp_config.receiver.protocols.grpc.tls";
+        let file = SourceTree::all_explicit(json!({
+            "otlp_config": { "receiver": { "protocols": { "grpc": { "tls": { "client_ca_file": "/etc/ca.pem" } } } } }
+        }));
+        let streamed = agent_layer(&[(
+            "otlp_config.receiver.protocols.grpc.tls.client_ca_file",
+            json!("/etc/ca.pem"),
+            StreamProvenance::Explicit,
+        )]);
+
+        assert!(file.has_explicit_under(TLS));
+        assert!(streamed.has_explicit_under(TLS));
+    }
+
+    #[test]
+    fn has_explicit_under_ignores_a_subtree_that_holds_only_defaults() {
+        const TLS: &str = "otlp_config.receiver.protocols.grpc.tls";
+        let defaults = agent_layer(&[
+            (
+                "otlp_config.receiver.protocols.grpc.tls.cert_file",
+                json!(""),
+                StreamProvenance::Default,
+            ),
+            (
+                "otlp_config.receiver.protocols.grpc.tls.key_file",
+                json!(""),
+                StreamProvenance::Default,
+            ),
+        ]);
+
+        assert!(!defaults.has_explicit_under(TLS));
+        assert!(!defaults.has_explicit_under("otlp_config.receiver.protocols.grpc.tls.cert_file"));
+
+        // One explicit value among the defaults is enough, whichever layer supplies it.
+        let local = SourceTree::all_explicit(json!({
+            "otlp_config": { "receiver": { "protocols": { "grpc": { "tls": { "key_file": "/etc/key.pem" } } } } }
+        }));
+        assert!(local.overlay(&defaults).has_explicit_under(TLS));
+        assert!(SourceTree::empty()
+            .overlay(&defaults)
+            .overlay(&local)
+            .has_explicit_under(TLS));
     }
 
     #[test]
