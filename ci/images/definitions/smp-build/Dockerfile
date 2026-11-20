@@ -2,12 +2,12 @@
 #
 # A slim build base for the SMP baseline and comparison image builds (see `.gitlab/benchmark.yml`).
 #
-# The `build-ci` image is about 2.8 GB compressed. It carries tooling for every job: cross toolchains for each platform,
-# a nightly toolchain, Python, the Docker CLI, and more. An SMP job builds the Linux x86_64 binary only, and pulling and
-# extracting all of `build-ci` takes about 105 seconds of each job. This image keeps only the parts of `build-ci` that
-# the ADP build uses, on a plain Ubuntu base: the pinned Rust toolchain, the crosstool-NG toolchain that sets the glibc
-# floor, and `protoc`. The SMP jobs build it on demand and tag it with a hash of its inputs, so a job builds it only when
-# this file, the base image, or `build-ci` changes.
+# The `build-ci` image carries tooling for every job: cross toolchains for each platform, a nightly toolchain, Python,
+# the Docker CLI, and more. An SMP job builds only the Linux x86_64 binary, and pulling all of `build-ci` adds much time
+# to each job. This image keeps only the parts of `build-ci` that the ADP build uses. It puts them on a plain Ubuntu
+# base. These parts are the pinned Rust toolchain, the crosstool-NG toolchain that sets the glibc floor, and `protoc`.
+# The SMP jobs build this image on demand and tag it with a hash of its inputs. Thus a job builds it only when this
+# file, the base image, or `build-ci` changes.
 #
 # The binary must stay the same as a build on `build-ci`. Thus we copy the toolchains from `build-ci` and do not
 # install them again, and we set the same environment that the build reads.
