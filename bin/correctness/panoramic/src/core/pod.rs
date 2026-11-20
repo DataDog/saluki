@@ -1091,7 +1091,13 @@ impl Running for PodRunning {
     }
 
     async fn capture_log(&self, sink: Sink, finish: CancellationToken) {
-        match self.logs().await {
+        // Opening the stream is a request to the Kubernetes API that can stall, and the capture task is cooperative, so
+        // only `finish` can end the wait.
+        let Some(logs) = finish.run_until_cancelled(self.logs()).await else {
+            sink.failed("Stopped opening the pod log stream during cleanup.".to_string());
+            return;
+        };
+        match logs {
             Ok(logs) => sink.capture(logs, finish).await,
             Err(e) => sink.failed(format!("{:#}", e)),
         }
