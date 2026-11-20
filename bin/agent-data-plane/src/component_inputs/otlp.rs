@@ -171,6 +171,7 @@ mod tests {
                     timeout: Duration::from_secs(16),
                 },
                 tls: tls("grpc"),
+                tls_configured: false,
             },
             http: otlp::HttpReceiver {
                 endpoint: "0.0.0.0:4318".to_string(),
@@ -182,6 +183,7 @@ mod tests {
                     max_age: 17,
                 },
                 tls: tls("http"),
+                tls_configured: false,
                 max_request_body_size: 18,
             },
         };
