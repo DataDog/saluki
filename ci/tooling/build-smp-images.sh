@@ -25,6 +25,14 @@
 # compute a key, it builds under a pipeline-scoped tag. If the registry lifecycle policy deletes a
 # keyed image, the next run builds it again.
 #
+# Caveats:
+#
+# - The downstream jobs pull the ADP image by digest. If another pipeline pushes a new build under
+#   the same tag, the old digest becomes untagged, and a lifecycle rule for untagged images can
+#   delete it before those jobs pull it.
+# - Every pipeline that runs this script can push a keyed tag, which other pipelines then reuse.
+#   This adds no new access: the same pipelines can already push any image to this repository.
+#
 # Many pipelines can use one keyed image. So the labels on a keyed image identify the ADP commit and
 # the key, and not the pipeline that built the image. An image under a pipeline-scoped tag also gets
 # labels for its branch, pipeline, and job.
