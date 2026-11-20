@@ -141,8 +141,8 @@ pub(crate) fn system_clock() -> UnixMillisClock {
 /// Builds a middleware function that stamps logs requests with the time they're sent.
 ///
 /// Adds the `dd-current-timestamp` header, read from `clock`, to requests for the logs intake paths (`/api/v2/logs`
-/// and `/v1/input`). Any existing value is replaced, so a retried request carries the time of its latest attempt
-/// rather than its first.
+/// and `/v1/input`). The path must be the route before endpoint mapping, which can add a base path. Any existing value
+/// is replaced, so a retried request carries the time of its latest attempt rather than its first.
 pub(crate) fn with_logs_current_timestamp<B>(clock: UnixMillisClock) -> impl Fn(Request<B>) -> Request<B> + Clone {
     move |mut request| {
         if LOGS_PATHS.contains(&request.uri().path()) {

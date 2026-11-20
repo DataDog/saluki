@@ -1151,6 +1151,10 @@ where
         .map_request(with_version_info())
         .concurrency_limit(config.effective_endpoint_concurrency())
         .layer(retry_circuit_breaker)
+        // Stamp logs requests with the send time, after any wait for a concurrency permit or the circuit breaker. This
+        // runs on every attempt, so retries carry a fresh value. It runs before the endpoint mapper, which can add the
+        // endpoint's base path to the request path.
+        .map_request(with_logs_current_timestamp(Arc::clone(&io.clock)))
         // Set the request's URI and endpoint-specific headers.
         //
         // This layer sits below the retry circuit breaker, so it maps each attempt from the original request. The circuit
@@ -1160,9 +1164,6 @@ where
         .map_request(move |request| endpoint_request_mapper(request))
         .layer(build_diagnostics_layer(io.emitter.clone(), endpoint_url))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
-        // Stamp logs requests with the send time, after any wait for a concurrency permit or the circuit breaker. This
-        // runs on every attempt, so retries carry a fresh value.
-        .map_request(with_logs_current_timestamp(Arc::clone(&io.clock)))
         .service(io.client.clone())
 }
 
@@ -3413,6 +3414,31 @@ mod tests {
 
         // One read per attempt: a value taken once and reused, or read more than once per send, breaks the sequence.
         assert_eq!(timestamps, ["1700000000000", "1700000000001", "1700000000002"]);
+    }
+
+    #[tokio::test]
+    async fn forwarder_sets_logs_current_timestamp_with_an_endpoint_base_path() {
+        let (server_url, _counter, mut requests) =
+            start_recording_http_server_with_requests(vec![StatusCode::OK]).await;
+        let endpoint_url = format!("{}/prefix", server_url.trim_end_matches('/'));
+        let (_, forwarder) = build_test_forwarder(&endpoint_url, Live::new_fixed(false)).await;
+        let forwarder = forwarder.with_clock(Arc::new(|| 1_700_000_000_000));
+
+        let supervisor = TestSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+        handle
+            .send_transaction(build_test_transaction_for("http://placeholder/api/v2/logs"))
+            .await
+            .expect("send should succeed");
+
+        let request = timeout(Duration::from_secs(3), requests.recv())
+            .await
+            .expect("the server should record the request")
+            .expect("the server should be running");
+        drain_test_forwarder(supervisor, handle).await;
+
+        assert_eq!(request.lines().next(), Some("POST /prefix/api/v2/logs HTTP/1.1"));
+        assert_eq!(recorded_header(&request, "dd-current-timestamp"), Some("1700000000000"));
     }
 
     #[tokio::test]
