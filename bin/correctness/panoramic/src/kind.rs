@@ -74,6 +74,7 @@ async fn check_kind_installed() -> Result<(), GenericError> {
 
 async fn cluster_exists(name: &str) -> Result<bool, GenericError> {
     let output = Command::new("kind")
+        .kill_on_drop(true)
         .args(["get", "clusters"])
         .output()
         .await
@@ -84,6 +85,7 @@ async fn cluster_exists(name: &str) -> Result<bool, GenericError> {
 
 async fn create_cluster(name: &str) -> Result<(), GenericError> {
     let output = Command::new("kind")
+        .kill_on_drop(true)
         .args(["create", "cluster", "--name", name, "--wait", "120s"])
         .output()
         .await
@@ -112,6 +114,7 @@ async fn create_cluster(name: &str) -> Result<(), GenericError> {
 
 async fn delete_cluster(name: &str) -> Result<(), GenericError> {
     let status = Command::new("kind")
+        .kill_on_drop(true)
         .args(["delete", "cluster", "--name", name])
         .status()
         .await
@@ -124,6 +127,7 @@ async fn delete_cluster(name: &str) -> Result<(), GenericError> {
 
 async fn load_image(cluster_name: &str, image: &str) -> Result<(), GenericError> {
     let output = Command::new("kind")
+        .kill_on_drop(true)
         .args(["load", "docker-image", image, "--name", cluster_name])
         .output()
         .await
@@ -144,6 +148,7 @@ async fn load_image(cluster_name: &str, image: &str) -> Result<(), GenericError>
 /// Returns true if the image is already present in the local Docker daemon.
 async fn image_present_locally(image: &str) -> Result<bool, GenericError> {
     let status = Command::new("docker")
+        .kill_on_drop(true)
         .args(["image", "inspect", "--format", "{{.Id}}", image])
         .output()
         .await
@@ -153,6 +158,7 @@ async fn image_present_locally(image: &str) -> Result<bool, GenericError> {
 
 async fn pull_image(image: &str) -> Result<(), GenericError> {
     let status = Command::new("docker")
+        .kill_on_drop(true)
         .args(["pull", image])
         .status()
         .await

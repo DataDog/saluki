@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use saluki_error::generic_error;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tracing::warn;
@@ -39,6 +40,10 @@ const PLAN_FILE: &str = "plan.json";
 
 /// How long pulling one image may take before the first case.
 const PULL_TIME: Duration = Duration::from_secs(15 * 60);
+
+/// How long setting up the kind cluster may take before the first case: creating it, pulling the images, and loading
+/// them.
+const KIND_SETUP_TIME: Duration = Duration::from_secs(30 * 60);
 
 /// One `--set NAME=IMAGE`: the image a case names as `NAME` runs as `IMAGE`.
 #[derive(Clone, Debug)]
@@ -234,6 +239,18 @@ pub(crate) struct KindSetup {
     pub(crate) events: UnboundedSender<TestEvent>,
 }
 
+/// How far the checks before the first case got with the kind cluster.
+#[derive(Default)]
+pub(crate) enum KindState {
+    /// Setup never started, so the checks did not touch kind.
+    #[default]
+    NotStarted,
+    /// Setup started and did not finish, so a cluster may exist.
+    Started,
+    /// Setup finished, and the cluster holds the images.
+    Ready(KindLifecycle),
+}
+
 /// Whether any of `plans` runs a participant in a pod, which needs a kind cluster.
 pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bool {
     plans.into_iter().any(|plan| {
@@ -248,7 +265,9 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 /// holds the images. `plans` holds the plan of each case that runs, by name.
 ///
 /// A kind cluster is made if it is missing, and a run with any pod sets it up once here, outside every case's timeout.
-/// When setup succeeds, `lifecycle` holds the cluster, so the caller can remove it even when connecting to it fails.
+/// `kind_state` records how far setup got: `Ready` holds the cluster once setup succeeds, so the caller can remove it
+/// even when connecting to it fails, and `Started` means setup began and a cluster may be left over. Setup that outlasts
+/// `KIND_SETUP_TIME` fails and stops its commands.
 ///
 /// Returns the backend of each realization the cases use.
 ///
@@ -257,7 +276,7 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 /// Returns every problem found: a realization the runner host cannot provide, an image that cannot be pulled, with the
 /// cases that use it, a missing courier, or a kind cluster that cannot be set up, with the cases that need it.
 pub(crate) async fn check_before_the_first_case(
-    plans: &[(String, &CasePlan)], kind: KindSetup, lifecycle: &mut Option<KindLifecycle>,
+    plans: &[(String, &CasePlan)], kind: KindSetup, kind_state: &mut KindState,
 ) -> Result<Backends, Vec<String>> {
     let mut errors = Vec::new();
     let mut container_images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -342,8 +361,12 @@ pub(crate) async fn check_before_the_first_case(
     if pods {
         let images = pod_images.keys().map(|image| image.to_string()).collect();
         let KindSetup { cluster, events } = kind;
-        match KindLifecycle::ensure(cluster.clone(), images, events).await {
-            Ok(ready) => *lifecycle = Some(ready),
+        *kind_state = KindState::Started;
+        let ensured = tokio::time::timeout(KIND_SETUP_TIME, KindLifecycle::ensure(cluster.clone(), images, events))
+            .await
+            .unwrap_or_else(|_| Err(generic_error!("Setup took longer than {:?}.", KIND_SETUP_TIME)));
+        match ensured {
+            Ok(ready) => *kind_state = KindState::Ready(ready),
             Err(e) => {
                 return Err(vec![format!(
                     "Kind cluster '{}' cannot be set up for cases {}: {:#}",

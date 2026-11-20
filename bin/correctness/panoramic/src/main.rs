@@ -17,10 +17,10 @@ use crate::core::case::{self, CaseError};
 use crate::core::participant::Os;
 use crate::core::plan::{self, CasePlan};
 use crate::core::registry::Registry;
+use crate::participant_case::KindState;
 use crate::runner::Runner;
 
 mod kind;
-use self::kind::KindLifecycle;
 
 mod actions;
 mod assertions;
@@ -303,14 +303,14 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         cluster: cmd.kind_cluster_name.clone(),
         events: tx.clone(),
     };
-    let mut kind_lifecycle = None;
+    let mut kind_state = KindState::default();
     let checked = tokio::select! {
         biased;
 
         Some(source) = interrupts.recv() => {
             Err(vec![format!("Received {} during the checks before the first case.", source)])
         }
-        checked = participant_case::check_before_the_first_case(&plans, kind, &mut kind_lifecycle) => checked,
+        checked = participant_case::check_before_the_first_case(&plans, kind, &mut kind_state) => checked,
     };
     settings.backends = match checked {
         Ok(backends) => backends,
@@ -323,8 +323,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                 }
             }
             if participant_case::uses_pods(plans.iter().map(|(_, plan)| *plan)) {
-                let teardown =
-                    tear_down_unused_kind(kind_lifecycle, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster);
+                let teardown = tear_down_unused_kind(kind_state, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster);
                 tokio::select! {
                     biased;
 
@@ -396,7 +395,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     }
 
     // Tear down the kind cluster unless the caller asked to keep it.
-    if let Some(lifecycle) = kind_lifecycle {
+    if let KindState::Ready(lifecycle) = kind_state {
         // The TUI has shut down by now, so its notices go to stderr directly.
         let notice = |message: String| {
             if use_tui {
@@ -450,14 +449,15 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
 /// Removes the kind cluster of a run that stopped at the checks before its first case, as a finished run would, or says
 /// that setup may have left one.
-async fn tear_down_unused_kind(lifecycle: Option<KindLifecycle>, cluster_name: &str, keep: bool) {
-    match lifecycle {
-        Some(_) if keep => info!(
+async fn tear_down_unused_kind(state: KindState, cluster_name: &str, keep: bool) {
+    match state {
+        KindState::NotStarted => {}
+        KindState::Ready(_) if keep => info!(
             "Skipping kind cluster teardown (--no-delete-kind-cluster). Cluster '{}' is still running.",
             cluster_name
         ),
-        Some(lifecycle) => lifecycle.teardown().await,
-        None => warn!(
+        KindState::Ready(lifecycle) => lifecycle.teardown().await,
+        KindState::Started => warn!(
             "Kind cluster setup did not complete successfully. A kind cluster named '{}' may still be running; run \
              'kind delete cluster --name {}' to clean it up.",
             cluster_name, cluster_name
