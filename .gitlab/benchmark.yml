@@ -222,9 +222,15 @@ run-benchmarks-adp:
     - echo "job_started ${CI_JOB_STARTED_AT}" > outputs/phase-times.txt
     - echo "submit_start $(date -u +%FT%TZ)" >> outputs/phase-times.txt
     # Trigger the SMP job run.
+    #
+    # The PR gate collects 300 samples per replicate (about five minutes) rather than SMP's
+    # default, which roughly halves the run. The quality gates are memory upper bounds, and ADP's
+    # RSS settles well within that window under these fixed loads; the full suite keeps the
+    # default for trend analysis.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
+      --total-samples 300
       --baseline-image ${BASELINE_SMP_IMG}
       --comparison-image ${COMPARISON_SMP_IMG}
       --baseline-sha ${BASELINE_ADP_SHA}
