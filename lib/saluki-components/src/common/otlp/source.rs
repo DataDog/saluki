@@ -306,7 +306,7 @@ fn azure_container_apps_source(attributes: &[KeyValue]) -> Option<Source> {
 
 /// An AWS Lambda function, identified by its unqualified ARN.
 struct LambdaFunction<'a> {
-    arn: String,
+    arn: &'a str,
     name: &'a str,
     region: &'a str,
     account: &'a str,
@@ -326,15 +326,21 @@ fn aws_lambda_function(attributes: &[KeyValue]) -> Option<LambdaFunction<'_>> {
         return None;
     }
 
-    let parts: Vec<&str> = function_arn.split(':').collect();
-    if parts.len() < 7 || parts[0] != "arn" || parts[2] != "lambda" || parts[5] != "function" {
+    // The unqualified ARN is the first seven `:`-separated fields, so it borrows a prefix of the input.
+    let mut fields = [""; 7];
+    let mut split = function_arn.splitn(8, ':');
+    for field in &mut fields {
+        *field = split.next()?;
+    }
+    if fields[0] != "arn" || fields[2] != "lambda" || fields[5] != "function" {
         return None;
     }
+    let arn_len = fields.iter().map(|field| field.len()).sum::<usize>() + fields.len() - 1;
     Some(LambdaFunction {
-        arn: parts[..7].join(":"),
-        name: parts[6],
-        region: parts[3],
-        account: parts[4],
+        arn: &function_arn[..arn_len],
+        name: fields[6],
+        region: fields[3],
+        account: fields[4],
     })
 }
 
@@ -592,7 +598,18 @@ mod tests {
             Some((SourceKind::AwsLambda, FUNCTION_ARN.to_string()))
         );
         assert_eq!(
+            resolve(&[("cloud.provider", "aws"), ("faas.id", &format!("{qualified}:extra"))]),
+            Some((SourceKind::AwsLambda, FUNCTION_ARN.to_string()))
+        );
+        assert_eq!(
             resolve(&[("cloud.provider", "aws"), ("faas.id", "arn:aws:s3:::bucket")]),
+            None
+        );
+        assert_eq!(
+            resolve(&[
+                ("cloud.provider", "aws"),
+                ("faas.id", "arn:aws:lambda:us-east-1:123456789012:function")
+            ]),
             None
         );
     }

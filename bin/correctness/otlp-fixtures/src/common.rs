@@ -48,6 +48,9 @@ pub fn empty() -> AnyValue {
     AnyValue { value: None }
 }
 
+/// A qualified AWS Lambda function ARN. The Agent drops the qualifier from the source and the `function_arn` tag.
+pub const LAMBDA_ARN: &str = "arn:aws:lambda:us-east-1:123456789012:function:orders:live";
+
 pub fn kv(key: &str, value: AnyValue) -> KeyValue {
     KeyValue {
         key: key.to_string(),

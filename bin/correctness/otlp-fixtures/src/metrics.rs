@@ -11,7 +11,7 @@ use otlp_protos::opentelemetry::proto::{
 };
 use prost::Message as _;
 
-use crate::common::{boolean, double, int, kv, string};
+use crate::common::{boolean, double, int, kv, string, LAMBDA_ARN};
 
 /// One second after the Unix epoch, in nanoseconds.
 const ONE_SECOND_NANOS: u64 = 1_000_000_000;
@@ -194,6 +194,14 @@ fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
         (
             "azure_container_apps_no_replica",
             with_host(azure("azure.container_apps")),
+        ),
+        (
+            "aws_lambda",
+            with_host(vec![
+                kv("cloud.provider", string("aws")),
+                kv("cloud.platform", string("aws_lambda")),
+                kv("faas.id", string(LAMBDA_ARN)),
+            ]),
         ),
         ("gcp_cloud_run", with_host(gcp("gcp_cloud_run"))),
         ("gcp_cloud_run_job", {
