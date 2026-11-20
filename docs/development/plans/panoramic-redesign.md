@@ -2152,7 +2152,7 @@ Why this order:
     calls `record.plan`, `start` and `finish`, as the step driver does. The tests of the legacy step
     budget and the legacy intake poll went with their code. The report tests build their steps with
     `TestResult::from_steps`.
-  - The Windows test image has no baked entrypoint or `CMD`. `windows-adp-entrypoint.ps1` is deleted,
+  - The Windows test image adds no entrypoint or `CMD` of its own. `windows-adp-entrypoint.ps1` is deleted,
     and `windows-adp-entrypoint-panoramic.ps1` keeps its name.
   - The macOS target drops `-p 1`, because the host permit serializes host-process cases.
   - The comparison and integration runners went in one commit, because the crate denies dead code
@@ -2248,4 +2248,5 @@ host-process subject with containerized helpers.
 - `rmlegacy`: a top-level `type:` key is an unknown field. `--runtime`, `--image-override`,
   `--mounts-dir`, `--adp-binary-path`, `--core-agent-binary-path`, `--alpine-image` and their
   environment variables are gone. `list --json` says `suite` and has no `images`. `plan.json` is kept
-  for interrupted cases. The Windows test image has no entrypoint of its own.
+  for interrupted cases. The Windows test image adds no entrypoint of its own: panoramic replaces the base image's
+  entrypoint.
