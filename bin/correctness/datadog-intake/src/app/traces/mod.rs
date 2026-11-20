@@ -13,7 +13,7 @@ pub fn build_traces_router() -> Router {
     Router::new()
         .route("/traces/dump_spans", get(handle_trace_spans_dump))
         .route("/traces/dump_stats", get(handle_trace_stats_dump))
-        .route("/traces/dump_requests", get(handle_trace_span_requests_dump))
+        .route("/traces/dump_span_requests", get(handle_trace_span_requests_dump))
         .route("/traces/dump_stats_requests", get(handle_trace_stats_requests_dump))
         .route("/api/v0.2/traces", post(handle_v02_traces))
         .route("/api/v0.2/stats", post(handle_v02_stats))
@@ -113,7 +113,7 @@ mod tests {
     }
 
     async fn dump_span_requests(router: &Router) -> Vec<IntakeRequest<Vec<Span>>> {
-        get_json(router, "/traces/dump_requests").await
+        get_json(router, "/traces/dump_span_requests").await
     }
 
     async fn dump_stats_requests(router: &Router) -> Vec<IntakeRequest<ClientStatisticsAggregator>> {
