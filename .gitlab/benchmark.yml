@@ -65,9 +65,9 @@
     fi
 
 # Shared settings for the SMP baseline and comparison image builds. They build on the slim SMP build image (see
-# `.resolve-smp-build-image`), with the same shared compiler cache as the shipped artifacts (see `.build-adp-definition`).
-# `.build-amd64-variables` gives DinD the larger loopback volume: with the default 20G volume, the final LTO link fails
-# with "No space left on device".
+# `.resolve-smp-build-image`), with the same shared compiler cache as the shipped artifacts (see
+# `.build-adp-definition`). `.build-amd64-variables` gives DinD the larger loopback volume: with the default 20G
+# volume, the final LTO link fails with "No space left on device".
 .smp-adp-image-build:
   extends: [.build-common-variables, .build-amd64-variables]
   variables:
