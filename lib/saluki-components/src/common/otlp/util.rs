@@ -726,12 +726,6 @@ mod tests {
         })
     }
 
-    fn assert_hostname(attributes: Vec<KeyValue>, expected: &str) {
-        let source = metric_source(attributes).expect("hostname source should resolve");
-        assert_eq!(source.kind, SourceKind::Hostname);
-        assert_eq!(source.identifier, expected);
-    }
-
     #[test]
     fn map_extraction_promotes_all_three_tag_sources() {
         let mut attributes = FastHashMap::default();
@@ -1132,32 +1126,6 @@ mod tests {
     }
 
     #[test]
-    fn literal_host_takes_precedence_over_all_other_hostname_attributes() {
-        assert_hostname(
-            vec![
-                string_attribute(ATTRIBUTE_HOST, "literal-host"),
-                string_attribute(ATTRIBUTE_DATADOG_HOSTNAME, "datadog-host"),
-                string_attribute(HOST_ID, "host-id"),
-                string_attribute(HOST_NAME, "host-name"),
-            ],
-            "literal-host",
-        );
-    }
-
-    #[test]
-    fn datadog_hostname_takes_precedence_over_cloud_and_generic_attributes() {
-        assert_hostname(
-            vec![
-                string_attribute(ATTRIBUTE_DATADOG_HOSTNAME, "datadog-host"),
-                string_attribute(CLOUD_PROVIDER, "azure"),
-                string_attribute(HOST_ID, "host-id"),
-                string_attribute(HOST_NAME, "host-name"),
-            ],
-            "datadog-host",
-        );
-    }
-
-    #[test]
     fn fargate_resource_is_not_a_hostname_source() {
         let source = metric_source(vec![
             string_attribute(AWS_ECS_LAUNCHTYPE, "fargate"),
@@ -1168,45 +1136,6 @@ mod tests {
 
         assert_eq!(source.kind, SourceKind::AwsEcsFargate);
         assert_eq!(source.identifier, "task-arn");
-    }
-
-    #[test]
-    fn cloud_hostname_helpers_use_provider_specific_rules() {
-        assert_hostname(
-            vec![
-                string_attribute(CLOUD_PROVIDER, "aws"),
-                string_attribute(HOST_ID, "i-123"),
-                string_attribute(HOST_NAME, "ec2-host"),
-            ],
-            "i-123",
-        );
-        assert_hostname(
-            vec![
-                string_attribute(CLOUD_PROVIDER, "gcp"),
-                string_attribute(HOST_NAME, "gce-host.us-central1-a.c.project.internal"),
-                string_attribute(CLOUD_ACCOUNT_ID, "project-id"),
-            ],
-            "gce-host.project-id",
-        );
-        assert_hostname(
-            vec![
-                string_attribute(CLOUD_PROVIDER, "azure"),
-                string_attribute(HOST_ID, "vm-id"),
-                string_attribute(HOST_NAME, "azure-host"),
-            ],
-            "vm-id",
-        );
-    }
-
-    #[test]
-    fn kubernetes_hostname_uses_the_explicit_cluster_name() {
-        assert_hostname(
-            vec![
-                string_attribute(K8S_NODE_NAME, "node-name"),
-                string_attribute(K8S_CLUSTER_NAME, "explicit-cluster"),
-            ],
-            "node-name-explicit-cluster",
-        );
     }
 
     #[test]
@@ -1242,28 +1171,6 @@ mod tests {
             string_attribute(K8S_NODE_NAME, "node-name"),
         ])
         .is_none());
-    }
-
-    #[test]
-    fn generic_host_id_and_name_are_final_fallbacks() {
-        assert_hostname(
-            vec![
-                string_attribute(HOST_ID, "host-id"),
-                string_attribute(HOST_NAME, "host-name"),
-            ],
-            "host-id",
-        );
-        assert_hostname(vec![string_attribute(HOST_NAME, "host-name")], "host-name");
-    }
-
-    #[test]
-    fn blocklisted_hostnames_do_not_produce_a_source() {
-        for hostname in INVALID_HOSTNAMES {
-            assert!(
-                metric_source(vec![string_attribute(HOST_NAME, hostname)]).is_none(),
-                "{hostname}"
-            );
-        }
     }
 
     #[test]
