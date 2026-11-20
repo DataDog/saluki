@@ -280,9 +280,9 @@ case sets `ADP_DD_<NAME>` for `DD_<NAME>`, or another name that the software rea
   `dogstatsd_stats`.
 - *macOS.* ADP and the Agent are two programs. The paths are `target/release/agent-data-plane` and
   `/tmp/saluki-dda/datadog-agent/bin/agent/agent`. `--set` replaces each. `host_view` and `ADP_DD_` keys are errors.
-- *Windows.* The image is `saluki-images/agent-data-plane:testing-windows`. It has no entrypoint of its own.
-  Panoramic places an entrypoint that starts the Agent and then ADP, writes their logs and exit records, and
-  restarts nothing. It keeps the container up after both exit, so panoramic can read what they left.
+- *Windows.* The image is `saluki-images/agent-data-plane:testing-windows`. It adds no entrypoint of its own.
+  Panoramic replaces the base image's entrypoint with one that starts the Agent and then ADP, writes their logs and
+  exit records, and restarts nothing. It keeps the container up after both exit, so panoramic can read what they left.
 
 **`datadog-intake`.** It takes no `with`. It has the endpoints `api` (HTTP) and `dogstatsd_forward` (UDP), and the
 operation `dump`. It runs from `saluki-images/correctness-tools:latest`. Connect an `agent-adp` or `agent` participant

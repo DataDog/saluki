@@ -1,5 +1,5 @@
-//! `agent-adp` in a Windows container: the Agent and ADP run under an entrypoint the harness places, because the image
-//! has none.
+//! `agent-adp` in a Windows container: the Agent and ADP run under an entrypoint the harness places, which replaces the
+//! base image's entrypoint.
 //!
 //! The entrypoint starts the Agent, then ADP, writes each one's log file and exit record, restarts nothing, and keeps
 //! the container up after both exit.
