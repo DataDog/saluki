@@ -463,7 +463,7 @@ impl OtlpServerConfiguration {
     ///
     /// Defaults to [`OtlpRoutes::ALL_INTERNAL`]. A proxied signal also needs a proxy: see
     /// [`with_proxy`][Self::with_proxy].
-    pub fn with_routes(mut self, routes: OtlpRoutes) -> Self {
+    pub(crate) fn with_routes(mut self, routes: OtlpRoutes) -> Self {
         self.routes = routes;
         self
     }
@@ -1782,6 +1782,76 @@ mod tests {
         let requests = upstream.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].body, body);
+
+        servers.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cors_applies_to_internal_signals_only() {
+        // The upstream answers CORS for a proxied signal, preflights included.
+        let upstream = FakeUpstream::tcp(|_| {
+            let mut response = axum::response::Response::new(Body::empty());
+            *response.status_mut() = StatusCode::NO_CONTENT;
+            response
+                .headers_mut()
+                .insert("x-upstream", header::HeaderValue::from_static("yes"));
+            response
+        })
+        .await;
+        let servers = TestServers::start(
+            "cors-internal-only",
+            TestServers::configuration()
+                .with_cors(CorsConfiguration {
+                    allowed_origins: vec!["http://example.com".to_string()],
+                    ..Default::default()
+                })
+                .with_routes(OtlpRoutes {
+                    metrics: OtlpRoute::Proxied,
+                    ..OtlpRoutes::ALL_INTERNAL
+                })
+                .with_proxy(proxy_to(&upstream, &upstream)),
+            RecordingHandler::default(),
+        )
+        .await;
+
+        let mut client = TestClient::new(HttpProtocol::Http1);
+        let preflight = [
+            ("origin", "http://example.com"),
+            ("access-control-request-method", "POST"),
+        ];
+        let uri = |signal: Signal| format!("http://127.0.0.1:{}{}", servers.http_port, signal.http_path());
+
+        let proxied = client
+            .send("OPTIONS", &uri(Signal::Metrics), &preflight, Bytes::new())
+            .await
+            .expect("proxy should answer");
+        assert_eq!(proxied.status, StatusCode::NO_CONTENT);
+        assert_eq!(proxied.headers["x-upstream"], "yes");
+        assert!(!proxied.headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        let proxied = client
+            .send(
+                "POST",
+                &uri(Signal::Metrics),
+                &[("origin", "http://example.com")],
+                Bytes::new(),
+            )
+            .await
+            .expect("proxy should answer");
+        assert!(!proxied.headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        let internal = client
+            .send("OPTIONS", &uri(Signal::Logs), &preflight, Bytes::new())
+            .await
+            .expect("server should answer");
+        assert_eq!(
+            internal.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "http://example.com"
+        );
+        assert!(!internal.headers.contains_key("x-upstream"));
+
+        let methods: Vec<_> = upstream.requests().into_iter().map(|request| request.method).collect();
+        assert_eq!(methods, [Method::OPTIONS, Method::POST]);
 
         servers.shutdown().await;
     }
