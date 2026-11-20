@@ -7,7 +7,7 @@ use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, trace};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -144,6 +144,8 @@ where
         compressed_size_bytes: usize,
         compressed_limit_bytes: usize,
     },
+    #[snafu(display("input no longer fits in a payload after the request split"))]
+    SplitInputDoesNotFit,
     #[snafu(display("failed to write/compress payload: {}", source))]
     Io { source: io::Error },
     #[snafu(display("error when building API endpoint/request: {}", source))]
@@ -157,9 +159,9 @@ where
     /// Returns `true` if the error is recoverable, allowing the request builder to continue to be used.
     pub fn is_recoverable(&self) -> bool {
         match self {
-            // Payloads that are oversized can be recovered from, because all we do is discard the payload without
-            // leaving the builder/encoder in an inconsistent state.
-            Self::PayloadTooLarge { .. } => true,
+            // For an oversized payload, or a split input that no longer fits, the builder discards the payload and
+            // stays in a consistent state.
+            Self::PayloadTooLarge { .. } | Self::SplitInputDoesNotFit => true,
 
             // Encoder _failures_, or I/O errors, or misconfigurations, are either static (trying again won't help)
             // or they are related to ending up in an inconsistent state that we cannot reason about and automatically
@@ -185,6 +187,35 @@ pub struct RequestMetadata {
 
     /// Size of the request payload after compression, in bytes: the size of the request body.
     pub compressed_len: usize,
+}
+
+/// The result of building one request: the request and its metadata, or the error that dropped its inputs.
+pub type RequestResult<E> = Result<(RequestMetadata, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>;
+
+/// The requests that `RequestBuilder::flush` built, and the number of inputs that it dropped.
+#[must_use = "the inputs that the flush dropped must be counted"]
+pub struct FlushedRequests<E>
+where
+    E: EndpointEncoder,
+{
+    /// One result for each request.
+    pub requests: Vec<RequestResult<E>>,
+
+    /// Number of inputs in the requests that failed.
+    pub inputs_dropped: usize,
+}
+
+impl<E> FlushedRequests<E>
+where
+    E: EndpointEncoder,
+{
+    /// Adds the result of the request that holds `inputs`.
+    fn push(&mut self, inputs: &[E::Input], result: RequestResult<E>) {
+        if result.is_err() {
+            self.inputs_dropped += inputs.len();
+        }
+        self.requests.push(result);
+    }
 }
 
 /// Framing written to the payload before an input.
@@ -267,11 +298,6 @@ where
             encoded_data_points: 0,
             encoded_inputs: Vec::new(),
         })
-    }
-
-    /// Returns the number of inputs encoded into the current payload that haven't been flushed yet.
-    pub fn pending_inputs(&self) -> usize {
-        self.encoded_inputs.len()
     }
 
     /// Sets the maximum number of inputs that can be encoded in a single payload.
@@ -375,7 +401,7 @@ where
         would_exceed_uncompressed_limit || likely_exceeds_compressed_limit
     }
 
-    /// Writes framing, such as the payload prefix, an input separator, or the payload suffix, to the compressor.
+    /// Writes framing, such as the payload prefix or an input separator, to the compressor.
     ///
     /// If `update_uncompressed_len` is `true`, the uncompressed length will be updated to reflect the size of the data
     /// written.
@@ -537,110 +563,66 @@ where
     /// Flushes the current request payload.
     ///
     /// This resets the internal state and prepares the request builder for further encoding. If there is no data to
-    /// flush, this method returns an empty `Vec`.
+    /// flush, the result has no requests.
     ///
-    /// This attempts to split the request payload into two smaller payloads if the original request payload is too large.
+    /// If the compressed payload is too large and holds more than one input, this splits it into two requests.
     ///
-    /// Each flushed request comes with its `RequestMetadata`.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    pub async fn flush(
-        &mut self,
-    ) -> Vec<Result<(RequestMetadata, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    /// Each input of the payload is in exactly one result. If a request can't be built, its result is an error, and its
+    /// inputs are counted in `FlushedRequests::inputs_dropped`.
+    pub async fn flush(&mut self) -> FlushedRequests<E> {
+        let mut flushed = FlushedRequests {
+            requests: Vec::new(),
+            inputs_dropped: 0,
+        };
         if self.encoded_inputs.is_empty() {
-            return vec![];
+            return flushed;
         }
 
-        // Flush the compressor and get the compressed payload, and the uncompressed length of the payload.
-        let (uncompressed_len, compressed_buf) = match self.flush_inner().await {
-            Ok((uncompressed_len, buffer)) => (uncompressed_len, buffer),
-            Err(e) => return vec![Err(e)],
-        };
+        // Take the inputs, so that no path leaves them pending. The buffer goes back at the end to keep its allocation.
+        let mut inputs = std::mem::take(&mut self.encoded_inputs);
+        self.encoded_data_points = 0;
 
-        // Make sure we haven't exceeded our compressed size limit, otherwise we'll need to split the request.
-        let compressed_len = compressed_buf.len();
-        let compressed_limit = self.compressed_len_limit;
-        if compressed_len > compressed_limit {
-            // Single input is unable to be split.
-            if self.encoded_inputs.len() == 1 {
-                let _ = self.clear_encoded_inputs();
+        match self.flush_inner().await {
+            Ok((_, compressed_buf)) if compressed_buf.len() > self.compressed_len_limit && inputs.len() > 1 => {
+                trace!(
+                    encoder = E::encoder_name(),
+                    endpoint = ?self.encoder.endpoint_uri(),
+                    encoded_inputs = inputs.len(),
+                    "Starting request split operation.",
+                );
 
-                return vec![Err(RequestBuilderError::PayloadTooLarge {
-                    compressed_size_bytes: compressed_len,
-                    compressed_limit_bytes: compressed_limit,
-                })];
+                // Each half is encoded again into a new payload, so that a half that fails doesn't drop the other.
+                let (first_half, second_half) = inputs.split_at(inputs.len() / 2);
+                for half in [first_half, second_half] {
+                    let result = self.try_split_request(half).await;
+                    flushed.push(half, result);
+                }
             }
-
-            return self.split_request().await;
+            Ok((uncompressed_len, compressed_buf)) => {
+                let result = self.finish_request(&inputs, uncompressed_len, compressed_buf);
+                flushed.push(&inputs, result);
+            }
+            Err(e) => flushed.push(&inputs, Err(e)),
         }
 
-        let data_points_written = self.encoded_data_point_count(&self.encoded_inputs);
-        let request = self.create_request(compressed_buf, &self.encoded_inputs);
-        let inputs_written = self.clear_encoded_inputs();
-        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, data_points_written, "Flushing request.");
-
-        let metadata = RequestMetadata {
-            input_count: inputs_written,
-            data_point_count: data_points_written,
-            uncompressed_len,
-            compressed_len,
-        };
-        vec![request.map(|request| (metadata, request))]
+        inputs.clear();
+        self.encoded_inputs = inputs;
+        flushed
     }
 
-    /// Internal implementation of `flush`.
+    /// Finalizes the current payload, and returns its size before compression and the compressed payload.
     ///
-    /// This method excludes any specific edge case/error handling (such as checking if the (un)compressed size limits
-    /// are exceeded), and doesn't handle request splitting, as it's meant to be used in the request splitting logic
-    /// itself.
+    /// This resets the payload state, also when it fails. It doesn't change the encoded inputs.
     async fn flush_inner(&mut self) -> Result<(usize, FrozenChunkedBytesBuffer), RequestBuilderError<E>> {
-        // If we have a payload suffix configured, write it now.
-        if let Some(suffix) = self.encoder.get_payload_suffix() {
-            self.write_framing(suffix, false).await.context(Io)?;
-        }
-
-        // Clear our internal state and finalize the compressor. We do it in this order so that if finalization fails,
-        // somehow, the request builder is in a default state and encoding can be attempted again.
         let uncompressed_len = self.uncompressed_len();
         let mut compressor = self.take_payload_compressor();
-        if let Err(e) = compressor.flush().await.context(Io) {
-            let inputs_dropped = self.clear_encoded_inputs();
-
-            // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
-            error!(
-                encoder = E::encoder_name(),
-                endpoint = ?self.encoder.endpoint_uri(),
-                inputs_dropped,
-                "Failed to finalize compressor while building request. Inputs have been dropped."
-            );
-
-            return Err(e);
+        if let Some(suffix) = self.encoder.get_payload_suffix() {
+            compressor.write_all(suffix).await.context(Io)?;
         }
-
-        if let Err(e) = compressor.shutdown().await.context(Io) {
-            let inputs_dropped = self.clear_encoded_inputs();
-
-            // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
-            error!(
-                encoder = E::encoder_name(),
-                endpoint = ?self.encoder.endpoint_uri(),
-                inputs_dropped,
-                "Failed to finalize compressor while building request. Inputs have been dropped."
-            );
-
-            return Err(e);
-        }
+        compressor.flush().await.context(Io)?;
+        compressor.shutdown().await.context(Io)?;
 
         Ok((uncompressed_len, compressor.into_inner().freeze()))
-    }
-
-    fn clear_encoded_inputs(&mut self) -> usize {
-        let len = self.encoded_inputs.len();
-        self.encoded_inputs.clear();
-        self.encoded_data_points = 0;
-        len
     }
 
     fn encoded_data_point_count(&self, inputs: &[E::Input]) -> usize {
@@ -650,71 +632,10 @@ where
             .sum()
     }
 
-    async fn split_request(
-        &mut self,
-    ) -> Vec<Result<(RequestMetadata, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
-        // Nothing to do if we have no encoded inputs.
-        let mut requests = Vec::new();
-        if self.encoded_inputs.is_empty() {
-            warn!(
-                encoder = E::encoder_name(),
-                endpoint = ?self.encoder.endpoint_uri(),
-                "Tried to split request with no encoded inputs."
-            );
-            return requests;
-        }
-
-        trace!(
-            encoder = E::encoder_name(),
-            endpoint = ?self.encoder.endpoint_uri(),
-            encoded_inputs = self.encoded_inputs.len(),
-            "Starting request split operation.",
-        );
-
-        // We're going to attempt to split all of the previously-encoded inputs between two _new_ compressed payloads,
-        // with the goal that each payload will be under the compressed size limit.
-        //
-        // We achieve this by temporarily consuming the "encoded inputs" buffer, feeding the first half of it back to
-        // ourselves by re-encoding and then flushing, and then doing the same thing with the second half.  If either
-        // half fails to properly encode, we give up entirely.
-        //
-        // We specifically manage the control flow so that we always restore the original "encoded inputs" buffer to
-        // the builder (albeit cleared) before returning, so that we don't waste its allocation as it's been sized up
-        // over time.
-        //
-        // We can do this by swapping it out with a new `Vec<E::Input>` since empty vectors don't allocate at all.
-        let mut encoded_inputs = std::mem::take(&mut self.encoded_inputs);
-        self.encoded_data_points = 0;
-        let encoded_inputs_pivot = encoded_inputs.len() / 2;
-
-        let first_half_encoded_inputs = &encoded_inputs[0..encoded_inputs_pivot];
-        let second_half_encoded_inputs = &encoded_inputs[encoded_inputs_pivot..];
-
-        if let Some(request) = self.try_split_request(first_half_encoded_inputs).await {
-            requests.push(request);
-        }
-
-        if let Some(request) = self.try_split_request(second_half_encoded_inputs).await {
-            requests.push(request);
-        }
-
-        // Restore our original "encoded inputs" buffer before finishing up, but also clear it.
-        encoded_inputs.clear();
-        self.encoded_inputs = encoded_inputs;
-
-        trace!(
-            encoder = E::encoder_name(),
-            endpoint = ?self.encoder.endpoint_uri(),
-            "Finished splitting oversized request. Generated {} subrequest(s).",
-            requests.len(),
-        );
-
-        requests
-    }
-
-    async fn try_split_request(
-        &mut self, inputs: &[E::Input],
-    ) -> Option<Result<(RequestMetadata, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    /// Builds one request from `inputs`, a part of an oversized payload, by encoding them again into a new payload.
+    ///
+    /// If this fails, the new payload is discarded.
+    async fn try_split_request(&mut self, inputs: &[E::Input]) -> RequestResult<E> {
         trace!(
             encoder = E::encoder_name(),
             endpoint = ?self.encoder.endpoint_uri(),
@@ -723,60 +644,37 @@ where
         );
 
         for input in inputs {
-            // Encode each input and write it to our compressor.
-            //
-            // We skip any of the typical payload size checks here, because we already know we at least fit these
-            // inputs into the previous attempted payload, so there's no reason to redo all of that here.
-            //
-            // If we do fail, we discard what we've written of this subrequest so far, so that it can't end up in the
-            // next request payload.
+            // `encode_inner` runs the size checks again, but not the other checks of `encode`, which these inputs
+            // already passed. If an input fails, discard what this subrequest wrote so far, so that it can't end up in
+            // the next request payload.
             match self.encode_inner(input).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    // If we can't encode the input, we need to stop here and return the input to the caller.
+                    // The input no longer fits, for example because the limits or the compression estimate changed.
                     let _ = self.take_payload_compressor();
-                    return None;
+                    return Err(RequestBuilderError::SplitInputDoesNotFit);
                 }
                 Err(e) => {
-                    // If we get an error, we need to stop here and return the error to the caller.
                     let _ = self.take_payload_compressor();
-                    return Some(Err(e));
+                    return Err(e);
                 }
             }
         }
 
-        let (uncompressed_len, compressed_buf) = match self.flush_inner().await {
-            Ok((uncompressed_len, buffer)) => (uncompressed_len, buffer),
-            Err(e) => return Some(Err(e)),
-        };
+        let (uncompressed_len, compressed_buf) = self.flush_inner().await?;
+        self.finish_request(inputs, uncompressed_len, compressed_buf)
+    }
 
-        // Make sure we haven't exceeded our uncompressed size limit.
-        //
-        // Again, this should never happen since we've already gone through this the first time but we're just being
-        // extra sure here since the interface allows for it to happen. :shrug:
-        if uncompressed_len > self.uncompressed_len_limit {
-            let inputs_dropped = inputs.len();
-
-            // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
-            error!(
-                encoder = E::encoder_name(),
-                endpoint = ?self.encoder.endpoint_uri(),
-                uncompressed_len,
-                inputs_dropped,
-                "Uncompressed size limit exceeded while splitting request. This should never occur. Inputs have been dropped."
-            );
-
-            return None;
-        }
-
-        // Finally, make sure we haven't exceeded our compressed size limit.
+    /// Builds the request for a finalized payload that holds `inputs`.
+    fn finish_request(
+        &self, inputs: &[E::Input], uncompressed_len: usize, compressed_buf: FrozenChunkedBytesBuffer,
+    ) -> RequestResult<E> {
         let compressed_len = compressed_buf.len();
-        let compressed_limit = self.compressed_len_limit;
-        if compressed_len > compressed_limit {
-            return Some(Err(RequestBuilderError::PayloadTooLarge {
+        if compressed_len > self.compressed_len_limit {
+            return Err(RequestBuilderError::PayloadTooLarge {
                 compressed_size_bytes: compressed_len,
-                compressed_limit_bytes: compressed_limit,
-            }));
+                compressed_limit_bytes: self.compressed_len_limit,
+            });
         }
 
         let metadata = RequestMetadata {
@@ -785,11 +683,18 @@ where
             uncompressed_len,
             compressed_len,
         };
+        let request = self.create_request(compressed_buf, inputs)?;
+        debug!(
+            encoder = E::encoder_name(),
+            endpoint = ?self.encoder.endpoint_uri(),
+            uncompressed_len,
+            compressed_len,
+            inputs_written = metadata.input_count,
+            data_points_written = metadata.data_point_count,
+            "Flushing request."
+        );
 
-        Some(
-            self.create_request(compressed_buf, inputs)
-                .map(|request| (metadata, request)),
-        )
+        Ok((metadata, request))
     }
 
     fn create_request(
@@ -854,7 +759,9 @@ mod tests {
     async fn flush_and_validate_requests(
         mut request_builder: RequestBuilder<TestEncoder>, expected_request_bodies: Vec<String>,
     ) {
-        let requests = request_builder.flush().await;
+        let flushed = request_builder.flush().await;
+        assert_eq!(flushed.inputs_dropped, 0, "flush dropped inputs");
+        let requests = flushed.requests;
         assert_eq!(
             requests.len(),
             expected_request_bodies.len(),
@@ -997,15 +904,20 @@ mod tests {
     }
 
     #[test]
-    fn request_builder_error_only_oversized_payload_is_recoverable() {
-        // Documented recoverability rule: an oversized compressed payload is recoverable, because the
-        // builder simply discards the payload without ending up in an inconsistent state. Every other
-        // variant is unrecoverable (static failure or unrecoverable inconsistent state).
-        let recoverable: RequestBuilderError<TestEncoder> = RequestBuilderError::PayloadTooLarge {
-            compressed_size_bytes: 100,
-            compressed_limit_bytes: 10,
-        };
-        assert!(recoverable.is_recoverable());
+    fn request_builder_error_only_discarded_payloads_are_recoverable() {
+        // An oversized compressed payload, or a split input that no longer fits, is recoverable. The builder discards
+        // the payload and stays in a consistent state. Every other variant is unrecoverable (static failure or
+        // unrecoverable inconsistent state).
+        let recoverable: Vec<RequestBuilderError<TestEncoder>> = vec![
+            RequestBuilderError::PayloadTooLarge {
+                compressed_size_bytes: 100,
+                compressed_limit_bytes: 10,
+            },
+            RequestBuilderError::SplitInputDoesNotFit,
+        ];
+        for error in &recoverable {
+            assert!(error.is_recoverable(), "{error:?} should be recoverable");
+        }
 
         let http_error = http::Request::builder()
             .header("invalid\nheader", "value")
@@ -1150,7 +1062,9 @@ mod tests {
 
         request_builder.set_custom_len_limits(usize::MAX, inputs.iter().map(|s| s.len()).sum::<usize>() - 1);
 
-        let requests = request_builder.flush().await;
+        let flushed = request_builder.flush().await;
+        assert_eq!(flushed.inputs_dropped, 0);
+        let requests = flushed.requests;
         assert_eq!(requests.len(), 2);
 
         let mut actual = Vec::new();
@@ -1389,31 +1303,42 @@ mod tests {
         // If we're given back the item during encoding and a flush is indicated, we do trigger a flush... but we
         // take the requests and just dump out their contents for later verification.
         let mut flushed_inputs_len = 0;
+        let mut encoded_since_flush = 0;
 
         while let Some(input) = inputs.pop_front() {
             let original_input = match request_builder.encode(input).await {
-                Ok(None) => continue,
+                Ok(None) => {
+                    encoded_since_flush += 1;
+                    continue;
+                }
                 Ok(Some(original_input)) => original_input,
                 Err(_) => panic!("should not fail to encode input in general"),
             };
 
             // We were instructed to flush, so we do so.
             let had_prior_flushes = flushed_inputs_len > 0;
-            let mut total_oversized_subrequests = 0;
-            let requests = request_builder.flush().await;
-            for request in requests {
+            let flushed = request_builder.flush().await;
+            let inputs_dropped = flushed.inputs_dropped;
+            prop_assert_eq!(flushed.requests.is_empty(), encoded_since_flush == 0);
+            let mut ok_inputs = 0;
+            for request in flushed.requests {
                 match request {
                     Ok((request_meta, request)) => {
                         prop_assert_eq!(request_meta.compressed_len, request.body().len());
                         prop_assert!(request_meta.compressed_len <= compressed_limit);
-                        flushed_inputs_len += request_meta.input_count;
+                        ok_inputs += request_meta.input_count;
                     }
                     Err(e) => match e {
-                        RequestBuilderError::PayloadTooLarge { .. } => total_oversized_subrequests += 1,
+                        RequestBuilderError::PayloadTooLarge { .. } => {}
                         _ => panic!("should not fail to flush requests (intermediate): {:?}", e),
                     },
                 }
             }
+
+            // Each input encoded since the last flush is in a request, or is counted as dropped.
+            prop_assert_eq!(ok_inputs + inputs_dropped, encoded_since_flush);
+            flushed_inputs_len += ok_inputs;
+            encoded_since_flush = 0;
 
             // TODO: Currently, we only support splitting a request into two subrequests.
             //
@@ -1427,12 +1352,12 @@ mod tests {
             // then we simply reject this test because we know that we can't split it in half without exceeding the limit.
             // Once we remove the limitation of only being able to split a request in half, we'll remove this escape hatch.
             if !had_prior_flushes {
-                prop_assume!(total_oversized_subrequests == 0);
+                prop_assume!(inputs_dropped == 0);
             }
 
             // Try again to encode our input after flushing.
             match request_builder.encode(original_input).await {
-                Ok(None) => continue,
+                Ok(None) => encoded_since_flush += 1,
                 Ok(Some(_)) => panic!("should not fail to encode an input after flushing"),
                 Err(_) => panic!("should not fail to encode input in general"),
             };
@@ -1440,21 +1365,25 @@ mod tests {
 
         // One final flush to capture anything still in the request builder.
         let had_prior_flushes = flushed_inputs_len > 0;
-        let mut total_oversized_subrequests = 0;
-        let requests = request_builder.flush().await;
-        for request in requests {
+        let flushed = request_builder.flush().await;
+        let inputs_dropped = flushed.inputs_dropped;
+        prop_assert_eq!(flushed.requests.is_empty(), encoded_since_flush == 0);
+        let mut ok_inputs = 0;
+        for request in flushed.requests {
             match request {
                 Ok((request_meta, request)) => {
                     prop_assert_eq!(request_meta.compressed_len, request.body().len());
                     prop_assert!(request_meta.compressed_len <= compressed_limit);
-                    flushed_inputs_len += request_meta.input_count;
+                    ok_inputs += request_meta.input_count;
                 }
                 Err(e) => match e {
-                    RequestBuilderError::PayloadTooLarge { .. } => total_oversized_subrequests += 1,
+                    RequestBuilderError::PayloadTooLarge { .. } => {}
                     _ => panic!("should not fail to flush requests (final)"),
                 },
             }
         }
+        prop_assert_eq!(ok_inputs + inputs_dropped, encoded_since_flush);
+        flushed_inputs_len += ok_inputs;
 
         // TODO: Currently, we only support splitting a request into two subrequests.
         //
@@ -1468,7 +1397,7 @@ mod tests {
         // then we simply reject this test because we know that we can't split it in half without exceeding the limit.
         // Once we remove the limitation of only being able to split a request in half, we'll remove this escape hatch.
         if !had_prior_flushes {
-            prop_assume!(total_oversized_subrequests == 0);
+            prop_assume!(inputs_dropped == 0);
         }
 
         prop_assert_eq!(original_inputs_len, flushed_inputs_len);
@@ -1513,7 +1442,7 @@ mod tests {
             request_builder.encode("cc".to_string()).await.unwrap()
         );
 
-        let requests = request_builder.flush().await;
+        let requests = request_builder.flush().await.requests;
         let (_, request) = requests.into_iter().next().unwrap().unwrap();
         assert_eq!(b"[a,b]", &request.into_body().collect().await.unwrap().to_bytes()[..]);
 
@@ -1531,7 +1460,7 @@ mod tests {
         assert_eq!(None, request_builder.encode("alpha".to_string()).await.unwrap());
         assert_eq!(None, request_builder.encode("beta".to_string()).await.unwrap());
 
-        let mut requests = request_builder.flush().await;
+        let mut requests = request_builder.flush().await.requests;
         assert_eq!(requests.len(), 1);
         let (request_meta, request) = requests.remove(0).expect("request should be created");
         assert_eq!(
@@ -1557,7 +1486,9 @@ mod tests {
                 Some("aaaaa".to_string()),
                 request_builder.encode("aaaaa".to_string()).await.unwrap()
             );
-            assert!(request_builder.flush().await.is_empty());
+            let flushed = request_builder.flush().await;
+            assert!(flushed.requests.is_empty());
+            assert_eq!(flushed.inputs_dropped, 0);
         }
 
         assert_eq!(None, request_builder.encode("b".to_string()).await.unwrap());
@@ -1588,7 +1519,7 @@ mod tests {
     async fn split_subrequest_that_fails_to_encode_is_discarded() {
         // The second input either doesn't fit with the first under the 20-byte uncompressed limit, or doesn't fit under
         // it at all.
-        for (second_input, expect_error) in [("a longer second", false), ("a much longer second input", true)] {
+        for (second_input, too_long_alone) in [("a longer second", false), ("a much longer second input", true)] {
             let inputs = vec![
                 "first".to_string(),
                 second_input.to_string(),
@@ -1606,16 +1537,35 @@ mod tests {
             // so the first subrequest fails to re-encode its second input. The first subrequest is dropped, and none of
             // it may leak into the second subrequest, or into the next request.
             request_builder.set_custom_len_limits(20, 20);
-            let mut requests = request_builder.flush().await;
-            if expect_error {
-                assert!(matches!(
-                    requests.remove(0),
-                    Err(RequestBuilderError::InputExceedsUncompressedLimit { .. })
-                ));
+            let flushed = request_builder.flush().await;
+            assert_eq!(flushed.inputs_dropped, 2, "{}", second_input);
+            let mut requests = flushed.requests;
+            assert_eq!(requests.len(), 2, "{}", second_input);
+            let first = requests.remove(0);
+            if too_long_alone {
+                assert!(
+                    matches!(first, Err(RequestBuilderError::InputExceedsUncompressedLimit { .. })),
+                    "{}",
+                    second_input
+                );
+            } else {
+                assert!(
+                    matches!(first, Err(RequestBuilderError::SplitInputDoesNotFit)),
+                    "{}",
+                    second_input
+                );
             }
-            assert_eq!(requests.len(), 1, "{}", second_input);
+
             let (request_meta, request) = requests.remove(0).expect("second subrequest should be created");
-            assert_eq!(request_meta.input_count, 2);
+            assert_eq!(
+                request_meta,
+                RequestMetadata {
+                    input_count: 2,
+                    data_point_count: "third".len() + "fourth".len(),
+                    uncompressed_len: "[third,fourth]".len(),
+                    compressed_len: "[third,fourth]".len(),
+                }
+            );
             assert_eq!(
                 b"[third,fourth]",
                 &request.into_body().collect().await.unwrap().to_bytes()[..]
@@ -1624,5 +1574,84 @@ mod tests {
             request_builder.encode("next".to_string()).await.unwrap();
             flush_and_validate_requests(request_builder, vec!["[next]".to_string()]).await;
         }
+    }
+
+    #[tokio::test]
+    async fn oversized_single_input_is_counted_as_dropped() {
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+        request_builder.encode("cccccccccccc".to_string()).await.unwrap();
+
+        // A payload with a single input can't be split, so the input is dropped.
+        request_builder.set_custom_len_limits(usize::MAX, 10);
+        let flushed = request_builder.flush().await;
+        assert_eq!(flushed.inputs_dropped, 1);
+        assert_eq!(flushed.requests.len(), 1);
+        assert!(matches!(
+            flushed.requests[0],
+            Err(RequestBuilderError::PayloadTooLarge {
+                compressed_size_bytes: 12,
+                compressed_limit_bytes: 10,
+            })
+        ));
+
+        let flushed = request_builder.flush().await;
+        assert!(flushed.requests.is_empty());
+        assert_eq!(flushed.inputs_dropped, 0);
+    }
+
+    #[tokio::test]
+    async fn split_subrequest_over_compressed_limit_is_counted_as_dropped() {
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+        request_builder.encode("aa".to_string()).await.unwrap();
+        request_builder.encode("cccccccccccc".to_string()).await.unwrap();
+
+        // The first half fits under the limit, but the second half is a single input that doesn't.
+        request_builder.set_custom_len_limits(usize::MAX, 10);
+        let flushed = request_builder.flush().await;
+        assert_eq!(flushed.inputs_dropped, 1);
+        let mut requests = flushed.requests;
+        assert_eq!(requests.len(), 2);
+
+        let (request_meta, _) = requests.remove(0).expect("first subrequest should be created");
+        assert_eq!(
+            request_meta,
+            RequestMetadata {
+                input_count: 1,
+                data_point_count: 2,
+                uncompressed_len: 2,
+                compressed_len: 2,
+            }
+        );
+        assert!(matches!(
+            requests.remove(0),
+            Err(RequestBuilderError::PayloadTooLarge {
+                compressed_size_bytes: 12,
+                compressed_limit_bytes: 10,
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn split_that_drops_both_halves_reports_both() {
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+        for input in ["aa", "bb", "cc", "dd"] {
+            request_builder.encode(input.to_string()).await.unwrap();
+        }
+
+        // Each half holds two inputs, and only one of them fits under the new limits.
+        request_builder.set_custom_len_limits(3, 3);
+        let flushed = request_builder.flush().await;
+        assert_eq!(flushed.inputs_dropped, 4);
+        assert_eq!(flushed.requests.len(), 2);
+        for result in &flushed.requests {
+            assert!(matches!(result, Err(RequestBuilderError::SplitInputDoesNotFit)));
+        }
+
+        // None of the dropped payloads may leak into the next request.
+        request_builder.encode("x".to_string()).await.unwrap();
+        flush_and_validate_requests(request_builder, vec!["x".to_string()]).await;
     }
 }

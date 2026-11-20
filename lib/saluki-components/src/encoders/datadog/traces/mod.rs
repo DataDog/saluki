@@ -428,12 +428,12 @@ async fn run_request_builder(
                         }
                     };
 
-                    let maybe_requests = trace_request_builder.flush().await;
-                    if maybe_requests.is_empty() {
+                    let flushed = trace_request_builder.flush().await;
+                    if flushed.requests.is_empty() {
                         panic!("builder told us to flush, but gave us nothing");
                     }
 
-                    for maybe_request in maybe_requests {
+                    for maybe_request in flushed.requests {
                         match maybe_request {
                             Ok((request_meta, request)) => {
                                 payload_telemetry.track_payload(request_meta);
@@ -482,8 +482,8 @@ async fn run_request_builder(
 
                 // Once we've encoded and written all traces, we flush the request builders to generate a request with
                 // anything left over. Again, we'll enqueue those requests to be sent immediately.
-                let maybe_trace_requests = trace_request_builder.flush().await;
-                for maybe_request in maybe_trace_requests {
+                let flushed = trace_request_builder.flush().await;
+                for maybe_request in flushed.requests {
                     match maybe_request {
                         Ok((request_meta, request)) => {
                             payload_telemetry.track_payload(request_meta);

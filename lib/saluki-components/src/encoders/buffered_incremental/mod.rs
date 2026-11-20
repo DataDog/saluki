@@ -378,6 +378,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn flush_counts_dropped_events_when_dispatch_fails() {
+        // The split of the oversized payload gives one request that fits and one that doesn't. Dispatching the request
+        // that fits fails, but the event in the request that doesn't fit is still counted as dropped.
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let context = BuildContext::test_encoder("flush_drops_with_failed_dispatch");
+        let (dispatcher, rx) = dispatcher_with_receiver(&context);
+        drop(rx);
+        let mut encoder = events_encoder(context, 1024).await;
+
+        accept_events(&mut encoder, 1).await;
+
+        // Pseudorandom text compresses poorly, so this event alone takes the payload over the size limit.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let text: String = (0..3000)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                char::from(b'!' + (state % 94) as u8)
+            })
+            .collect();
+        let event = Event::EventD(EventD::new("large", text));
+        assert!(matches!(
+            encoder.process_event(event).await.unwrap(),
+            ProcessResult::Continue
+        ));
+
+        let error = encoder
+            .flush(&dispatcher)
+            .await
+            .expect_err("dispatching to a closed output should fail");
+        assert_eq!(error.dispatched_events(), 0);
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &encoder_dropped_events_labels("flush_drops_with_failed_dispatch")[..]
+            )),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
     async fn flush_does_not_report_dropped_events_when_everything_is_dispatched() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);

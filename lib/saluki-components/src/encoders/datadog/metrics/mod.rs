@@ -1069,8 +1069,7 @@ async fn flush_v2_metrics(
 ) -> Result<usize, GenericError> {
     let mut requests_flushed = 0;
 
-    let maybe_requests = request_builder.flush().await;
-    for maybe_request in maybe_requests {
+    for maybe_request in request_builder.flush().await.requests {
         match maybe_request {
             Ok((request_meta, request)) => {
                 requests_flushed += 1;
@@ -3310,7 +3309,7 @@ mod tests {
             let mut pending = Some(metric);
             while let Some(metric) = pending.take() {
                 if let Some(returned) = builder.encode(metric).await.expect("encode should not error") {
-                    for request in builder.flush().await {
+                    for request in builder.flush().await.requests {
                         let (request_meta, _) = request.expect("request should build");
                         let points = request_meta.data_point_count;
                         assert!(
@@ -3324,7 +3323,7 @@ mod tests {
                 }
             }
         }
-        for request in builder.flush().await {
+        for request in builder.flush().await.requests {
             let (request_meta, _) = request.expect("request should build");
             let points = request_meta.data_point_count;
             assert!(

@@ -123,14 +123,14 @@ impl<'a> SketchShadowState<'a> {
         };
         // Allow a fresh sampling decision for the next batch.
         self.sampling_decided = false;
+        let flushed = builder.flush().await;
+        let baseline_failed = flushed.inputs_dropped > 0;
         let mut requests = Vec::new();
-        let mut baseline_failed = false;
         let mut fatal_error = None;
-        for request in builder.flush().await {
+        for request in flushed.requests {
             match request {
                 Ok(request) => requests.push(request),
                 Err(error) => {
-                    baseline_failed = true;
                     warn!(%error, "Failed to flush sketch baseline; skipping its shadow.");
                     if !error.is_recoverable() {
                         fatal_error = Some(error);
@@ -138,12 +138,6 @@ impl<'a> SketchShadowState<'a> {
                 }
             }
         }
-        // Splitting can discard a V2 subrequest without returning an error.
-        baseline_failed |= requests
-            .iter()
-            .map(|(request_meta, _)| request_meta.input_count)
-            .sum::<usize>()
-            != metrics.len();
         let request_count = requests.len();
         for (request_index, (request_meta, request)) in requests.into_iter().enumerate() {
             enqueue_sketch_request(
@@ -357,7 +351,7 @@ mod tests {
             let metric = Metric::distribution(Context::from_parts(name, TagSet::default()), [(123, 1.0)]);
             state.encode(&mut builder, metric, context, &mut tx).await.unwrap();
         }
-        // Force a split: each large metric fits alone, but their half is silently discarded during re-encoding.
+        // Force a split: each large metric fits alone, but their half is dropped during re-encoding.
         builder.with_len_limits(512, 512).unwrap();
         state.flush(&mut builder, context, &mut tx).await.unwrap();
         drop(tx);

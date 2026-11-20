@@ -167,10 +167,16 @@ impl IncrementalEncoder for DatadogEvents {
 
     async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, FlushError> {
         let mut dispatched_events = 0;
-        let pending_events = self.request_builder.pending_inputs();
 
-        let maybe_requests = self.request_builder.flush().await;
-        for maybe_request in maybe_requests {
+        // Count drops before dispatching, so that a dispatch failure can't skip them.
+        let flushed = self.request_builder.flush().await;
+        if flushed.inputs_dropped > 0 {
+            self.telemetry
+                .events_dropped_encoder()
+                .increment(flushed.inputs_dropped as u64);
+        }
+
+        for maybe_request in flushed.requests {
             match maybe_request {
                 Ok((request_meta, request)) => {
                     let payload_meta = PayloadMetadata::from_event_count(request_meta.input_count);
@@ -185,13 +191,6 @@ impl IncrementalEncoder for DatadogEvents {
                 }
                 Err(e) => error!(error = %e, "Failed to build Datadog events payload. Continuing..."),
             }
-        }
-
-        // Events that were queued but not dispatched were in a payload that couldn't be built, such as one that exceeded
-        // the size limit and couldn't be split. They're gone, so report them as dropped.
-        let dropped_events = pending_events.saturating_sub(dispatched_events);
-        if dropped_events > 0 {
-            self.telemetry.events_dropped_encoder().increment(dropped_events as u64);
         }
 
         Ok(dispatched_events)
