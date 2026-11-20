@@ -41,13 +41,18 @@
 #
 # The tag is a hash of the image inputs: the Dockerfile and the digests of the two images it starts from. Thus a job
 # builds and pushes the image only when an input changes, and other jobs reuse it. This must run before a job switches
-# to the commit that it builds, so that the image always comes from the pipeline commit's Dockerfile. It needs the ECR
+# to the commit that it builds. Thus the image always comes from the Dockerfile of the pipeline commit. It needs the ECR
 # login and the `adp-builder` builder.
 .resolve-smp-build-image: &resolve-smp-build-image
-  - SMP_BUILD_BASE_DIGEST=$(docker buildx imagetools inspect ${ADP_PUBLIC_BASE_IMAGE} --format '{{json .Manifest}}' | jq -er .digest) || exit 1
+  - SMP_BUILD_BASE_DIGEST=$(docker buildx imagetools inspect ${SMP_BUILD_BASE_IMAGE} --format '{{json .Manifest}}' | jq -er .digest) || exit 1
   - SMP_BUILD_TOOLCHAIN_DIGEST=$(docker buildx imagetools inspect ${ADP_BUILD_IMAGE} --format '{{json .Manifest}}' | jq -er .digest) || exit 1
   - SMP_BUILD_INPUTS_HASH=$( (cat ci/images/definitions/smp-build/Dockerfile; echo ${SMP_BUILD_BASE_DIGEST} ${SMP_BUILD_TOOLCHAIN_DIGEST}) | sha256sum | cut -c1-16)
   - export SMP_BUILD_IMAGE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:smp-build-${SMP_BUILD_INPUTS_HASH}"
+  # The repositories of the two source images, without a tag or a digest. We pin each one to the digest from above.
+  - SMP_BUILD_BASE_REPO=${SMP_BUILD_BASE_IMAGE%%@*}
+  - SMP_BUILD_BASE_REPO=${SMP_BUILD_BASE_REPO%:*}
+  - SMP_BUILD_TOOLCHAIN_REPO=${ADP_BUILD_IMAGE%%@*}
+  - SMP_BUILD_TOOLCHAIN_REPO=${SMP_BUILD_TOOLCHAIN_REPO%:*}
   - echo "SMP build image is ${SMP_BUILD_IMAGE} (base ${SMP_BUILD_BASE_DIGEST}, toolchain ${SMP_BUILD_TOOLCHAIN_DIGEST})"
   - |
     if docker buildx imagetools inspect ${SMP_BUILD_IMAGE} > /dev/null 2>&1; then
@@ -56,8 +61,8 @@
       echo "Building the SMP build image."
       docker buildx build \
         --file ./ci/images/definitions/smp-build/Dockerfile \
-        --build-arg BASE_IMAGE=${ADP_PUBLIC_BASE_IMAGE%:*}@${SMP_BUILD_BASE_DIGEST} \
-        --build-arg TOOLCHAIN_IMAGE=${ADP_BUILD_IMAGE%:*}@${SMP_BUILD_TOOLCHAIN_DIGEST} \
+        --build-arg BASE_IMAGE=${SMP_BUILD_BASE_REPO}@${SMP_BUILD_BASE_DIGEST} \
+        --build-arg TOOLCHAIN_IMAGE=${SMP_BUILD_TOOLCHAIN_REPO}@${SMP_BUILD_TOOLCHAIN_DIGEST} \
         --tag ${SMP_BUILD_IMAGE} \
         --output type=registry,compression=zstd,force-compression=true,oci-mediatypes=true \
         --provenance=false \
@@ -70,6 +75,10 @@
 # volume, the final LTO link fails with "No space left on device".
 .smp-adp-image-build:
   extends: [.build-common-variables, .build-amd64-variables, .buildcache-variables]
+  variables:
+    # The base of the slim SMP build image. It is a separate variable so that it can change independently of the base
+    # of the shipped app image (`ADP_PUBLIC_BASE_IMAGE`).
+    SMP_BUILD_BASE_IMAGE: "${PUBLIC_BASE_IMAGE}"
 
 build-adp-baseline-image:
   extends: .smp-adp-image-build
