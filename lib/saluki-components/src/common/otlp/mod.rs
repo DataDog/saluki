@@ -536,6 +536,10 @@ impl OtlpServerConfiguration {
     pub async fn build<H: OtlpHandler>(
         self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, worker_pool: &Handle,
     ) -> Result<(), GenericError> {
+        if self.routes.any_proxied() && self.proxy.is_none() {
+            return Err(generic_error!("An OTLP signal is proxied, but no OTLP proxy is set."));
+        }
+
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
@@ -565,7 +569,8 @@ impl OtlpServerConfiguration {
             let mut proxied_grpc_routes = Router::new();
             for signal in Signal::ALL {
                 match (self.routes.get(signal), &self.proxy) {
-                    (OtlpRoute::Disabled, _) => {}
+                    // The check at the top of `build` rules out a proxied signal without a proxy.
+                    (OtlpRoute::Disabled, _) | (OtlpRoute::Proxied, None) => {}
                     (OtlpRoute::Internal, _) => {
                         let inner = inner_grpc.clone();
                         grpc_server = match signal {
@@ -583,12 +588,6 @@ impl OtlpServerConfiguration {
                     (OtlpRoute::Proxied, Some(proxy)) => {
                         let path = format!("/{}/{{*method}}", signal.grpc_service_name());
                         proxied_grpc_routes = proxied_grpc_routes.route(&path, proxy.grpc_service(signal));
-                    }
-                    (OtlpRoute::Proxied, None) => {
-                        return Err(generic_error!(
-                            "The OTLP {} signal is proxied, but no proxy is set.",
-                            signal.as_str()
-                        ))
                     }
                 }
             }
@@ -630,7 +629,8 @@ impl OtlpServerConfiguration {
             let mut proxied_routes = Router::new();
             for signal in Signal::ALL {
                 match (self.routes.get(signal), &self.proxy) {
-                    (OtlpRoute::Disabled, _) => {}
+                    // The check at the top of `build` rules out a proxied signal without a proxy.
+                    (OtlpRoute::Disabled, _) | (OtlpRoute::Proxied, None) => {}
                     (OtlpRoute::Internal, _) => {
                         let handler = match signal {
                             Signal::Metrics => post(http_metrics_handler::<H>),
@@ -641,12 +641,6 @@ impl OtlpServerConfiguration {
                     }
                     (OtlpRoute::Proxied, Some(proxy)) => {
                         proxied_routes = proxied_routes.route(signal.http_path(), proxy.http_service(signal));
-                    }
-                    (OtlpRoute::Proxied, None) => {
-                        return Err(generic_error!(
-                            "The OTLP {} signal is proxied, but no proxy is set.",
-                            signal.as_str()
-                        ))
                     }
                 }
             }
@@ -1815,7 +1809,7 @@ mod tests {
         let error = result.expect_err("build should fail");
         assert_eq!(
             error.to_string(),
-            "The OTLP logs signal is proxied, but no proxy is set."
+            "An OTLP signal is proxied, but no OTLP proxy is set."
         );
 
         supervisor
