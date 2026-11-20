@@ -168,17 +168,8 @@ async fn create_topology(
 
     // Like the Agent, refuse to proxy OTLP signals from a receiver that sets TLS: the connection to the Agent is
     // plaintext. The other pipelines keep running.
-    if dp.otlp_blocked() {
-        let proxy = &config.domains.otlp.proxy;
-        error!(
-            proxy_logs = proxy.logs_enabled,
-            proxy_metrics = proxy.metrics_enabled,
-            proxy_traces = proxy.traces_enabled,
-            "ADP won't start OTLP ingest. A receiver sets `tls` while OTLP proxy mode is on, and ADP doesn't secure \
-            the proxied connection to the Agent. Remove `tls` from `otlp_config.receiver.protocols.grpc` or \
-            `otlp_config.receiver.protocols.http`, or set each `data_plane.experimental.otlp.proxy.<signal>` that is \
-            `true` to `false`."
-        );
+    if let Some(message) = dp.otlp_blocked_message() {
+        error!("ADP won't start OTLP ingest. {message}.");
     }
 
     // If no data pipelines are enabled, then there's nothing for us to do.
