@@ -11,16 +11,18 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
+use self::dogstatsd::{Capture, Replay, Stats};
 use super::datadog_agent::{
     self, ListenAt, Listener, With, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE,
     NOT_WINDOWS,
 };
-use super::dogstatsd_cli::{Capture, Replay, Stats};
 use crate::core::handle::{Handle, HandleError};
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{CommandSpec, Evidence, FileSource, FileSpec, ParticipantSpec, Program, Protocol, Wiring};
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
+
+mod dogstatsd;
 
 const LISTENERS: &[Listener] = &[
     Listener {
