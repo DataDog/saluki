@@ -64,8 +64,18 @@
         ci/images/definitions/smp-build
     fi
 
+# Shared settings for the SMP baseline and comparison image builds. They build on the slim SMP build image (see
+# `.resolve-smp-build-image`), with the same shared compiler cache as the shipped artifacts (see
+# `.build-adp-definition`). `.build-amd64-variables` gives DinD the larger loopback volume: with the default 20G
+# volume, the final LTO link fails with "No space left on device".
+.smp-adp-image-build:
+  extends: [.build-common-variables, .build-amd64-variables]
+  variables:
+    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
+    BUILDCACHE_S3_REGION: "us-east-1"
+
 build-adp-baseline-image:
-  extends: .build-common-variables
+  extends: .smp-adp-image-build
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
@@ -79,14 +89,6 @@ build-adp-baseline-image:
   retry: 2
   # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
   timeout: 30m
-  variables:
-    # Build on the same prepped build image as the shipped artifacts, with the shared compiler cache.
-    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
-    BUILDCACHE_S3_REGION: "us-east-1"
-    # The default 20G DinD loopback volume is too small for this build: with it, the final LTO link fails with "No
-    # space left on device". Use the same larger volume as the main AMD64 builds (see `.build-amd64-variables`).
-    DOCKER_LOOPBACK_SIZE: "50G"
-    DOCKER_LOOPBACK_PATH: "/var"
   before_script:
     - *setup-smp-env
   script:
@@ -147,7 +149,7 @@ build-adp-baseline-image:
       dotenv: smp-vars.env
 
 build-adp-comparison-image:
-  extends: .build-common-variables
+  extends: .smp-adp-image-build
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
@@ -161,14 +163,6 @@ build-adp-comparison-image:
   retry: 2
   # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
   timeout: 30m
-  variables:
-    # Build on the same prepped build image as the shipped artifacts, with the shared compiler cache.
-    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
-    BUILDCACHE_S3_REGION: "us-east-1"
-    # The default 20G DinD loopback volume is too small for this build: with it, the final LTO link fails with "No
-    # space left on device". Use the same larger volume as the main AMD64 builds (see `.build-amd64-variables`).
-    DOCKER_LOOPBACK_SIZE: "50G"
-    DOCKER_LOOPBACK_PATH: "/var"
   before_script:
     - *setup-smp-env
   script:
