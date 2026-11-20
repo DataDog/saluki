@@ -118,6 +118,9 @@ const HOST_VIEW_ENV: &[DefaultEnv] = &[
     ),
 ];
 
+/// Added to the hint for an `ADP_DD_` key. Connected, a value the Agent sets itself wins over it.
+const ADP_ONLY_NOTE: &str = " (connected, the Agent must not set it in datadog.yaml or a plain DD_ variable)";
+
 /// One listener the software can open, as an endpoint.
 pub(super) struct Listener {
     pub(super) name: &'static str,
@@ -272,9 +275,13 @@ pub(super) fn add_endpoints(
         };
         spec.endpoints.insert(listener.name.to_string(), endpoint);
         if let Some((key, value)) = listener.opt_in {
+            let mut write = format!("{}: \"{}\"", key, value);
+            if key.starts_with("ADP_DD_") {
+                write.push_str(ADP_ONLY_NOTE);
+            }
             let wiring = Wiring {
                 withdrawn: None,
-                write: format!("{}: \"{}\"", key, value),
+                write,
                 overridden: None,
             };
             spec.wiring.insert(listener.name.to_string(), wiring);
