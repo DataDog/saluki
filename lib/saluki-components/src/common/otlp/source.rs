@@ -2,7 +2,8 @@
 //!
 //! A source is the entity that emitted the telemetry: a host, or a serverless resource such as an AWS Lambda function.
 //! Detectors run in a fixed order, and the first one that matches wins. Resources that match none of them fall back to
-//! the hostname cascade in [`super::util`].
+//! the hostname cascade in [`super::util`], except a Cloud Run or Cloud Functions resource with an incomplete
+//! identity, which has no source even when it has a hostname.
 //!
 //! Logs, metrics, and traces all resolve their source here.
 
