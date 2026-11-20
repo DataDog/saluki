@@ -103,9 +103,6 @@ pub struct OtlpConfiguration {
     /// Metrics translation settings.
     pub metrics: OtlpMetricsSettings,
 
-    /// Whether OTLP traces are accepted.
-    pub traces_enabled: bool,
-
     /// Trace translation settings.
     pub traces: OtlpTracesSettings,
 
@@ -166,9 +163,9 @@ impl SourceBuilder for OtlpConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if !self.receiver.metrics_enabled && !self.receiver.logs_enabled && !self.traces_enabled {
+        if self.routes == OtlpRoutes::ALL_DISABLED {
             return Err(generic_error!(
-                "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
+                "Every OTLP signal is disabled, so the OTLP source has nothing to serve."
             ));
         }
 
@@ -341,22 +338,27 @@ impl Source for Otlp {
         // The converter stops once the servers exit and its channel closes, which can take longer than the default
         // timeout of a closure-based child. Thus, it has no timeout of its own, and is halted with the source if the
         // component's shutdown timeout expires.
-        let converter_context = context.clone();
-        runtime::worker(
-            "resource_converter",
-            run_converter(
-                rx,
-                converter_context,
-                metrics_translator,
-                logs_translator,
-                traces_translator,
-                metrics,
-            ),
-        )
-        .on_runtime(context.topology_context().global_thread_pool().clone())
-        .with_shutdown_timeout(Duration::MAX)
-        .needed()
-        .spawn();
+        //
+        // Only the servers' internal routes hold the handler, so without an internal signal the channel closes at once.
+        // There is nothing to convert then, and a needed converter that stopped would stop the source with it.
+        if routes.any_internal() {
+            let converter_context = context.clone();
+            runtime::worker(
+                "resource_converter",
+                run_converter(
+                    rx,
+                    converter_context,
+                    metrics_translator,
+                    logs_translator,
+                    traces_translator,
+                    metrics,
+                ),
+            )
+            .on_runtime(context.topology_context().global_thread_pool().clone())
+            .with_shutdown_timeout(Duration::MAX)
+            .needed()
+            .spawn();
+        }
 
         health.mark_ready();
         debug!("OTLP source started.");
@@ -632,7 +634,6 @@ mod tests {
             routes: OtlpRoutes::ALL_INTERNAL,
             proxy_destinations: None,
             metrics: metrics_settings(),
-            traces_enabled: false,
             traces: traces_settings(),
             contexts: OtlpContextSettings {
                 allow_context_heap_allocs: true,
@@ -930,7 +931,6 @@ mod tests {
     #[tokio::test]
     async fn an_empty_endpoint_leaves_its_server_unbound() {
         let mut config = source_configuration();
-        config.receiver.logs_enabled = true;
         config.receiver.grpc.endpoint = String::new();
         config.receiver.http.endpoint = "127.0.0.1:0".to_string();
 
@@ -958,8 +958,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_fails_when_both_endpoints_are_empty() {
-        let mut config = source_configuration();
-        config.receiver.logs_enabled = true;
+        let config = source_configuration();
 
         let error = TestComponentDriver::source(config)
             .await
@@ -973,6 +972,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_fails_when_every_signal_is_disabled() {
+        let mut config = source_configuration();
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.routes = OtlpRoutes::ALL_DISABLED;
+
+        let error = TestComponentDriver::source(config)
+            .await
+            .err()
+            .expect("source should fail to build without a signal to serve");
+        assert!(
+            format!("{error:#}").contains("Every OTLP signal is disabled"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
     async fn accepted_logs_are_dispatched_before_the_source_stops() {
         // Many more records than two event buffers hold, so that the converter blocks on the output with most of the
         // requests still queued.
@@ -980,7 +995,6 @@ mod tests {
         const RECORDS: usize = 512;
 
         let mut config = source_configuration();
-        config.receiver.logs_enabled = true;
         config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
         config.receiver.grpc.max_recv_msg_size_mib = 4;
         // The configuration translator resolves a zero keepalive to these defaults.
@@ -1041,9 +1055,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_source_without_internal_signals_keeps_its_outputs_open() {
+        // With no internal signal, the topology connects the source to a destination that drops everything. That
+        // destination stops once its input closes, which would stop the topology.
+        let mut config = source_configuration();
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
+        config.routes = OtlpRoutes {
+            metrics: OtlpRoute::Proxied,
+            logs: OtlpRoute::Disabled,
+            traces: OtlpRoute::Proxied,
+        };
+        let destination = |port| Destination::Tcp {
+            host: "127.0.0.1".to_string(),
+            port,
+        };
+        config.proxy_destinations = Some(OtlpProxyDestinations {
+            grpc: destination(4319),
+            http: destination(4320),
+        });
+
+        let (control, mut outputs) = TestComponentDriver::source(config).await.expect("source should build");
+        let mut metrics = outputs.take_named_output("metrics");
+        control.wait_until_ready().await;
+
+        let closed = tokio::time::timeout(Duration::from_millis(500), metrics.collect_events()).await;
+        assert!(
+            closed.is_err(),
+            "the metrics output closed while the source was running"
+        );
+        assert!(!control.is_finished(), "the source stopped on its own");
+        control.shutdown().await.expect("source should stop cleanly");
+    }
+
+    #[tokio::test]
     async fn a_proxied_signal_needs_proxy_destinations() {
         let mut config = source_configuration();
-        config.receiver.metrics_enabled = true;
         config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
         config.receiver.http.endpoint = "127.0.0.1:0".to_string();
         config.routes = OtlpRoutes {
