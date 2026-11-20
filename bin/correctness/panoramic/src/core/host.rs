@@ -451,10 +451,13 @@ impl Realized for RealizedHost {
             }
         };
         let exited = match timeout_at(deadline, ran).await {
-            Ok(exited) => exited.map_err(harness)?,
+            Ok(Ok(exited)) => exited,
+            Ok(Err(e)) => {
+                process.kill();
+                return Err(harness(e));
+            }
             Err(_) => {
-                // Dropping the process kills its group.
-                drop(process);
+                process.kill();
                 return Err(harness(format!("'{}' did not exit within the deadline", program)));
             }
         };

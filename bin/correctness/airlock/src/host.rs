@@ -165,15 +165,16 @@ impl HostProcess {
         &self.name
     }
 
-    /// Stops the process and its group: SIGTERM, then SIGKILL after `grace`, then up to two seconds for the exit and for the group to empty.
+    /// Stops the process and its group: SIGTERM, then SIGKILL after `grace`, then up to two seconds for the exit and
+    /// for the group to empty.
     ///
     /// Whatever is left in the group is killed even when the program itself exited. Dropping the future before the
     /// SIGKILL drops the process, which sends SIGKILL.
     ///
     /// # Errors
     ///
-    /// Returns an error if the process has not exited, or its group is not empty, after the SIGKILL. A process on a target with no process groups
-    /// is not signalled, and stopping it does nothing.
+    /// Returns an error if the process has not exited, or its group is not empty, after the SIGKILL. A process on a
+    /// target with no process groups is not signalled, and stopping it does nothing.
     #[cfg_attr(not(unix), allow(unused_mut, unused_variables))]
     pub async fn stop(mut self, grace: Duration) -> Result<(), GenericError> {
         #[cfg(unix)]
@@ -203,6 +204,17 @@ impl HostProcess {
             }
         }
         Ok(())
+    }
+
+    /// Kills the group with SIGKILL without waiting for it to exit, for a caller that abandons the process on purpose.
+    /// Unlike a drop, it does not warn that the process leaked.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    pub fn kill(mut self) {
+        #[cfg(unix)]
+        {
+            self.signal(libc::SIGKILL);
+            self.group = None;
+        }
     }
 
     /// Sends `signal` to the group, ignoring failure: the group may already be empty.
