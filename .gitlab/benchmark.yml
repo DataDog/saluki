@@ -1,6 +1,10 @@
 .setup-smp-env: &setup-smp-env
   - export AWS_NAMED_PROFILE=single-machine-performance
   - export SMP_VERSION=0.29.1
+  # The Cargo profile for the SMP baseline and comparison images. We use the profile we ship, so that SMP and the
+  # binary size analysis measure the production binary. The correctness tests build with `release` and cover debug
+  # assertions.
+  - export SMP_BUILD_PROFILE=optimized-release
   - export RUST_LOG=info,aws_config::profile::credentials=error
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
@@ -45,7 +49,8 @@ build-adp-baseline-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 15m
+  # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
+  timeout: 30m
   before_script:
     - *setup-smp-env
   script:
@@ -70,7 +75,7 @@ build-adp-baseline-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
-      --build-arg BUILD_PROFILE=release
+      --build-arg BUILD_PROFILE=${SMP_BUILD_PROFILE}
       --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
@@ -109,7 +114,8 @@ build-adp-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 15m
+  # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
+  timeout: 30m
   before_script:
     - *setup-smp-env
   script:
@@ -130,7 +136,7 @@ build-adp-comparison-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
-      --build-arg BUILD_PROFILE=release
+      --build-arg BUILD_PROFILE=${SMP_BUILD_PROFILE}
       --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
@@ -358,12 +364,15 @@ binary-size-analysis:
     - docker rm comparison-container
 
     # Extract debug info and strip binaries for accurate release size comparison.
-    # This gives us stripped binaries (reflecting actual release artifact size) while
-    # preserving symbol information in separate debug files for bloaty's analysis.
+    # The strip flags match the flags that the Datadog Agent's Linux packaging applies to ADP, so the stripped size
+    # is the size that ships. The separate debug files keep the symbol information for bloaty's analysis. The Agent
+    # strips its install directory with omnibus `strip_build`, which runs `strip --strip-debug --strip-unneeded`:
+    # https://github.com/DataDog/datadog-agent/blob/ef7d0646bc86573f1c370f866d606d7ad5391179/omnibus/config/projects/agent.rb#L391
+    # https://github.com/DataDog/omnibus-ruby/blob/564a6f11686c655771da48765ae65a11c479d625/lib/omnibus/stripper.rb#L95
     - objcopy --only-keep-debug binaries/baseline-adp binaries/baseline-adp.debug
     - objcopy --only-keep-debug binaries/comparison-adp binaries/comparison-adp.debug
-    - strip --strip-debug binaries/baseline-adp
-    - strip --strip-debug binaries/comparison-adp
+    - strip --strip-debug --strip-unneeded binaries/baseline-adp
+    - strip --strip-debug --strip-unneeded binaries/comparison-adp
 
     # Run the analysis script to generate bloaty output, markdown report, and check threshold.
     # The script exits with code 1 if size increased by more than 5%.
@@ -379,6 +388,7 @@ binary-size-analysis:
       --output-csv size-diff.csv
       --output-txt size-diff.txt
       --threshold 5
+      --build-profile ${SMP_BUILD_PROFILE}
 
     # Post the report to the linked PR.
     - cat size-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Binary Size Analysis (Agent Data Plane)"
