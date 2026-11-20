@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
+use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
 use crate::core::spec::{
     CollectFile, Consumed, ExitChannel, FileSource, FileSpec, Keep, OutputChannel, ParticipantSpec, ProcessSpec,
     Protocol,
@@ -65,10 +65,7 @@ impl ParticipantType for Millstone {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        &[
-            (Os::Linux, Enclosure::LinuxContainer),
-            (Os::Linux, Enclosure::KubernetesPod),
-        ]
+        LINUX_CONTAINER_OR_POD
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {

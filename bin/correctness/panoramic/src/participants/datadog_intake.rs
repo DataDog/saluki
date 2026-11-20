@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use tokio::time::Instant;
 
 use crate::core::handle::{Handle, HandleError};
-use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
+use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
 use crate::core::spec::{Address, EndpointSpec, Evidence, ParticipantSpec, Protocol, DEFAULT_PROCESS};
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
@@ -37,10 +37,7 @@ impl ParticipantType for DatadogIntake {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        &[
-            (Os::Linux, Enclosure::LinuxContainer),
-            (Os::Linux, Enclosure::KubernetesPod),
-        ]
+        LINUX_CONTAINER_OR_POD
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {

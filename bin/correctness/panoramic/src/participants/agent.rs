@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use super::datadog_agent::{
     self, ListenAt, Listener, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE, NOT_WINDOWS,
 };
-use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
+use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
 use crate::core::spec::{Evidence, ParticipantSpec, Protocol, Wiring};
 use crate::core::template::Template;
 
@@ -95,10 +95,7 @@ impl ParticipantType for Agent {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        &[
-            (Os::Linux, Enclosure::LinuxContainer),
-            (Os::Linux, Enclosure::KubernetesPod),
-        ]
+        LINUX_CONTAINER_OR_POD
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
