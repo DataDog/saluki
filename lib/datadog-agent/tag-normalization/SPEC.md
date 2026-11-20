@@ -251,7 +251,9 @@ implementations still pass.
 ## 10. Use in the tag filter list (informative)
 
 A `metric_tag_filterlist` rule applies to one metric name and lists tag keys.
-In the Datadog Agent it is implemented in `comp/filterlist/impl/tagfilterlist.go`.
+In the Datadog Agent, rules are compiled in
+`comp/filterlist/impl/tagfilterlist.go` and matched in
+`pkg/metrics/metricname/tagmatcher.go`.
 To agree with the intake:
 
 - The rule's metric name is compared after metric-name normalization
