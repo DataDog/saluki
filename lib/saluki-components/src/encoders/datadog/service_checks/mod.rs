@@ -171,8 +171,8 @@ impl IncrementalEncoder for DatadogServiceChecks {
         let maybe_requests = self.request_builder.flush().await;
         for maybe_request in maybe_requests {
             match maybe_request {
-                Ok((events, _data_points, _uncompressed_len, request)) => {
-                    let payload_meta = PayloadMetadata::from_event_count(events);
+                Ok((request_meta, request)) => {
+                    let payload_meta = PayloadMetadata::from_event_count(request_meta.input_count);
                     let http_payload = HttpPayload::new(payload_meta, request);
                     let payload = Payload::Http(http_payload);
 
@@ -180,7 +180,7 @@ impl IncrementalEncoder for DatadogServiceChecks {
                         .dispatch(payload)
                         .await
                         .map_err(|source| FlushError::new(dispatched_events, source))?;
-                    dispatched_events += events;
+                    dispatched_events += request_meta.input_count;
                 }
                 Err(e) => error!(error = %e, "Failed to build Datadog service checks payload. Continuing..."),
             }

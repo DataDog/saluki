@@ -41,7 +41,7 @@ use tracing::{debug, error};
 use crate::common::datadog::{
     get_tracer_hostname,
     io::RB_BUFFER_CHUNK_SIZE,
-    request_builder::{EndpointEncoder, RequestBuilder},
+    request_builder::{EndpointEncoder, RequestBuilder, RequestMetadata},
     telemetry::ComponentTelemetry,
     version_data::ContainerVersionData,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, KEY_ANALYZED_SPANS,
@@ -275,17 +275,17 @@ impl TracePayloadTelemetry {
         self.events.increment(counts.events);
     }
 
-    /// Tracks a flushed payload, given its size before compression and the size of the request body.
+    /// Tracks a flushed payload.
     ///
     /// The body size goes into a distribution, and the largest body seen so far goes into a gauge: exported
     /// distributions keep their buckets, sum and count, but not the exact maximum.
-    fn track_payload(&mut self, uncompressed_len: usize, body_len: usize) {
-        self.bytes_uncompressed.increment(uncompressed_len as u64);
-        self.payload_size.record(body_len as f64);
+    fn track_payload(&mut self, metadata: RequestMetadata) {
+        self.bytes_uncompressed.increment(metadata.uncompressed_len as u64);
+        self.payload_size.record(metadata.compressed_len as f64);
 
-        if body_len > self.largest_payload_size_seen {
-            self.largest_payload_size_seen = body_len;
-            self.largest_payload_size.set(body_len as f64);
+        if metadata.compressed_len > self.largest_payload_size_seen {
+            self.largest_payload_size_seen = metadata.compressed_len;
+            self.largest_payload_size.set(metadata.compressed_len as f64);
         }
     }
 }
@@ -435,9 +435,9 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, _data_points, uncompressed_len, request)) => {
-                                payload_telemetry.track_payload(uncompressed_len, request.body().len());
-                                let payload_meta = PayloadMetadata::from_event_count(events);
+                            Ok((request_meta, request)) => {
+                                payload_telemetry.track_payload(request_meta);
+                                let payload_meta = PayloadMetadata::from_event_count(request_meta.input_count);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
 
@@ -485,9 +485,9 @@ async fn run_request_builder(
                 let maybe_trace_requests = trace_request_builder.flush().await;
                 for maybe_request in maybe_trace_requests {
                     match maybe_request {
-                        Ok((events, _data_points, uncompressed_len, request)) => {
-                            payload_telemetry.track_payload(uncompressed_len, request.body().len());
-                            let payload_meta = PayloadMetadata::from_event_count(events);
+                        Ok((request_meta, request)) => {
+                            payload_telemetry.track_payload(request_meta);
+                            let payload_meta = PayloadMetadata::from_event_count(request_meta.input_count);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
 
@@ -1855,7 +1855,12 @@ mod tests {
         let mut telemetry = TracePayloadTelemetry::from_builder(&MetricsBuilder::default());
 
         for (body_len, expected_largest) in [(100_000, 100_000.0), (3_000_000, 3_000_000.0), (50_000, 3_000_000.0)] {
-            telemetry.track_payload(body_len, body_len);
+            telemetry.track_payload(RequestMetadata {
+                input_count: 1,
+                data_point_count: 0,
+                uncompressed_len: body_len,
+                compressed_len: body_len,
+            });
             assert_eq!(
                 recorder.gauge("component_payload_size_max_bytes"),
                 Some(expected_largest)
@@ -1886,7 +1891,7 @@ mod tests {
             make_sampled_trace(vec![make_span(5, false)], false),
         ];
 
-        // Without compression or framing, the payload before compression is every trace encoded back to back.
+        // Without framing, the payload before compression is every trace encoded back to back.
         let expected_uncompressed_len = traces
             .iter()
             .map(|trace| {
@@ -1898,9 +1903,13 @@ mod tests {
             })
             .sum::<u64>();
 
-        let request_builder = RequestBuilder::new(make_encoder(false), CompressionScheme::noop(), RB_BUFFER_CHUNK_SIZE)
-            .await
-            .expect("request builder should be created");
+        let request_builder = RequestBuilder::new(
+            make_encoder(false),
+            CompressionScheme::zstd_default(),
+            RB_BUFFER_CHUNK_SIZE,
+        )
+        .await
+        .expect("request builder should be created");
         let (events_tx, events_rx) = mpsc::channel(1);
         let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
 

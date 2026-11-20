@@ -37,7 +37,7 @@ use tracing::{debug, error};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
-    request_builder::{EndpointEncoder, RequestBuilder},
+    request_builder::{EndpointEncoder, RequestBuilder, RequestMetadata},
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
@@ -172,9 +172,9 @@ impl StatsPayloadTelemetry {
         self.entries.increment(counts.entries);
     }
 
-    /// Tracks a flushed payload, given its size before compression.
-    fn track_payload(&self, uncompressed_len: usize) {
-        self.bytes_uncompressed.increment(uncompressed_len as u64);
+    /// Tracks a flushed payload.
+    fn track_payload(&self, metadata: RequestMetadata) {
+        self.bytes_uncompressed.increment(metadata.uncompressed_len as u64);
     }
 }
 
@@ -309,9 +309,9 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, _data_points, uncompressed_len, request)) => {
-                                payload_telemetry.track_payload(uncompressed_len);
-                                let payload_meta = PayloadMetadata::from_event_count(events);
+                            Ok((request_meta, request)) => {
+                                payload_telemetry.track_payload(request_meta);
+                                let payload_meta = PayloadMetadata::from_event_count(request_meta.input_count);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
 
@@ -355,9 +355,9 @@ async fn run_request_builder(
                 let maybe_stats_requests = stats_request_builder.flush().await;
                 for maybe_request in maybe_stats_requests {
                     match maybe_request {
-                        Ok((events, _data_points, uncompressed_len, request)) => {
-                            payload_telemetry.track_payload(uncompressed_len);
-                            let payload_meta = PayloadMetadata::from_event_count(events);
+                        Ok((request_meta, request)) => {
+                            payload_telemetry.track_payload(request_meta);
+                            let payload_meta = PayloadMetadata::from_event_count(request_meta.input_count);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
 
@@ -611,7 +611,7 @@ mod tests {
             TraceStats::new(vec![make_client_payload(&[4])]),
         ];
 
-        // Without compression or framing, the payload before compression is all stats encoded back to back.
+        // Without framing, the payload before compression is all stats encoded back to back.
         let expected_uncompressed_len = all_stats
             .iter()
             .map(|stats| {
@@ -626,7 +626,7 @@ mod tests {
 
         let request_builder = RequestBuilder::new(
             config.endpoint_encoder(),
-            CompressionScheme::noop(),
+            CompressionScheme::zstd_default(),
             RB_BUFFER_CHUNK_SIZE,
         )
         .await

@@ -169,6 +169,24 @@ where
     }
 }
 
+/// Metadata about a request that `RequestBuilder` flushed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestMetadata {
+    /// Number of inputs in the request payload.
+    pub input_count: usize,
+
+    /// Number of metric data points in the request payload.
+    ///
+    /// This is `0` when the encoder doesn't override `EndpointEncoder::input_data_point_count`.
+    pub data_point_count: usize,
+
+    /// Size of the request payload before compression, in bytes, framing included.
+    pub uncompressed_len: usize,
+
+    /// Size of the request payload after compression, in bytes: the size of the request body.
+    pub compressed_len: usize,
+}
+
 /// Framing written to the payload before an input.
 #[derive(Clone, Copy)]
 enum InputFraming {
@@ -519,19 +537,18 @@ where
     /// Flushes the current request payload.
     ///
     /// This resets the internal state and prepares the request builder for further encoding. If there is no data to
-    /// flush, this method will return `Ok(None)`.
+    /// flush, this method returns an empty `Vec`.
     ///
     /// This attempts to split the request payload into two smaller payloads if the original request payload is too large.
     ///
-    /// Each flushed request comes with the number of inputs it holds, the number of data points it holds, and the size
-    /// of its payload before compression, in that order.
+    /// Each flushed request comes with its `RequestMetadata`.
     ///
     /// # Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
     pub async fn flush(
         &mut self,
-    ) -> Vec<Result<(usize, usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Vec<Result<(RequestMetadata, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
             return vec![];
         }
@@ -564,7 +581,13 @@ where
         let inputs_written = self.clear_encoded_inputs();
         debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, data_points_written, "Flushing request.");
 
-        vec![request.map(|req| (inputs_written, data_points_written, uncompressed_len, req))]
+        let metadata = RequestMetadata {
+            input_count: inputs_written,
+            data_point_count: data_points_written,
+            uncompressed_len,
+            compressed_len,
+        };
+        vec![request.map(|request| (metadata, request))]
     }
 
     /// Internal implementation of `flush`.
@@ -629,7 +652,7 @@ where
 
     async fn split_request(
         &mut self,
-    ) -> Vec<Result<(usize, usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Vec<Result<(RequestMetadata, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         // Nothing to do if we have no encoded inputs.
         let mut requests = Vec::new();
         if self.encoded_inputs.is_empty() {
@@ -691,7 +714,7 @@ where
 
     async fn try_split_request(
         &mut self, inputs: &[E::Input],
-    ) -> Option<Result<(usize, usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Option<Result<(RequestMetadata, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         trace!(
             encoder = E::encoder_name(),
             endpoint = ?self.encoder.endpoint_uri(),
@@ -756,11 +779,16 @@ where
             }));
         }
 
-        let data_points_written = self.encoded_data_point_count(inputs);
+        let metadata = RequestMetadata {
+            input_count: inputs.len(),
+            data_point_count: self.encoded_data_point_count(inputs),
+            uncompressed_len,
+            compressed_len,
+        };
 
         Some(
             self.create_request(compressed_buf, inputs)
-                .map(|request| (inputs.len(), data_points_written, uncompressed_len, request)),
+                .map(|request| (metadata, request)),
         )
     }
 
@@ -801,7 +829,7 @@ mod tests {
     use proptest::{collection::vec_deque as arb_vecdeque, prelude::*, string::string_regex};
     use saluki_io::compression::CompressionScheme;
 
-    use super::{EndpointEncoder, RequestBuilder, RequestBuilderError};
+    use super::{EndpointEncoder, RequestBuilder, RequestBuilderError, RequestMetadata};
     use crate::common::datadog::io::RB_BUFFER_CHUNK_SIZE;
 
     /// An input that `TestEncoder` fails to encode.
@@ -836,8 +864,8 @@ mod tests {
         );
 
         for (request, expected_request_body) in requests.into_iter().zip(expected_request_bodies) {
-            let (request, expected_request_body) = match request {
-                Ok((_, _data_points, _uncompressed_len, request)) => (request, expected_request_body),
+            let (request_meta, request) = match request {
+                Ok(flushed) => flushed,
                 Err(e) => panic!("failed to create request: {}", e),
             };
 
@@ -874,6 +902,11 @@ mod tests {
                 "flushed request body did not match expected body: expected {:?}, got {:?}",
                 expected_request_body,
                 actual_request_body
+            );
+            assert_eq!(
+                request_meta.compressed_len,
+                actual_request_body.len(),
+                "flushed request reported a compressed size other than the size of its body"
             );
         }
     }
@@ -1122,24 +1155,34 @@ mod tests {
 
         let mut actual = Vec::new();
         for request in requests {
-            let (events, data_points, uncompressed_len, request) = request.expect("split request should be created");
+            let (request_meta, request) = request.expect("split request should be created");
             let body = request.into_body().collect().await.unwrap().to_bytes();
-            // No compression is configured, so the uncompressed size is the size of the body.
-            assert_eq!(uncompressed_len, body.len());
-            actual.push((events, data_points, String::from_utf8(body.to_vec()).unwrap()));
+            actual.push((request_meta, String::from_utf8(body.to_vec()).unwrap()));
         }
 
+        // No compression or framing is configured, so the payload sizes and the data point count all equal the size of
+        // the body.
+        let first_len = inputs[0].len() + inputs[1].len();
+        let second_len = inputs[2].len() + inputs[3].len();
         assert_eq!(
             actual,
             vec![
                 (
-                    2,
-                    inputs[0].len() + inputs[1].len(),
+                    RequestMetadata {
+                        input_count: 2,
+                        data_point_count: first_len,
+                        uncompressed_len: first_len,
+                        compressed_len: first_len,
+                    },
                     format!("{}{}", inputs[0], inputs[1])
                 ),
                 (
-                    2,
-                    inputs[2].len() + inputs[3].len(),
+                    RequestMetadata {
+                        input_count: 2,
+                        data_point_count: second_len,
+                        uncompressed_len: second_len,
+                        compressed_len: second_len,
+                    },
                     format!("{}{}", inputs[2], inputs[3])
                 ),
             ]
@@ -1360,8 +1403,10 @@ mod tests {
             let requests = request_builder.flush().await;
             for request in requests {
                 match request {
-                    Ok((events, _data_points, _uncompressed_len, _request)) => {
-                        flushed_inputs_len += events;
+                    Ok((request_meta, request)) => {
+                        prop_assert_eq!(request_meta.compressed_len, request.body().len());
+                        prop_assert!(request_meta.compressed_len <= compressed_limit);
+                        flushed_inputs_len += request_meta.input_count;
                     }
                     Err(e) => match e {
                         RequestBuilderError::PayloadTooLarge { .. } => total_oversized_subrequests += 1,
@@ -1399,8 +1444,10 @@ mod tests {
         let requests = request_builder.flush().await;
         for request in requests {
             match request {
-                Ok((events, _data_points, _uncompressed_len, _request)) => {
-                    flushed_inputs_len += events;
+                Ok((request_meta, request)) => {
+                    prop_assert_eq!(request_meta.compressed_len, request.body().len());
+                    prop_assert!(request_meta.compressed_len <= compressed_limit);
+                    flushed_inputs_len += request_meta.input_count;
                 }
                 Err(e) => match e {
                     RequestBuilderError::PayloadTooLarge { .. } => total_oversized_subrequests += 1,
@@ -1467,7 +1514,7 @@ mod tests {
         );
 
         let requests = request_builder.flush().await;
-        let (_, _, _, request) = requests.into_iter().next().unwrap().unwrap();
+        let (_, request) = requests.into_iter().next().unwrap().unwrap();
         assert_eq!(b"[a,b]", &request.into_body().collect().await.unwrap().to_bytes()[..]);
 
         assert_eq!(None, request_builder.encode("cc".to_string()).await.unwrap());
@@ -1476,7 +1523,8 @@ mod tests {
 
     #[tokio::test]
     async fn flushed_request_reports_uncompressed_size_with_framing() {
-        // The reported size is that of the payload before compression, framing included, not the size of the body.
+        // The reported uncompressed size is that of the payload before compression, framing included. The reported
+        // compressed size is the size of the body.
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit").with_delimiters(b"[", b"]", b",");
         let mut request_builder = create_zstd_compression_request_builder(encoder).await;
 
@@ -1485,9 +1533,16 @@ mod tests {
 
         let mut requests = request_builder.flush().await;
         assert_eq!(requests.len(), 1);
-        let (inputs_written, _, uncompressed_len, _) = requests.remove(0).expect("request should be created");
-        assert_eq!(inputs_written, 2);
-        assert_eq!(uncompressed_len, "[alpha,beta]".len());
+        let (request_meta, request) = requests.remove(0).expect("request should be created");
+        assert_eq!(
+            request_meta,
+            RequestMetadata {
+                input_count: 2,
+                data_point_count: "alpha".len() + "beta".len(),
+                uncompressed_len: "[alpha,beta]".len(),
+                compressed_len: request.body().len(),
+            }
+        );
     }
 
     #[tokio::test]
@@ -1559,8 +1614,8 @@ mod tests {
                 ));
             }
             assert_eq!(requests.len(), 1, "{}", second_input);
-            let (inputs_written, _, _, request) = requests.remove(0).expect("second subrequest should be created");
-            assert_eq!(inputs_written, 2);
+            let (request_meta, request) = requests.remove(0).expect("second subrequest should be created");
+            assert_eq!(request_meta.input_count, 2);
             assert_eq!(
                 b"[third,fourth]",
                 &request.into_body().collect().await.unwrap().to_bytes()[..]
