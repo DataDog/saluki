@@ -117,7 +117,7 @@ pub fn is_gcp_serverless(attributes: &[KeyValue]) -> bool {
 
 /// Adds the serverless identity tags derived from resource attributes: the Azure App Service app identity, and the
 /// dimensions of an AWS Lambda function, a Cloud Run job, or a Cloud Run service or Cloud Functions function.
-pub fn extract_serverless_tags_from_resource_attributes(attributes: &[KeyValue], tags: &mut TagSet) {
+pub(super) fn extract_serverless_tags_from_resource_attributes(attributes: &[KeyValue], tags: &mut TagSet) {
     if let Some(app) = azure_app_service_identity(attributes) {
         tags.insert_tag(format!("name:{}", app.name));
         tags.insert_tag(format!("subscription_id:{}", app.subscription_id));
@@ -904,6 +904,17 @@ mod tests {
                 ("azure.resource_group.name", "rg"),
             ]),
             vec!["name:app", "resource_group:rg", "subscription_id:sub"]
+        );
+        // An identity taken only from `cloud.resource_id` gets the same tags.
+        assert_eq!(
+            tags(&[
+                ("cloud.platform", "azure.app_service"),
+                (
+                    "cloud.resource_id",
+                    "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Web/sites/site-1"
+                ),
+            ]),
+            vec!["name:site-1", "resource_group:rg-1", "subscription_id:sub-1"]
         );
         assert!(tags(&[
             ("cloud.platform", "azure.functions"),

@@ -2,6 +2,9 @@
 
 use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue, KeyValueList};
 
+/// A qualified AWS Lambda function ARN. The Agent drops the qualifier from the source and the `function_arn` tag.
+pub const LAMBDA_ARN: &str = "arn:aws:lambda:us-east-1:123456789012:function:orders:live";
+
 pub fn string(value: &str) -> AnyValue {
     AnyValue {
         value: Some(Value::StringValue(value.to_string())),
@@ -47,9 +50,6 @@ pub fn map(entries: Vec<KeyValue>) -> AnyValue {
 pub fn empty() -> AnyValue {
     AnyValue { value: None }
 }
-
-/// A qualified AWS Lambda function ARN. The Agent drops the qualifier from the source and the `function_arn` tag.
-pub const LAMBDA_ARN: &str = "arn:aws:lambda:us-east-1:123456789012:function:orders:live";
 
 pub fn kv(key: &str, value: AnyValue) -> KeyValue {
     KeyValue {
