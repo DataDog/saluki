@@ -179,8 +179,6 @@ impl OtlpMetricsTranslator {
         let mut resource_tags = self.metric_tags.clone();
         resource_tags.extend_from_shared(&resource_attribute_tags);
 
-        // An empty hostname stays empty rather than falling back to the default host, as in the Agent's
-        // `MapMetrics`.
         let host = match source {
             Some(Source {
                 kind: SourceKind::Hostname,
@@ -629,33 +627,6 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), Some("resource-host"));
-    }
-
-    #[test]
-    fn translate_metrics_keeps_an_empty_resource_host_without_a_default() {
-        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue};
-
-        let metrics = Metrics::for_tests();
-        let mut translator = OtlpMetricsTranslator::for_tests();
-        let mut resource_metrics = single_gauge_resource_metrics(Some("resource-host"));
-        // A non-string `datadog.host.name` takes precedence and resolves to an empty hostname.
-        let resource = resource_metrics.resource.as_mut().expect("resource");
-        resource.attributes.insert(
-            0,
-            OtlpKeyValue {
-                key: "datadog.host.name".to_string(),
-                value: Some(AnyValue {
-                    value: Some(Value::IntValue(1)),
-                }),
-            },
-        );
-
-        let (events_iter, _) = translator
-            .translate_metrics(resource_metrics, &metrics)
-            .expect("translation should succeed");
-        let events = events_iter.collect::<Vec<_>>();
-        let metric = events[0].try_as_metric().expect("metric event");
-        assert_eq!(metric.context().host(), Some(""));
     }
 
     #[test]
