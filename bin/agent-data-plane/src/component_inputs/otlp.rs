@@ -22,8 +22,6 @@ pub(crate) fn otlp_receiver(receiver: &otlp::Receiver) -> OtlpReceiver {
     let http = &receiver.http;
 
     OtlpReceiver {
-        logs_enabled: receiver.logs_enabled,
-        metrics_enabled: receiver.metrics_enabled,
         grpc: OtlpGrpcReceiver {
             endpoint: grpc.endpoint.clone(),
             max_recv_msg_size_mib: grpc.max_recv_msg_size_mib,
@@ -235,8 +233,6 @@ mod tests {
 
         assert_eq!(
             OtlpReceiver {
-                logs_enabled: true,
-                metrics_enabled: false,
                 grpc: OtlpGrpcReceiver {
                     endpoint: "0.0.0.0:4317".to_string(),
                     max_recv_msg_size_mib: 11,

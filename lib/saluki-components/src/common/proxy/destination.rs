@@ -3,6 +3,7 @@
 use std::net::{IpAddr, SocketAddr};
 #[cfg(unix)]
 use std::path::PathBuf;
+use std::time::Duration;
 
 use http::{uri::Authority, Uri};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -94,6 +95,9 @@ impl Destination {
     }
 }
 
+/// How long [`listener_reached_by`] waits for a destination's host name to resolve.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Returns the listener in `listeners` that `destination` reaches, if any.
 ///
 /// A TCP destination reaches a TCP listener, and a Unix domain socket destination reaches a Unix domain socket listener
@@ -116,9 +120,11 @@ where
                 return None;
             }
 
-            // A destination that doesn't resolve yet can't be told apart from the listener, so it is let through.
-            let destinations = tokio::net::lookup_host((host.as_str(), *port))
+            // A destination that doesn't resolve yet can't be told apart from the listener, so it is let through. A
+            // slow resolver mustn't hold up startup, so a lookup that times out counts the same.
+            let destinations = tokio::time::timeout(LOOKUP_TIMEOUT, tokio::net::lookup_host((host.as_str(), *port)))
                 .await
+                .ok()?
                 .ok()?
                 .collect::<Vec<_>>();
             tcp_listeners

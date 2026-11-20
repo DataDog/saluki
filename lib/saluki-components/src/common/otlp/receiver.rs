@@ -10,12 +10,6 @@ use super::{CorsConfiguration, OtlpTlsConfiguration};
 /// Settings of the OTLP receiver's gRPC and HTTP servers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OtlpReceiver {
-    /// Whether OTLP logs are accepted.
-    pub logs_enabled: bool,
-
-    /// Whether OTLP metrics are accepted.
-    pub metrics_enabled: bool,
-
     /// gRPC server settings.
     pub grpc: OtlpGrpcReceiver,
 
@@ -260,8 +254,6 @@ pub(crate) fn receiver() -> OtlpReceiver {
         ca_file: String::new(),
     };
     OtlpReceiver {
-        logs_enabled: false,
-        metrics_enabled: false,
         grpc: OtlpGrpcReceiver {
             endpoint: String::new(),
             max_recv_msg_size_mib: 0,
