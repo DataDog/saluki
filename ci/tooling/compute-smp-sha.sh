@@ -22,54 +22,27 @@
 #   If a day had no commits, --before falls back to the latest earlier commit; if that makes
 #   baseline == comparison the run is simply a no-op delta.
 #
-# The benchmark jobs use a shallow checkout (see `.smp-checkout` in .gitlab/benchmark.yml), so
-# this script fetches the history it needs. It fetches only the last `history_depth` commits of
-# main and of the branch. If the commit is not in those commits, it fetches the full history and
-# tries again.
+# All cases except the PR comparison need git history. The jobs that run those cases must check
+# out the full history (`GIT_DEPTH: "0"`; see .gitlab/benchmark.yml), because the CI git mirror
+# does not deepen a shallow checkout: `git fetch --deepen` and `git fetch --unshallow` do not
+# change it. This script then fetches main, and stops with an error if the checkout is shallow.
 
 set -euo pipefail
-# Keep `set -e` in command substitutions, so that a failed fetch stops the script.
-shopt -s inherit_errexit
 
 role="${1:?usage: compute-smp-sha.sh <baseline|comparison>}"
 
-# The number of commits to fetch from each branch tip before we fetch the full history. This is
-# enough for a branch that is up to this many commits behind main, and for some weeks of commits
-# on main. Set `SMP_HISTORY_DEPTH` to change it, for example to test the full-history fallback.
-history_depth="${SMP_HISTORY_DEPTH:-1000}"
-
-# The refspecs for main and for the current branch. On the nightly schedule, the current branch
-# is main.
-history_refspecs() {
-    echo "+refs/heads/main:refs/remotes/origin/main"
-    if [[ "${CI_COMMIT_BRANCH}" != "main" ]]; then
-        echo "+refs/heads/${CI_COMMIT_BRANCH}:refs/remotes/origin/${CI_COMMIT_BRANCH}"
-    fi
-}
-
+# Fetch main and the current branch, so that origin/main and origin/$CI_COMMIT_BRANCH are
+# current. On the nightly schedule, the current branch is main.
 fetch_history() {
-    local refspecs
-    mapfile -t refspecs < <(history_refspecs)
-    # TEMPORARY diagnostics.
-    echo "compute-smp-sha: before fetch: shallow=$(git rev-parse --is-shallow-repository) count=$(git rev-list --count HEAD) refs:" >&2
-    git for-each-ref >&2
-    git config --list --show-origin | grep -iv "token\|auth\|header" >&2 || true
-    git fetch --verbose --deepen="${history_depth}" origin "${refspecs[@]}" >&2
-    echo "compute-smp-sha: after fetch: shallow=$(git rev-parse --is-shallow-repository) count=$(git rev-list --count HEAD) main=$(git rev-list --count origin/main || true)" >&2
-    git for-each-ref >&2
-}
-
-# Fetch the full history. Returns 1 if the repository has the full history already.
-fetch_full_history() {
-    local refspecs
-    if [[ "$(git rev-parse --is-shallow-repository)" != "true" ]]; then
-        return 1
+    local refspecs=("+refs/heads/main:refs/remotes/origin/main")
+    if [[ "${CI_COMMIT_BRANCH}" != "main" ]]; then
+        refspecs+=("+refs/heads/${CI_COMMIT_BRANCH}:refs/remotes/origin/${CI_COMMIT_BRANCH}")
     fi
-    echo "compute-smp-sha: the commit is not in the last ${history_depth} commits, fetching the full history" >&2
-    mapfile -t refspecs < <(history_refspecs)
-    git fetch --verbose --unshallow origin "${refspecs[@]}" >&2
-    # TEMPORARY diagnostics.
-    echo "compute-smp-sha: after unshallow: shallow=$(git rev-parse --is-shallow-repository) count=$(git rev-list --count HEAD) main=$(git rev-list --count origin/main || true)" >&2
+    if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+        echo "compute-smp-sha: the checkout is shallow, so the ${role} commit can be incorrect. Set GIT_DEPTH to 0 for this job." >&2
+        exit 1
+    fi
+    git fetch --quiet origin "${refspecs[@]}" >&2
 }
 
 # Most recent origin/main commit committed strictly before 00:00:00 UTC of the given
@@ -78,39 +51,29 @@ last_commit_before_day() {
     git rev-list -n 1 --before="$1 00:00:00 +0000" origin/main
 }
 
-# Fetch the history, then run the given command and print its output. If the command gives no
-# output, fetch the full history and run the command again.
-#
-# A shallow history cannot give an incorrect result: if the correct commit is not in the shallow
-# history, then no older commit that would also match is in it.
-with_history() {
-    local sha
-    fetch_history
-    sha="$("$@" || true)"
-    if [[ -z "${sha}" ]] && fetch_full_history; then
-        sha="$("$@" || true)"
-    fi
-    if [[ -z "${sha}" ]]; then
-        echo "compute-smp-sha: could not resolve the ${role} commit with: $*" >&2
-        return 1
-    fi
-    echo "${sha}"
-}
-
 if [[ "${CI_PIPELINE_SOURCE:-}" == "schedule" ]]; then
+    fetch_history
     run_date="$(date -u -d "${CI_PIPELINE_CREATED_AT}" +%F)"
     day_before="$(date -u -d "${run_date} -1 day" +%F)"
     case "${role}" in
-        comparison) sha="$(with_history last_commit_before_day "${run_date}")" ;;
-        baseline)   sha="$(with_history last_commit_before_day "${day_before}")" ;;
+        comparison) sha="$(last_commit_before_day "${run_date}")" ;;
+        baseline)   sha="$(last_commit_before_day "${day_before}")" ;;
         *) echo "unknown role: ${role}" >&2; exit 1 ;;
     esac
 else
     case "${role}" in
         comparison) sha="${CI_COMMIT_SHA}" ;;
-        baseline)   sha="$(with_history git merge-base origin/main "origin/${CI_COMMIT_BRANCH}")" ;;
+        baseline)
+            fetch_history
+            sha="$(git merge-base origin/main "origin/${CI_COMMIT_BRANCH}")"
+            ;;
         *) echo "unknown role: ${role}" >&2; exit 1 ;;
     esac
+fi
+
+if [[ -z "${sha}" ]]; then
+    echo "compute-smp-sha: could not resolve the ${role} commit" >&2
+    exit 1
 fi
 
 echo "compute-smp-sha: ${role} commit is ${sha}" >&2
