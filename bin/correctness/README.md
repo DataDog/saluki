@@ -4,8 +4,10 @@ This directory contains a number of tools/utilities that are used in conjunction
 the metrics correctness testing framework we use to check Agent Data Plane's behavior against the Datadog Agent. It
 consists of the following components:
 
-- `airlock`: helper library for running containers and host processes. Each case gets its own network and volume, so
-  concurrent cases don't collide
+- `airlock`: helper library for running containers and host processes. Each case's containers get their own network
+  and, on Linux, volume, so concurrent cases don't collide. Host processes get no network or volume: they share the
+  runner host's network and use one fixed state directory, so `panoramic` runs only one case with host processes at a
+  time
 - `courier`: a small static binary that `panoramic` runs inside containers to probe listeners, send bytes, make plain
   HTTP requests and follow log files from where the software runs
 - `panoramic`: unified test runner for both correctness tests and integration tests. A case is a directory of
