@@ -159,7 +159,8 @@ build-adp-comparison-image:
     - docker buildx create --name adp-builder --driver docker-container --use
     # Temporary credentials (from the runner's own IAM role, not the SMP profile) for the shared build cache.
     - ci/tooling/get-temporary-aws-credentials.sh
-    # We don't pass `APP_GIT_HASH`, to keep the build cache warm: see build-adp-baseline-image.
+    # We don't pass `APP_GIT_HASH`, to keep the build cache warm: see build-adp-baseline-image. The baseline and
+    # comparison builds then share every cached crate that the PR doesn't change.
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
