@@ -163,11 +163,11 @@ fn build_ipc_client_tls_config_with_provider(
     let protocol_versions = ipc_client_protocol_versions(&provider);
     let config = ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(protocol_versions)
-        .map_err(|e| generic_error!("Failed to select TLS protocol versions: {}", e))?
+        .error_context("Failed to select TLS protocol versions.")?
         .dangerous()
         .with_custom_certificate_verifier(agent_cert_verifier)
         .with_client_auth_cert(vec![cert], key)
-        .map_err(|e| generic_error!("Failed to set the client certificate: {}", e))?;
+        .error_context("Failed to set the client certificate.")?;
 
     ensure_client_config_fips_compliant(&config)?;
 
@@ -179,7 +179,11 @@ fn build_ipc_client_tls_config_with_provider(
 /// The client offers only TLS 1.3 when the provider has a TLS 1.3 cipher suite. Otherwise, it offers only TLS 1.2. For
 /// example, the Windows CNG provider in FIPS mode has no TLS 1.3 cipher suites on Windows Server 2016, because CNG
 /// there has no HKDF algorithm. Its TLS 1.2 cipher suites use the CNG TLS 1.2 key derivation function, which is
-/// available in FIPS mode. The Datadog Agent's IPC server accepts both versions.
+/// available in FIPS mode.
+///
+/// The TLS 1.2 fallback relies on the Datadog Agent's IPC server accepting TLS 1.2. Its server configuration sets no
+/// minimum version, so Go's default minimum of TLS 1.2 applies:
+/// <https://github.com/DataDog/datadog-agent/blob/a04e8aa6d8a46856d37cfbe064dd936d1e214701/pkg/api/security/cert/cert_getter.go#L179-L185>
 fn ipc_client_protocol_versions(provider: &CryptoProvider) -> &'static [&'static SupportedProtocolVersion] {
     if provider.cipher_suites.iter().any(|suite| suite.tls13().is_some()) {
         IPC_TLS13_ONLY
