@@ -11,7 +11,6 @@ use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, 
 use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
-use crate::common::otlp::source::resolve_source_from_attributes;
 use crate::common::otlp::traces::translator::ContainerTagPromotion;
 use crate::common::otlp::value::{otlp_value_as_string, otlp_value_to_string};
 
@@ -608,13 +607,6 @@ pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> 
     (!INVALID_HOSTNAMES.contains(&hostname.as_str())).then_some(hostname)
 }
 
-/// Resolves the source metadata from OTLP metric resource attributes.
-pub fn resource_to_metric_source(
-    resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
-) -> Option<Source> {
-    resolve_source_from_attributes(&resource.attributes)
-}
-
 /// Resolves the source metadata from a typed attributes map.
 ///
 /// The trace encoder only resolves AWS ECS Fargate tasks and `host.name` hosts.
@@ -652,10 +644,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
 
 #[cfg(test)]
 mod tests {
-    use otlp_protos::opentelemetry::proto::{
-        common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue},
-        resource::v1::Resource,
-    };
+    use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue};
     use stringtheory::interning::GenericMapInterner;
 
     use super::*;
@@ -668,13 +657,6 @@ mod tests {
                 value: Some(Value::StringValue(value.to_string())),
             }),
         }
-    }
-
-    fn metric_source(attributes: Vec<KeyValue>) -> Option<Source> {
-        resource_to_metric_source(&Resource {
-            attributes,
-            ..Default::default()
-        })
     }
 
     #[test]
@@ -1077,19 +1059,6 @@ mod tests {
     }
 
     #[test]
-    fn fargate_resource_is_not_a_hostname_source() {
-        let source = metric_source(vec![
-            string_attribute(AWS_ECS_LAUNCHTYPE, "fargate"),
-            string_attribute(AWS_ECS_TASK_ARN, "task-arn"),
-            string_attribute(HOST_NAME, "host-name"),
-        ])
-        .expect("Fargate source should resolve");
-
-        assert_eq!(source.kind, SourceKind::AwsEcsFargate);
-        assert_eq!(source.identifier, "task-arn");
-    }
-
-    #[test]
     fn aks_and_ec2_cluster_name_helpers_extract_cluster_names() {
         let azure_attributes = vec![
             string_attribute(CLOUD_PROVIDER, "azure"),
@@ -1113,15 +1082,6 @@ mod tests {
             ];
             assert_eq!(kubernetes_cluster_name(&attributes), None);
         }
-    }
-
-    #[test]
-    fn recognized_cloud_providers_do_not_fall_through_to_kubernetes_or_generic_hosts() {
-        assert!(metric_source(vec![
-            string_attribute(CLOUD_PROVIDER, "azure"),
-            string_attribute(K8S_NODE_NAME, "node-name"),
-        ])
-        .is_none());
     }
 
     fn attribute_value(key: &str, value: Value) -> KeyValue {
@@ -1286,6 +1246,11 @@ mod tests {
                 "Azure falls back to host.name",
                 vec![s(CLOUD_PROVIDER, "azure"), s(HOST_NAME, "name")],
                 host("name"),
+            ),
+            (
+                "Azure without host.id or host.name doesn't fall back",
+                vec![s(CLOUD_PROVIDER, "azure"), s(K8S_NODE_NAME, "node")],
+                None,
             ),
             (
                 "Kubernetes node and cluster",

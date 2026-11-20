@@ -36,7 +36,7 @@ use super::telemetry::OtlpMetricsTranslatorMetrics;
 use crate::common::otlp::attributes::translator::AttributeTranslator;
 use crate::common::otlp::attributes::ResourceAttributeTagMode;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
-use crate::common::otlp::source::is_gcp_serverless;
+use crate::common::otlp::source::{is_gcp_serverless, resolve_source_from_attributes};
 use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::Metrics;
 
@@ -160,7 +160,7 @@ impl OtlpMetricsTranslator {
         let mut events = Vec::new();
         let mut detected_languages = FastHashSet::default();
         let resource = resource_metrics.resource.unwrap_or_default();
-        let source = self.attribute_translator.resource_to_metric_source(&resource);
+        let source = resolve_source_from_attributes(&resource.attributes);
 
         let resource_tag_mode = if self.config.resource_attributes_as_tags {
             ResourceAttributeTagMode::All
