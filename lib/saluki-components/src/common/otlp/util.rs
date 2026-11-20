@@ -143,7 +143,9 @@ const TAG_SOURCE_SEMANTIC_CONVENTION: u8 = 3;
 // Attribute helper functions
 // ============================================================================
 
-/// Extracts a string attribute value from OTLP KeyValue attributes by key.
+/// Returns the value of the first attribute named `key` that holds a string.
+///
+/// Attributes named `key` that don't hold a string are skipped. See [`first_attribute_str`] for the `pdata` reading.
 pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
     attributes.iter().find_map(|kv| {
         if kv.key == key {
@@ -480,7 +482,7 @@ const INVALID_HOSTNAMES: [&str; 6] = [
 /// Returns the value of the first attribute named `key`, like `Map.Get` in `pdata`.
 ///
 /// The inner `Option` is `None` for an attribute that is present but has an empty value.
-pub(super) fn get_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
+pub(super) fn first_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
     attributes
         .iter()
         .find(|kv| kv.key == key)
@@ -491,8 +493,8 @@ pub(super) fn get_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
 ///
 /// Unlike [`get_string_attribute`], a present attribute that isn't a string yields `Some("")`, so a
 /// presence check succeeds for it.
-pub(super) fn get_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
-    get_attribute(attributes, key).map(|value| match value {
+pub(super) fn first_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
+    first_attribute(attributes, key).map(|value| match value {
         Some(Value::StringValue(s_val)) => s_val.as_str(),
         _ => "",
     })
@@ -521,12 +523,12 @@ fn ec2_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
 
 /// Resolves the Kubernetes cluster name from resource attributes.
 fn kubernetes_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    if let Some(cluster_name) = get_attribute_str(attributes, K8S_CLUSTER_NAME) {
+    if let Some(cluster_name) = first_attribute_str(attributes, K8S_CLUSTER_NAME) {
         return Some(cluster_name);
     }
 
-    match get_attribute_str(attributes, CLOUD_PROVIDER) {
-        Some("azure") => get_attribute_str(attributes, AZURE_RESOURCE_GROUP_NAME).and_then(aks_cluster_name),
+    match first_attribute_str(attributes, CLOUD_PROVIDER) {
+        Some("azure") => first_attribute_str(attributes, AZURE_RESOURCE_GROUP_NAME).and_then(aks_cluster_name),
         Some("aws") => ec2_cluster_name(attributes),
         _ => None,
     }
@@ -534,30 +536,30 @@ fn kubernetes_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str>
 
 /// Resolves the hostname for an Azure resource.
 fn azure_hostname(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    get_attribute_str(attributes, HOST_ID).or_else(|| get_attribute_str(attributes, HOST_NAME))
+    first_attribute_str(attributes, HOST_ID).or_else(|| first_attribute_str(attributes, HOST_NAME))
 }
 
 /// Resolves the hostname for an EC2 resource.
 fn ec2_hostname(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    get_attribute_str(attributes, HOST_ID)
+    first_attribute_str(attributes, HOST_ID)
 }
 
 /// Resolves the hostname for a GCP resource.
 pub(super) fn gcp_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
-    let host_name = get_attribute_str(attributes, HOST_NAME)?;
+    let host_name = first_attribute_str(attributes, HOST_NAME)?;
     let host_name = if host_name.matches('.').count() >= 3 {
         host_name.split_once('.').map_or(host_name, |(name, _)| name)
     } else {
         host_name
     };
-    let cloud_account_id = get_attribute_str(attributes, CLOUD_ACCOUNT_ID)?;
+    let cloud_account_id = first_attribute_str(attributes, CLOUD_ACCOUNT_ID)?;
 
     Some(format!("{host_name}.{cloud_account_id}"))
 }
 
 /// Resolves a Kubernetes hostname from resource attributes.
 fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
-    let node_name = get_attribute_str(attributes, K8S_NODE_NAME)?;
+    let node_name = first_attribute_str(attributes, K8S_NODE_NAME)?;
     let cluster_name = kubernetes_cluster_name(attributes);
 
     Some(match cluster_name {
@@ -573,19 +575,19 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
 fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     // A literal `host` of any type stops resolution, rendered as `Value.AsString` in `pdata` does. Only
     // the JSON layout of arrays and maps is approximate.
-    if let Some(hostname) = get_attribute(attributes, ATTRIBUTE_HOST) {
+    if let Some(hostname) = first_attribute(attributes, ATTRIBUTE_HOST) {
         return Some(otlp_value_as_string(hostname).into_owned());
     }
 
-    if let Some(hostname) = get_attribute_str(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
+    if let Some(hostname) = first_attribute_str(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
         return Some(hostname.to_string());
     }
 
-    if get_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
+    if first_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
         return None;
     }
 
-    match get_attribute_str(attributes, CLOUD_PROVIDER) {
+    match first_attribute_str(attributes, CLOUD_PROVIDER) {
         Some("aws") => return ec2_hostname(attributes).map(str::to_owned),
         Some("gcp") => return gcp_hostname(attributes),
         Some("azure") => return azure_hostname(attributes).map(str::to_owned),
@@ -593,8 +595,8 @@ fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) ->
     }
 
     kubernetes_hostname(attributes)
-        .or_else(|| get_attribute_str(attributes, HOST_ID).map(str::to_owned))
-        .or_else(|| get_attribute_str(attributes, HOST_NAME).map(str::to_owned))
+        .or_else(|| first_attribute_str(attributes, HOST_ID).map(str::to_owned))
+        .or_else(|| first_attribute_str(attributes, HOST_NAME).map(str::to_owned))
 }
 
 /// Resolves a valid hostname from resource attributes.
