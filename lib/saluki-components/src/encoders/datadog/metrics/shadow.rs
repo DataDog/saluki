@@ -117,7 +117,7 @@ impl<'a> SketchShadowState<'a> {
         let Some(sampled_destinations) = self.sampled_destinations.take() else {
             // Allow a fresh sampling decision for the next batch.
             self.sampling_decided = false;
-            return flush_v2_metrics(builder, tx, Some(MetricsPayloadInfo::v2_sketches()))
+            return flush_v2_metrics(builder, context.telemetry, tx, Some(MetricsPayloadInfo::v2_sketches()))
                 .await
                 .map(|_| ());
         };
@@ -125,6 +125,12 @@ impl<'a> SketchShadowState<'a> {
         self.sampling_decided = false;
         let flushed = builder.flush().await;
         let baseline_failed = flushed.inputs_dropped > 0;
+        if baseline_failed {
+            context
+                .telemetry
+                .events_dropped_encoder()
+                .increment(flushed.inputs_dropped as u64);
+        }
         let mut requests = Vec::new();
         let mut fatal_error = None;
         for request in flushed.requests {
@@ -206,6 +212,7 @@ mod tests {
             tags::TagSet,
         },
     };
+    use saluki_metrics::test::TestRecorder;
 
     use super::*;
     use crate::common::datadog::{test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH};
@@ -336,6 +343,8 @@ mod tests {
         let mut builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &endpoint_config)
             .await
             .unwrap();
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = V3FlushContext {
@@ -362,6 +371,13 @@ mod tests {
         assert!(
             rx.recv().await.is_none(),
             "an incomplete baseline must not emit a shadow"
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")][..]
+            )),
+            Some(2)
         );
     }
 

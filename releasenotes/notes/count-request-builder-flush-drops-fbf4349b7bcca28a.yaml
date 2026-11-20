@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    The traces, APM stats, and metrics encoders in Agent Data Plane now count the items that they drop when they can't
+    build a payload, for example a payload that is too large after compression and can't be split. Before, they
+    dropped these items without a count. Each dropped trace, APM stats item, or metric is now reported in
+    ``component_events_dropped_total`` with ``drop_reason:encoder_failure``. For metrics, the count includes the
+    metrics dropped from V2 payloads. When V3 metrics are enabled, the V3 payloads can still contain these metrics.

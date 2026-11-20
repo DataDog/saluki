@@ -432,6 +432,9 @@ async fn run_request_builder(
                     if flushed.requests.is_empty() {
                         panic!("builder told us to flush, but gave us nothing");
                     }
+                    if flushed.inputs_dropped > 0 {
+                        telemetry.events_dropped_encoder().increment(flushed.inputs_dropped as u64);
+                    }
 
                     for maybe_request in flushed.requests {
                         match maybe_request {
@@ -445,7 +448,6 @@ async fn run_request_builder(
                                     .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
                             },
                             Err(e) => if e.is_recoverable() {
-                                // If the error is recoverable, we'll hold on to the trace to retry it later.
                                 continue;
                             } else {
                                 return Err(GenericError::from(e).context("Failed to flush request."));
@@ -483,6 +485,9 @@ async fn run_request_builder(
                 // Once we've encoded and written all traces, we flush the request builders to generate a request with
                 // anything left over. Again, we'll enqueue those requests to be sent immediately.
                 let flushed = trace_request_builder.flush().await;
+                if flushed.inputs_dropped > 0 {
+                    telemetry.events_dropped_encoder().increment(flushed.inputs_dropped as u64);
+                }
                 for maybe_request in flushed.requests {
                     match maybe_request {
                         Ok((request_meta, request)) => {
@@ -1866,6 +1871,54 @@ mod tests {
                 Some(expected_largest)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn request_builder_counts_traces_in_payloads_it_drops() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+
+        // Each payload holds one trace, and no payload fits under the compressed size limit, so the flush after the
+        // first trace and the flush on the timer each drop one.
+        let mut request_builder =
+            RequestBuilder::new(make_encoder(false), CompressionScheme::noop(), RB_BUFFER_CHUNK_SIZE)
+                .await
+                .expect("request builder should be created");
+        request_builder.with_max_inputs_per_payload(1);
+        request_builder
+            .with_len_limits(usize::MAX, 1)
+            .expect("limits should be accepted");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        for id in [1, 2] {
+            let trace = make_sampled_trace(vec![make_span(id, false)], false);
+            assert!(events.try_push(Event::Trace(trace)).is_none());
+        }
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            TracePayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        assert!(payloads_rx.recv().await.is_none());
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")][..]
+            )),
+            Some(2)
+        );
     }
 
     #[test]

@@ -306,6 +306,9 @@ async fn run_request_builder(
                     if flushed.requests.is_empty() {
                         panic!("builder told us to flush, but gave us nothing");
                     }
+                    if flushed.inputs_dropped > 0 {
+                        telemetry.events_dropped_encoder().increment(flushed.inputs_dropped as u64);
+                    }
 
                     for maybe_request in flushed.requests {
                         match maybe_request {
@@ -353,6 +356,9 @@ async fn run_request_builder(
                 pending_flush = false;
 
                 let flushed = stats_request_builder.flush().await;
+                if flushed.inputs_dropped > 0 {
+                    telemetry.events_dropped_encoder().increment(flushed.inputs_dropped as u64);
+                }
                 for maybe_request in flushed.requests {
                     match maybe_request {
                         Ok((request_meta, request)) => {
@@ -593,6 +599,61 @@ mod tests {
         assert_eq!(
             StatsCounts::from_trace_stats(&TraceStats::new(Vec::new())),
             StatsCounts::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn request_builder_counts_stats_in_payloads_it_drops() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let config = DatadogApmStatsEncoderConfiguration::new(
+            Duration::from_secs(2),
+            AgentEnv::resolve(None, Some("prod"), &[], &[]),
+        );
+
+        // Each payload holds one stats item, and no payload fits under the compressed size limit, so the flush after
+        // the first item and the flush on the timer each drop one.
+        let mut request_builder = RequestBuilder::new(
+            config.endpoint_encoder(),
+            CompressionScheme::noop(),
+            RB_BUFFER_CHUNK_SIZE,
+        )
+        .await
+        .expect("request builder should be created");
+        request_builder.with_max_inputs_per_payload(1);
+        request_builder
+            .with_len_limits(usize::MAX, 1)
+            .expect("limits should be accepted");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        for entries in [1, 2] {
+            let stats = TraceStats::new(vec![make_client_payload(&[entries])]);
+            assert!(events.try_push(Event::TraceStats(stats)).is_none());
+        }
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            StatsPayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        assert!(payloads_rx.recv().await.is_none());
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")][..]
+            )),
+            Some(2)
         );
     }
 
