@@ -158,20 +158,31 @@ impl SourceBuilder for OtlpConfiguration {
             ));
         }
 
-        let grpc_listen_str = format!(
-            "{}://{}",
-            self.receiver.grpc.transport.as_str(),
-            self.receiver.grpc.endpoint
-        );
-        let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
-            .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
+        // An empty endpoint turns its server off.
+        let grpc_endpoint = if self.receiver.grpc.endpoint.is_empty() {
+            None
+        } else {
+            let grpc_listen_str = format!(
+                "{}://{}",
+                self.receiver.grpc.transport.as_str(),
+                self.receiver.grpc.endpoint
+            );
+            let address = ListenAddress::try_from(grpc_listen_str.as_str())
+                .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
+            Some(address)
+        };
 
         let http_endpoint_str = &self.receiver.http.endpoint;
-        let http_socket_addr = http_endpoint_str
-            .to_socket_addrs()
-            .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
-            .next()
-            .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
+        let http_endpoint = if http_endpoint_str.is_empty() {
+            None
+        } else {
+            let http_socket_addr = http_endpoint_str
+                .to_socket_addrs()
+                .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
+                .next()
+                .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
+            Some(ListenAddress::Tcp(http_socket_addr))
+        };
 
         let origin_tag_resolver = OtlpOriginTagResolver::new(Arc::clone(&self.workload_provider));
 
@@ -197,7 +208,7 @@ impl SourceBuilder for OtlpConfiguration {
             context_resolver,
             origin_tag_resolver,
             grpc_endpoint,
-            http_endpoint: ListenAddress::Tcp(http_socket_addr),
+            http_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_http2_config,
             http_max_request_body_size,
@@ -229,8 +240,8 @@ impl MemoryBounds for OtlpConfiguration {
 pub struct Otlp {
     context_resolver: ContextResolver,
     origin_tag_resolver: OtlpOriginTagResolver,
-    grpc_endpoint: ListenAddress,
-    http_endpoint: ListenAddress,
+    grpc_endpoint: Option<ListenAddress>,
+    http_endpoint: Option<ListenAddress>,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
@@ -894,6 +905,52 @@ mod tests {
             ("reason", "decode"),
         ];
         assert_eq!(recorder.counter(("component_errors_total", decode_tags)), Some(0));
+    }
+
+    #[tokio::test]
+    async fn an_empty_endpoint_leaves_its_server_unbound() {
+        let mut config = source_configuration();
+        config.receiver.logs_enabled = true;
+        config.receiver.grpc.endpoint = String::new();
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
+
+        let (control, _outputs) = TestComponentDriver::source(config)
+            .await
+            .expect("source should build with only an HTTP endpoint");
+
+        let mut bound = control
+            .supervisor()
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-http"));
+        match bound.recv().await {
+            Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(_))) => {}
+            update => panic!("expected the HTTP server to bind, got {update:?}"),
+        }
+
+        let grpc = control
+            .supervisor()
+            .dataspace()
+            .current_values::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-grpc"));
+        assert!(grpc.is_empty(), "the gRPC server should not bind, got {grpc:?}");
+
+        control.shutdown().await.expect("source should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn source_fails_when_both_endpoints_are_empty() {
+        let mut config = source_configuration();
+        config.receiver.logs_enabled = true;
+
+        let (control, _outputs) = TestComponentDriver::source(config).await.expect("source should build");
+
+        let error = control
+            .wait()
+            .await
+            .expect_err("source should fail to start any server");
+        assert!(
+            error.to_string().contains("Both OTLP receiver endpoints are empty"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

@@ -3344,7 +3344,15 @@ inventory:
   otlp_config.receiver.protocols.grpc.endpoint:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.receiver.protocols.grpc.endpoint"
+    description: "OTLP gRPC receiver listen address"
+    documentation: |-
+      Address that ADP listens on for OTLP gRPC requests. Defaults to `localhost:4317`.
+      An empty value disables the gRPC receiver. If both receiver endpoints are empty, ADP fails to start OTLP ingest.
+      `data_plane.otlp.receiver_grpc_endpoint_temporary` overrides this value when it is set.
+
+      ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
+      doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols that
+      the configuration lists.
 
   otlp_config.receiver.protocols.grpc.include_metadata:
     support: none
@@ -3680,7 +3688,15 @@ inventory:
   otlp_config.receiver.protocols.http.endpoint:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.receiver.protocols.http.endpoint"
+    description: "OTLP HTTP receiver listen address"
+    documentation: |-
+      Address that ADP listens on for OTLP HTTP requests. Defaults to `localhost:4318`.
+      An empty value disables the HTTP receiver. If both receiver endpoints are empty, ADP fails to start OTLP ingest.
+      `data_plane.otlp.receiver_http_endpoint_temporary` overrides this value when it is set.
+
+      ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
+      doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols that
+      the configuration lists.
 
   otlp_config.receiver.protocols.http.idle_timeout:
     support: unknown

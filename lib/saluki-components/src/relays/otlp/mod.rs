@@ -31,18 +31,21 @@ impl OtlpRelayConfiguration {
         Self { receiver }
     }
 
-    fn http_endpoint(&self) -> ListenAddress {
-        let address = format!("{}://{}", self.receiver.http.transport, self.receiver.http.endpoint);
-        ListenAddress::try_from(address).expect("valid HTTP endpoint")
+    /// Returns the HTTP listen address, or `None` if the endpoint is empty.
+    fn http_endpoint(&self) -> Option<ListenAddress> {
+        let http = &self.receiver.http;
+        (!http.endpoint.is_empty()).then(|| {
+            ListenAddress::try_from(format!("{}://{}", http.transport, http.endpoint)).expect("valid HTTP endpoint")
+        })
     }
 
-    fn grpc_endpoint(&self) -> ListenAddress {
-        let address = format!(
-            "{}://{}",
-            self.receiver.grpc.transport.as_str(),
-            self.receiver.grpc.endpoint
-        );
-        ListenAddress::try_from(address).expect("valid gRPC endpoint")
+    /// Returns the gRPC listen address, or `None` if the endpoint is empty.
+    fn grpc_endpoint(&self) -> Option<ListenAddress> {
+        let grpc = &self.receiver.grpc;
+        (!grpc.endpoint.is_empty()).then(|| {
+            ListenAddress::try_from(format!("{}://{}", grpc.transport.as_str(), grpc.endpoint))
+                .expect("valid gRPC endpoint")
+        })
     }
 
     fn grpc_max_recv_msg_size_bytes(&self) -> usize {
@@ -89,8 +92,8 @@ impl RelayBuilder for OtlpRelayConfiguration {
 ///
 /// Receives OTLP metrics and logs via gRPC and HTTP, outputting payloads for downstream processing.
 pub struct OtlpRelay {
-    http_endpoint: ListenAddress,
-    grpc_endpoint: ListenAddress,
+    http_endpoint: Option<ListenAddress>,
+    grpc_endpoint: Option<ListenAddress>,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
@@ -149,7 +152,7 @@ impl Relay for OtlpRelay {
             .await?;
 
         health.mark_ready();
-        debug!(%http_endpoint, %grpc_endpoint, "OTLP relay started.");
+        debug!(?http_endpoint, ?grpc_endpoint, "OTLP relay started.");
 
         loop {
             select! {
@@ -295,8 +298,16 @@ mod tests {
         receiver.http.transport = "tcp".to_string();
         let config = OtlpRelayConfiguration::new(receiver);
 
-        assert_eq!(config.grpc_endpoint().to_string(), "tcp://0.0.0.0:4317");
-        assert_eq!(config.http_endpoint().to_string(), "tcp://0.0.0.0:4318");
+        assert_eq!(config.grpc_endpoint().unwrap().to_string(), "tcp://0.0.0.0:4317");
+        assert_eq!(config.http_endpoint().unwrap().to_string(), "tcp://0.0.0.0:4318");
+    }
+
+    #[test]
+    fn empty_endpoints_have_no_address() {
+        let config = OtlpRelayConfiguration::new(receiver());
+
+        assert!(config.grpc_endpoint().is_none());
+        assert!(config.http_endpoint().is_none());
     }
 
     #[test]

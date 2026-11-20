@@ -36,7 +36,7 @@ use saluki_core::accounting::MemoryLimiter;
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::runtime;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_io::net::server::http::{Http2Config, HttpServer};
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
@@ -315,9 +315,11 @@ const GRPC_SERVER_ID: &str = "otlp-grpc";
 ///
 /// Holds the raw inputs needed to construct and start the OTLP HTTP and gRPC servers. Call [`build`][Self::build] to
 /// validate the configuration and spawn the servers.
+///
+/// A server with no endpoint doesn't start.
 pub struct OtlpServerConfiguration {
-    http_endpoint: ListenAddress,
-    grpc_endpoint: ListenAddress,
+    http_endpoint: Option<ListenAddress>,
+    grpc_endpoint: Option<ListenAddress>,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
@@ -331,7 +333,7 @@ pub struct OtlpServerConfiguration {
 impl OtlpServerConfiguration {
     /// Creates a new OTLP server configuration.
     pub fn new(
-        http_endpoint: ListenAddress, grpc_endpoint: ListenAddress, grpc_max_recv_msg_size_bytes: usize,
+        http_endpoint: Option<ListenAddress>, grpc_endpoint: Option<ListenAddress>, grpc_max_recv_msg_size_bytes: usize,
     ) -> Self {
         Self {
             http_endpoint,
@@ -404,11 +406,18 @@ impl OtlpServerConfiguration {
     ///
     /// # Errors
     ///
-    /// If the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound, or the TLS
-    /// configuration is invalid, an error is returned.
+    /// If neither endpoint is set, the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound,
+    /// or the TLS configuration is invalid, an error is returned.
     pub async fn build<H: OtlpHandler>(
         self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, worker_pool: &Handle,
     ) -> Result<(), GenericError> {
+        if self.grpc_endpoint.is_none() && self.http_endpoint.is_none() {
+            return Err(generic_error!(
+                "Both OTLP receiver endpoints are empty, so no OTLP server can start. Set \
+                 `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`."
+            ));
+        }
+
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
@@ -423,76 +432,79 @@ impl OtlpServerConfiguration {
         };
 
         // Create and spawn the gRPC server.
-        let inner_grpc = GrpcServiceImpl::new(otlp_handler.clone(), memory_limiter.clone(), metrics.clone());
+        if let Some(grpc_endpoint) = self.grpc_endpoint {
+            let inner_grpc = GrpcServiceImpl::new(otlp_handler.clone(), memory_limiter.clone(), metrics.clone());
 
-        let grpc_metrics_server =
-            MetricsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+            let grpc_metrics_server = MetricsServiceServer::new(inner_grpc.clone())
+                .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        let grpc_logs_server =
-            LogsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+            let grpc_logs_server =
+                LogsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        let grpc_traces_server =
-            TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+            let grpc_traces_server =
+                TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        // The gRPC endpoint is served by an HTTP server: gRPC is HTTP/2 with a distinct route naming convention, so
-        // the generated services are just another route set. It is restricted to HTTP/2 because the OTLP gRPC port
-        // only ever serves gRPC, and an HTTP/1.1 caller belongs on the HTTP endpoint instead.
-        let mut grpc_server = HttpServer::from_listen_address(self.grpc_endpoint.clone())
-            .add_grpc_service(grpc_metrics_server)
-            .add_grpc_service(grpc_logs_server)
-            .add_grpc_service(grpc_traces_server)
-            .with_http2_only()
-            .with_http2_config(self.grpc_http2_config)
-            .with_server_id(self.grpc_server_id)
-            .with_worker_pool(worker_pool.clone());
+            // The gRPC endpoint is served by an HTTP server: gRPC is HTTP/2 with a distinct route naming convention,
+            // so the generated services are just another route set. It is restricted to HTTP/2 because the OTLP gRPC
+            // port only ever serves gRPC, and an HTTP/1.1 caller belongs on the HTTP endpoint instead.
+            let mut grpc_server = HttpServer::from_listen_address(grpc_endpoint)
+                .add_grpc_service(grpc_metrics_server)
+                .add_grpc_service(grpc_logs_server)
+                .add_grpc_service(grpc_traces_server)
+                .with_http2_only()
+                .with_http2_config(self.grpc_http2_config)
+                .with_server_id(self.grpc_server_id)
+                .with_worker_pool(worker_pool.clone());
 
-        if let Some(tls_config) = grpc_tls_config {
-            grpc_server = grpc_server.with_tls_config(tls_config);
+            if let Some(tls_config) = grpc_tls_config {
+                grpc_server = grpc_server.with_tls_config(tls_config);
+            }
+
+            runtime::nested_supervisor(grpc_server.into_supervisor())
+                .needed()
+                .stops_with_owner()
+                .spawn();
         }
-
-        runtime::nested_supervisor(grpc_server.into_supervisor())
-            .needed()
-            .stops_with_owner()
-            .spawn();
 
         // Create and spawn the HTTP server.
-        //
-        // Apply an explicit body-size limit. A configured `0` selects the receiver's 20 MiB compatibility default; a
-        // positive value is the limit in bytes. Axum's own default is not the receiver's default and must not be left
-        // implicit.
-        let max_body_size = if self.http_max_request_body_size == 0 {
-            HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE
-        } else {
-            self.http_max_request_body_size as usize
-        };
+        if let Some(http_endpoint) = self.http_endpoint {
+            // Apply an explicit body-size limit. A configured `0` selects the receiver's 20 MiB compatibility default;
+            // a positive value is the limit in bytes. Axum's own default is not the receiver's default and must not be
+            // left implicit.
+            let max_body_size = if self.http_max_request_body_size == 0 {
+                HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE
+            } else {
+                self.http_max_request_body_size as usize
+            };
 
-        let router = Router::new()
-            .route("/v1/metrics", post(http_metrics_handler::<H>))
-            .route("/v1/logs", post(http_logs_handler::<H>))
-            .route("/v1/traces", post(http_traces_handler::<H>))
-            .layer(DefaultBodyLimit::max(max_body_size))
-            .with_state((otlp_handler, memory_limiter, metrics));
+            let router = Router::new()
+                .route("/v1/metrics", post(http_metrics_handler::<H>))
+                .route("/v1/logs", post(http_logs_handler::<H>))
+                .route("/v1/traces", post(http_traces_handler::<H>))
+                .layer(DefaultBodyLimit::max(max_body_size))
+                .with_state((otlp_handler, memory_limiter, metrics));
 
-        // Apply CORS middleware when origins are configured.
-        let router = if !self.cors.allowed_origins.is_empty() {
-            router.layer(build_cors_layer(&self.cors))
-        } else {
-            router
-        };
+            // Apply CORS middleware when origins are configured.
+            let router = if !self.cors.allowed_origins.is_empty() {
+                router.layer(build_cors_layer(&self.cors))
+            } else {
+                router
+            };
 
-        let mut http_server = HttpServer::from_listen_address(self.http_endpoint)
-            .add_routes(router)
-            .with_server_id(self.http_server_id)
-            .with_worker_pool(worker_pool.clone());
+            let mut http_server = HttpServer::from_listen_address(http_endpoint)
+                .add_routes(router)
+                .with_server_id(self.http_server_id)
+                .with_worker_pool(worker_pool.clone());
 
-        if let Some(tls_config) = http_tls_config {
-            http_server = http_server.with_tls_config(tls_config);
+            if let Some(tls_config) = http_tls_config {
+                http_server = http_server.with_tls_config(tls_config);
+            }
+
+            runtime::nested_supervisor(http_server.into_supervisor())
+                .needed()
+                .stops_with_owner()
+                .spawn();
         }
-
-        runtime::nested_supervisor(http_server.into_supervisor())
-            .needed()
-            .stops_with_owner()
-            .spawn();
 
         Ok(())
     }
@@ -1002,7 +1014,7 @@ mod tests {
         let max_body_size: usize = 64;
         supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+                OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024)
                     .with_server_ids(http_server_id, "grpc-body-limit-rejects-oversized-request")
                     .with_http_max_request_body_size(max_body_size as u64)
                     .build(
@@ -1065,7 +1077,7 @@ mod tests {
         // Build with the default (`max_request_body_size=0` → 20 MiB limit) — no explicit limit set.
         supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+                OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024)
                     .with_server_ids(http_server_id, "grpc-body-default-limit-rejects-oversized-request")
                     .build(
                         NoopHandler,
@@ -1139,7 +1151,7 @@ mod tests {
         // The servers spawn on the ambient supervisor, so the build has to run under the one they belong to.
         let result = supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024).build(
                     NoopHandler,
                     MemoryLimiter::noop(),
                     Metrics::for_tests(),
@@ -1153,6 +1165,80 @@ mod tests {
             "build should succeed with a Unix gRPC endpoint, got: {:?}",
             result.err()
         );
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn build_starts_only_the_servers_with_an_endpoint() {
+        let supervisor = TestSupervisor::start("otlp-test").await;
+
+        // The HTTP server alone.
+        supervisor
+            .scope(
+                OtlpServerConfiguration::new(Some(ListenAddress::tcp_loopback(0)), None, 4 * 1024 * 1024)
+                    .with_server_ids("http-only-http", "http-only-grpc")
+                    .build(
+                        NoopHandler,
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
+            .await
+            .expect("build should succeed with only an HTTP endpoint");
+
+        bound_port(&supervisor, "http-only-http").await;
+        assert_eq!(supervisor.active_children(), 1);
+        assert_not_bound(&supervisor, "http-only-grpc");
+
+        // The gRPC server alone.
+        supervisor
+            .scope(
+                OtlpServerConfiguration::new(None, Some(ListenAddress::tcp_loopback(0)), 4 * 1024 * 1024)
+                    .with_server_ids("grpc-only-http", "grpc-only-grpc")
+                    .build(
+                        NoopHandler,
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
+            .await
+            .expect("build should succeed with only a gRPC endpoint");
+
+        bound_port(&supervisor, "grpc-only-grpc").await;
+        assert_eq!(supervisor.active_children(), 2);
+        assert_not_bound(&supervisor, "grpc-only-http");
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn build_fails_without_any_endpoint() {
+        let supervisor = TestSupervisor::start("otlp-test").await;
+
+        let error = supervisor
+            .scope(OtlpServerConfiguration::new(None, None, 4 * 1024 * 1024).build(
+                NoopHandler,
+                MemoryLimiter::noop(),
+                Metrics::for_tests(),
+                &tokio::runtime::Handle::current(),
+            ))
+            .await
+            .expect_err("build should fail when both endpoints are empty");
+
+        assert!(
+            error.to_string().contains("Both OTLP receiver endpoints are empty"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(supervisor.active_children(), 0);
 
         supervisor
             .shutdown()
@@ -1175,7 +1261,7 @@ mod tests {
 
         supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024).build(
                     NoopHandler,
                     MemoryLimiter::noop(),
                     Metrics::for_tests(),
@@ -1240,7 +1326,7 @@ mod tests {
         let grpc_server_id = format!("otlp-grpc-test-{}", server_id);
 
         let tls_config = OtlpTlsConfiguration::new(cert_path, key_path);
-        let server_config = OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+        let server_config = OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024)
             .with_server_ids(&*http_server_id, &*grpc_server_id)
             .with_http_tls(tls_config.clone())
             .with_grpc_tls(tls_config);
@@ -1261,6 +1347,19 @@ mod tests {
         wait_for_port(grpc_port).await;
 
         (http_port, grpc_port, cert, supervisor)
+    }
+
+    /// Asserts that the server with identifier `id` has not bound a listen address.
+    fn assert_not_bound(supervisor: &TestSupervisor, id: &str) {
+        let id = format!("http-server-{}", id);
+        let bound = supervisor
+            .dataspace()
+            .current_values::<BoundListenAddress>(IdentifierFilter::exact(id.clone()));
+
+        assert!(
+            bound.is_empty(),
+            "'{id}' should not bind a listen address, got {bound:?}"
+        );
     }
 
     async fn bound_port(supervisor: &TestSupervisor, id: &str) -> u16 {

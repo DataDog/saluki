@@ -1122,6 +1122,42 @@ mod tests {
     }
 
     #[test]
+    fn otlp_receiver_endpoints_come_from_the_canonical_keys_unless_a_temporary_key_is_set() {
+        let endpoints = |sources: Value| {
+            let config =
+                translate_strict(&SourceTree::all_explicit(sources)).expect("OTLP receiver endpoints should translate");
+            (
+                config.domains.otlp.receiver.grpc.endpoint,
+                config.domains.otlp.receiver.http.endpoint,
+            )
+        };
+        let protocols = |grpc: &str, http: &str| {
+            json!({ "otlp_config": { "receiver": { "protocols": {
+                "grpc": { "endpoint": grpc },
+                "http": { "endpoint": http },
+            } } } })
+        };
+
+        // The schema defaults apply when nothing sets an endpoint.
+        let (grpc, http) = endpoints(json!({}));
+        assert_eq!((grpc.as_str(), http.as_str()), ("localhost:4317", "localhost:4318"));
+
+        // The canonical keys win while the temporary keys are unset.
+        let (grpc, http) = endpoints(protocols("0.0.0.0:5317", "0.0.0.0:5318"));
+        assert_eq!((grpc.as_str(), http.as_str()), ("0.0.0.0:5317", "0.0.0.0:5318"));
+
+        // A temporary key wins over its canonical key.
+        let mut sources = protocols("0.0.0.0:5317", "0.0.0.0:5318");
+        sources["data_plane"] = json!({ "otlp": { "receiver_grpc_endpoint_temporary": "0.0.0.0:6317" } });
+        let (grpc, http) = endpoints(sources);
+        assert_eq!((grpc.as_str(), http.as_str()), ("0.0.0.0:6317", "0.0.0.0:5318"));
+
+        // An empty canonical endpoint stays empty, which disables its protocol.
+        let (grpc, http) = endpoints(protocols("", "0.0.0.0:5318"));
+        assert_eq!((grpc.as_str(), http.as_str()), ("", "0.0.0.0:5318"));
+    }
+
+    #[test]
     fn invalid_metric_tag_value_allowlist_is_rejected_before_publication() {
         let sources = SourceTree::all_explicit(json!({
             "metric_tag_value_allowlist": [
