@@ -6,4 +6,4 @@ mod destination;
 pub(crate) use self::destination::{listener_reached_by, Destination};
 
 mod forwarding;
-pub(crate) use self::forwarding::{strip_hop_by_hop_headers, ForwardError, UpstreamClient};
+pub(crate) use self::forwarding::{strip_hop_by_hop_headers, upstream_uri, ForwardError, UpstreamClient};

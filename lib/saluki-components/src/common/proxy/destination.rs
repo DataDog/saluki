@@ -4,7 +4,8 @@ use std::net::{IpAddr, SocketAddr};
 #[cfg(unix)]
 use std::path::PathBuf;
 
-use saluki_io::net::ListenAddress;
+use http::Uri;
+use saluki_io::net::{client::http::HttpClientBuilder, ListenAddress};
 
 /// Where a proxy forwards requests to.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -15,6 +16,46 @@ pub(crate) enum Destination {
     /// A Unix domain socket path.
     #[cfg(unix)]
     Unix(PathBuf),
+}
+
+impl Destination {
+    /// Returns the URI with the scheme and authority of each request to this destination, and a root path.
+    ///
+    /// The client connects a Unix domain socket destination to its socket and ignores the authority, but a request URI
+    /// still needs one, so it gets `localhost`.
+    ///
+    /// # Errors
+    ///
+    /// If the host and port don't make a valid authority, an error is returned.
+    pub(crate) fn base_uri(&self) -> Result<Uri, http::Error> {
+        match self {
+            Self::Tcp { host, port } => {
+                // An IPv6 host needs brackets in a URI.
+                let authority = if host.contains(':') {
+                    format!("[{host}]:{port}")
+                } else {
+                    format!("{host}:{port}")
+                };
+                Uri::builder()
+                    .scheme("http")
+                    .authority(authority)
+                    .path_and_query("/")
+                    .build()
+            }
+            #[cfg(unix)]
+            Self::Unix(_) => Ok(Uri::from_static("http://localhost/")),
+        }
+    }
+
+    /// Makes the client that `builder` builds connect to this destination.
+    pub(crate) fn configure_client(&self, builder: HttpClientBuilder) -> HttpClientBuilder {
+        match self {
+            // The client connects to the host and port of each request URI.
+            Self::Tcp { .. } => builder,
+            #[cfg(unix)]
+            Self::Unix(path) => builder.with_unix_socket_path(path.clone()),
+        }
+    }
 }
 
 /// Returns the listener of the proxy that `destination` reaches, if any.
@@ -66,6 +107,23 @@ fn tcp_reaches(destination: SocketAddr, listener: SocketAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_uri_brackets_an_ipv6_host() {
+        let uri = |host: &str| {
+            Destination::Tcp {
+                host: host.to_string(),
+                port: 8126,
+            }
+            .base_uri()
+            .unwrap()
+            .to_string()
+        };
+
+        assert_eq!(uri("127.0.0.1"), "http://127.0.0.1:8126/");
+        assert_eq!(uri("localhost"), "http://localhost:8126/");
+        assert_eq!(uri("::1"), "http://[::1]:8126/");
+    }
 
     #[test]
     fn tcp_reaches_only_a_listener_on_the_same_port_and_address() {

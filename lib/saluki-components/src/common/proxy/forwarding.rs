@@ -10,6 +10,7 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::response::{IntoResponse, Response};
 use http::header::{self, HeaderMap, HeaderName};
+use http::uri::{PathAndQuery, Uri};
 use http::StatusCode;
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use saluki_error::GenericError;
@@ -84,6 +85,21 @@ impl UpstreamClient {
         strip_hop_by_hop_headers(&mut parts.headers);
         Ok(Response::from_parts(parts, Body::new(body)))
     }
+}
+
+/// Returns `base_uri` with the path and query of a request, or the root path if the request has none.
+///
+/// # Errors
+///
+/// If the result isn't a valid URI, an error is returned.
+pub(crate) fn upstream_uri(base_uri: &Uri, path_and_query: Option<&PathAndQuery>) -> Result<Uri, http::Error> {
+    let mut parts = base_uri.clone().into_parts();
+    parts.path_and_query = Some(
+        path_and_query
+            .cloned()
+            .unwrap_or_else(|| PathAndQuery::from_static("/")),
+    );
+    Ok(Uri::from_parts(parts)?)
 }
 
 /// Removes hop-by-hop headers, including any the `Connection` header names.
