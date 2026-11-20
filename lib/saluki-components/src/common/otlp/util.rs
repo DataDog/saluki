@@ -614,8 +614,8 @@ pub fn resource_to_metric_source(
     let attributes = &resource.attributes;
 
     //If the metric comes from an AWS ECS Fargate resource and a task_arn is present, we omit the hostname
-    if get_string_attribute(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
-        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
+    if get_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
+        if let Some(task_arn) = get_attribute_str(attributes, AWS_ECS_TASK_ARN) {
             return Some(Source {
                 kind: SourceKind::AwsEcsFargate,
                 identifier: task_arn.to_string(),
@@ -1162,6 +1162,20 @@ mod tests {
             ];
             assert_eq!(kubernetes_cluster_name(&attributes), None);
         }
+    }
+
+    #[test]
+    fn metric_fargate_check_reads_the_first_launch_type() {
+        let source = metric_source(vec![
+            attribute_value(AWS_ECS_LAUNCHTYPE, Value::IntValue(1)),
+            string_attribute(AWS_ECS_LAUNCHTYPE, "fargate"),
+            string_attribute(AWS_ECS_TASK_ARN, "task-arn"),
+            string_attribute(HOST_NAME, "host-name"),
+        ])
+        .expect("hostname source should resolve");
+
+        assert_eq!(source.kind, SourceKind::Hostname);
+        assert_eq!(source.identifier, "host-name");
     }
 
     #[test]
