@@ -58,12 +58,6 @@ use tracing::error;
 
 use self::proxy::OtlpProxy;
 
-pub const OTLP_METRICS_GRPC_SERVICE_PATH: MetaString =
-    MetaString::from_static("/opentelemetry.proto.collector.metrics.v1.MetricsService/Export");
-pub const OTLP_LOGS_GRPC_SERVICE_PATH: MetaString =
-    MetaString::from_static("/opentelemetry.proto.collector.logs.v1.LogsService/Export");
-pub const OTLP_TRACES_GRPC_SERVICE_PATH: MetaString =
-    MetaString::from_static("/opentelemetry.proto.collector.trace.v1.TraceService/Export");
 const IMPLICIT_HEADERS: [HeaderName; 4] = [
     HeaderName::from_static("accept"),
     HeaderName::from_static("accept-language"),
