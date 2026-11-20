@@ -115,7 +115,7 @@ build-adp-baseline-image:
     - ci/tooling/get-temporary-aws-credentials.sh
     # We don't pass `APP_GIT_HASH`. `saluki-metadata` embeds it, so a new value on each commit invalidates that crate
     # and every crate that depends on it in the build cache, including `saluki-components`. The binary then reports
-    # an unknown Git hash. The image tag and labels still identify the commit.
+    # an unknown Git hash. The image tag still identifies the built commit.
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
