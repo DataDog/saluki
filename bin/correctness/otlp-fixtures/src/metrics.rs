@@ -11,7 +11,7 @@ use otlp_protos::opentelemetry::proto::{
 };
 use prost::Message as _;
 
-use crate::common::{int, kv, string};
+use crate::common::{boolean, double, int, kv, string};
 
 /// One second after the Unix epoch, in nanoseconds.
 const ONE_SECOND_NANOS: u64 = 1_000_000_000;
@@ -108,8 +108,8 @@ fn host_name(name: &str) -> Option<Resource> {
 
 /// Host fallbacks: no resource, an empty `host.name`, the Agent's own hostname, and a custom one, then Azure VM-ID
 /// precedence over `host.name` and the `host.name` fallback without a VM ID. Then one `otlpsource.<case>` gauge per
-/// serverless source case: those sources have no host, and an incomplete identity falls back to `host.name`, except on
-/// Cloud Run, which never falls back.
+/// source case: serverless sources have no host, an incomplete identity falls back to `host.name`, except on Cloud
+/// Run, which never falls back, and a literal `host` of any type takes precedence over `host.name`.
 pub fn host_fixture() -> Vec<u8> {
     let mut resources = vec![
         host_gauge(None, 1.0),
@@ -185,6 +185,11 @@ fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
             "azure_app_service_incomplete",
             with_host(without(azure("azure.app_service"), "cloud.account.id")),
         ),
+        ("azure_container_apps", {
+            let mut attributes = with_host(azure("azure.container_apps"));
+            attributes.push(kv("azure.container_app.instance.id", string("replica-1")));
+            attributes
+        }),
         (
             "azure_container_apps_no_replica",
             with_host(azure("azure.container_apps")),
@@ -202,6 +207,9 @@ fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
             "non_string_datadog_host_name",
             with_host(vec![kv("datadog.host.name", int(1))]),
         ),
+        ("literal_host_int", with_host(vec![kv("host", int(5))])),
+        ("literal_host_bool", with_host(vec![kv("host", boolean(true))])),
+        ("literal_host_double", with_host(vec![kv("host", double(1.5))])),
     ]
 }
 
