@@ -434,6 +434,17 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_AGENT_RECEIVER_HTTP_ENDPOINT"],
+        path: &[
+            "data_plane",
+            "experimental",
+            "otlp",
+            "proxy",
+            "agent_receiver_http_endpoint",
+        ],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS"],
         path: &["data_plane", "experimental", "otlp", "proxy", "logs"],
         decode: EnvDecode::Bool,

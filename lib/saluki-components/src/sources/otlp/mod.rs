@@ -1,4 +1,3 @@
-use std::net::ToSocketAddrs as _;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -186,30 +185,8 @@ impl SourceBuilder for OtlpConfiguration {
         };
 
         // An empty endpoint turns its server off.
-        let grpc_endpoint = if self.receiver.grpc.endpoint.is_empty() {
-            None
-        } else {
-            let grpc_listen_str = format!(
-                "{}://{}",
-                self.receiver.grpc.transport.as_str(),
-                self.receiver.grpc.endpoint
-            );
-            let address = ListenAddress::try_from(grpc_listen_str.as_str())
-                .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
-            Some(address)
-        };
-
-        let http_endpoint_str = &self.receiver.http.endpoint;
-        let http_endpoint = if http_endpoint_str.is_empty() {
-            None
-        } else {
-            let http_socket_addr = http_endpoint_str
-                .to_socket_addrs()
-                .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
-                .next()
-                .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
-            Some(ListenAddress::Tcp(http_socket_addr))
-        };
+        let grpc_endpoint = self.receiver.grpc.listen_address()?;
+        let http_endpoint = self.receiver.http.listen_address()?;
 
         let origin_tag_resolver = OtlpOriginTagResolver::new(Arc::clone(&self.workload_provider));
 
