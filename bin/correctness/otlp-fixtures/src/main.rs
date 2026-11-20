@@ -18,8 +18,9 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 mod common;
 mod logs;
 mod metrics;
-// TODO: remove the dead_code guard when a fixture uses the trace builder.
-#[allow(dead_code)]
+// TODO: remove the dead_code expectation when a fixture uses the trace builder.
+// Tests already use it, so the expectation only applies to non-test builds.
+#[cfg_attr(not(test), expect(dead_code))]
 mod traces;
 
 /// Writes `payload` into the `static_base64` payload of the sender config at `target`, a path relative to `root`.
