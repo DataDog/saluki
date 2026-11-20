@@ -2161,7 +2161,8 @@ Why this order:
     `ActivePhase` methods, and the `snafu`, `socket2` and `zstd` dependencies.
 - **Deviations from the brief:**
   - `--alpine-image` and `PANORAMIC_ALPINE_IMAGE` are deleted, because no backend runs a helper image.
-  - The guide is a new page, and `test/integration/README.md` is deleted rather than rewritten.
+  - The guide is a new page, and `test/integration/README.md` is rewritten as a short page that says what the
+    directory is for and points to the guide.
   - `list --json` says `suite` and has no `images`.
   - The runner, not the case, writes `plan.json`.
   - The Windows image has no baked entrypoint.
