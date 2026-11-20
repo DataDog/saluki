@@ -12,7 +12,7 @@ use otlp_protos::opentelemetry::proto::{
 };
 use prost::Message as _;
 
-use crate::common::{array, boolean, bytes, double, empty, int, kv, map, string};
+use crate::common::{array, boolean, bytes, double, empty, int, kv, map, string, LAMBDA_ARN};
 
 /// 2026-10-29T10:00:00Z, in nanoseconds.
 const BASE_TIME_NANOS: u64 = 1_793_268_000_000_000_000;
@@ -723,6 +723,7 @@ pub fn resource_host_fixture() -> Vec<u8> {
             "source-azure-functions-incomplete",
             without(azure("azure.functions"), "azure.resource_group.name"),
         ),
+        ("source-azure-app-service", azure("azure.app_service")),
         (
             "source-azure-app-service-incomplete",
             without(azure("azure.app_service"), "cloud.account.id"),
@@ -735,9 +736,23 @@ pub fn resource_host_fixture() -> Vec<u8> {
             ),
         ),
         ("source-azure-container-apps-no-replica", azure("azure.container_apps")),
+        ("source-gcp-cloud-run", gcp("gcp_cloud_run")),
+        ("source-gcp-cloud-functions", gcp("gcp_cloud_functions")),
         (
             "source-gcp-cloud-run-incomplete",
             without(gcp("gcp_cloud_run"), "faas.instance"),
+        ),
+        (
+            "source-gcp-cloud-run-job",
+            with(gcp("gcp_cloud_run"), kv("gcp.cloud_run.job.execution", string("job-1"))),
+        ),
+        (
+            "source-aws-lambda",
+            vec![
+                kv("cloud.provider", string("aws")),
+                kv("cloud.platform", string("aws_lambda")),
+                kv("faas.id", string(LAMBDA_ARN)),
+            ],
         ),
         ("source-literal-host-int", vec![kv("host", int(5))]),
         ("source-literal-host-bool", vec![kv("host", boolean(true))]),
