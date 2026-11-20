@@ -48,10 +48,10 @@ impl StepFactory for DogstatsdReplayFactory {
     }
 }
 
-/// Starts a capture on `on`, sends each payload to its endpoint `endpoint` while the capture runs, waiting
-/// `payload_interval` between payloads if it is set, and then, until
-/// `timeout`, replays the capture and collects statistics together. Passes once the statistics hold every one of
-/// `expected_metrics`. The capture lasts `capture_duration`, and the statistics take `stats_duration`.
+/// Starts a capture on `on`, and sends each payload to its endpoint `endpoint` while the capture runs. It waits
+/// `payload_interval` between payloads if that is set. The capture lasts `capture_duration`. Then, until `timeout`, it
+/// replays the capture and collects statistics together, and the statistics take `stats_duration`. Passes once the
+/// statistics hold every one of `expected_metrics`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DogstatsdReplay {
@@ -248,12 +248,19 @@ mod tests {
         };
         let report = run(&DogstatsdReplayFactory, fields, &scripted, &observation()).await;
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
-        assert!(report.message.contains('b'), "{}", report.message);
+        assert!(
+            report
+                .message
+                .ends_with("DogStatsD replay statistics did not contain expected metric(s): b"),
+            "{}",
+            report.message
+        );
     }
 
     #[test]
     fn a_statistics_harness_error_after_a_replay_keeps_the_step_failed() {
-        // A harness error used to override an earlier replay's missing metrics and turn the step `errored`.
+        // A harness error from the statistics run does not override the missing metrics of an earlier replay, so the
+        // step stays `failed`.
         let step: DogstatsdReplay = serde_saphyr::from_str(
             "{on: app, endpoint: statsd, payloads: ['b:1|c'], capture_duration: 1s, stats_duration: 1s, \
              expected_metrics: [replay.requests], timeout: 5s}",
