@@ -124,11 +124,6 @@ else
     adp_img="${ADP_IMG_BASE}-${adp_sha}"
 fi
 
-labels=("git.repository=${CI_PROJECT_NAME}" "git.commit=${adp_sha}")
-if [[ "${reuse}" != "true" ]]; then
-    labels+=("git.branch=${CI_COMMIT_REF_NAME}" "ci.pipeline_id=${CI_PIPELINE_ID}" "ci.job_id=${CI_JOB_ID}")
-fi
-
 log "${role}: ADP commit ${adp_sha}"
 for arg in "${adp_build_args[@]}"; do
     log "${role}: ${arg}"
@@ -146,15 +141,19 @@ prepare_build() {
     docker buildx create --name adp-builder --driver docker-container --use >&2
 }
 
-# Run `docker buildx build` and push the image. Arguments: the Dockerfile, the tag, the image key, and
-# the build arguments.
+# Run `docker buildx build` and push the image. Arguments: the Dockerfile, the tag, the image key
+# (`none` for a pipeline-scoped tag), and the build arguments.
 build_and_push() {
     local dockerfile="$1" tag="$2" key="$3" arg label flags=()
+    local labels=("git.repository=${CI_PROJECT_NAME}" "git.commit=${adp_sha}" "smp.image_key=${key}")
     shift 3
+    if [[ "${key}" == "none" ]]; then
+        labels+=("git.branch=${CI_COMMIT_REF_NAME}" "ci.pipeline_id=${CI_PIPELINE_ID}" "ci.job_id=${CI_JOB_ID}")
+    fi
     for arg in "$@"; do
         flags+=(--build-arg "${arg}")
     done
-    for label in "${labels[@]}" "smp.image_key=${key}"; do
+    for label in "${labels[@]}"; do
         flags+=(--label "${label}")
     done
     prepare_build
