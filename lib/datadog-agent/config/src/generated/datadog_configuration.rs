@@ -1505,6 +1505,12 @@ pub struct DataPlaneExperimentalOtlpProxy {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub agent_receiver_grpc_endpoint: String,
 
+    #[serde(
+        default = "defaults::datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub agent_receiver_http_endpoint: String,
+
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub logs: bool,
@@ -1522,6 +1528,7 @@ impl Default for DataPlaneExperimentalOtlpProxy {
     fn default() -> Self {
         Self {
             agent_receiver_grpc_endpoint: defaults::datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(),
+            agent_receiver_http_endpoint: defaults::datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint(),
             logs: Default::default(),
             metrics: Default::default(),
             traces: Default::default(),
@@ -2618,6 +2625,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint() -> String {
         "127.0.0.1:4319".to_string()
+    }
+    pub(super) fn datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint() -> String {
+        "127.0.0.1:4320".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_debug_verbosity() -> String {
         "basic".to_string()

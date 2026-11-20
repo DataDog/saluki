@@ -26,23 +26,19 @@ use saluki_components::{
     config::{
         AgentEnv, AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
     },
-    decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
-        DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
+        BlackholeConfiguration, DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration,
+        DogStatsDStatisticsConfiguration,
     },
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogServiceChecksConfiguration,
     },
-    forwarders::{
-        ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration,
-        RoutingTargetCatalog,
-    },
-    relays::otlp::OtlpRelayConfiguration,
+    forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, RoutingTargetCatalog},
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement,
-        OriginEnrichmentConfiguration, OtlpConfiguration, OtlpRoutes,
+        OriginEnrichmentConfiguration, OtlpConfiguration, OtlpRoute, OtlpRoutes,
     },
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
@@ -64,7 +60,8 @@ use crate::{
     component_inputs::{
         apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
         metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
-        otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
+        otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_proxy_destinations, otlp_receiver,
+        otlp_traces_settings,
         ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration,
         trace_sampler_configuration, trace_tag_replacer_configuration,
     },
@@ -106,13 +103,13 @@ pub async fn handle_run_command(
         .start(bootstrap_guard, bootstrap_supervisor)
         .await?;
 
-    let (enabled, active_pipelines) = {
-        let config = agent.config().system().config();
-        let dp = DataPlaneConfiguration::from_configuration(&config);
-        (dp.enabled(), dp.active_pipelines())
-    };
+    // Every pipeline decision below comes from this one configuration and check.
+    let config = agent.config().system().config();
+    let dp = DataPlaneConfiguration::from_configuration(&config)
+        .with_otlp_proxy_loop_check()
+        .await;
 
-    if !agent.is_standalone() && !enabled {
+    if !agent.is_standalone() && !dp.enabled() {
         info!("Agent Data Plane is not enabled. Exiting.");
         return Ok(());
     }
@@ -120,19 +117,19 @@ pub async fn handle_run_command(
     agent
         .config()
         .system()
-        .check_compatibility(&active_pipelines)
+        .check_compatibility(&dp.active_pipelines())
         .error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let mut agent = agent.initialize().await?;
 
-    let rc_products = remote_config::enabled_products(&agent.config().system().config());
+    let rc_products = remote_config::enabled_products(&dp, &config.domains.remote_configuration);
     let rc_subscriptions = RemoteConfigSubscriptions::subscribe(rc_products, &mut agent)
         .await
         .error_context("Failed to set up Remote Configuration.")?;
 
     // Create the blueprint for our primary topology.
-    let (blueprint, dogstatsd_api) = create_topology(&agent, rc_subscriptions).await?;
+    let (blueprint, dogstatsd_api) = create_topology(&agent, &dp, rc_subscriptions).await?;
 
     // Create the control plane, and then run: the remote agent builds the rest of the supervisors, and runs memory
     // bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
@@ -143,11 +140,11 @@ pub async fn handle_run_command(
 }
 
 async fn create_topology(
-    agent: &RemoteAgent<AgentDataPlane, Initialized>, rc_subscriptions: RemoteConfigSubscriptions,
+    agent: &RemoteAgent<AgentDataPlane, Initialized>, dp: &DataPlaneConfiguration<'_>,
+    rc_subscriptions: RemoteConfigSubscriptions,
 ) -> Result<(TopologyBlueprint, Option<DogStatsDAPIWorker>), GenericError> {
     let config_system = agent.config().system();
     let config = config_system.config();
-    let dp = DataPlaneConfiguration::from_configuration(&config);
     let mut blueprint = TopologyBlueprint::new("primary", agent.component_registry());
     blueprint.with_shutdown_timeout(dp.stop_timeout());
     let shared = config.shared.clone();
@@ -161,8 +158,8 @@ async fn create_topology(
     if dp.otlp_enabled_without_signals() {
         error!(
             "OTLP ingest is enabled, but OTLP metrics, logs, and traces are all disabled. ADP won't start OTLP \
-            ingest. Enable at least one of `otlp_config.metrics.enabled`, `otlp_config.logs.enabled`, or \
-            `otlp_config.traces.enabled`."
+            ingest. Enable at least one of `otlp_config.metrics.enabled`, `otlp_config.traces.enabled`, or \
+            `otlp_config.logs.enabled` together with `logs_enabled`."
         );
     }
 
@@ -170,6 +167,11 @@ async fn create_topology(
     // plaintext. The other pipelines keep running.
     if let Some(message) = dp.otlp_blocked_message() {
         error!(reason = %message, "ADP won't start OTLP ingest.");
+    }
+
+    // Refuse to proxy OTLP signals to ADP's own OTLP listeners. The other pipelines keep running.
+    if let Some(message) = dp.otlp_proxy_loop_message() {
+        error!("ADP won't start OTLP ingest. {message}.");
     }
 
     // If no data pipelines are enabled, then there's nothing for us to do.
@@ -187,10 +189,10 @@ async fn create_topology(
     // we additionally create metrics- and logs-specific components connected to that forwarder depending on which of
     // the baseline pipelines are required.
     //
-    // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
-    // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
-    // provisions metric and service-check output paths even for proxy-only topologies. The APM relay needs the
-    // forwarder alone, as it has nothing to feed the traces pipeline.
+    // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline with every signal
+    // proxied to the Agent, which is the only reason we're differentiating here. Connected mode is the exception:
+    // liveness deliberately provisions metric and service-check output paths even for proxy-only topologies. The APM
+    // relay needs the forwarder alone, as it has nothing to feed the traces pipeline.
     let mut routing_targets = None;
     if dp.metrics_pipeline_required()
         || dp.logs_pipeline_required()
@@ -272,7 +274,14 @@ async fn create_topology(
     };
 
     if dp.otlp_enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry.clone()).await?;
+        add_otlp_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            env_provider,
+            semantic_registry.clone(),
+            dp.otlp_routes(),
+        )
+        .await?;
     }
 
     if dp.apm_enabled() {
@@ -1034,99 +1043,66 @@ async fn add_apm_pipeline_to_blueprint(
 
 async fn add_otlp_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
-    env_provider: &RemoteAgentEnvironmentProvider, semantic_registry: SemanticRegistryProvider,
+    env_provider: &RemoteAgentEnvironmentProvider, semantic_registry: SemanticRegistryProvider, routes: OtlpRoutes,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
-    let dp = DataPlaneConfiguration::from_configuration(&config);
-    if dp.otlp_proxy_enabled() {
-        let core_agent_otlp_grpc_endpoint = config.domains.otlp.proxy.grpc_endpoint.clone();
-        let proxy_metrics = config.domains.otlp.proxy.metrics_enabled;
-        let proxy_logs = config.domains.otlp.proxy.logs_enabled;
-        let proxy_traces = config.domains.otlp.proxy.traces_enabled;
+    let otlp = &config.domains.otlp;
+    info!(metrics = ?routes.metrics, logs = ?routes.logs, traces = ?routes.traces, "Starting OTLP ingest.");
 
-        info!(
-            proxy_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
-            proxy_logs,
-            proxy_metrics,
-            proxy_traces,
-            "OTLP proxy mode enabled. Logs, metrics, and (if `proxy_traces`) traces will be proxied to the Core Agent."
-        );
-
-        let config = config_system.config();
-        let otlp_relay_config = OtlpRelayConfiguration::new(otlp_receiver(&config.domains.otlp.receiver));
-
-        let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::new(config.domains.otlp.traces.internal_port, core_agent_otlp_grpc_endpoint);
-
-        blueprint
-            // Components.
-            .add_relay("otlp_relay_in", otlp_relay_config)?
-            .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
-            // Metrics and logs directly to the forwarders.
-            .connect_components(["otlp_relay_in.metrics", "otlp_relay_in.logs"], "local_agent_otlp_out")?;
-
-        if proxy_traces {
-            blueprint.connect_components("otlp_relay_in.traces", "local_agent_otlp_out")?;
-        } else {
-            let default_hostname = env_provider
-                .host()
-                .get_hostname()
-                .await
-                .error_context("Failed to get default hostname for OTLP traces decoder.")?;
-            let otlp_decoder_config = OtlpDecoderConfiguration::new(
-                otlp_traces_settings(&config.domains.otlp.traces, &config.domains.traces.features),
-                env_provider.workload().clone(),
-            )
-            .with_max_resource_len(config.domains.traces.max_resource_len)
-            .with_semantic_registry(semantic_registry)
-            .with_default_hostname(MetaString::from(default_hostname));
-
-            blueprint
-                .add_decoder("otlp_traces_decode", otlp_decoder_config)?
-                // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
-                .connect_components_in_order(["otlp_relay_in.traces", "otlp_traces_decode", "traces_enrich"])?;
-        }
+    let proxy_destinations = if routes.any_proxied() {
+        Some(otlp_proxy_destinations(otlp)?)
     } else {
-        info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
+        None
+    };
+    let default_hostname = env_provider
+        .host()
+        .get_hostname()
+        .await
+        .error_context("Failed to get default hostname for OTLP source.")?;
+    let static_tags = resolve_static_tags(
+        &config.shared.static_tags,
+        &config.shared.tags,
+        features::is_ecs_fargate(),
+    );
+    let otlp_config = OtlpConfiguration {
+        default_hostname: default_hostname.into(),
+        receiver: otlp_receiver(&otlp.receiver),
+        routes,
+        proxy_destinations,
+        metrics: otlp_metrics_settings(&otlp.metrics),
+        traces_enabled: otlp.traces.enabled,
+        traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),
+        contexts: otlp_context_settings(&otlp.contexts),
+        debug_verbosity: otlp_debug_verbosity(&otlp.debug),
+        max_resource_len: config.domains.traces.max_resource_len,
+        semantic_registry,
+        workload_provider: Arc::new(env_provider.workload().clone()),
+    }
+    .with_static_metric_tags(static_tags);
 
-        let default_hostname = env_provider
-            .host()
-            .get_hostname()
-            .await
-            .error_context("Failed to get default hostname for OTLP source.")?;
-        let config = config_system.config();
-        let static_tags = resolve_static_tags(
-            &config.shared.static_tags,
-            &config.shared.tags,
-            features::is_ecs_fargate(),
-        );
-        let otlp = &config.domains.otlp;
-        let otlp_config = OtlpConfiguration {
-            default_hostname: default_hostname.into(),
-            receiver: otlp_receiver(&otlp.receiver),
-            routes: OtlpRoutes::ALL_INTERNAL,
-            proxy_destinations: None,
-            metrics: otlp_metrics_settings(&otlp.metrics),
-            traces_enabled: otlp.traces.enabled,
-            traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),
-            contexts: otlp_context_settings(&otlp.contexts),
-            debug_verbosity: otlp_debug_verbosity(&otlp.debug),
-            max_resource_len: config.domains.traces.max_resource_len,
-            semantic_registry,
-            workload_provider: Arc::new(env_provider.workload().clone()),
-        }
-        .with_static_metric_tags(static_tags);
+    blueprint.add_source("otlp_in", otlp_config)?;
 
+    // Each signal that ADP processes itself goes to its pipeline. The pipeline predicates follow the same routes, so
+    // the pipeline exists.
+    //
+    // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation, to avoid
+    // transforming counters into rates.
+    let internal = OtlpRoute::Internal;
+    if routes.metrics == internal {
+        blueprint.connect_components("otlp_in.metrics", "metrics_enrich")?;
+    }
+    if routes.logs == internal {
+        blueprint.connect_components("otlp_in.logs", "dd_logs_encode")?;
+    }
+    if routes.traces == internal {
+        blueprint.connect_components("otlp_in.traces", "traces_enrich")?;
+    }
+    if ![routes.metrics, routes.logs, routes.traces].contains(&internal) {
+        // The source has no output path of its own when it proxies or refuses every signal, but a topology can't hold
+        // a component with no connections, so it connects to a destination that drops everything.
         blueprint
-            // Components.
-            .add_source("otlp_in", otlp_config)?
-            // Metrics, logs, and traces.
-            //
-            // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
-            // to avoid transforming counters into rates.
-            .connect_components("otlp_in.metrics", "metrics_enrich")?
-            .connect_components("otlp_in.logs", "dd_logs_encode")?
-            .connect_components("otlp_in.traces", "traces_enrich")?;
+            .add_destination("otlp_out_blackhole", BlackholeConfiguration)?
+            .connect_components("otlp_in.metrics", "otlp_out_blackhole")?;
     }
     Ok(())
 }

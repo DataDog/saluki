@@ -24,4 +24,4 @@ pub use crate::common::otlp::{
     traces::translator::{ContainerTagPromotion, OtlpTracesSettings},
     CorsConfiguration, OtlpRoute, OtlpRoutes,
 };
-pub use crate::common::proxy::Destination as ProxyDestination;
+pub use crate::common::proxy::{listener_reached_by, Destination as ProxyDestination};

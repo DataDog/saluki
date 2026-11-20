@@ -951,6 +951,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.proxy.grpc_endpoint = value;
     }
 
+    fn consume_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint(&mut self, value: String) {
+        self.config.domains.otlp.proxy.http_endpoint = value;
+    }
+
     fn consume_data_plane_experimental_otlp_proxy_logs(&mut self, value: bool) {
         self.config.domains.otlp.proxy.logs_enabled = value;
     }
@@ -2330,7 +2334,8 @@ mod tests {
                     "logs": logs,
                     "metrics": metrics,
                     "traces": traces,
-                    "agent_receiver_grpc_endpoint": "127.0.0.1:5000"
+                    "agent_receiver_grpc_endpoint": "127.0.0.1:5000",
+                    "agent_receiver_http_endpoint": "127.0.0.1:5001"
                 }}}}
             }));
             assert!(errors.is_none(), "translation should succeed: {errors:?}");
@@ -2341,6 +2346,7 @@ mod tests {
                 (logs, metrics, traces)
             );
             assert_eq!(proxy.grpc_endpoint, "127.0.0.1:5000");
+            assert_eq!(proxy.http_endpoint, "127.0.0.1:5001");
             assert!(proxy.enabled());
         }
     }
@@ -2356,6 +2362,7 @@ mod tests {
         assert!(!proxy.traces_enabled);
         assert!(!proxy.enabled());
         assert_eq!(proxy.grpc_endpoint, "127.0.0.1:4319");
+        assert_eq!(proxy.http_endpoint, "127.0.0.1:4320");
     }
 
     #[test]

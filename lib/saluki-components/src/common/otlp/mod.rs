@@ -410,7 +410,7 @@ impl OtlpRoutes {
     }
 
     /// Returns `true` if any signal is proxied.
-    pub(crate) fn any_proxied(&self) -> bool {
+    pub fn any_proxied(&self) -> bool {
         Signal::ALL
             .into_iter()
             .any(|signal| self.get(signal) == OtlpRoute::Proxied)
