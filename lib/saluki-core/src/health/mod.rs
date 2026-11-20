@@ -70,8 +70,8 @@ impl Health {
     /// This should generally be polled as part of a `select!` block to ensure it's checked alongside other
     /// asynchronous operations.
     ///
-    /// If the liveness responder was taken with [`take_liveness_responder`][Self::take_liveness_responder], this
-    /// method never resolves, because the [`LivenessResponder`] answers the probes instead.
+    /// For a component that runs in a topology, this method never resolves, because the topology answers liveness
+    /// probes around the run future of the component.
     pub async fn live(&mut self) {
         match self.liveness.as_mut() {
             Some(channel) => {
@@ -87,7 +87,7 @@ impl Health {
     /// [`live`][Self::live] never resolves. The handle still controls readiness.
     ///
     /// Returns `None` if the responder was already taken.
-    pub fn take_liveness_responder(&mut self) -> Option<LivenessResponder> {
+    pub(crate) fn take_liveness_responder(&mut self) -> Option<LivenessResponder> {
         self.liveness.take().map(|channel| LivenessResponder { channel })
     }
 }
@@ -117,13 +117,20 @@ impl LivenessChannel {
 /// Answers liveness probes for a component while it runs a future.
 ///
 /// A component that waits on an `.await` outside its `select!` loop can't answer probes. One example is a send into a
-/// full downstream channel. The component is not stuck, it is waiting for backpressure to clear, but the registry
-/// marks it as not live. `LivenessResponder` moves probe handling out of the component: [`drive`][Self::drive]
-/// answers probes whenever the task of the component runs, whatever the component is waiting on.
+/// full downstream channel. The component is not stuck. It waits for backpressure to clear, but the registry marks it
+/// as not live. `LivenessResponder` moves probe handling out of the component: [`drive`][Self::drive] answers probes
+/// whenever the task of the component runs, whatever the component is waiting on.
 ///
-/// The component is thus live while its task is scheduled and polled. A probe still fails if the task blocks the
-/// thread, or if the runtime can't poll the task within the probe timeout.
-pub struct LivenessResponder {
+/// The component is live while its task is scheduled and polled. A probe still fails if the task blocks the thread, or
+/// if the runtime can't poll the task within the probe timeout.
+///
+/// # Missing
+///
+/// - Detection of a run future that waits forever. Such a component stays live, because its task still gets polled.
+///   Examples are two components that each wait on a full channel that the other one drains, and a forwarder that
+///   waits on a request that never completes. Catching these cases needs a progress-based signal, such as a check that
+///   a component with buffered input still sends events.
+pub(crate) struct LivenessResponder {
     channel: LivenessChannel,
 }
 
@@ -132,13 +139,13 @@ impl LivenessResponder {
     ///
     /// The probes and `fut` run in the same task. When `fut` completes, the responder is dropped, and the registry
     /// marks the component as dead at the next probe.
-    pub async fn drive<F: Future>(mut self, fut: F) -> F::Output {
+    pub(crate) async fn drive<F: Future>(mut self, fut: F) -> F::Output {
         pin!(fut);
 
         loop {
             select! {
-                // Check probes first, so that a waiting probe is seen on every wakeup, even when `fut` uses up the
-                // cooperative budget of the task.
+                // Check probes first, so that each time the task wakes, a waiting probe is seen, even when `fut` uses
+                // up the cooperative budget of the task.
                 biased;
 
                 open = self.channel.respond() => {
