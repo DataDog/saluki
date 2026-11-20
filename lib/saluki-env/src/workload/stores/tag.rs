@@ -312,6 +312,13 @@ impl TagStoreQuerier {
         self.entity_tags.get_entity_tags(entity_id, cardinality)
     }
 
+    /// Gets the entity that an entity is aliased to.
+    ///
+    /// Returns `None` if the entity has no alias. An alias target doesn't need tags.
+    pub fn get_entity_alias(&self, entity_id: &EntityId) -> Option<EntityId> {
+        self.aliases.pin().get(entity_id).cloned()
+    }
+
     /// Visits each active entity in the tag store.
     pub fn visit_active_entities<F>(&self, mut visitor: F)
     where
@@ -594,6 +601,24 @@ mod tests {
             .expect("alias target should have low-cardinality tags");
         let target_tags = TagSet::from_iter((&target_tags).into_iter().cloned());
         assert_eq!(sorted_ts(target_tags), sorted_ts(expected_tags));
+    }
+
+    #[test]
+    fn get_entity_alias_returns_the_alias_target_without_tags() {
+        let container_id = EntityId::Container("container-id".into());
+        let inode_id = EntityId::ContainerInode(4242);
+
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        let querier = store.querier();
+        assert_eq!(querier.get_entity_alias(&inode_id), None);
+
+        store.process_operation(MetadataOperation::add_alias(inode_id.clone(), container_id.clone()));
+        assert_eq!(querier.get_entity_alias(&inode_id), Some(container_id.clone()));
+        assert_eq!(querier.get_entity_alias(&container_id), None);
+        assert!(querier.get_entity_tags(&inode_id, OriginTagCardinality::High).is_none());
+
+        store.process_operation(MetadataOperation::remove_alias(inode_id.clone(), container_id));
+        assert_eq!(querier.get_entity_alias(&inode_id), None);
     }
 
     #[test]

@@ -15,6 +15,7 @@ use stringtheory::MetaString;
 
 use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
+use crate::common::otlp::container_id::{inject_container_id, ContainerIdResolver};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::hostname_from_source_attributes;
 use crate::common::otlp::util::get_string_attribute;
@@ -30,14 +31,16 @@ static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 /// translator keeps its render buffers between logs.
 pub struct OtlpLogsTranslator {
     origin_tag_resolver: OtlpOriginTagResolver,
+    container_id_resolver: ContainerIdResolver,
     renderer: OtlpLogsRenderer,
 }
 
 impl OtlpLogsTranslator {
     /// Creates a new `OtlpLogsTranslator`.
-    pub fn new(origin_tag_resolver: OtlpOriginTagResolver) -> Self {
+    pub fn new(origin_tag_resolver: OtlpOriginTagResolver, container_id_resolver: ContainerIdResolver) -> Self {
         Self {
             origin_tag_resolver,
+            container_id_resolver,
             renderer: OtlpLogsRenderer::default(),
         }
     }
@@ -48,7 +51,7 @@ impl OtlpLogsTranslator {
     pub fn translate_logs<'a>(
         &'a mut self, resource_logs: OtlpResourceLogs, metrics: &'a Metrics,
     ) -> impl Iterator<Item = Log> + 'a {
-        ResourceLogsIter::new(resource_logs, &self.origin_tag_resolver).filter_map(|log| {
+        ResourceLogsIter::new(resource_logs, &self.origin_tag_resolver, &self.container_id_resolver).filter_map(|log| {
             metrics.logs_received().increment(1);
             self.renderer.render(log, metrics)
         })
@@ -66,8 +69,12 @@ pub(super) struct ResourceLogsIter {
 }
 
 impl ResourceLogsIter {
-    pub(super) fn new(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
-        let resource = resource_logs.resource.unwrap_or_default();
+    pub(super) fn new(
+        resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver,
+        container_id_resolver: &ContainerIdResolver,
+    ) -> Self {
+        let mut resource = resource_logs.resource.unwrap_or_default();
+        inject_container_id(&mut resource.attributes, container_id_resolver);
         // An empty host or service counts as missing, so the record fallbacks still apply.
         let host = host_from_attributes(&resource.attributes);
 
@@ -163,18 +170,22 @@ impl Iterator for ResourceLogsIter {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use otlp_common::any_value::Value::{KvlistValue, StringValue};
     use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
     use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
     use otlp_protos::opentelemetry::proto::resource::v1 as otlp_resource_v1;
     use saluki_core::components::ComponentContext;
     use saluki_core::data_model::event::log::Log;
+    use saluki_env::workload::providers::{NoopWorkloadProvider, TestWorkloadProvider};
     use saluki_metrics::test::TestRecorder;
     use serde_json::Value as JsonValue;
 
     use super::SERVICE_NAME;
     use super::{OtlpLogsTranslator, ResourceLogsIter};
     use crate::common::otlp::build_metrics;
+    use crate::common::otlp::container_id::ContainerIdResolver;
     use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::sources::otlp::logs::transform::DDTAGS_ATTR;
 
@@ -224,6 +235,13 @@ mod tests {
         lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource,
         scope: Option<otlp_common::InstrumentationScope>,
     ) -> Log {
+        translate_log_with_provider(lr, resource, scope, TestWorkloadProvider::new())
+    }
+
+    fn translate_log_with_provider(
+        lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource,
+        scope: Option<otlp_common::InstrumentationScope>, provider: TestWorkloadProvider,
+    ) -> Log {
         let scope_logs = otlp_logs_v1::ScopeLogs {
             scope,
             log_records: vec![lr],
@@ -235,11 +253,11 @@ mod tests {
             schema_url: String::new(),
         };
 
+        let provider = Arc::new(provider);
         let translator = ResourceLogsIter::new(
             resource_logs,
-            &OtlpOriginTagResolver::new(std::sync::Arc::new(
-                saluki_env::workload::providers::NoopWorkloadProvider,
-            )),
+            &OtlpOriginTagResolver::new(provider.clone()),
+            &ContainerIdResolver::new(Some(provider.clone()), provider),
         );
 
         let mut logs = translator.collect::<Vec<_>>();
@@ -361,6 +379,93 @@ mod tests {
         assert_eq!(log.service(), "test_service_name");
     }
 
+    /// Ports the container ID detection cases of `TestInfraAttributesLogProcessor`
+    /// (<https://github.com/DataDog/datadog-agent/blob/d22eedcd06ef9fcedad3d43bcab45795068b8ecc/comp/otelcol/otlp/components/processor/infraattributesprocessor/logs_test.go#L103-L161>).
+    ///
+    /// The injected `container.id` becomes a content property and the `container_id` tag. The detected container has
+    /// no tags of its own here, so the cases also show that detection doesn't depend on tags.
+    #[test]
+    fn detects_container_id_as_the_infra_attributes_processor_does() {
+        use otlp_common::any_value::Value::{BoolValue, IntValue};
+
+        let attribute = |key: &str, value| otlp_common::KeyValue {
+            key: key.to_string(),
+            value: Some(otlp_common::AnyValue { value: Some(value) }),
+        };
+        let cases = [
+            ("from PID", vec![attribute("process.pid", IntValue(12345))]),
+            (
+                "from cgroup inode",
+                vec![attribute("datadog.container.cgroup_inode", IntValue(12345))],
+            ),
+            (
+                "from pod UID + container name",
+                vec![
+                    attribute(
+                        "k8s.pod.uid",
+                        StringValue("01234567-89ab-cdef-0123-456789abcdef".into()),
+                    ),
+                    attribute("k8s.container.name", StringValue("mycontainer".into())),
+                    attribute("datadog.container.is_init", BoolValue(true)),
+                ],
+            ),
+        ];
+
+        for (name, attributes) in cases {
+            let mut provider = TestWorkloadProvider::new();
+            provider
+                .add_live_process(12345, saluki_env::workload::EntityId::Container("test".into()))
+                .add_entity_alias(
+                    saluki_env::workload::EntityId::ContainerInode(12345),
+                    saluki_env::workload::EntityId::Container("test".into()),
+                )
+                .add_external_data(
+                    "01234567-89ab-cdef-0123-456789abcdef",
+                    "mycontainer",
+                    true,
+                    saluki_env::workload::EntityId::Container("test".into()),
+                );
+            let resource = otlp_resource_v1::Resource {
+                attributes,
+                ..Default::default()
+            };
+
+            let log = translate_log_with_provider(otlp_logs_v1::LogRecord::default(), resource, None, provider);
+            assert_eq!(
+                log.additional_properties().get("container.id"),
+                Some(&JsonValue::String("test".into())),
+                "case: {name}"
+            );
+            assert!(log.tags().has_tag("container_id:test"), "case: {name}");
+        }
+    }
+
+    #[test]
+    fn keeps_an_existing_container_id() {
+        let mut provider = TestWorkloadProvider::new();
+        provider.add_live_process(42, saluki_env::workload::EntityId::Container("detected".into()));
+        let resource = otlp_resource_v1::Resource {
+            attributes: vec![
+                key_value_string_to_otlp_common_key_value("container.id", "given"),
+                otlp_common::KeyValue {
+                    key: "process.pid".into(),
+                    value: Some(otlp_common::AnyValue {
+                        value: Some(otlp_common::any_value::Value::IntValue(42)),
+                    }),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let log = translate_log_with_provider(otlp_logs_v1::LogRecord::default(), resource, None, provider);
+        assert_eq!(
+            log.additional_properties().get("container.id"),
+            Some(&JsonValue::String("given".into()))
+        );
+        assert!(log.tags().has_tag("container_id:given"));
+        assert!(!log.tags().has_tag("container_id:detected"));
+    }
+
     #[test]
     fn k8s_node_name_maps_to_kube_node_tag() {
         let lr = otlp_logs_v1::LogRecord::default();
@@ -459,11 +564,11 @@ mod tests {
             schema_url: String::new(),
         };
 
+        let provider = Arc::new(NoopWorkloadProvider);
         ResourceLogsIter::new(
             resource_logs,
-            &OtlpOriginTagResolver::new(std::sync::Arc::new(
-                saluki_env::workload::providers::NoopWorkloadProvider,
-            )),
+            &OtlpOriginTagResolver::new(provider.clone()),
+            &ContainerIdResolver::new(None, provider),
         )
         .map(|log| (log.hostname().to_string(), log.service().to_string()))
         .collect()
@@ -1057,9 +1162,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut translator = OtlpLogsTranslator::new(OtlpOriginTagResolver::new(std::sync::Arc::new(
-            saluki_env::workload::providers::NoopWorkloadProvider,
-        )));
+        let provider = Arc::new(NoopWorkloadProvider);
+        let mut translator = OtlpLogsTranslator::new(
+            OtlpOriginTagResolver::new(provider.clone()),
+            ContainerIdResolver::new(None, provider),
+        );
 
         let contents = translator
             .translate_logs(resource_logs, &metrics)

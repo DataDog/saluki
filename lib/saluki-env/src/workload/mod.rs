@@ -81,6 +81,14 @@ pub trait WorkloadProvider {
     ///  If the origin is empty, `None` is returned. Otherwise, `Some(ResolvedOrigin)` will be returned, which contains
     ///  fully resolved versions of the raw origin components.
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin>;
+
+    /// Gets the container entity that owns a cgroup, by the inode of the cgroup.
+    ///
+    /// The container doesn't need tags. Returns `None` if no known container owns the cgroup, or if the provider
+    /// can't map cgroup inodes to containers.
+    fn get_container_entity_for_inode(&self, _inode: u64) -> Option<EntityId> {
+        None
+    }
 }
 
 impl<T> WorkloadProvider for Option<T>
@@ -104,6 +112,13 @@ where
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         match self.as_ref() {
             Some(provider) => provider.get_resolved_origin(origin),
+            None => None,
+        }
+    }
+
+    fn get_container_entity_for_inode(&self, inode: u64) -> Option<EntityId> {
+        match self.as_ref() {
+            Some(provider) => provider.get_container_entity_for_inode(inode),
             None => None,
         }
     }
