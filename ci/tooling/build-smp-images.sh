@@ -42,7 +42,6 @@ build_target="x86_64-unknown-linux-gnu"
 image_repo="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-recipe_hash="$(sha256sum "${BASH_SOURCE[0]}" | cut -c1-64)"
 
 log() {
     echo "[build-smp-images] $*" >&2
@@ -52,6 +51,8 @@ log() {
 sha256() {
     sha256sum | cut -c1-64
 }
+
+recipe_hash="$(sha256 < "${BASH_SOURCE[0]}")"
 
 # Print `<ref>@<digest>` for an image reference, with the digest that the tag points at now.
 pin_digest() {
