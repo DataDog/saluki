@@ -25,6 +25,9 @@ pub use self::config::{LogLevel, LoggingConfiguration};
 mod layer;
 use self::layer::{build_formatting_layer, build_syslog_formatting_layer};
 
+mod panic;
+use self::panic::install_panic_hook;
+
 mod syslog;
 use self::syslog::SyslogWriter;
 
@@ -119,6 +122,10 @@ pub(crate) async fn initialize_logging(
     tracing_subscriber::registry()
         .with(output_layer.with_filter(filter_layer))
         .try_init()?;
+
+    // Log panics through the subscriber we just installed, so they reach the configured outputs and not only standard
+    // error. `try_init` fails on a second call, so the hook is installed at most once.
+    install_panic_hook();
 
     // The override worker also asserts the privileged API routes for runtime filter control, so nothing driven
     // through those routes takes effect until this supervisor is running.

@@ -1,0 +1,7 @@
+---
+enhancements:
+  - |
+    Agent Data Plane now writes a panic to its configured log outputs, such as ``agent-data-plane.log``, in addition
+    to standard error. The log entry is at the ``ERROR`` level and includes the panic message, its source location, and
+    the thread name. Before this change, a panic on Windows left no record, because standard error is not captured
+    there, and the log file showed only the startup line.
