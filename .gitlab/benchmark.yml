@@ -29,7 +29,7 @@ build-adp-baseline-image:
   needs: []
   retry: 2
   # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build, when
-  # the image isn't reused.
+  # neither image is reused.
   timeout: 30m
   before_script:
     - *setup-smp-env
@@ -61,7 +61,7 @@ build-adp-comparison-image:
   needs: []
   retry: 2
   # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build, when
-  # the image isn't reused.
+  # neither image is reused.
   timeout: 30m
   before_script:
     - *setup-smp-env
