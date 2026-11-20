@@ -11,6 +11,8 @@ use serde::de::{self, DeserializeOwned, Deserializer, SeqAccess, Visitor};
 use serde::Deserialize;
 use tracing::warn;
 
+use crate::cast_de::cast_to_string;
+
 /// Deserialize a `Vec<String>` from either a sequence or a string.
 ///
 /// A string is read as the Agent's `[]string` cast reads it (see
@@ -19,7 +21,8 @@ use tracing::warn;
 ///
 /// A sequence is read item by item, as the Agent's `cast.ToStringSlice` reads it: each item is cast
 /// with `cast.ToString`, so a number or a boolean is its string form and a null is an empty string.
-/// The Agent drops a map or a sequence item without a warning. This function also drops it, and
+/// `cast.ToString` cannot cast a map or a sequence item, and the Agent keeps the empty string that
+/// it returns, without a warning. This function also reads such an item as an empty string, and
 /// logs a warning, so that an item such as `- product: contentcontrol` does not reject a
 /// configuration that the Agent runs with.
 pub(crate) fn deserialize_space_separated_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -42,14 +45,15 @@ where
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
             let mut values = Vec::new();
             while let Some(item) = seq.next_element::<serde_json::Value>()? {
-                match crate::cast_de::cast_to_string(&item) {
-                    Ok(value) => values.push(value),
-                    Err(_) => warn!(
+                let value = cast_to_string(&item).unwrap_or_else(|_| {
+                    warn!(
                         item = %item,
-                        "Ignoring a list item that is not a string, a number, or a boolean. Write the item as a \
-                         string, such as `\"key:value\"`."
-                    ),
-                }
+                        "Reading a list item that is not a string, a number, or a boolean as an empty string. \
+                         Write the item as a string, such as `\"key:value\"`."
+                    );
+                    String::new()
+                });
+                values.push(value);
             }
             Ok(values)
         }
@@ -192,12 +196,12 @@ mod tests {
     }
 
     #[test]
-    fn compound_items_are_dropped() {
-        // The Agent cannot cast a map or a sequence item to a string, and drops its value. A YAML item such as
-        // `- product: contentcontrol` is a map, so it must not reject the whole list.
+    fn compound_items_are_empty_strings() {
+        // `cast.ToString` cannot cast a map or a sequence item, and `cast.ToStringSlice` keeps the empty string that it
+        // returns. A YAML item such as `- product: contentcontrol` is a map, so it must not reject the whole list.
         assert_eq!(
             parse(r#"{"list": [{"product": "contentcontrol"}, "env:prod", ["nested"]]}"#),
-            vec!["env:prod"]
+            vec!["", "env:prod", ""]
         );
     }
 
