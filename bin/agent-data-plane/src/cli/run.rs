@@ -42,7 +42,7 @@ use saluki_components::{
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement,
-        OriginEnrichmentConfiguration, OtlpConfiguration,
+        OriginEnrichmentConfiguration, OtlpConfiguration, OtlpRoutes,
     },
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
@@ -1104,6 +1104,8 @@ async fn add_otlp_pipeline_to_blueprint(
         let otlp_config = OtlpConfiguration {
             default_hostname: default_hostname.into(),
             receiver: otlp_receiver(&otlp.receiver),
+            routes: OtlpRoutes::ALL_INTERNAL,
+            proxy_destinations: None,
             metrics: otlp_metrics_settings(&otlp.metrics),
             traces_enabled: otlp.traces.enabled,
             traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),

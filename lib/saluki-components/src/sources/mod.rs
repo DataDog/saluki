@@ -19,7 +19,9 @@ pub use self::otlp::{
     OtlpMetricsSettings, SummaryMode,
 };
 pub use crate::common::otlp::{
+    proxy::OtlpProxyDestinations,
     receiver::{GrpcTransport, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive, OtlpReceiver, OtlpReceiverTls},
     traces::translator::{ContainerTagPromotion, OtlpTracesSettings},
-    CorsConfiguration,
+    CorsConfiguration, OtlpRoute, OtlpRoutes,
 };
+pub use crate::common::proxy::Destination;
