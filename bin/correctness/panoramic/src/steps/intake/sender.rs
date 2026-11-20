@@ -256,7 +256,7 @@ impl Target {
         fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, String> {
             serde_json::from_slice(body).map_err(|e| {
                 if body.is_empty() {
-                    "the answer is empty: the intake may not have this route".to_string()
+                    "the intake answered with an empty body (check that it serves this route)".to_string()
                 } else {
                     e.to_string()
                 }
@@ -1167,10 +1167,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_answer_that_does_not_decode_errors_at_once() {
         let answers = [Ok(b"{}".to_vec()), Ok(Vec::new())];
-        for (answer, why) in answers
-            .into_iter()
-            .zip(["invalid type", "the intake may not have this route"])
-        {
+        for (answer, why) in answers.into_iter().zip(["invalid type", "answered with an empty body"]) {
             let outcome = watch(&adp_step(Telemetry::Metrics), vec![answer]).await;
             assert_status(&outcome, StepStatus::Errored);
             assert_mentions(
