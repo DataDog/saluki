@@ -5730,6 +5730,7 @@ dependencies = [
  "saluki-tls",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tonic",
  "tower",
