@@ -26,9 +26,9 @@ like <code>Some(1)</code>: a single socket is bound normally and one stream is y
 <p>For non-UDP listen addresses, <code>udp_streams</code> is ignored.</p>
 <h5 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h5>
 <p>If the listen address can’t be bound, or if the listener can’t be configured correctly, an error is returned.</p>
-</div></details><details class="toggle method-toggle" open><summary><section id="method.with_subleases" class="method"><a class="src rightside" href="../../../src/saluki_io/net/listener/mod.rs.html#297-300">Source</a><h4 class="code-header">pub fn <a href="#method.with_subleases" class="fn">with_subleases</a>(self, subleases: <a class="struct" href="../../../saluki_core/runtime/state/resources/sublease/struct.Subleases.html" title="struct saluki_core::runtime::state::resources::sublease::Subleases">Subleases</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the subleases issued for the connectionless sockets this listener lends out.</p>
+</div></details><details class="toggle method-toggle" open><summary><section id="method.with_subleases" class="method"><a class="src rightside" href="../../../src/saluki_io/net/listener/mod.rs.html#297-300">Source</a><h4 class="code-header">pub fn <a href="#method.with_subleases" class="fn">with_subleases</a>(self, subleases: Subleases) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the subleases issued for the connectionless sockets this listener lends out.</p>
 <p>Only meaningful for a listener owned by a
-<a href="../../../saluki_core/runtime/state/resources/struct.ResourceRegistry.html" title="struct saluki_core::runtime::state::resources::ResourceRegistry"><code>ResourceRegistry</code></a>: it is what stops the registry handing the
+[<code>ResourceRegistry</code>][saluki_core::runtime::state::ResourceRegistry]: it is what stops the registry handing the
 listener to another acquirer while a stream from the previous one is still reading the socket underneath it.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_receive_buffer_size" class="method"><a class="src rightside" href="../../../src/saluki_io/net/listener/mod.rs.html#305-308">Source</a><h4 class="code-header">pub fn <a href="#method.with_receive_buffer_size" class="fn">with_receive_buffer_size</a>(
     self,
