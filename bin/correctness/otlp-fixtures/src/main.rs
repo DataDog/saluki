@@ -1,8 +1,8 @@
 //! Builds the `static_base64` OTLP payloads used by some correctness and integration cases.
 //!
 //! Each payload is built here and written into the `static_base64` payload of a sender config, such as a correctness
-//! case's `millstone.yaml`. The config must already exist and hold a `static_base64: ""` placeholder. After changing a
-//! fixture, regenerate the payloads with:
+//! case's `millstone.yaml`. The config must be named `millstone*.yaml`, must already exist, and must hold a
+//! `static_base64: ""` placeholder. After changing a fixture, regenerate the payloads with:
 //!
 //! ```text
 //! make generate-correctness-fixtures
@@ -27,6 +27,13 @@ mod traces;
 /// Returns whether the file changed.
 fn write_fixture(root: &Path, target: &str, payload: &[u8]) -> Result<bool, GenericError> {
     let path = root.join(target);
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    if !(name.starts_with("millstone") && name.ends_with(".yaml")) {
+        return Err(generic_error!(
+            "{}: sender configs must be named `millstone*.yaml` so millstone's config parse test covers them",
+            path.display()
+        ));
+    }
     if !path.is_file() {
         return Err(generic_error!(
             "{}: no such file; create it with a `static_base64: \"\"` placeholder",
@@ -168,13 +175,13 @@ mod tests {
     #[test]
     fn write_fixture_fills_the_placeholder_in_a_named_file() {
         let root = root_with(
-            "cases/case/traces-grpc.yaml",
+            "cases/case/millstone-traces-grpc.yaml",
             "payload:\n  static_base64: \"\"\nvolume: 1\n",
         );
 
-        assert!(write_fixture(root.path(), "cases/case/traces-grpc.yaml", PAYLOAD).unwrap());
+        assert!(write_fixture(root.path(), "cases/case/millstone-traces-grpc.yaml", PAYLOAD).unwrap());
 
-        let written = std::fs::read_to_string(root.path().join("cases/case/traces-grpc.yaml")).unwrap();
+        let written = std::fs::read_to_string(root.path().join("cases/case/millstone-traces-grpc.yaml")).unwrap();
         assert_eq!(
             written,
             format!("payload:\n  static_base64: \"{}\"\nvolume: 1\n", ENCODED)
@@ -196,12 +203,25 @@ mod tests {
     fn write_fixture_refuses_a_missing_file() {
         let root = tempfile::tempdir().unwrap();
 
-        let error = write_fixture(root.path(), "cases/case/missing.yaml", PAYLOAD).unwrap_err();
+        let error = write_fixture(root.path(), "cases/case/millstone-missing.yaml", PAYLOAD).unwrap_err();
 
         let message = format!("{:#}", error);
-        assert!(message.contains("cases/case/missing.yaml"), "{}", message);
+        assert!(message.contains("cases/case/millstone-missing.yaml"), "{}", message);
         assert!(message.contains("no such file"), "{}", message);
         assert!(!root.path().join("cases").exists());
+    }
+
+    #[test]
+    fn write_fixture_refuses_a_name_millstone_does_not_test() {
+        let root = root_with("cases/case/traces-grpc.yaml", "static_base64: \"\"\n");
+
+        let error = write_fixture(root.path(), "cases/case/traces-grpc.yaml", PAYLOAD).unwrap_err();
+
+        assert!(format!("{:#}", error).contains("millstone*.yaml"));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("cases/case/traces-grpc.yaml")).unwrap(),
+            "static_base64: \"\"\n"
+        );
     }
 
     #[test]
