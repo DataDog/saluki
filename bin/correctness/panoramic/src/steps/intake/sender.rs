@@ -699,7 +699,6 @@ mod tests {
     use crate::core::observe::{Kept, Observation};
     use crate::core::participant::Os;
     use crate::core::reference::Values;
-    use crate::intake::test_server::install_crypto_provider;
 
     const ADP: &str = "agent-data-plane/1.9.0";
     const AGENT: &str = "datadog-agent/7.87.0";
@@ -1340,7 +1339,7 @@ procedure:
         }
 
         // The client of the handle needs the process-wide crypto provider, which `main` installs at startup.
-        install_crypto_provider();
+        let _ = crate::default_crypto_provider().install_default();
         let port = serve(BTreeMap::from([
             (
                 "/metrics/dump_requests",
