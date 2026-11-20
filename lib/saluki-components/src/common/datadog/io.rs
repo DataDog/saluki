@@ -78,7 +78,10 @@ use super::{
     api_key::{ApiKeyRefresher, LiveApiKeys},
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
-    middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
+    middleware::{
+        for_resolved_endpoint, system_clock, with_allow_arbitrary_tags, with_logs_current_timestamp, with_version_info,
+        UnixMillisClock,
+    },
     retry::{RetryConfiguration, SecretsGate, SecretsGateRefresher, SecretsHttpRetryPolicy},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
     routing::RoutingTargetId,
@@ -354,6 +357,7 @@ struct ForwarderIo<B> {
     telemetry: ComponentTelemetry,
     endpoint_name: Arc<EndpointNameFn>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    clock: UnixMillisClock,
     emitter: DiagnosticsEmitter,
 }
 
@@ -551,6 +555,7 @@ where
                 telemetry,
                 endpoint_name,
                 endpoint_request_mapper_factory,
+                clock: system_clock(),
                 emitter,
             },
         })
@@ -602,6 +607,13 @@ where
         .spawn();
 
         Handle { transactions_tx }
+    }
+
+    /// Replaces the clock that stamps logs requests with their send time.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: UnixMillisClock) -> Self {
+        self.io.clock = clock;
+        self
     }
 
     /// Returns API key validation for the startup endpoint set.
@@ -914,7 +926,7 @@ async fn run_endpoint_io_loop<B>(
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let queue_id = generate_retry_queue_id(io.context, &endpoint);
+    let queue_id = generate_retry_queue_id(io.context.clone(), &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
     let configured_endpoint = endpoint.configured_endpoint().to_string();
     let endpoint_domain = endpoint.endpoint().origin().ascii_serialization();
@@ -950,11 +962,10 @@ async fn run_endpoint_io_loop<B>(
         .retry
         .to_default_http_retry_policy(secrets, endpoint_telemetry.retry_cause);
     let mut service = build_endpoint_service(
-        io.client,
+        &io,
         &config,
         retry_policy,
         endpoint_request_mapper,
-        io.emitter,
         endpoint_url.clone(),
         &in_flight_shutdown,
     );
@@ -1115,9 +1126,8 @@ async fn run_endpoint_io_loop<B>(
 /// into a `RetryCircuitBreakerError::Retry` error that only re-enqueues the transaction. The response never reaches the
 /// endpoint I/O loop, so this layer is the only place that reliably sees the rejection.
 fn build_endpoint_service<B>(
-    client: HttpClient, config: &ForwarderConfiguration, retry_policy: SecretsHttpRetryPolicy<Incoming>,
-    endpoint_request_mapper: EndpointRequestMapper<B>, emitter: DiagnosticsEmitter, endpoint_url: String,
-    in_flight_shutdown: &CancellationToken,
+    io: &ForwarderIo<B>, config: &ForwarderConfiguration, retry_policy: SecretsHttpRetryPolicy<Incoming>,
+    endpoint_request_mapper: EndpointRequestMapper<B>, endpoint_url: String, in_flight_shutdown: &CancellationToken,
 ) -> impl Service<
     Request<TransactionBody<B>>,
     Response = Response<Incoming>,
@@ -1141,6 +1151,10 @@ where
         .map_request(with_version_info())
         .concurrency_limit(config.effective_endpoint_concurrency())
         .layer(retry_circuit_breaker)
+        // Stamp logs requests with the send time, after any wait for a concurrency permit or the circuit breaker. This
+        // runs on every attempt, so retries carry a fresh value. It runs before the endpoint mapper, which can add the
+        // endpoint's base path to the request path.
+        .map_request(with_logs_current_timestamp(Arc::clone(&io.clock)))
         // Set the request's URI and endpoint-specific headers.
         //
         // This layer sits below the retry circuit breaker, so it maps each attempt from the original request. The circuit
@@ -1148,9 +1162,9 @@ where
         // keeps its relative path. Above the circuit breaker, a retried request would be mapped again, and the mapper
         // would add the endpoint's base path a second time.
         .map_request(move |request| endpoint_request_mapper(request))
-        .layer(build_diagnostics_layer(emitter, endpoint_url))
+        .layer(build_diagnostics_layer(io.emitter.clone(), endpoint_url))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
-        .service(client)
+        .service(io.client.clone())
 }
 
 /// Builds the retry queue of one endpoint, persisting it to disk when retry storage is enabled.
@@ -1520,7 +1534,7 @@ mod tests {
     use std::{
         future::{pending, Pending},
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicU64, AtomicUsize, Ordering},
             Arc, OnceLock,
         },
     };
@@ -2905,13 +2919,17 @@ mod tests {
     }
 
     fn build_test_transaction() -> Transaction<FrozenChunkedBytesBuffer> {
+        // The endpoint middleware rewrites the authority to point at our `dd_url`, but preserves the path. Use a path
+        // that is not the special-cased `/api/v2/logs` or `/api/v0.2/{traces,stats}` routes, so the request is
+        // dispatched to the configured `dd_url` host directly.
+        build_test_transaction_for("http://placeholder/api/v2/series")
+    }
+
+    fn build_test_transaction_for(uri: &'static str) -> Transaction<FrozenChunkedBytesBuffer> {
         let body = FrozenChunkedBytesBuffer::from(Bytes::from_static(b"test-payload"));
         let request = http::Request::builder()
             .method("POST")
-            // The endpoint middleware rewrites the authority to point at our `dd_url`, but preserves the path. Use a
-            // path that is not the special-cased `/api/v2/logs` or `/api/v0.2/{traces,stats}` routes, so the request
-            // is dispatched to the configured `dd_url` host directly.
-            .uri("http://placeholder/api/v2/series")
+            .uri(uri)
             .body(body)
             .expect("request should build");
         Transaction::from_original(TxnMetadata::from_event_and_data_point_count(1, 0), request)
@@ -2954,9 +2972,14 @@ mod tests {
 
     /// Returns the API key a recorded request presented.
     fn recorded_api_key(request: &str) -> Option<&str> {
+        recorded_header(request, "dd-api-key")
+    }
+
+    /// Returns the value of the header `name` in the text of a recorded request.
+    fn recorded_header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.trim().eq_ignore_ascii_case("dd-api-key").then_some(value.trim())
+            let (header, value) = line.split_once(':')?;
+            header.trim().eq_ignore_ascii_case(name).then_some(value.trim())
         })
     }
 
@@ -3353,6 +3376,69 @@ mod tests {
 
         drain_test_forwarder(supervisor, handle).await;
         assert_eq!(recorder.gauge(in_flight_key()), Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn forwarder_refreshes_logs_current_timestamp_on_each_retry() {
+        let (server_url, _counter, mut requests) = start_recording_http_server_with_requests(vec![
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::OK,
+        ])
+        .await;
+        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(false)).await;
+        // Each read of the clock moves it forward by a millisecond.
+        let now_ms = Arc::new(AtomicU64::new(1_700_000_000_000));
+        let forwarder = forwarder.with_clock(Arc::new(move || now_ms.fetch_add(1, Ordering::SeqCst)));
+
+        let supervisor = TestSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+        // A custom `dd_url` has no logs intake host, so logs requests also go to the test server.
+        handle
+            .send_transaction(build_test_transaction_for("http://placeholder/api/v2/logs"))
+            .await
+            .expect("send should succeed");
+
+        let mut timestamps = Vec::new();
+        for _ in 0..3 {
+            let request = timeout(Duration::from_secs(3), requests.recv())
+                .await
+                .expect("the server should record the request")
+                .expect("the server should be running");
+            let timestamp = recorded_header(&request, "dd-current-timestamp")
+                .expect("logs requests should carry dd-current-timestamp")
+                .to_string();
+            timestamps.push(timestamp);
+        }
+        drain_test_forwarder(supervisor, handle).await;
+
+        // One read per attempt: a value taken once and reused, or read more than once per send, breaks the sequence.
+        assert_eq!(timestamps, ["1700000000000", "1700000000001", "1700000000002"]);
+    }
+
+    #[tokio::test]
+    async fn forwarder_sets_logs_current_timestamp_with_an_endpoint_base_path() {
+        let (server_url, _counter, mut requests) =
+            start_recording_http_server_with_requests(vec![StatusCode::OK]).await;
+        let endpoint_url = format!("{}/prefix", server_url.trim_end_matches('/'));
+        let (_, forwarder) = build_test_forwarder(&endpoint_url, Live::new_fixed(false)).await;
+        let forwarder = forwarder.with_clock(Arc::new(|| 1_700_000_000_000));
+
+        let supervisor = TestSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+        handle
+            .send_transaction(build_test_transaction_for("http://placeholder/api/v2/logs"))
+            .await
+            .expect("send should succeed");
+
+        let request = timeout(Duration::from_secs(3), requests.recv())
+            .await
+            .expect("the server should record the request")
+            .expect("the server should be running");
+        drain_test_forwarder(supervisor, handle).await;
+
+        assert_eq!(request.lines().next(), Some("POST /prefix/api/v2/logs HTTP/1.1"));
+        assert_eq!(recorded_header(&request, "dd-current-timestamp"), Some("1700000000000"));
     }
 
     #[tokio::test]

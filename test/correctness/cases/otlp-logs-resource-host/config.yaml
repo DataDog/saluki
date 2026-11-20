@@ -153,8 +153,3 @@ procedure:
           when:
             fixture_id: [host-k8s-node-and-cluster, host-id-only]
           reason: ADP's logs host resolution doesn't know `k8s.node.name` or `host.id`.
-        - gap: gap/missing-headers
-          paths:
-            - headers.dd-current-timestamp
-          kinds: [missing]
-          reason: ADP doesn't send the `dd-current-timestamp` header on logs requests.

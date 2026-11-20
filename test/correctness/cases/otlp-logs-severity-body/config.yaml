@@ -68,8 +68,3 @@ procedure:
           when:
             fixture_id: [body-empty]
           reason: ADP renders an empty body as "null" instead of "".
-        - gap: gap/missing-headers
-          paths:
-            - headers.dd-current-timestamp
-          kinds: [missing]
-          reason: ADP doesn't send the `dd-current-timestamp` header on logs requests.
