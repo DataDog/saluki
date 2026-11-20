@@ -24,5 +24,7 @@ Apply these rules to files under `lib/saluki-components`.
 
 - Flag a component loop that isn't a `loop { select! { ... } }` with a `health.live()` arm, such as a `while let` loop
   over input.
-- Flag a `select!` arm that awaits work whose duration grows with buffered state, such as a whole flush. (A slow flush
-  in one arm made `/live` fail on CPU-starved pods: #2726.)
+- Flag a `select!` arm that awaits work that can take a long time without wrapping it in `Health::keep_live_during`.
+  This includes a whole flush, and a send to a downstream component, which waits while the downstream channel is full.
+  (A slow flush in one arm made `/live` fail on CPU-starved pods: #2726. A send blocked behind that flush then made the
+  transform upstream of it fail.)

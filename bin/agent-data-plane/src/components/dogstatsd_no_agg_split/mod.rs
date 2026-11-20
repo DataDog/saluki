@@ -298,7 +298,9 @@ impl Transform for DogStatsDNoAggSplit {
         loop {
             select! {
                 _ = health.live() => continue,
-                _ = passthrough_flush.tick() => self.passthrough_batcher.try_flush(context.dispatcher()).await,
+                _ = passthrough_flush.tick() => {
+                    health.keep_live_during(self.passthrough_batcher.try_flush(context.dispatcher())).await
+                },
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
@@ -306,49 +308,54 @@ impl Transform for DogStatsDNoAggSplit {
                         // Fast path: when nothing in this buffer is timestamped -- overwhelmingly the common case,
                         // since only clients using the timestamp extension produce them -- there's nothing to split
                         // out, so forward the buffer as-is instead of moving every event into a new one.
+                        //
+                        // Every send below can wait a long time for room downstream, for example during a long
+                        // aggregation flush, so we keep answering liveness probes while they wait.
                         if !has_timestamped_metrics(&events) {
-                            if let Err(e) = context.dispatcher().dispatch(events).await {
+                            if let Err(e) = health.keep_live_during(context.dispatcher().dispatch(events)).await {
                                 error!(error = %e, "Failed to dispatch events.");
                             }
                             continue;
                         }
 
-                        let mut default_dispatcher = context
-                            .dispatcher()
-                            .buffered()
-                            .expect("default output should always exist");
+                        health.keep_live_during(async {
+                            let mut default_dispatcher = context
+                                .dispatcher()
+                                .buffered()
+                                .expect("default output should always exist");
 
-                        let mut buffered_any = false;
-                        for metric in events.into_events::<Metric>() {
-                            let (maybe_timestamped, maybe_remainder) = try_split_timestamped_values(metric);
+                            let mut buffered_any = false;
+                            for metric in events.into_events::<Metric>() {
+                                let (maybe_timestamped, maybe_remainder) = try_split_timestamped_values(metric);
 
-                            if let Some(timestamped_metric) = maybe_timestamped {
-                                buffered_any |= self
-                                    .passthrough_batcher
-                                    .push_metric(timestamped_metric, context.dispatcher())
-                                    .await;
-                            }
+                                if let Some(timestamped_metric) = maybe_timestamped {
+                                    buffered_any |= self
+                                        .passthrough_batcher
+                                        .push_metric(timestamped_metric, context.dispatcher())
+                                        .await;
+                                }
 
-                            if let Some(remainder) = maybe_remainder {
-                                // A push only fails when the downstream output can no longer be sent to, which
-                                // means the buffered events it was flushing are gone along with this one. There's
-                                // nowhere left to put them, so log and keep draining our input.
-                                if let Err(e) = default_dispatcher.push(Event::Metric(remainder)).await {
-                                    error!(error = %e, "Failed to dispatch non-timestamped events.");
+                                if let Some(remainder) = maybe_remainder {
+                                    // A push only fails when the downstream output can no longer be sent to, which
+                                    // means the buffered events it was flushing are gone along with this one. There's
+                                    // nowhere left to put them, so log and keep draining our input.
+                                    if let Err(e) = default_dispatcher.push(Event::Metric(remainder)).await {
+                                        error!(error = %e, "Failed to dispatch non-timestamped events.");
+                                    }
                                 }
                             }
-                        }
 
-                        // Only push the batcher's idle timer forward if it actually buffered something. Timestamped
-                        // metrics it dropped (for an unsupported type) don't count as activity: otherwise, a steady
-                        // stream of them would keep already-buffered metrics from ever hitting the idle flush.
-                        if buffered_any {
-                            self.passthrough_batcher.update_last_processed_at();
-                        }
+                            // Only push the batcher's idle timer forward if it actually buffered something. Timestamped
+                            // metrics it dropped (for an unsupported type) don't count as activity: otherwise, a steady
+                            // stream of them would keep already-buffered metrics from ever hitting the idle flush.
+                            if buffered_any {
+                                self.passthrough_batcher.update_last_processed_at();
+                            }
 
-                        if let Err(e) = default_dispatcher.flush().await {
-                            error!(error = %e, "Failed to dispatch events.");
-                        }
+                            if let Err(e) = default_dispatcher.flush().await {
+                                error!(error = %e, "Failed to dispatch events.");
+                            }
+                        }).await;
                     },
                     None => break,
                 },

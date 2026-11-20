@@ -78,6 +78,32 @@ impl Health {
             let _ = self.response_tx.send(response).await;
         }
     }
+
+    /// Runs `fut` to completion and answers liveness probes while it runs.
+    ///
+    /// Use this for an `.await` in a component loop that can wait for a long time, such as a send into a full
+    /// downstream channel. Without it, the component can't answer probes until the `.await` completes, and the
+    /// registry marks it as not live, even though it only waits on backpressure.
+    ///
+    /// Probes go first, so that a waiting probe is seen on every wakeup, even when `fut` uses up the cooperative budget
+    /// of the task.
+    pub async fn keep_live_during<F: Future>(&mut self, fut: F) -> F::Output {
+        pin!(fut);
+
+        loop {
+            // When the registry is gone, `live` resolves at once. Wait on `fut` alone so that we don't spin.
+            if self.request_rx.is_closed() {
+                return fut.await;
+            }
+
+            select! {
+                biased;
+
+                _ = self.live() => {},
+                output = &mut fut => return output,
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1221,5 +1247,45 @@ mod tests {
 
         // The component's health should have been reset to Unknown since its last response is stale:
         assert!(!component_live(&registry_state, COMPONENT_ID));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn keep_live_during_answers_probes_while_future_waits() {
+        let (mut handle, mut registry, registry_state, _runner_state) =
+            initialize_registry_with_component(COMPONENT_ID);
+
+        // The future waits on a channel that nothing sends to yet. This models a send into a full downstream channel.
+        let (unblock_tx, unblock_rx) = oneshot::channel::<u32>();
+        let mut waiting = spawn(handle.keep_live_during(async move { unblock_rx.await.unwrap() }));
+        assert_pending!(waiting.poll());
+
+        // Send a probe. It must be answered, even though the future is still waiting.
+        drive_until_quiesced(&mut registry);
+        assert!(!component_live(&registry_state, COMPONENT_ID));
+
+        assert!(waiting.is_woken());
+        assert_pending!(waiting.poll());
+
+        assert!(registry.is_woken());
+        drive_until_quiesced(&mut registry);
+        assert!(component_live(&registry_state, COMPONENT_ID));
+
+        // Once the future completes, `keep_live_during` returns its output.
+        unblock_tx.send(42).unwrap();
+        assert!(waiting.is_woken());
+        assert_eq!(assert_ready!(waiting.poll()), 42);
+    }
+
+    #[tokio::test]
+    async fn keep_live_during_does_not_spin_when_registry_is_gone() {
+        let registry = HealthRegistry::new();
+        let mut handle = registry
+            .register_component(&SubsystemIdentifier::from_dotted(COMPONENT_ID))
+            .unwrap();
+        drop(registry);
+
+        // With the registry gone, `live` resolves at once. The future must still complete normally.
+        let output = handle.keep_live_during(async { 7 }).await;
+        assert_eq!(output, 7);
     }
 }

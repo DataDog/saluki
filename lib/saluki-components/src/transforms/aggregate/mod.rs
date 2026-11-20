@@ -507,18 +507,10 @@ impl Transform for Aggregate {
 
                             self.telemetry.record_last_flush_duration(flush_start.elapsed());
                         };
-                        tokio::pin!(flush);
 
                         // A flush can wait a long time for space in a full downstream channel. Keep answering liveness
-                        // probes while it waits. Probes go first so that a waiting probe is seen on every wakeup, even
-                        // when the flush would use up the task's cooperative budget.
-                        loop {
-                            select! {
-                                biased;
-                                _ = health.live() => {},
-                                _ = &mut flush => break,
-                            }
-                        }
+                        // probes while it waits.
+                        health.keep_live_during(flush).await;
                     }
 
                     // If this is the final flush, we break out of the loop.

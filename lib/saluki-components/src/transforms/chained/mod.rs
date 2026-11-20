@@ -119,7 +119,9 @@ impl Transform for Chained {
                             transform.transform_buffer(&mut event_buffer);
                         }
 
-                        if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
+                        // The send can wait a long time for room downstream, for example during a long aggregation
+                        // flush. Keep answering liveness probes while it waits.
+                        if let Err(e) = health.keep_live_during(context.dispatcher().dispatch(event_buffer)).await {
                             error!(error = %e, "Failed to dispatch events.");
                         }
                     },

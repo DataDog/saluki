@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Agent Data Plane no longer fails its liveness probe when a long DogStatsD aggregation flush, such as on a
+    host with many contexts, makes the DogStatsD transforms upstream of the aggregator wait. Previously a
+    transform that waited more than 5 seconds to send to the aggregator stopped answering liveness probes,
+    so ``/live`` returned 503 and Kubernetes restarted the container.

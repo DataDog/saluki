@@ -422,7 +422,9 @@ impl Transform for TagFilterlist {
                                 }
                             }
                         }
-                        if let Err(e) = context.dispatcher().dispatch(events).await {
+                        // The send can wait a long time for room downstream, for example during a long aggregation
+                        // flush. Keep answering liveness probes while it waits.
+                        if let Err(e) = health.keep_live_during(context.dispatcher().dispatch(events)).await {
                             error!(error = %e, "Failed to dispatch events.");
                         }
                     }
