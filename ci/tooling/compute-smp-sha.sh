@@ -11,7 +11,7 @@
 #
 #   PR / on-demand (any non-schedule pipeline, e.g. a development-branch pipeline):
 #     comparison = the current commit ($CI_COMMIT_SHA)
-#     baseline   = the merge base of the branch with main
+#     baseline   = the merge base of the current commit with main
 #
 #   Nightly (scheduled pipeline; see .on_smp_nightly): a deterministic, date-anchored
 #   "previous nightly" comparison that is immune to divergent/backport release branches.
@@ -87,7 +87,10 @@ else
         comparison) sha="${CI_COMMIT_SHA}" ;;
         baseline)
             fetch_history
-            sha="$(git -C "${history_repo}" merge-base origin/main "origin/${CI_COMMIT_BRANCH}")"
+            # Use the pipeline commit, not the branch tip that the fetch returns: the branch can
+            # move while the pipeline runs. If a force-push removed the pipeline commit from the
+            # branch, the history repository does not have it, and the job fails.
+            sha="$(git -C "${history_repo}" merge-base origin/main "${CI_COMMIT_SHA}")"
             share_history
             ;;
         *) echo "unknown role: ${role}" >&2; exit 1 ;;
