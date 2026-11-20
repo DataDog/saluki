@@ -111,6 +111,12 @@ edit the payloads by hand. To add a fixture, create the sender config with a `st
 a table entry in `main.rs` with the config's path from the repository root. The `check-correctness-fixtures` CI job
 runs the same target and fails if it changes any committed payload.
 
+Name every sender config that `otlp-fixtures` writes `millstone*.yaml`, such as `millstone.yaml` or
+`millstone-traces-grpc.yaml`. Millstone's `every_test_case_config_parses` test only checks files with that name, so a
+differently named config skips the parse and validation check. `otlp-fixtures` refuses a target with another name.
+A fixture's trace builder takes a seed for the trace and span IDs: give each fixture that can reach the same
+destination its own seed, such as one per protocol.
+
 ## Integration tests (panoramic)
 
 Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
