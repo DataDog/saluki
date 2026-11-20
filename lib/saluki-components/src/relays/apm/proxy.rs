@@ -13,7 +13,7 @@ use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _, path::PathBuf};
 use axum::extract::Request as AxumRequest;
 use axum::response::Response;
 use http::header::{self, HeaderMap};
-use http::uri::{PathAndQuery, Uri};
+use http::uri::Uri;
 use http::{HeaderValue, Version};
 use rustls::RootCertStore;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -21,7 +21,7 @@ use saluki_io::net::client::http::{HttpClient, HttpProtocol};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::common::proxy::{strip_hop_by_hop_headers, Destination, ForwardError, UpstreamClient};
+use crate::common::proxy::{strip_hop_by_hop_headers, upstream_uri, Destination, ForwardError, UpstreamClient};
 
 /// Name the relay adds itself to the `Via` header under, so that a request proxied back to the relay is recognized.
 /// See RFC 9110, section 7.6.3.
@@ -80,7 +80,7 @@ impl TraceAgentProxy {
             // proxy must not impose a shorter one of its own.
             .without_request_timeout();
 
-        let (builder, base_uri, destination) = match url.scheme() {
+        let upstream = match url.scheme() {
             "http" => {
                 if url.path() != "/" {
                     return Err(generic_error!(
@@ -94,16 +94,9 @@ impl TraceAgentProxy {
                 let port = url
                     .port_or_known_default()
                     .ok_or_else(|| generic_error!("APM proxy destination `{destination}` has no port."))?;
-                // An IPv6 host comes back already bracketed.
-                let base_uri = Uri::builder()
-                    .scheme("http")
-                    .authority(format!("{host}:{port}"))
-                    .path_and_query("/")
-                    .build()
-                    .with_error_context(|| format!("Invalid APM proxy destination `{destination}`."))?;
                 // The URL keeps an IPv6 host bracketed, which address lookups don't accept.
                 let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
-                (builder, base_uri, Destination::Tcp { host, port })
+                Destination::Tcp { host, port }
             }
             #[cfg(unix)]
             "unix" => {
@@ -117,11 +110,7 @@ impl TraceAgentProxy {
                         "APM proxy destination `{destination}` must name an absolute socket path."
                     ));
                 }
-                (
-                    builder.with_unix_socket_path(path.clone()),
-                    Uri::from_static("http://localhost/"),
-                    Destination::Unix(path),
-                )
+                Destination::Unix(path)
             }
             scheme => {
                 return Err(generic_error!(
@@ -130,10 +119,15 @@ impl TraceAgentProxy {
             }
         };
 
+        let base_uri = upstream
+            .base_uri()
+            .with_error_context(|| format!("Invalid APM proxy destination `{destination}`."))?;
+        let builder = upstream.configure_client(builder);
+
         Ok(Self {
             client: UpstreamClient::new(builder.build()?),
             base_uri,
-            destination,
+            destination: upstream,
             unreachable: Arc::new(AtomicBool::new(false)),
             loop_detected: Arc::new(AtomicBool::new(false)),
         })
@@ -168,7 +162,7 @@ impl TraceAgentProxy {
             return Err(ForwardError::Loop);
         }
 
-        parts.uri = match self.upstream_uri(parts.uri.path_and_query()) {
+        parts.uri = match upstream_uri(&self.base_uri, parts.uri.path_and_query()) {
             Ok(uri) => uri,
             Err(e) => {
                 debug!(error = %e, "Failed to build the upstream URI for a proxied APM request.");
@@ -199,16 +193,6 @@ impl TraceAgentProxy {
                 Err(ForwardError::Unreachable)
             }
         }
-    }
-
-    fn upstream_uri(&self, path_and_query: Option<&PathAndQuery>) -> Result<Uri, http::Error> {
-        let mut parts = self.base_uri.clone().into_parts();
-        parts.path_and_query = Some(
-            path_and_query
-                .cloned()
-                .unwrap_or_else(|| PathAndQuery::from_static("/")),
-        );
-        Ok(Uri::from_parts(parts)?)
     }
 }
 
