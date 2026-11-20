@@ -1,11 +1,16 @@
+use std::convert::Infallible;
 use std::io;
+use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
 
 use axum::body::{Body, Bytes};
+use axum::Router;
 use futures::StreamExt as _;
 use http::StatusCode;
 use http_body::Frame;
-use http_body_util::StreamBody;
+use http_body_util::{BodyExt as _, Full, StreamBody};
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
     ExportMetricsPartialSuccess, ExportMetricsServiceRequest, ExportMetricsServiceResponse,
@@ -16,6 +21,8 @@ use saluki_core::observability::ComponentMetricsExt as _;
 use saluki_metrics::test::TestRecorder;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpSocket};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::timeout;
 
 use super::*;
 use crate::common::otlp::test_util::{
@@ -701,4 +708,278 @@ fn accepts_trailers_finds_the_trailers_coding() {
     assert!(accepts_trailers(&header_map(&[("te", "gzip, Trailers")])));
     assert!(!accepts_trailers(&header_map(&[("te", "gzip")])));
     assert!(!accepts_trailers(&HeaderMap::new()));
+}
+
+/// How long a streaming test waits for a chunk that the proxy should pass on at once.
+const CHUNK_WAIT: Duration = Duration::from_secs(5);
+
+/// Serves `router` on an ephemeral loopback port, over HTTP/1.1 and HTTP/2 with prior knowledge.
+async fn serve(router: Router) -> Destination {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should bind an ephemeral port");
+    let port = listener.local_addr().expect("listener should have an address").port();
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    Destination::Tcp {
+        host: "127.0.0.1".to_string(),
+        port,
+    }
+}
+
+/// A request body that sends each chunk as soon as the test hands it over.
+struct ChannelBody(mpsc::Receiver<Bytes>);
+
+impl http_body::Body for ChannelBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        self.0
+            .poll_recv(cx)
+            .map(|chunk| chunk.map(|chunk| Ok(Frame::data(chunk))))
+    }
+}
+
+/// Returns the request that streaming tests send for `protocol`, with `body`.
+fn streaming_request<B>(protocol: Protocol, servers: &TestServers, body: B) -> http::Request<B> {
+    let (port, path, content_type) = match protocol {
+        Protocol::Grpc => (servers.grpc_port, METRICS_EXPORT_PATH, "application/grpc"),
+        Protocol::Http => (servers.http_port, "/v1/metrics", "application/x-protobuf"),
+    };
+    http::Request::builder()
+        .method("POST")
+        .uri(format!("http://127.0.0.1:{port}{path}"))
+        .header("content-type", content_type)
+        .header("te", "trailers")
+        .body(body)
+        .expect("request should build")
+}
+
+fn streaming_client(protocol: Protocol) -> TestClient {
+    TestClient::new(match protocol {
+        Protocol::Grpc => HttpProtocol::Http2,
+        Protocol::Http => HttpProtocol::Http1,
+    })
+}
+
+#[tokio::test]
+async fn request_body_streams_to_the_upstream() {
+    // A proxy that buffered the request would hold the first chunk until the client sent the rest.
+    for protocol in [Protocol::Http, Protocol::Grpc] {
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<Bytes>();
+        let upstream = serve(Router::new().fallback(move |request: Request| {
+            let seen_tx = seen_tx.clone();
+            async move {
+                let mut body = request.into_body();
+                while let Some(frame) = body.frame().await {
+                    if let Ok(data) = frame.expect("request body should be readable").into_data() {
+                        let _ = seen_tx.send(data);
+                    }
+                }
+                Response::new(Body::empty())
+            }
+        }))
+        .await;
+        let servers = start_proxy(
+            &format!("proxy-streams-request-{}", protocol.as_str()),
+            &upstream,
+            &upstream,
+            CONNECT_TIMEOUT,
+        )
+        .await;
+
+        let (chunks_tx, chunks_rx) = mpsc::channel(2);
+        let mut client = streaming_client(protocol);
+        let request = streaming_request(protocol, &servers, ChannelBody(chunks_rx));
+        let response = tokio::spawn(async move { client.send_request(request).await });
+
+        timeout(CHUNK_WAIT, chunks_tx.send(Bytes::from_static(b"first")))
+            .await
+            .expect("body should accept a chunk in time")
+            .expect("body should accept a chunk");
+        let mut seen = Vec::new();
+        while seen.len() < b"first".len() {
+            let chunk = timeout(CHUNK_WAIT, seen_rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{protocol:?}: the upstream should see the first chunk before the rest"))
+                .expect("upstream should report chunks");
+            seen.extend_from_slice(&chunk);
+        }
+        assert_eq!(seen, b"first", "{protocol:?}");
+
+        timeout(CHUNK_WAIT, chunks_tx.send(Bytes::from_static(b"second")))
+            .await
+            .expect("body should accept a chunk in time")
+            .expect("body should accept a chunk");
+        drop(chunks_tx);
+        let response = timeout(CHUNK_WAIT, response)
+            .await
+            .unwrap_or_else(|_| panic!("{protocol:?}: the proxy should answer"))
+            .expect("client task should not panic")
+            .expect("proxy should answer");
+        assert_eq!(response.status(), StatusCode::OK, "{protocol:?}");
+        // The upstream reads the whole body before it answers, so every chunk is already reported.
+        while let Ok(chunk) = seen_rx.try_recv() {
+            seen.extend_from_slice(&chunk);
+        }
+        assert_eq!(seen, b"firstsecond", "{protocol:?}");
+
+        servers.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn response_body_streams_to_the_client() {
+    // A proxy that buffered the response would hold the first chunk until the upstream sent the rest.
+    for protocol in [Protocol::Http, Protocol::Grpc] {
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+        let upstream = serve(Router::new().fallback(move |_: Request| {
+            let release_rx = release_rx
+                .lock()
+                .expect("lock should not be poisoned")
+                .take()
+                .expect("the upstream should get one request");
+            async move {
+                // gRPC ends with trailers, and HTTP with a second data frame.
+                let last = match protocol {
+                    Protocol::Grpc => Frame::trailers(header_map(&[("grpc-status", "0")])),
+                    Protocol::Http => Frame::data(Bytes::from_static(b"second")),
+                };
+                let frames =
+                    futures::stream::once(async { Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"first"))) })
+                        .chain(futures::stream::once(async move {
+                            let _ = release_rx.await;
+                            Ok(last)
+                        }));
+                Response::new(Body::new(StreamBody::new(frames)))
+            }
+        }))
+        .await;
+        let servers = start_proxy(
+            &format!("proxy-streams-response-{}", protocol.as_str()),
+            &upstream,
+            &upstream,
+            CONNECT_TIMEOUT,
+        )
+        .await;
+
+        let mut client = streaming_client(protocol);
+        let request = streaming_request(protocol, &servers, Full::new(Bytes::new()));
+        let response = timeout(CHUNK_WAIT, client.send_request(request))
+            .await
+            .unwrap_or_else(|_| panic!("{protocol:?}: the response headers should arrive before the rest"))
+            .expect("proxy should answer");
+        assert_eq!(response.status(), StatusCode::OK, "{protocol:?}");
+        let mut body = response.into_body();
+
+        let mut first = Vec::new();
+        while first.len() < b"first".len() {
+            let frame = timeout(CHUNK_WAIT, body.frame())
+                .await
+                .unwrap_or_else(|_| panic!("{protocol:?}: the client should see the first chunk before the rest"))
+                .expect("body should not end yet")
+                .expect("body should be readable");
+            first.extend_from_slice(&frame.into_data().expect("frame should be data"));
+        }
+        assert_eq!(first, b"first", "{protocol:?}");
+
+        release_tx.send(()).expect("upstream should wait for the release");
+        let rest = timeout(CHUNK_WAIT, body.collect())
+            .await
+            .unwrap_or_else(|_| panic!("{protocol:?}: the rest of the body should arrive after the release"))
+            .expect("body should be readable");
+        match protocol {
+            Protocol::Grpc => {
+                assert_eq!(
+                    rest.trailers().map(|t| &t["grpc-status"]),
+                    Some(&HeaderValue::from_static("0"))
+                );
+            }
+            Protocol::Http => assert_eq!(rest.to_bytes(), "second"),
+        }
+
+        servers.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn http_request_failed_on_a_reused_connection_is_not_retried() {
+    // The upstream answers the first request, then closes the same connection after it reads the second. The second
+    // request may have reached the upstream, so the proxy must not resend it. A resent request would get 200.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should bind an ephemeral port");
+    let port = listener.local_addr().expect("listener should have an address").port();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let connections = Arc::new(AtomicUsize::new(0));
+    tokio::spawn({
+        let requests = Arc::clone(&requests);
+        let connections = Arc::clone(&connections);
+        async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                connections.fetch_add(1, Ordering::SeqCst);
+                let requests = Arc::clone(&requests);
+                tokio::spawn(async move {
+                    let mut buffer = Vec::new();
+                    let mut read = [0; 1024];
+                    loop {
+                        // The requests have no body, so a request ends with its headers.
+                        while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                            match stream.read(&mut read).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => buffer.extend_from_slice(&read[..n]),
+                            }
+                        }
+                        let end = buffer
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .expect("headers should end")
+                            + 4;
+                        buffer.drain(..end);
+                        if requests.fetch_add(1, Ordering::SeqCst) == 1 {
+                            return;
+                        }
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                            .await;
+                    }
+                });
+            }
+        }
+    });
+    let destination = Destination::Tcp {
+        host: "127.0.0.1".to_string(),
+        port,
+    };
+    let servers = start_proxy(
+        "proxy-http-no-retry-reused",
+        &destination,
+        &destination,
+        CONNECT_TIMEOUT,
+    )
+    .await;
+
+    let mut client = TestClient::new(HttpProtocol::Http1);
+    let uri = format!("http://127.0.0.1:{}/v1/metrics", servers.http_port);
+    let first = timeout(CHUNK_WAIT, client.send("POST", &uri, &[], Bytes::new()))
+        .await
+        .expect("proxy should answer in time")
+        .expect("proxy should answer");
+    assert_eq!(first.status, StatusCode::OK);
+    assert_eq!(first.body, "ok");
+
+    let second = timeout(CHUNK_WAIT, client.send("POST", &uri, &[], Bytes::new()))
+        .await
+        .expect("proxy should answer in time")
+        .expect("proxy should answer");
+    assert_eq!(second.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "the second request should go out on the reused connection"
+    );
+
+    servers.shutdown().await;
 }

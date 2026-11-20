@@ -329,6 +329,21 @@ impl TestClient {
         Self { client }
     }
 
+    /// Sends `request`, and returns the response once its headers arrive.
+    ///
+    /// # Errors
+    ///
+    /// If the server doesn't answer, an error is returned.
+    pub(super) async fn send_request<B>(
+        &mut self, request: http::Request<B>,
+    ) -> Result<http::Response<hyper::body::Incoming>, GenericError>
+    where
+        B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        self.client.send(request).await
+    }
+
     /// Sends a request to `uri`, and reads the whole response.
     ///
     /// # Errors
