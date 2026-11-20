@@ -69,10 +69,7 @@
 # `.build-adp-definition`). `.build-amd64-variables` gives DinD the larger loopback volume: with the default 20G
 # volume, the final LTO link fails with "No space left on device".
 .smp-adp-image-build:
-  extends: [.build-common-variables, .build-amd64-variables]
-  variables:
-    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
-    BUILDCACHE_S3_REGION: "us-east-1"
+  extends: [.build-common-variables, .build-amd64-variables, .buildcache-variables]
 
 build-adp-baseline-image:
   extends: .smp-adp-image-build
@@ -117,7 +114,7 @@ build-adp-baseline-image:
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
       --build-arg BUILD_PROFILE=${SMP_BUILD_PROFILE}
-      --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
+      --build-arg BUILD_TARGET=${BUILD_TARGET}
       --build-arg BUILD_IMAGE=${SMP_BUILD_IMAGE}
       --build-arg BUILD_BASE=build-prepped
       --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
@@ -185,7 +182,7 @@ build-adp-comparison-image:
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
       --build-arg BUILD_PROFILE=${SMP_BUILD_PROFILE}
-      --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
+      --build-arg BUILD_TARGET=${BUILD_TARGET}
       --build-arg BUILD_IMAGE=${SMP_BUILD_IMAGE}
       --build-arg BUILD_BASE=build-prepped
       --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
