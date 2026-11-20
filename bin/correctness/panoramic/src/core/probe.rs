@@ -13,7 +13,7 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Pause between polling attempts.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Shortest request limit, so curl never gets `--max-time 0`, which disables its limit.
+/// Shortest request limit. A zero limit disables the limit of curl and is invalid for .NET `HttpClient`.
 const MIN_REQUEST: Duration = Duration::from_millis(1);
 
 /// Limits for one polling attempt.
@@ -40,8 +40,8 @@ impl AttemptLimits {
         }
     }
 
-    /// Returns `request` as a curl `--max-time` value.
-    pub(crate) fn curl_max_time(&self) -> String {
+    /// Returns `request` in seconds, as accepted by curl `--max-time` and .NET `TimeSpan.FromSeconds`.
+    pub(crate) fn request_seconds(&self) -> String {
         format!("{:.3}", self.request.as_secs_f64())
     }
 }
@@ -108,11 +108,11 @@ mod tests {
         let short = AttemptLimits::new(Duration::from_secs(3));
         assert_eq!(short.attempt, Duration::from_secs(3));
         assert_eq!(short.request, Duration::from_millis(1500));
-        assert_eq!(short.curl_max_time(), "1.500");
+        assert_eq!(short.request_seconds(), "1.500");
 
         let spent = AttemptLimits::new(Duration::ZERO);
         assert_eq!(spent.attempt, Duration::ZERO);
-        assert_eq!(spent.curl_max_time(), "0.001", "curl treats a zero limit as no limit");
+        assert_eq!(spent.request_seconds(), "0.001", "curl treats a zero limit as no limit");
     }
 
     #[tokio::test]

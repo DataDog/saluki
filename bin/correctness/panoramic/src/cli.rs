@@ -4,8 +4,8 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use airlock::driver::DEFAULT_ALPINE_IMAGE;
-use chrono::Local;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 
 use crate::config::{os_of_runtime, runtime_of};
 use crate::core::participant::Os;
@@ -280,13 +280,18 @@ impl RunCommand {
     /// Gets the log directory for this run.
     ///
     /// The base comes from `--log-dir`/`PANORAMIC_LOG_DIR`, falling back to a temporary directory.
-    pub fn log_dir(&self) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system clock is out of range, since the directory is named after the current time.
+    pub fn log_dir(&self) -> Result<PathBuf, String> {
         let base = self.log_dir.clone().unwrap_or_else(std::env::temp_dir);
 
         // Always append a timestamped subdirectory so artifacts from separate runs never mix. The
         // reports name the directory they landed in.
-        let timestamp = Local::now().format("%Y%m%d-%H%M%S");
-        base.join(format!("panoramic-{}", timestamp))
+        let now = Timestamp::now().map_err(|e| e.to_string())?;
+        let timestamp = now.format(TimestampFormat::CompactDateTime(TimeZone::system()));
+        Ok(base.join(format!("panoramic-{}", timestamp)))
     }
 }
 
@@ -640,7 +645,10 @@ mod tests {
         assert_eq!(cmd.test_dirs, vec![PathBuf::from("test/correctness/cases")]);
         assert!(cmd.no_tui);
         assert_eq!(cmd.parallelism.get(), 1);
-        assert!(cmd.log_dir().starts_with("integration-logs"));
+        assert!(cmd
+            .log_dir()
+            .expect("log dir should resolve")
+            .starts_with("integration-logs"));
 
         // `-d` accumulates; `-t` takes the last value, matching the previous parser.
         let cli = Cli::try_parse_from([
@@ -781,7 +789,7 @@ mod tests {
     fn log_dir_appends_a_timestamped_subdirectory() {
         let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases", "-l", "/tmp/panoramic-test"])
             .expect("run with a log dir should parse");
-        let log_dir = run_command_of(&cli).log_dir();
+        let log_dir = run_command_of(&cli).log_dir().expect("log dir should resolve");
 
         let parent = log_dir.parent().expect("log dir should have a parent");
         assert_eq!(parent, Path::new("/tmp/panoramic-test"));

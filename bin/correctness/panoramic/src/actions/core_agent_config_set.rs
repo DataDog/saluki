@@ -6,6 +6,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
 use tokio::time::Instant;
 
+use super::windows_http::WindowsHttpRequest;
 use super::{docker_exec, Action};
 use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus, Attempts};
 use crate::core::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
@@ -253,25 +254,21 @@ impl Setter {
 impl ContainerRequest {
     /// Returns the script that sends the request, bounded by `limits`.
     fn command(&self, limits: &AttemptLimits) -> Vec<String> {
-        let max_time = limits.curl_max_time();
         if self.windows {
-            let script = format!(
-                "$tok = Get-Content -Raw 'C:\\ProgramData\\Datadog\\auth_token'; curl.exe -ks --max-time {} -X POST -H \"Authorization: Bearer $tok\" --data-urlencode \"value={}\" \"{}\" -o NUL -w \"%{{http_code}}\"",
-                max_time,
-                powershell_quote(&self.value),
-                powershell_quote(&self.endpoint)
-            );
-            vec![
-                "pwsh".to_string(),
-                "-NoProfile".to_string(),
-                "-NonInteractive".to_string(),
-                "-Command".to_string(),
-                script,
-            ]
+            let form_body = format!("value={}", form_encode(&self.value));
+            WindowsHttpRequest {
+                method: "POST",
+                url: &self.endpoint,
+                insecure_skip_verify: true,
+                read_body: false,
+                bearer_token_path: Some("C:\\ProgramData\\Datadog\\auth_token"),
+                form_body: Some(&form_body),
+            }
+            .command(limits)
         } else {
             let script = format!(
                 "tok=$(cat /etc/datadog-agent/auth_token) && curl -ks --max-time {} -X POST -H \"Authorization: Bearer $tok\" --data-urlencode value={} {} -o /tmp/panoramic-core-agent-config-set -w '%{{http_code}}'",
-                max_time,
+                limits.request_seconds(),
                 shell_quote(&self.value),
                 shell_quote(&self.endpoint)
             );
@@ -321,10 +318,6 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn powershell_quote(value: &str) -> String {
-    value.replace('`', "``").replace('"', "`\"")
-}
-
 fn form_encode(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -346,7 +339,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{CoreAgentConfigSetAction, Setter};
-    use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
+    use crate::actions::test_docker::{request_limit, Exec, FakeDocker};
     use crate::actions::Action as _;
     use crate::assertions::test_support::host_context;
     use crate::assertions::{AssertionResult, AssertionStatus};
@@ -370,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_container_requests_get_the_request_limit_of_their_attempt() {
-        // An abandoned `docker exec` keeps running, so curl must bound itself.
+        // An abandoned `docker exec` keeps running, so the request must bound itself.
         let action = CoreAgentConfigSetAction::new(
             "log_level".to_string(),
             Value::String("debug".to_string()),
@@ -393,26 +386,59 @@ mod tests {
             for remaining in [Duration::from_secs(60), Duration::from_secs(3)] {
                 let limits = AttemptLimits::new(remaining);
                 let command = request.command(&limits);
-                let script = command.last().expect("the command should end with its script");
-                let max_time = format!(" --max-time {} ", limits.curl_max_time());
-                assert!(script.contains(&max_time), "{target_os:?}, {remaining:?}: {script}");
+                assert_eq!(
+                    request_limit(&command),
+                    limits.request,
+                    "{target_os:?}, {remaining:?}: {command:?}"
+                );
             }
         }
     }
 
     #[tokio::test]
+    async fn windows_requests_do_not_use_curl() {
+        // `curl.exe` comes from the image's `System32`. It failed to start (exit 126) in nightly Agent images whose
+        // Windows build is newer than the build of the pinned image.
+        let action = CoreAgentConfigSetAction::new(
+            "log_level".to_string(),
+            Value::String("debug info".to_string()),
+            "https://localhost:5001/config/{key}".to_string(),
+            Duration::from_secs(30),
+        );
+        let mut ctx = host_context(CancellationToken::new());
+        ctx.is_host_process = false;
+        ctx.target_os = Some(ContainerOs::Windows);
+        let Setter::Container(request) = action
+            .setter(&ctx, "debug info")
+            .await
+            .expect("a container setter should build")
+        else {
+            panic!("a container target should get a container setter");
+        };
+
+        let command = request.command(&AttemptLimits::new(Duration::from_secs(10)));
+
+        assert_eq!(command[0], "pwsh");
+        let script = command.last().expect("the command should end with its script");
+        assert!(!script.contains("curl"), "{script}");
+        assert!(script.contains("'value=debug+info'"), "{script}");
+        assert!(script.contains("HttpMethod]::new('POST')"), "{script}");
+    }
+
+    #[tokio::test]
     async fn a_core_agent_that_never_answers_fails_the_action() {
-        // When curl shared the attempt's limit, Docker overhead let the attempt time out first, so a Core Agent that
-        // never answered left only harness errors and the action errored instead of failing.
+        // When the request shared the attempt's limit, Docker overhead let the attempt time out first, so a Core Agent
+        // that never answered left only harness errors and the action errored instead of failing.
         //
-        // The first exec is curl waiting out its `--max-time` for a Core Agent that accepted the connection but never
-        // answered. Later execs never finish, so they add no observation of the target: the action fails only if the
-        // first attempt observed curl's own timeout. An 8 s step gets a short attempt; a 10.5 s step gets a full one.
+        // The first exec is the request waiting out its own limit for a Core Agent that accepted the connection but
+        // never answered. Later execs never finish, so they add no observation of the target: the action fails only if
+        // the first attempt observed the request's own timeout. An 8 s step gets a short attempt; a 10.5 s step gets a
+        // full one.
         // Both leave seconds after the first attempt, so a stalled test machine still launches the second exec.
         let set = |target_os, timeout| async move {
             let docker = FakeDocker::start(Duration::from_millis(50), |index, command| match index {
                 0 => Exec::Exits {
-                    duration: curl_max_time(command),
+                    duration: request_limit(command),
                     stdout: "000".to_string(),
                     exit_code: 28,
                 },

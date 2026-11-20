@@ -6,6 +6,7 @@ use tokio::time::Instant;
 use tracing::trace;
 
 use crate::actions::docker_exec;
+use crate::actions::windows_http::WindowsHttpRequest;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
 use crate::config::{HttpBodyMatcher, HttpStatusMatcher};
 use crate::core::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
@@ -117,10 +118,10 @@ impl Assertion for HttpCheckAssertion {
 
         // Pick a probe strategy. Linux/host targets are reachable directly from the test runner,
         // so we use a real HTTP client. Windows targets are not (the container's listener is
-        // bound to its own loopback / internal port), so we shell out to `curl.exe` via
+        // bound to its own loopback / internal port), so we send the request from PowerShell via
         // `docker exec` inside the container.
         let http_probe = if ctx.target_is_windows() {
-            HttpProbe::InContainerCurl {
+            HttpProbe::InContainer {
                 container_name: ctx.container_name.clone(),
                 insecure_skip_verify: self.insecure_skip_verify,
             }
@@ -209,7 +210,7 @@ impl Assertion for HttpCheckAssertion {
                 // Direct requests test the target; a stalled Docker exec prevents evaluation.
                 Err(error @ ProbeError::TimedOut { .. }) => match http_probe {
                     HttpProbe::HostClient { .. } => attempts.observed(error),
-                    HttpProbe::InContainerCurl { .. } => attempts.errored(error),
+                    HttpProbe::InContainer { .. } => attempts.errored(error),
                 },
             }
 
@@ -225,14 +226,14 @@ impl Assertion for HttpCheckAssertion {
 ///
 /// `HostClient` uses a `reqwest` client running on the test runner; this is the standard path
 /// for Linux containers (which expose listeners on mapped ephemeral host ports) and host-process
-/// runtimes. `InContainerCurl` shells out to `curl.exe` via `docker exec` inside the target
+/// runtimes. `InContainer` sends the request from PowerShell via `docker exec` inside the target
 /// container; this is the path for Windows containers, where the listener is reachable only
 /// from inside the container itself.
 enum HttpProbe {
     HostClient {
         client: reqwest::Client,
     },
-    InContainerCurl {
+    InContainer {
         container_name: String,
         insecure_skip_verify: bool,
     },
@@ -244,7 +245,7 @@ enum Answer {
     ///
     /// `body` is empty unless the caller asked for it.
     Response { status: u16, body: String },
-    /// The request failed, for example through a refused connection or `curl.exe` error.
+    /// The request failed, for example through a refused connection or a timeout.
     TargetError(String),
     /// The harness couldn't send the request.
     HarnessError(String),
@@ -255,8 +256,8 @@ impl HttpProbe {
     fn what(&self, endpoint: &str) -> String {
         match self {
             Self::HostClient { .. } => format!("GET {endpoint}"),
-            Self::InContainerCurl { container_name, .. } => {
-                format!("GET {endpoint} with curl.exe in container '{container_name}'")
+            Self::InContainer { container_name, .. } => {
+                format!("GET {endpoint} from container '{container_name}'")
             }
         }
     }
@@ -282,33 +283,34 @@ impl HttpProbe {
                     Err(e) => Answer::TargetError(format!("{:#}", GenericError::from(e))),
                 }
             }
-            Self::InContainerCurl {
+            Self::InContainer {
                 container_name,
                 insecure_skip_verify,
             } => {
-                let cmd = curl_command(endpoint, *insecure_skip_verify, read_body, limits);
+                let cmd = in_container_command(endpoint, *insecure_skip_verify, read_body, limits);
                 get_in_container(container_name, cmd).await
             }
         }
     }
 }
 
-/// Returns a `curl.exe` command that sends a GET request to `endpoint` and prints the status on the last line of its output.
+/// Returns a command that sends a GET request to `endpoint` from inside a Windows container and prints the status on
+/// the last line of its output.
 ///
 /// With `read_body`, the response body precedes the status; otherwise it is discarded.
-fn curl_command(endpoint: &str, insecure_skip_verify: bool, read_body: bool, limits: &AttemptLimits) -> Vec<String> {
+fn in_container_command(
+    endpoint: &str, insecure_skip_verify: bool, read_body: bool, limits: &AttemptLimits,
+) -> Vec<String> {
     let endpoint = endpoint.replace("localhost", "127.0.0.1");
-    let mut cmd = vec!["curl.exe".to_string()];
-    if insecure_skip_verify {
-        cmd.push("-k".to_string());
+    WindowsHttpRequest {
+        method: "GET",
+        url: &endpoint,
+        insecure_skip_verify,
+        read_body,
+        bearer_token_path: None,
+        form_body: None,
     }
-    cmd.extend(["--max-time".to_string(), limits.curl_max_time(), "-s".to_string()]);
-    if !read_body {
-        cmd.extend(["-o".to_string(), "NUL".to_string()]);
-    }
-    // curl expands `\n` in the write-out format, which keeps the status on its own line after the body.
-    cmd.extend(["-w".to_string(), "\\n%{http_code}".to_string(), endpoint]);
-    cmd
+    .command(limits)
 }
 
 async fn get_in_container(container_name: &str, cmd: Vec<String>) -> Answer {
@@ -317,20 +319,27 @@ async fn get_in_container(container_name: &str, cmd: Vec<String>) -> Answer {
         Err(e) => return Answer::HarnessError(format!("{e:#}")),
     };
     if !output.succeeded() {
-        return Answer::TargetError(format!("curl.exe exited {:?}.", output.exit_code));
+        return Answer::TargetError(format!(
+            "The in-container request exited {:?}: {}",
+            output.exit_code,
+            output.stderr.trim()
+        ));
     }
-    parse_curl_output(&output.stdout)
+    parse_probe_output(&output.stdout)
 }
 
-/// Splits the output of a [`curl_command`] into the response body and the status on its last line.
-fn parse_curl_output(stdout: &str) -> Answer {
+/// Splits the output of an [`in_container_command`] into the response body and the status on its last line.
+fn parse_probe_output(stdout: &str) -> Answer {
     let (body, status) = stdout.rsplit_once('\n').unwrap_or(("", stdout));
     match status.trim().parse::<u16>() {
         Ok(status) if status != 0 => Answer::Response {
             status,
             body: body.to_string(),
         },
-        _ => Answer::TargetError(format!("curl.exe reported no status: '{}'.", stdout.trim())),
+        _ => Answer::TargetError(format!(
+            "The in-container request reported no status: '{}'.",
+            stdout.trim()
+        )),
     }
 }
 
@@ -343,8 +352,8 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
-    use super::{curl_command, parse_curl_output, Answer, HttpCheckAssertion};
-    use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
+    use super::{in_container_command, parse_probe_output, Answer, HttpCheckAssertion};
+    use crate::actions::test_docker::{request_limit, Exec, FakeDocker};
     use crate::assertions::test_support::host_context;
     use crate::assertions::{Assertion as _, AssertionResult, AssertionStatus};
     use crate::config::{HttpBodyMatcher, HttpStatusMatcher};
@@ -369,19 +378,16 @@ mod tests {
     }
 
     #[test]
-    fn curl_gets_the_request_limit_of_the_attempt() {
+    fn the_in_container_request_gets_the_request_limit_of_the_attempt() {
         for remaining in [Duration::from_secs(60), Duration::from_secs(3)] {
             let limits = AttemptLimits::new(remaining);
 
-            let cmd = curl_command("https://localhost:5001/health", true, false, &limits);
+            let cmd = in_container_command("https://localhost:5001/health", true, false, &limits);
 
-            let max_time = cmd
-                .iter()
-                .position(|arg| arg == "--max-time")
-                .and_then(|index| cmd.get(index + 1))
-                .unwrap_or_else(|| panic!("curl should bound itself: {cmd:?}"));
-            assert_eq!(*max_time, limits.curl_max_time(), "{remaining:?}");
-            assert_eq!(cmd.last().map(String::as_str), Some("https://127.0.0.1:5001/health"));
+            assert_eq!(request_limit(&cmd), limits.request, "{remaining:?}: {cmd:?}");
+            let script = cmd.last().expect("the command should end with its script");
+            assert!(script.contains("'https://127.0.0.1:5001/health'"), "{script}");
+            assert!(!script.contains("curl"), "{script}");
         }
     }
 
@@ -455,25 +461,26 @@ mod tests {
     }
 
     #[test]
-    fn curl_keeps_the_body_only_when_asked() {
+    fn the_in_container_request_keeps_the_body_only_when_asked() {
         let limits = AttemptLimits::new(Duration::from_secs(10));
 
-        let discarding = curl_command("http://localhost:8126/services", false, false, &limits);
-        let reading = curl_command("http://localhost:8126/services", false, true, &limits);
+        let discarding = in_container_command("http://localhost:8126/services", false, false, &limits);
+        let reading = in_container_command("http://localhost:8126/services", false, true, &limits);
 
-        assert!(discarding.iter().any(|arg| arg == "NUL"), "{discarding:?}");
-        assert!(!reading.iter().any(|arg| arg == "NUL"), "{reading:?}");
+        let reads_body = |cmd: &[String]| cmd.iter().any(|arg| arg.contains("ReadAsStringAsync"));
+        assert!(!reads_body(&discarding), "{discarding:?}");
+        assert!(reads_body(&reading), "{reading:?}");
     }
 
     #[test]
-    fn curl_output_splits_into_body_and_status() {
+    fn probe_output_splits_into_body_and_status() {
         let cases = [
             ("\n200", 200, ""),
             ("OK\n\n200", 200, "OK\n"),
             ("line one\nline two\n404", 404, "line one\nline two"),
         ];
         for (stdout, expected_status, expected_body) in cases {
-            match parse_curl_output(stdout) {
+            match parse_probe_output(stdout) {
                 Answer::Response { status, body } => {
                     assert_eq!((status, body.as_str()), (expected_status, expected_body), "{stdout:?}");
                 }
@@ -482,26 +489,27 @@ mod tests {
         }
         for stdout in ["000", "\n000", ""] {
             assert!(
-                matches!(parse_curl_output(stdout), Answer::TargetError(_)),
+                matches!(parse_probe_output(stdout), Answer::TargetError(_)),
                 "{stdout:?} should report no status"
             );
         }
     }
 
     #[tokio::test]
-    async fn a_target_that_never_answers_curl_fails_the_check() {
-        // When curl shared the attempt's limit, Docker overhead let the attempt time out first, so a target that never
-        // answered left only harness errors and the step errored instead of failing.
+    async fn a_target_that_never_answers_the_request_fails_the_check() {
+        // When the request shared the attempt's limit, Docker overhead let the attempt time out first, so a target that
+        // never answered left only harness errors and the step errored instead of failing.
         //
-        // The first exec is curl waiting out its `--max-time` for a target that accepted the connection but never
+        // The first exec is the request waiting out its own limit for a target that accepted the connection but never
         // answered. Later execs never finish, so they add no observation of the target: the step fails only if the
-        // first attempt observed curl's own timeout. A 3 s step gets a short attempt; a 10.5 s step gets a full one.
+        // first attempt observed the request's own timeout. A 3 s step gets a short attempt; a 10.5 s step gets a full
+        // one.
         let check = |timeout| async move {
             let docker = FakeDocker::start(Duration::from_millis(50), |index, command| match index {
                 0 => Exec::Exits {
-                    duration: curl_max_time(command),
-                    stdout: "000".to_string(),
-                    exit_code: 28,
+                    duration: request_limit(command),
+                    stdout: String::new(),
+                    exit_code: 1,
                 },
                 _ => Exec::Stalled,
             })
@@ -522,7 +530,7 @@ mod tests {
         );
         for launched in [short_launched, full_launched] {
             assert_eq!(launched.len(), 2, "{launched:?}");
-            assert_eq!(launched[0][0], "curl.exe");
+            assert_eq!(launched[0][0], "pwsh");
         }
     }
 

@@ -86,7 +86,7 @@ fn duration_value_as_nanos(value: &Value) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classifier::Severity;
+    use crate::classifier::{Pipeline, Severity};
 
     fn classifier() -> ConfigClassifier {
         ConfigClassifier::new()
@@ -127,6 +127,23 @@ mod tests {
         let result = c.classify("config_id", &Value::String("".into())).unwrap();
         assert!(matches!(result.support_level, SupportLevel::Incompatible(_)));
         assert!(result.is_default);
+    }
+
+    #[test]
+    fn logs_affinity_keys_are_classified_with_the_logs_pipeline() {
+        let c = classifier();
+        let result = c.classify("logs_config.pipelines", &Value::Number(8.into())).unwrap();
+        assert!(matches!(result.support_level, SupportLevel::Incompatible(_)));
+        assert_eq!(result.pipeline_affinity, PipelineAffinity::Pipelines(&[Pipeline::Logs]));
+    }
+
+    #[test]
+    fn partial_keys_without_warning_not_in_classifier() {
+        // A partial key whose difference is only documented has no entry, like a fully supported key.
+        let c = classifier();
+        assert!(c
+            .classify("additional_endpoints", &Value::Object(Default::default()))
+            .is_none());
     }
 
     #[test]

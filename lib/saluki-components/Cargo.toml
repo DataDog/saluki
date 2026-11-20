@@ -21,7 +21,6 @@ backon = { workspace = true, features = ["tokio-sleep"] }
 base64 = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }
-chrono = { workspace = true }
 datadog-agent-apm = { workspace = true }
 datadog-agent-commons = { workspace = true }
 datadog-agent-metrics-v3 = { workspace = true }
@@ -97,7 +96,6 @@ tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tower-http = { workspace = true, features = ["cors"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
-tracing-rolling-file = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }

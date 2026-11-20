@@ -9,7 +9,6 @@ use std::sync::OnceLock;
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use datadog_agent_commons::ipc::{
     client::RemoteAgentClient,
     config::RemoteAgentClientConfiguration,
@@ -29,6 +28,7 @@ use process_memory::Querier as MemoryQuerier;
 use saluki_api::{DynamicRoute, EndpointType};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_core::{
     diagnostic::{subscribe_events, DiagnosticCollector, DiagnosticDetails, DiagnosticEvent},
@@ -145,7 +145,7 @@ impl RemoteAgentBootstrap {
         &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>, remapper_rules: Vec<RemapperRule>,
     ) -> RemoteAgentImpl {
         RemoteAgentImpl {
-            started: Utc::now(),
+            started: Timestamp::now().ok(),
             internal_metrics: self.internal_metrics.clone(),
             processor: telemetry_processor(remapper_rules),
             status_sections,
@@ -364,9 +364,27 @@ async fn run_config_stream_event_loop(
     }
 }
 
+/// Formats the start time for the status page, as RFC 3339 in UTC, or `unavailable` if it isn't known.
+fn format_started(started: Option<Timestamp>) -> String {
+    match started {
+        Some(started) => started.format(TimestampFormat::Rfc3339(TimeZone::utc())).to_string(),
+        None => "unavailable".to_string(),
+    }
+}
+
+/// Formats the number of whole seconds from `started` to `now`, which is negative if the clock went backwards, or
+/// `unavailable` if either time isn't known.
+fn format_uptime(started: Option<Timestamp>, now: Option<Timestamp>) -> String {
+    match (started, now) {
+        (Some(started), Some(now)) => now.whole_seconds_since(started).to_string(),
+        _ => "unavailable".to_string(),
+    }
+}
+
 /// The implementation behind the status, flare, and telemetry services that the Datadog Agent queries.
 struct RemoteAgentImpl {
-    started: DateTime<Utc>,
+    /// When the process started, or `None` if the system clock was out of range.
+    started: Option<Timestamp>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     processor: Option<Mutex<TelemetryProcessor>>,
     status_sections: Vec<Arc<dyn StatusSectionProvider>>,
@@ -427,7 +445,7 @@ impl StatusProvider for RemoteAgentImpl {
                     .set_field("Version", app_details.version().raw())
                     .set_field("Git Commit", app_details.git_hash())
                     .set_field("Architecture", app_details.target_arch())
-                    .set_field("Started", self.started.to_rfc3339());
+                    .set_field("Started", format_started(self.started));
 
                 // Surface the Agent version this build was compiled against, for debugging version-gated behavior.
                 if let Some(agent_version) = datadog_agent_commons::agent_version::version_string() {
@@ -591,7 +609,7 @@ impl FlareProvider for RemoteAgentImpl {
 
                 // Process info: pid, uptime, RSS, args, fd count, thread count.
                 let pid = std::process::id();
-                let uptime = Utc::now().signed_duration_since(self.started);
+                let uptime = format_uptime(self.started, Timestamp::now().ok());
                 let args: Vec<String> = std::env::args().collect();
                 let rss_display = MemoryQuerier::default()
                     .resident_set_size()
@@ -599,7 +617,7 @@ impl FlareProvider for RemoteAgentImpl {
                     .unwrap_or_else(|| "unavailable".to_string());
                 let process_info = format!(
                     "pid: {pid}\nuptime_seconds: {uptime}\nrss_bytes: {rss_display}\nargs: {args:?}\nfd_count: {fd_count}\nthread_count: {thread_count}\n",
-                    uptime = uptime.num_seconds(),
+                    uptime = uptime,
                     fd_count = fd_count(),
                     thread_count = thread_count(),
                 );
@@ -850,6 +868,45 @@ mod tests {
         let (second, _) = RemoteAgentState::new(address(), vec![]);
         assert_eq!(second.pid, first.pid);
         assert_eq!(second.process_instance_id, first.process_instance_id);
+    }
+
+    fn at(secs: i64, nanos: u32) -> Timestamp {
+        Timestamp::from_unix_nanos(i128::from(secs) * 1_000_000_000 + i128::from(nanos))
+            .expect("test timestamp should be valid")
+    }
+
+    #[test]
+    fn started_is_rfc3339_with_the_fewest_exact_fraction_digits() {
+        // 2026-11-18T11:06:40Z
+        let secs = 1_795_000_000;
+        let cases = [
+            (0, "2026-11-18T11:06:40+00:00"),
+            (1, "2026-11-18T11:06:40.000000001+00:00"),
+            (1_000, "2026-11-18T11:06:40.000001+00:00"),
+            (120_000_000, "2026-11-18T11:06:40.120+00:00"),
+            (123_400_000, "2026-11-18T11:06:40.123400+00:00"),
+            (123_456_789, "2026-11-18T11:06:40.123456789+00:00"),
+        ];
+
+        for (nanos, expected) in cases {
+            assert_eq!(format_started(Some(at(secs, nanos))), expected);
+        }
+    }
+
+    #[test]
+    fn uptime_is_in_whole_seconds_rounded_toward_zero() {
+        let started = Some(at(1_795_000_000, 500_000_000));
+        assert_eq!(format_uptime(started, Some(at(1_795_000_090, 200_000_000))), "89");
+        assert_eq!(format_uptime(started, Some(at(1_795_000_090, 500_000_000))), "90");
+        assert_eq!(format_uptime(started, Some(at(1_794_999_970, 800_000_000))), "-29");
+    }
+
+    #[test]
+    fn unknown_times_are_unavailable() {
+        let known = Some(at(1_795_000_000, 0));
+        assert_eq!(format_started(None), "unavailable");
+        assert_eq!(format_uptime(None, known), "unavailable");
+        assert_eq!(format_uptime(known, None), "unavailable");
     }
 
     #[test]

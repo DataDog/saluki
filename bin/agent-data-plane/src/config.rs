@@ -190,15 +190,22 @@ impl<'a> DataPlaneConfiguration<'a> {
             || self.traces_pipeline_required()
     }
 
+    /// Returns `true` if ADP handles OTLP logs itself, rather than relaying them to the Core Agent.
+    ///
+    /// It mirrors the native branch of the OTLP topology, which wires the OTLP source's logs into the logs pipeline
+    /// and is taken when OTLP is enabled and `otlp_proxy_enabled()` is false. The topology branches on that check
+    /// itself, so a change to when it proxies must update this function too.
+    pub const fn otlp_logs_native(&self) -> bool {
+        self.otlp_enabled() && !self.otlp_proxy_enabled()
+    }
+
     /// Returns `true` if the logs pipeline is required.
     ///
     /// This indicates that the "baseline" logs pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as Checks or OTLP.
+    /// pipelines, such as Checks or OTLP. It also decides whether the classifier's `logs` pipeline is active, so the
+    /// startup compatibility check follows the topology.
     pub const fn logs_pipeline_required(&self) -> bool {
-        // We consider the logs pipeline to be enabled if:
-        // - Checks is enabled
-        // - OTLP is enabled and not in proxy mode
-        self.checks_enabled() || (self.otlp_enabled() && !self.otlp_proxy_enabled())
+        self.checks_enabled() || self.otlp_logs_native()
     }
 
     /// Returns `true` if the events pipeline is required.
@@ -242,6 +249,9 @@ impl<'a> DataPlaneConfiguration<'a> {
         }
         if self.traces_pipeline_required() {
             s.insert(Pipeline::Traces);
+        }
+        if self.logs_pipeline_required() {
+            s.insert(Pipeline::Logs);
         }
         s
     }
@@ -462,6 +472,7 @@ mod tests {
         assert!(dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+        assert!(dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -475,6 +486,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
+        assert!(dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -505,6 +517,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+        assert!(!dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -520,6 +533,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
+        assert!(!dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]

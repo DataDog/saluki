@@ -5,7 +5,7 @@ use std::fmt;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 
-use chrono::Local;
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 use serde::Serialize;
 use tracing::warn;
 
@@ -83,8 +83,8 @@ pub struct RunReport {
     pub(crate) set: BTreeMap<String, String>,
     /// How many tests ran concurrently.
     pub parallelism: usize,
-    /// When the run started, as an RFC 3339 timestamp.
-    pub started_at: String,
+    /// When the run started, as an RFC 3339 timestamp, or `null` if the system clock was out of range.
+    pub started_at: Option<String>,
     /// Elapsed milliseconds at the last report update.
     pub duration_ms: u64,
     /// Absolute path of the run's log directory.
@@ -333,7 +333,9 @@ impl RunReport {
             runtime,
             set: BTreeMap::new(),
             parallelism,
-            started_at: Local::now().to_rfc3339(),
+            started_at: Timestamp::now()
+                .ok()
+                .map(|now| now.format(TimestampFormat::Rfc3339(TimeZone::system())).to_string()),
             duration_ms: 0,
             log_dir,
             totals: RunTotals::new(&[], selected.len()),

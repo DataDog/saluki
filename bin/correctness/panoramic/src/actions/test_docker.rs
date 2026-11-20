@@ -100,18 +100,31 @@ impl Drop for FakeDocker {
     }
 }
 
-/// Returns the `--max-time` a curl command was given.
-pub(crate) fn curl_max_time(command: &[String]) -> Duration {
-    let words = command
-        .iter()
-        .flat_map(|arg| arg.split_whitespace())
-        .collect::<Vec<_>>();
-    let seconds = words
-        .iter()
-        .position(|word| *word == "--max-time")
-        .and_then(|index| words.get(index + 1))
-        .unwrap_or_else(|| panic!("curl should bound itself: {command:?}"));
-    Duration::from_secs_f64(seconds.parse().expect("--max-time should be a number of seconds"))
+/// Returns the request limit an in-container request command was given.
+///
+/// This reads the `--max-time` of a curl command, or the `HttpClient` timeout of a [`WindowsHttpRequest`] command.
+///
+/// [`WindowsHttpRequest`]: crate::actions::windows_http::WindowsHttpRequest
+pub(crate) fn request_limit(command: &[String]) -> Duration {
+    const TIMESPAN: &str = "[TimeSpan]::FromSeconds(";
+
+    let joined = command.join(" ");
+    let seconds = if let Some((_, rest)) = joined.split_once(TIMESPAN) {
+        rest.split_once(')').map(|(seconds, _)| seconds)
+    } else {
+        let words = joined.split_whitespace().collect::<Vec<_>>();
+        words
+            .iter()
+            .position(|word| *word == "--max-time")
+            .and_then(|index| words.get(index + 1))
+            .copied()
+    };
+    let seconds = seconds.unwrap_or_else(|| panic!("the request should bound itself: {command:?}"));
+    Duration::from_secs_f64(
+        seconds
+            .parse()
+            .expect("the request limit should be a number of seconds"),
+    )
 }
 
 async fn respond(mut stream: TcpStream, latency: Duration, state: Arc<Mutex<State>>, plan: Arc<ExecPlan>) {
