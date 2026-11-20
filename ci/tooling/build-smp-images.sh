@@ -24,8 +24,9 @@
 # compute a key, it builds under a pipeline-scoped tag. If the registry lifecycle policy deletes a
 # keyed image, the next run builds it again.
 #
-# Many pipelines can use one keyed image. So the image labels identify the ADP commit and the key,
-# and not the pipeline that built the image.
+# Many pipelines can use one keyed image. So the labels on a keyed image identify the ADP commit and
+# the key, and not the pipeline that built the image. An image under a pipeline-scoped tag also gets
+# labels for its branch, pipeline, and job.
 #
 # Expects the environment from `.setup-smp-env` in `.gitlab/benchmark.yml`, AWS credentials, and a
 # Docker login to `${SMP_ECR_HOST}`.
@@ -129,6 +130,11 @@ else
 fi
 smp_build_args+=("ADP_IMAGE=${adp_img}")
 
+labels=("git.repository=${CI_PROJECT_NAME}" "git.commit=${adp_sha}")
+if [[ "${reuse}" != "true" ]]; then
+    labels+=("git.branch=${CI_COMMIT_REF_NAME}" "ci.pipeline_id=${CI_PIPELINE_ID}" "ci.job_id=${CI_JOB_ID}")
+fi
+
 log "${role}: ADP commit ${adp_sha}"
 for arg in "${adp_build_args[@]}" "${smp_build_args[@]}"; do
     log "${role}: ${arg}"
@@ -161,7 +167,7 @@ if [[ "${need_adp}" == "true" ]]; then
     for arg in "${adp_build_args[@]}"; do
         adp_flags+=(--build-arg "${arg}")
     done
-    for label in "git.repository=${CI_PROJECT_NAME}" "git.commit=${adp_sha}" "smp.image_key=${adp_key}"; do
+    for label in "${labels[@]}" "smp.image_key=${adp_key}"; do
         adp_flags+=(--label "${label}")
     done
     docker buildx build \
@@ -184,7 +190,7 @@ if [[ "${need_smp}" == "true" ]]; then
     for arg in "${smp_build_args[@]}"; do
         smp_flags+=(--build-arg "${arg}")
     done
-    for label in "git.repository=${CI_PROJECT_NAME}" "git.commit=${adp_sha}" "smp.image_key=${smp_key}"; do
+    for label in "${labels[@]}" "smp.image_key=${smp_key}"; do
         smp_flags+=(--label "${label}")
     done
     docker buildx build \
