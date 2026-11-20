@@ -37,8 +37,6 @@ build-adp-baseline-image:
     # Initialize our AWS credentials, and log in to ECR.
     - ./ci/tooling/configure-smp-aws-credentials.sh
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    # EXPERIMENT: report the ECR lifecycle policy, which decides how long reusable images live.
-    - aws ecr get-lifecycle-policy --region us-west-2 --profile ${AWS_NAMED_PROFILE} --repository-name ${SMP_TEAM_ID}-saluki || true
     # Build the ADP image and the converged Agent image, or reuse them when an image with the same
     # inputs is already in the registry, and write the image variables for the runner jobs. See
     # ci/tooling/build-smp-images.sh.
@@ -69,8 +67,6 @@ build-adp-comparison-image:
     # Initialize our AWS credentials, and log in to ECR.
     - ./ci/tooling/configure-smp-aws-credentials.sh
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    # EXPERIMENT: report the ECR lifecycle policy, which decides how long reusable images live.
-    - aws ecr get-lifecycle-policy --region us-west-2 --profile ${AWS_NAMED_PROFILE} --repository-name ${SMP_TEAM_ID}-saluki || true
     # Build the ADP image and the converged Agent image, or reuse them when an image with the same
     # inputs is already in the registry, and write the image variables for the runner jobs. See
     # ci/tooling/build-smp-images.sh.
