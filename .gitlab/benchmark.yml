@@ -1,13 +1,13 @@
 # The git checkout for every SMP job. The jobs need only the files at the pipeline commit, so a
 # depth of one is sufficient. To find the baseline commit or the nightly commits,
 # ci/tooling/compute-smp-sha.sh fetches the history that it needs into a separate repository.
-# A full checkout (`GIT_DEPTH: "0"`) takes about 50 seconds on the image job runners, but that
-# fetch takes some seconds.
+# That history fetch takes some seconds. A full checkout (`GIT_DEPTH: "0"`) takes about 50
+# seconds on the image job runners.
 #
-# We also disable the runner's git cache. The cache is not always on the runner, and then the
-# runner clones the full repository into it before the checkout starts, which takes about 30
-# seconds. When the cache is on the runner, the checkout after it took about a minute on the
-# image job runners. A shallow checkout without the cache takes some seconds.
+# We also disable the runner's git cache. When the cache is not on the runner, the runner first
+# clones the full repository into it, which takes about 30 seconds. When the cache is on the
+# runner, the checkout from the cache takes about a minute on the image job runners. A shallow
+# checkout without the cache takes some seconds.
 .smp-checkout:
   variables:
     GIT_DEPTH: "1"
@@ -228,9 +228,9 @@ run-benchmarks-adp:
       --submission-metadata submission_metadata
     # Wait for job to complete.
     #
-    # We poll every 20 seconds, not at the default of 60 seconds. On average, the job sees that
-    # the SMP job is complete half of a poll interval after it completes, so this saves about 20
-    # seconds. Each poll is one small status request.
+    # We poll every 20 seconds. On average, the job sees that the SMP job is complete half of a
+    # poll interval after it completes, so a short interval keeps that delay to about 10 seconds.
+    # Each poll is one small status request.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job status
       --wait
@@ -333,7 +333,7 @@ run-benchmarks-adp-full:
       --comparison-sha ${COMPARISON_ADP_SHA}
       --target-config-dir ./test/smp/regression/adp/full/
       --submission-metadata submission_metadata
-    # Wait for job to complete.
+    # Wait for job to complete. For the poll interval, see run-benchmarks-adp.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job status
       --wait
