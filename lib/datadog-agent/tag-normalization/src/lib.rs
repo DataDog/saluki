@@ -2,7 +2,7 @@
 //!
 //! Tags are submitted verbatim and the intake normalizes them on ingest, so a decision that has to agree with what the
 //! intake stores, such as matching `metric_tag_filterlist` keys, must compare normalized keys. The specification is
-//! `docs/reference/tag-normalization.md`: this crate implements its tag key K(t) ([`tag_key`]) and rule key R(k)
+//! `SPEC.md`, next to this crate's `Cargo.toml`: this crate implements its tag key K(t) ([`tag_key`]) and rule key R(k)
 //! ([`rule_key`]), and the tests check the vectors in `testdata/` and the specification's properties.
 //!
 //! [`tag_key`] borrows the input for an already-normalized ASCII key, and otherwise writes into a caller-provided

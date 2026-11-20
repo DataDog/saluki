@@ -1310,7 +1310,7 @@ This ADP-only key is independent from `metric_tag_filterlist`. Remote Config upd
 
 Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value tag such as `customer_id:` is a value and is subject to the allow-list; include `""` in `values` to retain it. An empty `values` list treats every key/value tag as a mismatch.
 
-Like `metric_tag_filterlist`, ADP compares `tag_name` with tag keys as Datadog stores them, normalizing both, so `tag_name: Customer ID` applies to `customer_id:top-1` and `CUSTOMER_ID:top-1`. Values are still matched exactly, so `customer_id:Top-1` does not match a configured `top-1`. A replacement tag uses the normalized tag name, such as `customer_id:other`. See [Metric tag normalization](../../reference/tag-normalization.md) for the rules.
+Like `metric_tag_filterlist`, ADP compares `tag_name` with tag keys as Datadog stores them, normalizing both, so `tag_name: Customer ID` applies to `customer_id:top-1` and `CUSTOMER_ID:top-1`. Values are still matched exactly, so `customer_id:Top-1` does not match a configured `top-1`. A replacement tag uses the normalized tag name, such as `customer_id:other`. See `SPEC.md` in the `datadog-agent-tag-normalization` crate (`lib/datadog-agent/tag-normalization/`) for the rules.
 
 Multiple rules may use the same prefix when they target different tags. Metric prefixes are compared exactly, without normalization. ADP rejects the configuration at startup when:
 
@@ -1822,7 +1822,8 @@ a rule whose metric name Datadog never stores, such as `123`. It also ignores an
 containing `:`, since tag keys can't contain one: list the key only, such as `env`.
 Whitespace in a tag key is normalized like any other character, so `"env "` becomes `env_`
 and no longer matches `env`. Tags that are kept are sent unchanged. See
-[Metric tag normalization](../../reference/tag-normalization.md) for the rules.
+`SPEC.md` in the `datadog-agent-tag-normalization` crate (`lib/datadog-agent/tag-normalization/`)
+for the rules.
 
 ### `otlp_config.metrics.delta_ttl`
 

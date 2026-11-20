@@ -16,7 +16,7 @@
 //! The intake normalizes metric names and tags on ingest, and users write rules against the normalized form they see
 //! in Datadog. Rules therefore match normalized names: a whole-tag rule's metric name is compared after metric-name
 //! normalization, and the tag keys of both kinds of rule are compared after tag-key normalization (see
-//! `docs/reference/tag-normalization.md`). Configured strings are normalized once, when the rules are compiled, and
+//! `SPEC.md` in the `datadog-agent-tag-normalization` crate). Configured strings are normalized once, when the rules are compiled, and
 //! incoming names are normalized only for comparison. Tags that are kept are still sent verbatim, and tag values are
 //! still matched exactly.
 
@@ -235,8 +235,9 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 
         let Some(metric_name) = normalize_metric_name(&mut name_buf, &entry.metric_name) else {
             warn!(
+                setting = "metric_tag_filterlist",
                 metric_name = %entry.metric_name,
-                "metric_tag_filterlist: dropping entry whose metric name cannot match any metric name stored by Datadog"
+                "Dropping entry because Datadog never stores its metric name."
             );
             continue;
         };
@@ -251,9 +252,10 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
                     tag_set.insert(key);
                 }
                 None => warn!(
+                    setting = "metric_tag_filterlist",
                     metric_name = %entry.metric_name,
                     tag = %tag,
-                    "metric_tag_filterlist: ignoring tag key containing ':'; list the tag key only, without a value"
+                    "Ignoring tag key containing ':'. List the tag key only, without a value."
                 ),
             }
         }
@@ -276,11 +278,11 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
                     continue;
                 }
                 warn!(
+                    setting = "metric_tag_filterlist",
                     metric_name = %occupied.key(),
                     first_entry = %source.0,
                     conflicting_entry = %entry.metric_name,
-                    "metric_tag_filterlist: entries for the same metric configure both include and exclude; keeping \
-                     only the exclude entries"
+                    "Entries for the same metric configure both include and exclude. Keeping only the exclude entries."
                 );
                 if is_exclude {
                     *occupied.get_mut() = CompiledKeyFilter {
@@ -295,8 +297,9 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
     for (metric_name, filter) in &filters.key_filters {
         if !filter.is_exclude && filter.tag_names.is_empty() && sources[metric_name].1 {
             warn!(
+                setting = "metric_tag_filterlist",
                 metric_name = %sources[metric_name].0,
-                "metric_tag_filterlist: include rule has no usable tag keys left, so it removes every tag"
+                "Include rule has no usable tag keys left, so it removes every tag."
             );
         }
     }
@@ -319,10 +322,10 @@ pub fn add_value_allowlists(filters: &mut CompiledFilters, entries: &[MetricTagV
             .expect("the configuration boundary rejects value allow-list tag names containing ':'");
         if !can_have_value(&tag_key) {
             warn!(
+                setting = "metric_tag_value_allowlist",
                 metric_prefix = %entry.metric_prefix,
                 tag_name = %entry.tag_name,
-                "metric_tag_value_allowlist: ignoring rule whose tag name is too long for Datadog to store a tag with \
-                 that name and a value"
+                "Ignoring rule because its tag name is too long for Datadog to store a tag with that name and a value."
             );
             continue;
         }
@@ -353,11 +356,12 @@ pub fn add_value_allowlists(filters: &mut CompiledFilters, entries: &[MetricTagV
                     vacant.insert(allowlist);
                 }
                 Entry::Occupied(occupied) => warn!(
+                    setting = "metric_tag_value_allowlist",
                     metric_prefix = %entry.metric_prefix,
                     tag_name = %entry.tag_name,
                     normalized_tag_name = %occupied.key(),
-                    "metric_tag_value_allowlist: ignoring rule whose tag name normalizes to the same tag key as an \
-                     earlier rule for this prefix"
+                    "Ignoring rule because its tag name normalizes to the same tag key as an earlier rule for this \
+                     prefix."
                 ),
             }
         } else {

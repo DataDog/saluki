@@ -2927,7 +2927,8 @@ inventory:
       containing `:`, since tag keys can't contain one: list the key only, such as `env`.
       Whitespace in a tag key is normalized like any other character, so `"env "` becomes `env_`
       and no longer matches `env`. Tags that are kept are sent unchanged. See
-      [Metric tag normalization](../../reference/tag-normalization.md) for the rules.
+      `SPEC.md` in the `datadog-agent-tag-normalization` crate (`lib/datadog-agent/tag-normalization/`)
+      for the rules.
 
   min_tls_version:
     support: partial

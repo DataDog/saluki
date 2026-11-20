@@ -483,7 +483,7 @@ pub struct MetricTagValueAllowlistEntry {
     ///
     /// Bare tags have no value and are not changed. Key/value tags with an empty value are processed normally. Empty
     /// names and names containing `:` are invalid. The name is compared with tag keys after both are normalized the way
-    /// the Datadog intake stores them; see `docs/reference/tag-normalization.md`.
+    /// the Datadog intake stores them; see `SPEC.md` in the `datadog-agent-tag-normalization` crate.
     pub tag_name: String,
 
     /// Tag values retained unchanged.

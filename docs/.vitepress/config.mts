@@ -56,7 +56,6 @@ export default defineConfig({
                     { text: "Architecture", link: "/reference/architecture" },
                     { text: "ADRs", link: "/reference/adrs" },
                     { text: "Proposals", link: "/reference/proposals" },
-                    { text: "Tag Normalization", link: "/reference/tag-normalization" },
                 ],
             },
             {

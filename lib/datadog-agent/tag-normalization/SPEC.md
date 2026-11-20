@@ -6,13 +6,12 @@ stored tag is derived. Character data comes from the Unicode Character Database
 (§3.2, §3.3). Agent-side implementations, the Datadog Agent's
 `pkg/metrics/tagname` and Agent Data Plane (ADP), must conform to it.
 
-**In ADP:** this page is a copy of `pkg/metrics/tagname/SPEC.md` in the Datadog
+**In ADP:** this file is a copy of `pkg/metrics/tagname/SPEC.md` in the Datadog
 Agent repository (`DataDog/datadog-agent`), kept identical apart from paragraphs
-marked like this one. ADP implements it in the `datadog-agent-tag-normalization`
-crate, `lib/datadog-agent/tag-normalization/`. Its `testdata/` vectors are
-vendored unchanged from the Agent's `pkg/metrics/tagname/testdata/`, as of
-DataDog/datadog-agent#60236; where their headers refer to `SPEC.md`, they mean
-this page. ADP's metric-name normalization is
+marked like this one. This crate, `datadog-agent-tag-normalization`, implements
+it for ADP. Its `testdata/` vectors are vendored unchanged from the Agent's
+`pkg/metrics/tagname/testdata/`, as of DataDog/datadog-agent#60236. ADP's
+metric-name normalization is
 `bin/agent-data-plane/src/components/metric_name.rs`.
 
 The key words MUST, MUST NOT and MAY are used as in RFC 2119.
