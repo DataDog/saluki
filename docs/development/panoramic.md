@@ -6,6 +6,19 @@ cases. [Testing](./testing.md) says what each kind of test is for.
 A case is a directory with a `config.yaml` and the files it uses. Panoramic runs the participants the case names,
 runs the steps of its procedure against them, and reports what happened. The same file runs on each OS it declares.
 
+## The two suites
+
+The cases live in two directories, one for each purpose. Panoramic runs both the same way, and any step can appear
+in either. The directory says what a case is for.
+
+- **`test/integration/cases`** checks ADP on its own. A case starts ADP, usually with the Agent, and checks that it
+  starts, stays up, logs what it should, listens on its endpoints, exits as expected, and sends the expected metrics to
+  a mock intake. Each case runs on every OS in its `subject_os`: Linux, macOS, Windows, or more than one. See
+  [Writing an integration case](#writing-an-integration-case).
+- **`test/correctness/cases`** compares ADP with the Datadog Agent. A case sends the same load to both, gives each
+  its own mock intake, and ends with a `compare` step. The cases run on Linux. See
+  [Writing a comparison case](#writing-a-comparison-case).
+
 ## What a case is
 
 - **The name.** The directory names the case. The name must be unique among the cases of one run. Panoramic loads
@@ -308,7 +321,7 @@ template fields: `pattern` of the two log steps, `path` of `file_contains`, and 
 | `process_stable_for` | `on`, `process` (optional), `duration` | The process, or every process, keeps running. |
 | `exits_with` | `on`, `process`, `code`, `timeout` | The process exits with the code. A death by signal has code 256. |
 | `port_listening` | `on`, `endpoint`, `timeout` | The endpoint accepts a connection. |
-| `http_check` | `on`, `endpoint`, `path`, `status`, `body` (optional), `insecure_skip_verify` (optional), `timeout` | A `GET` answers as expected. `status` is `{equal: n}` or `{not_equal: n}`, and `body` is `{equal: text}` or `{contains: text}`. |
+| `http_check` | `on`, `endpoint`, `path`, `status`, `body` (optional), `insecure_skip_verify` (optional), `timeout` | A `GET` answers as expected. `status` is `{equal: n}` or `{not_equal: n}`, and `body` is `{equal: text}` or `{contains: text}`. It sends no client certificate, so it cannot reach the privileged routes of ADP. |
 | `file_contains` | `on`, `path`, `pattern`, `timeout` | A file in the participant holds the text. |
 | `config_key_equals` | `on`, `key`, `value`, `view`, `timeout` | A key of the ADP configuration has the value. `view` is `source` or `runtime`. |
 | `intake_has_metric` | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match` (all optional), `timeout` | An intake holds a metric that meets every criterion. |
@@ -322,6 +335,15 @@ An `exec` that fails quotes the output of the command. A step needs the particip
 or operations that it names, and the plan checks each for every OS. Three steps need an operation of `agent-adp`:
 `config_key_equals`, `config_set` and `dogstatsd_replay`. `intake_has_metric` and `compare` need the `dump` operation
 of `datadog-intake`.
+
+**`intake_has_metric`.** Each poll normalizes the metrics in the intake per context and type: a context is the
+name and the tags, with the host as a `host:<value>` tag. Counts and rates are summed, sketches are merged, and a
+gauge takes its latest value, so a value split across flushes is compared as its total. Expect totals: a partial sum can match an
+early poll. Contexts are never combined, and one context must meet every criterion. `value` uses approximate float
+equality, and is an error with `metric_type: sketch`. `tags_match` is `subset`, the default, or `exact`. Both sides
+of the tags are sorted and deduplicated first. Under `exact`, `tags: []` means no tags and no host. `exact` does not
+show that no other context arrived. A failure lists the contexts with the expected name, or the other names when
+none has it.
 
 Steps run in order. A step that does not pass stops the procedure, and the steps after it are `not_run`. A
 `parallel` block runs its members together, and holds assertions only. A step reaches a participant through its
@@ -430,6 +452,22 @@ removal adds a `resource_leaked` issue, and an unconfirmed one adds `resource_un
 outcome.
 
 Send SIGINT or SIGTERM to stop a run with cleanup. A second signal can leave containers behind.
+
+## Writing an integration case
+
+An integration case runs `agent-adp` as the subject, and a `datadog-intake` when it checks what ADP sends. Copy a
+case from `test/integration/cases` that uses the same steps.
+
+- When ADP must stay up, end with a `parallel` block of `process_stable_for` and a `log_not_contains` on
+  `panic|PANIC`, so a crash fails the case. When ADP must exit, use `exits_with`.
+- Give each step a budget that covers the start of the Agent and ADP. The cases give a readiness step 30 to 60
+  seconds, and an `intake_has_metric` 120 seconds to cover a flush.
+- Before a `send` to a UDP endpoint, wait for the listener's own startup log with `log_contains`. A probe cannot
+  confirm a UDP listener, so `port_listening` is not a readiness gate for it.
+- Use `config_key_equals`, `config_set` or an `exec` of the `adp` command for the privileged API of ADP.
+  `http_check` cannot reach it.
+- List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
+  See [Files](#files).
 
 ## Writing a comparison case
 

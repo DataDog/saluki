@@ -70,7 +70,7 @@ All binaries live under `bin/correctness/`:
 
 | Binary             | Purpose                                                                                  |
 |--------------------|------------------------------------------------------------------------------------------|
-| **panoramic**      | Unified test runner for both correctness and integration tests.                          |
+| **panoramic**      | Test runner for the correctness and integration tests.                                   |
 | **millstone**      | Deterministic load generator.                                                            |
 | **`otlp-fixtures`** | Builds the static OTLP payloads of some correctness cases.                              |
 | **datadog-intake** | Mock Datadog API: receives test output                                                   |
@@ -113,13 +113,15 @@ hand. The `check-correctness-fixtures` CI job runs the same target and fails if 
 ## Integration tests (panoramic)
 
 Integration tests run ADP, with the Datadog Agent where a case needs it, and assert high-level invariants: process
-stability, expected log output, port availability, exit behavior. They run in Linux and Windows containers and as host
-processes on macOS. They catch regressions from enabling new features or settings that cause crashes or early exits.
-They don't test output correctness. This type of test is often known as a "smoke test." For integration tests that
-check system output, see [correctness tests](#correctness-tests-panoramic) above.
+stability, expected log output, port availability, exit behavior, and the metrics that reach a mock intake. Each case
+runs on the OSes it declares: in Linux and Windows containers, and as host processes on macOS. They catch regressions
+from enabling new features or settings that cause crashes or early exits. They don't compare ADP's output with the
+Datadog Agent's. This type of test is often known as a "smoke test." For tests that compare the two, see
+[correctness tests](#correctness-tests-panoramic) above.
 
 Test cases live in `test/integration/cases/`, one directory for each case, and the runner is **panoramic**
-(`bin/correctness/panoramic/`). [Panoramic cases](./panoramic.md) explains how to write a case, run one, and read its
+(`bin/correctness/panoramic/`). Panoramic runs integration and correctness cases the same way: the directory says
+what a case is for. See [The two suites](./panoramic.md#the-two-suites). [Panoramic cases](./panoramic.md) explains how to write a case, run one, and read its
 results.
 
 ### Running
@@ -246,7 +248,7 @@ agents drive runs there.
 
 # custom test tooling
 bin/correctness/
-├── panoramic/             : unified test runner (correctness + integration)
+├── panoramic/             : test runner (correctness + integration)
 ├── millstone/             : load generator
 ├── otlp-fixtures/         : static OTLP payload builder
 ├── datadog-intake/        : mock Datadog API
