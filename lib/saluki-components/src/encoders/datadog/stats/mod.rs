@@ -37,7 +37,7 @@ use tracing::{debug, error};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
-    request_builder::{EndpointEncoder, RequestBuilder},
+    request_builder::{EndpointEncoder, RequestBuilder, RequestMetadata},
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
@@ -172,9 +172,9 @@ impl StatsPayloadTelemetry {
         self.entries.increment(counts.entries);
     }
 
-    /// Tracks a flushed payload, given its size before compression.
-    fn track_payload(&self, uncompressed_len: usize) {
-        self.bytes_uncompressed.increment(uncompressed_len as u64);
+    /// Tracks a flushed payload.
+    fn track_payload(&self, metadata: RequestMetadata) {
+        self.bytes_uncompressed.increment(metadata.uncompressed_len as u64);
     }
 }
 
@@ -302,16 +302,19 @@ async fn run_request_builder(
                         }
                     };
 
-                    let maybe_requests = stats_request_builder.flush().await;
-                    if maybe_requests.is_empty() {
+                    let flushed = stats_request_builder.flush().await;
+                    if flushed.requests.is_empty() {
                         panic!("builder told us to flush, but gave us nothing");
                     }
+                    if flushed.inputs_dropped > 0 {
+                        telemetry.events_dropped_encoder().increment(flushed.inputs_dropped as u64);
+                    }
 
-                    for maybe_request in maybe_requests {
+                    for maybe_request in flushed.requests {
                         match maybe_request {
-                            Ok((events, _data_points, uncompressed_len, request)) => {
-                                payload_telemetry.track_payload(uncompressed_len);
-                                let payload_meta = PayloadMetadata::from_event_count(events);
+                            Ok((request_meta, request)) => {
+                                payload_telemetry.track_payload(request_meta);
+                                let payload_meta = PayloadMetadata::from_event_count(request_meta.input_count);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
 
@@ -352,12 +355,15 @@ async fn run_request_builder(
 
                 pending_flush = false;
 
-                let maybe_stats_requests = stats_request_builder.flush().await;
-                for maybe_request in maybe_stats_requests {
+                let flushed = stats_request_builder.flush().await;
+                if flushed.inputs_dropped > 0 {
+                    telemetry.events_dropped_encoder().increment(flushed.inputs_dropped as u64);
+                }
+                for maybe_request in flushed.requests {
                     match maybe_request {
-                        Ok((events, _data_points, uncompressed_len, request)) => {
-                            payload_telemetry.track_payload(uncompressed_len);
-                            let payload_meta = PayloadMetadata::from_event_count(events);
+                        Ok((request_meta, request)) => {
+                            payload_telemetry.track_payload(request_meta);
+                            let payload_meta = PayloadMetadata::from_event_count(request_meta.input_count);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
 
@@ -597,6 +603,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_builder_counts_stats_in_payloads_it_drops() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let config = DatadogApmStatsEncoderConfiguration::new(
+            Duration::from_secs(2),
+            AgentEnv::resolve(None, Some("prod"), &[], &[]),
+        );
+
+        // Each payload holds one stats item, and no payload fits under the compressed size limit, so the flush after
+        // the first item and the flush on the timer each drop one.
+        let mut request_builder = RequestBuilder::new(
+            config.endpoint_encoder(),
+            CompressionScheme::noop(),
+            RB_BUFFER_CHUNK_SIZE,
+        )
+        .await
+        .expect("request builder should be created");
+        request_builder.with_max_inputs_per_payload(1);
+        request_builder
+            .with_len_limits(usize::MAX, 1)
+            .expect("limits should be accepted");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        for entries in [1, 2] {
+            let stats = TraceStats::new(vec![make_client_payload(&[entries])]);
+            assert!(events.try_push(Event::TraceStats(stats)).is_none());
+        }
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            StatsPayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        assert!(payloads_rx.recv().await.is_none());
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")][..]
+            )),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
     async fn request_builder_tracks_written_stats_and_uncompressed_bytes() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
@@ -611,7 +672,7 @@ mod tests {
             TraceStats::new(vec![make_client_payload(&[4])]),
         ];
 
-        // Without compression or framing, the payload before compression is all stats encoded back to back.
+        // Without framing, the payload before compression is all stats encoded back to back.
         let expected_uncompressed_len = all_stats
             .iter()
             .map(|stats| {
@@ -626,7 +687,7 @@ mod tests {
 
         let request_builder = RequestBuilder::new(
             config.endpoint_encoder(),
-            CompressionScheme::noop(),
+            CompressionScheme::zstd_default(),
             RB_BUFFER_CHUNK_SIZE,
         )
         .await

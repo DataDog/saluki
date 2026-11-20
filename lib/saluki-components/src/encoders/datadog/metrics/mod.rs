@@ -934,7 +934,9 @@ async fn run_request_builder(
                 let v2_series_payload_info = tag_series.then(MetricsPayloadInfo::v2_series);
                 let mut v2_series_flush_succeeded = true;
                 if let Some(builder) = &mut v2_series_builder {
-                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, v2_series_payload_info).await {
+                    if let Err(e) =
+                        flush_v2_metrics(builder, &telemetry, &mut payloads_tx, v2_series_payload_info).await
+                    {
                         error!(error = %e, "Failed to flush V2 series metrics: {}", e);
                         v2_series_flush_succeeded = false;
                     }
@@ -966,7 +968,9 @@ async fn run_request_builder(
                     let result = if sketch_shadow_state.is_enabled() {
                         sketch_shadow_state.flush(builder, v3_sketch_flush_context, &mut payloads_tx).await
                     } else {
-                        flush_v2_metrics(builder, &mut payloads_tx, v2_sketches_payload_info).await.map(|_| ())
+                        flush_v2_metrics(builder, &telemetry, &mut payloads_tx, v2_sketches_payload_info)
+                            .await
+                            .map(|_| ())
                     };
                     if let Err(e) = result {
                         error!(error = %e, "Failed to flush V2 sketch metrics: {}", e);
@@ -1045,7 +1049,7 @@ async fn encode_v2_metrics(
         }
     };
 
-    flush_v2_metrics(request_builder, payloads_tx, payload_info).await?;
+    flush_v2_metrics(request_builder, telemetry, payloads_tx, payload_info).await?;
 
     // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
     // be possible to fail at this point, otherwise we would have already caught that the first
@@ -1064,21 +1068,33 @@ async fn encode_v2_metrics(
 }
 
 async fn flush_v2_metrics(
-    request_builder: &mut RequestBuilder<MetricsEndpointEncoder>, payloads_tx: &mut mpsc::Sender<Payload>,
-    payload_info: Option<MetricsPayloadInfo>,
+    request_builder: &mut RequestBuilder<MetricsEndpointEncoder>, telemetry: &ComponentTelemetry,
+    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<usize, GenericError> {
     let mut requests_flushed = 0;
 
-    let maybe_requests = request_builder.flush().await;
-    for maybe_request in maybe_requests {
+    let flushed = request_builder.flush().await;
+    if flushed.inputs_dropped > 0 {
+        telemetry
+            .events_dropped_encoder()
+            .increment(flushed.inputs_dropped as u64);
+    }
+
+    for maybe_request in flushed.requests {
         match maybe_request {
-            Ok((events, data_points, _uncompressed_len, request)) => {
+            Ok((request_meta, request)) => {
                 requests_flushed += 1;
 
-                flush_payload(request, events, data_points, payloads_tx, payload_info).await?;
+                flush_payload(
+                    request,
+                    request_meta.input_count,
+                    request_meta.data_point_count,
+                    payloads_tx,
+                    payload_info,
+                )
+                .await?;
             }
 
-            // TODO: Increment a counter here that metrics were dropped due to a flush failure.
             Err(e) => {
                 if !e.is_recoverable() {
                     return Err(GenericError::from(e).context("Failed to flush request."));
@@ -3280,6 +3296,42 @@ mod tests {
         tags.into_iter().map(Tag::from_static).collect()
     }
 
+    #[tokio::test]
+    async fn flush_v2_metrics_counts_metrics_it_drops() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, 10_000, None);
+        let mut builder = v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
+            .await
+            .expect("V2 request builder should be created");
+        let returned = builder
+            .encode(Metric::gauge("dropped.gauge", [(123, 1.0)]))
+            .await
+            .expect("encode should not error");
+        assert!(returned.is_none());
+
+        // A payload with a single metric can't be split, so the metric is dropped.
+        builder
+            .with_len_limits(usize::MAX, 1)
+            .expect("byte limits should be accepted");
+        let (mut payloads_tx, mut payloads_rx) = mpsc::channel(8);
+        let requests_flushed = flush_v2_metrics(&mut builder, &telemetry, &mut payloads_tx, None)
+            .await
+            .expect("a dropped payload should not fail the flush");
+        drop(payloads_tx);
+
+        assert_eq!(requests_flushed, 0);
+        assert!(payloads_rx.recv().await.is_none());
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")][..]
+            )),
+            Some(1)
+        );
+    }
+
     // Regression test to ensure the V2 series request builder enforces `max_series_points_per_payload`.
     //
     // The test encodes more total points than the configured limit and asserts the builder splits them across
@@ -3303,8 +3355,9 @@ mod tests {
             let mut pending = Some(metric);
             while let Some(metric) = pending.take() {
                 if let Some(returned) = builder.encode(metric).await.expect("encode should not error") {
-                    for request in builder.flush().await {
-                        let (_, points, _, _) = request.expect("request should build");
+                    for request in builder.flush().await.requests {
+                        let (request_meta, _) = request.expect("request should build");
+                        let points = request_meta.data_point_count;
                         assert!(
                             points <= 10_000,
                             "payload carried {} points, over the 10000 limit",
@@ -3316,8 +3369,9 @@ mod tests {
                 }
             }
         }
-        for request in builder.flush().await {
-            let (_, points, _, _) = request.expect("request should build");
+        for request in builder.flush().await.requests {
+            let (request_meta, _) = request.expect("request should build");
+            let points = request_meta.data_point_count;
             assert!(
                 points <= 10_000,
                 "final payload carried {} points, over the 10000 limit",

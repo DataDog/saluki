@@ -117,20 +117,26 @@ impl<'a> SketchShadowState<'a> {
         let Some(sampled_destinations) = self.sampled_destinations.take() else {
             // Allow a fresh sampling decision for the next batch.
             self.sampling_decided = false;
-            return flush_v2_metrics(builder, tx, Some(MetricsPayloadInfo::v2_sketches()))
+            return flush_v2_metrics(builder, context.telemetry, tx, Some(MetricsPayloadInfo::v2_sketches()))
                 .await
                 .map(|_| ());
         };
         // Allow a fresh sampling decision for the next batch.
         self.sampling_decided = false;
+        let flushed = builder.flush().await;
+        let baseline_failed = flushed.inputs_dropped > 0;
+        if baseline_failed {
+            context
+                .telemetry
+                .events_dropped_encoder()
+                .increment(flushed.inputs_dropped as u64);
+        }
         let mut requests = Vec::new();
-        let mut baseline_failed = false;
         let mut fatal_error = None;
-        for request in builder.flush().await {
+        for request in flushed.requests {
             match request {
                 Ok(request) => requests.push(request),
                 Err(error) => {
-                    baseline_failed = true;
                     warn!(%error, "Failed to flush sketch baseline; skipping its shadow.");
                     if !error.is_recoverable() {
                         fatal_error = Some(error);
@@ -138,14 +144,12 @@ impl<'a> SketchShadowState<'a> {
                 }
             }
         }
-        // Splitting can discard a V2 subrequest without returning an error.
-        baseline_failed |= requests.iter().map(|(events, _, _, _)| *events).sum::<usize>() != metrics.len();
         let request_count = requests.len();
-        for (request_index, (events, points, _uncompressed_len, request)) in requests.into_iter().enumerate() {
+        for (request_index, (request_meta, request)) in requests.into_iter().enumerate() {
             enqueue_sketch_request(
                 request,
-                events,
-                points,
+                request_meta.input_count,
+                request_meta.data_point_count,
                 tx,
                 SketchShadowMetadata {
                     sampled_destinations: Arc::clone(&sampled_destinations),
@@ -208,6 +212,7 @@ mod tests {
             tags::TagSet,
         },
     };
+    use saluki_metrics::test::TestRecorder;
 
     use super::*;
     use crate::common::datadog::{test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH};
@@ -338,6 +343,8 @@ mod tests {
         let mut builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &endpoint_config)
             .await
             .unwrap();
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = V3FlushContext {
@@ -353,7 +360,7 @@ mod tests {
             let metric = Metric::distribution(Context::from_parts(name, TagSet::default()), [(123, 1.0)]);
             state.encode(&mut builder, metric, context, &mut tx).await.unwrap();
         }
-        // Force a split: each large metric fits alone, but their half is silently discarded during re-encoding.
+        // Force a split: each large metric fits alone, but their half is dropped during re-encoding.
         builder.with_len_limits(512, 512).unwrap();
         state.flush(&mut builder, context, &mut tx).await.unwrap();
         drop(tx);
@@ -364,6 +371,13 @@ mod tests {
         assert!(
             rx.recv().await.is_none(),
             "an incomplete baseline must not emit a shadow"
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")][..]
+            )),
+            Some(2)
         );
     }
 
