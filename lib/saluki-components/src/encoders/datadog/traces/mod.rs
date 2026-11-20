@@ -3,7 +3,6 @@ use std::{borrow::Cow, fmt, fmt::Write, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
-use metrics::{Counter, Gauge, Histogram};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
@@ -28,7 +27,7 @@ use saluki_env::{workload::EntityId, EnvironmentProvider, HostProvider, Workload
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
-use saluki_metrics::MetricsBuilder;
+use saluki_metrics::{static_metrics, Counter, Histogram, MetricsBuilder};
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::{
@@ -197,7 +196,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let payload_telemetry = TracePayloadTelemetry::from_builder(&metrics_builder);
+        let payload_telemetry = TracePayloadTelemetry::new(context.component_id(), context.component_type().as_str());
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create request builder for traces which is used to generate HTTP requests.
@@ -245,48 +244,32 @@ pub struct DatadogTrace {
 }
 
 /// Telemetry for what the traces encoder writes into payloads.
+#[static_metrics(prefix = component, labels(component_id, component_type))]
 struct TracePayloadTelemetry {
-    traces: Counter,
-    spans: Counter,
-    events: Counter,
-    bytes_uncompressed: Counter,
-    payload_size: Histogram,
-    largest_payload_size: Gauge,
-    largest_payload_size_seen: usize,
+    traces_encoded_total: Counter,
+    spans_encoded_total: Counter,
+    trace_events_encoded_total: Counter,
+    bytes_uncompressed_total: Counter,
+    /// The size of each request body.
+    ///
+    /// Exported distributions keep their buckets, sum and count, but not the exact maximum, so a derived gauge keeps
+    /// the largest body seen so far.
+    #[metric(derived(max))]
+    payload_size_bytes: Histogram,
 }
 
 impl TracePayloadTelemetry {
-    fn from_builder(builder: &MetricsBuilder) -> Self {
-        Self {
-            traces: builder.register_counter("component_traces_encoded_total"),
-            spans: builder.register_counter("component_spans_encoded_total"),
-            events: builder.register_counter("component_trace_events_encoded_total"),
-            bytes_uncompressed: builder.register_counter("component_bytes_uncompressed_total"),
-            payload_size: builder.register_histogram("component_payload_size_bytes"),
-            largest_payload_size: builder.register_gauge("component_payload_size_max_bytes"),
-            largest_payload_size_seen: 0,
-        }
-    }
-
     /// Tracks a trace written into a payload.
     fn track_trace(&self, counts: TraceCounts) {
-        self.traces.increment(1);
-        self.spans.increment(counts.spans);
-        self.events.increment(counts.events);
+        self.traces_encoded_total().increment(1);
+        self.spans_encoded_total().increment(counts.spans);
+        self.trace_events_encoded_total().increment(counts.events);
     }
 
     /// Tracks a flushed payload, given its size before compression and the size of the request body.
-    ///
-    /// The body size goes into a distribution, and the largest body seen so far goes into a gauge: exported
-    /// distributions keep their buckets, sum and count, but not the exact maximum.
-    fn track_payload(&mut self, uncompressed_len: usize, body_len: usize) {
-        self.bytes_uncompressed.increment(uncompressed_len as u64);
-        self.payload_size.record(body_len as f64);
-
-        if body_len > self.largest_payload_size_seen {
-            self.largest_payload_size_seen = body_len;
-            self.largest_payload_size.set(body_len as f64);
-        }
+    fn track_payload(&self, uncompressed_len: usize, body_len: usize) {
+        self.bytes_uncompressed_total().increment(uncompressed_len as u64);
+        self.payload_size_bytes().record(body_len as f64);
     }
 }
 
@@ -401,7 +384,7 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
+    payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
     payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
@@ -1848,16 +1831,35 @@ mod tests {
         trace
     }
 
+    /// Builds the key of a payload telemetry metric, with the labels that `make_payload_telemetry` uses.
+    fn payload_metric_key(name: &'static str) -> metrics::Key {
+        metrics::Key::from_parts(
+            name,
+            vec![
+                metrics::Label::new("component_id", "dd_traces_encode"),
+                metrics::Label::new("component_type", "encoder"),
+            ],
+        )
+    }
+
+    fn make_payload_telemetry() -> TracePayloadTelemetry {
+        TracePayloadTelemetry::new("dd_traces_encode", "encoder")
+    }
+
     #[test]
     fn largest_payload_gauge_only_moves_up() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let mut telemetry = TracePayloadTelemetry::from_builder(&MetricsBuilder::default());
+        let telemetry = make_payload_telemetry();
+        assert_eq!(
+            TracePayloadTelemetry::payload_size_bytes_max_name(),
+            "component_payload_size_bytes_max"
+        );
 
         for (body_len, expected_largest) in [(100_000, 100_000.0), (3_000_000, 3_000_000.0), (50_000, 3_000_000.0)] {
             telemetry.track_payload(body_len, body_len);
             assert_eq!(
-                recorder.gauge("component_payload_size_max_bytes"),
+                recorder.gauge(payload_metric_key("component_payload_size_bytes_max")),
                 Some(expected_largest)
             );
         }
@@ -1914,7 +1916,7 @@ mod tests {
         run_request_builder(
             request_builder,
             ComponentTelemetry::from_builder(&metrics_builder),
-            TracePayloadTelemetry::from_builder(&metrics_builder),
+            make_payload_telemetry(),
             events_rx,
             payloads_tx,
             Duration::from_millis(1),
@@ -1930,16 +1932,28 @@ mod tests {
         }
         assert_eq!(body_lens.len(), 1);
         assert_eq!(
-            recorder.histogram("component_payload_size_bytes"),
+            recorder.histogram(payload_metric_key("component_payload_size_bytes")),
             Some(body_lens.clone())
         );
-        assert_eq!(recorder.gauge("component_payload_size_max_bytes"), Some(body_lens[0]));
-
-        assert_eq!(recorder.counter("component_traces_encoded_total"), Some(3));
-        assert_eq!(recorder.counter("component_spans_encoded_total"), Some(3));
-        assert_eq!(recorder.counter("component_trace_events_encoded_total"), Some(1));
         assert_eq!(
-            recorder.counter("component_bytes_uncompressed_total"),
+            recorder.gauge(payload_metric_key("component_payload_size_bytes_max")),
+            Some(body_lens[0])
+        );
+
+        assert_eq!(
+            recorder.counter(payload_metric_key("component_traces_encoded_total")),
+            Some(3)
+        );
+        assert_eq!(
+            recorder.counter(payload_metric_key("component_spans_encoded_total")),
+            Some(3)
+        );
+        assert_eq!(
+            recorder.counter(payload_metric_key("component_trace_events_encoded_total")),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter(payload_metric_key("component_bytes_uncompressed_total")),
             Some(expected_uncompressed_len)
         );
     }

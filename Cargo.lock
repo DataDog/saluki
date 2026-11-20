@@ -6031,8 +6031,10 @@ dependencies = [
 name = "saluki-metrics"
 version = "0.1.0"
 dependencies = [
+ "loom",
  "metrics",
  "papaya",
+ "proptest",
  "saluki-metrics-macros",
  "trybuild",
 ]
