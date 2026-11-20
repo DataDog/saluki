@@ -40,9 +40,9 @@ pub enum SourceKind {
     AzureAppService,
     /// Azure Functions source.
     AzureFunctions,
-    /// Cloud Run service source.
+    /// Google Cloud Run service source.
     GcpCloudRun,
-    /// Cloud Functions source.
+    /// Google Cloud Functions (v2) source.
     GcpCloudFunctions,
     /// Google Cloud Run job source.
     GcpCloudRunJobs,
