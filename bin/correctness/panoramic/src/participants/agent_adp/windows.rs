@@ -25,11 +25,9 @@ const AGENT_COMMAND: &str = "C:\\Program Files\\Datadog\\Datadog Agent\\bin\\age
 
 /// The flat name of each `DD_DATA_PLANE_` setting a case writes, and the nested name ADP reads in this image.
 ///
-/// On Linux the image's s6 init script reads each flat name and exports it under the nested name before it starts
-/// ADP: a single underscore between path levels, and a double underscore after the `data_plane` prefix. The Windows
-/// image has no such script, and ADP reads only the nested form. So the table replays the translation, which keeps the
-/// case's `env` portable across the OSes. Only the names a case uses are listed: a new shared `DD_DATA_PLANE_` key
-/// needs a line here.
+/// The Windows image gives ADP only the nested form, which puts a double underscore between path levels. The table
+/// copies the legacy runner's `WINDOWS_ENV_ALIASES`, so a case's `env` works on every OS. Only the names a case uses
+/// are listed: a new shared `DD_DATA_PLANE_` key needs a line here.
 const DATA_PLANE_NESTED_NAMES: &[(&str, &str)] = &[
     ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
     ("DD_DATA_PLANE_STANDALONE_MODE", "DD_DATA_PLANE__STANDALONE_MODE"),

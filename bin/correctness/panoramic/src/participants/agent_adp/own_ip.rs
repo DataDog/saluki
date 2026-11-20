@@ -33,7 +33,7 @@ pub(super) fn files(cx: &SpecContext<'_>, own_ip: Option<&OwnIp>) -> Result<BTre
     let (destination, mode, text) = match cx.realization.enclosure {
         Enclosure::LinuxContainer => (LINUX_SCRIPT, Some(0o755), linux_script(own_ip)),
         Enclosure::WindowsContainer => (WINDOWS_SCRIPT, None, windows_script(own_ip)),
-        _ => return Err("with.own_ip is built for containers".to_string()),
+        _ => return Err("with.own_ip is built for Linux and Windows containers only".to_string()),
     };
     check(cx, own_ip)?;
     let file = FileSpec {
