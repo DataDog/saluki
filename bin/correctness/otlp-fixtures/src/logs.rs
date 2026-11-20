@@ -559,6 +559,51 @@ pub fn resource_host_fixture() -> Vec<u8> {
                 scope_logs(no_scope(), vec![record(5, "carry-over-next-scope", vec![])]),
             ],
         ),
+        // The record-level host fallback resolves the record's source like a resource's: `datadog.host.name` wins and
+        // sticks.
+        resource_logs(
+            vec![],
+            vec![scope_logs(
+                no_scope(),
+                vec![
+                    record(
+                        60,
+                        "carry-over-datadog-host",
+                        vec![
+                            kv("datadog.host.name", string("record-datadog-host")),
+                            kv("host.name", string("record-host")),
+                        ],
+                    ),
+                    record(61, "carry-over-datadog-host-second", vec![]),
+                ],
+            )],
+        ),
+        // A serverless record has no host, so the host of a later record sticks.
+        resource_logs(
+            vec![],
+            vec![scope_logs(
+                no_scope(),
+                vec![
+                    record(
+                        62,
+                        "carry-over-serverless",
+                        vec![
+                            kv("cloud.platform", string("azure.functions")),
+                            kv("service.name", string("record-function")),
+                            kv("cloud.account.id", string("sub-1")),
+                            kv("azure.resource_group.name", string("rg-1")),
+                            kv("host.name", string("serverless-host")),
+                        ],
+                    ),
+                    record(
+                        63,
+                        "carry-over-after-serverless",
+                        vec![kv("host.name", string("later-host"))],
+                    ),
+                    record(64, "carry-over-after-serverless-second", vec![]),
+                ],
+            )],
+        ),
     ];
 
     // gap/host-resolution: resource host precedence.
