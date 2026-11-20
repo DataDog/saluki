@@ -401,6 +401,12 @@ templates:
         DD_DATA_PLANE_OTLP_ENABLED: "true"
         DD_OTLP_CONFIG: "{}"
 
+        # The SMP baseline is built from an older `main` that may still default to `6317`/`6318`
+        # and honors these keys. This ADP ignores them. Remove once the baseline defaults to the
+        # receiver endpoints.
+        DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "localhost:4317"
+        DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "localhost:4318"
+
   # Base template for OTLP traces experiments at 5 MiB/s with a realistic service topology
   otlp_traces_5mb_base:
     extends: otlp_base
