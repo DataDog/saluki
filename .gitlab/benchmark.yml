@@ -1,13 +1,13 @@
-# The git checkout for every SMP job. Most jobs need only the files at the pipeline commit, so a
-# depth of one is sufficient. The jobs that need history, to find the baseline commit or the
-# nightly commits, set `GIT_DEPTH: "0"` for a full clone. They cannot deepen a shallow checkout
-# later, because the CI git mirror ignores `git fetch --deepen` and `git fetch --unshallow`.
+# The git checkout for every SMP job. The jobs need only the files at the pipeline commit, so a
+# depth of one is sufficient. To find the baseline commit or the nightly commits,
+# ci/tooling/compute-smp-sha.sh fetches the history that it needs into a separate repository.
+# A full checkout (`GIT_DEPTH: "0"`) takes about 50 seconds on the image job runners, but that
+# fetch takes some seconds.
 #
 # We also disable the runner's git cache. The cache is not always on the runner, and then the
 # runner clones the full repository into it before the checkout starts, which takes about 30
 # seconds. When the cache is on the runner, the checkout after it took about a minute on the
-# image job runners. A fetch from the git mirror without the cache takes some seconds, also for
-# a full clone.
+# image job runners. A shallow checkout without the cache takes some seconds.
 .smp-checkout:
   variables:
     GIT_DEPTH: "1"
@@ -70,9 +70,6 @@ build-adp-baseline-image:
   retry: 2
   # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
   timeout: 30m
-  variables:
-    # The full history, to find the baseline commit. See `.smp-checkout`.
-    GIT_DEPTH: "0"
   before_script:
     - *setup-smp-env
   script:
@@ -136,10 +133,6 @@ build-adp-comparison-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_smp_nightly, rules, if]
-      variables:
-        # The full history, to find the nightly comparison commit. See `.smp-checkout`. On PRs,
-        # the comparison commit is the pipeline commit, so a shallow checkout is sufficient.
-        GIT_DEPTH: "0"
     - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []

@@ -22,33 +22,54 @@
 #   If a day had no commits, --before falls back to the latest earlier commit; if that makes
 #   baseline == comparison the run is simply a no-op delta.
 #
-# All cases except the PR comparison need git history. The jobs that run those cases must check
-# out the full history (`GIT_DEPTH: "0"`; see .gitlab/benchmark.yml), because the CI git mirror
-# does not deepen a shallow checkout: `git fetch --deepen` and `git fetch --unshallow` do not
-# change it. This script then fetches main, and stops with an error if the checkout is shallow.
+# All cases except the PR comparison need git history, and the benchmark jobs use a shallow
+# checkout (see `.smp-checkout` in .gitlab/benchmark.yml). We cannot deepen the checkout: the CI
+# git mirror ignores `git fetch --deepen` and `git fetch --unshallow` for a ref that the checkout
+# has already. So this script fetches the full history of main and of the branch into a separate
+# repository, and resolves the commit there. A full fetch from the mirror takes some seconds,
+# but a full checkout takes about a minute.
+#
+# The script then adds the objects of that repository to the checkout as alternates, so that the
+# job can check out the resolved commit.
 
 set -euo pipefail
 
 role="${1:?usage: compute-smp-sha.sh <baseline|comparison>}"
 
-# Fetch main and the current branch, so that origin/main and origin/$CI_COMMIT_BRANCH are
-# current. On the nightly schedule, the current branch is main.
+history_repo=""
+
+# Fetch the full history of main and of the current branch into a separate bare repository, and
+# set `history_repo` to its path. On the nightly schedule, the current branch is main.
 fetch_history() {
     local refspecs=("+refs/heads/main:refs/remotes/origin/main")
     if [[ "${CI_COMMIT_BRANCH}" != "main" ]]; then
         refspecs+=("+refs/heads/${CI_COMMIT_BRANCH}:refs/remotes/origin/${CI_COMMIT_BRANCH}")
     fi
-    if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-        echo "compute-smp-sha: the checkout is shallow, so the ${role} commit can be incorrect. Set GIT_DEPTH to 0 for this job." >&2
+
+    history_repo="$(mktemp -d -t smp-history.XXXXXX)"
+    git init --quiet --bare "${history_repo}"
+    # Use the remote and the HTTP settings (for example, authentication) of the checkout.
+    git -C "${history_repo}" remote add origin "$(git remote get-url origin)"
+    git config --local --get-regexp '^http\.' | while read -r key value; do
+        git -C "${history_repo}" config --add "${key}" "${value}"
+    done || true
+    git -C "${history_repo}" fetch --quiet --no-tags origin "${refspecs[@]}" >&2
+
+    if [[ "$(git -C "${history_repo}" rev-parse --is-shallow-repository)" == "true" ]]; then
+        echo "compute-smp-sha: the history fetch is shallow, so the ${role} commit can be incorrect" >&2
         exit 1
     fi
-    git fetch --quiet origin "${refspecs[@]}" >&2
+}
+
+# Make the objects of the history repository available in the checkout.
+share_history() {
+    echo "${history_repo}/objects" >> "$(git rev-parse --git-path objects/info/alternates)"
 }
 
 # Most recent origin/main commit committed strictly before 00:00:00 UTC of the given
 # YYYY-MM-DD date.
 last_commit_before_day() {
-    git rev-list -n 1 --before="$1 00:00:00 +0000" origin/main
+    git -C "${history_repo}" rev-list -n 1 --before="$1 00:00:00 +0000" origin/main
 }
 
 if [[ "${CI_PIPELINE_SOURCE:-}" == "schedule" ]]; then
@@ -60,12 +81,14 @@ if [[ "${CI_PIPELINE_SOURCE:-}" == "schedule" ]]; then
         baseline)   sha="$(last_commit_before_day "${day_before}")" ;;
         *) echo "unknown role: ${role}" >&2; exit 1 ;;
     esac
+    share_history
 else
     case "${role}" in
         comparison) sha="${CI_COMMIT_SHA}" ;;
         baseline)
             fetch_history
-            sha="$(git merge-base origin/main "origin/${CI_COMMIT_BRANCH}")"
+            sha="$(git -C "${history_repo}" merge-base origin/main "origin/${CI_COMMIT_BRANCH}")"
+            share_history
             ;;
         *) echo "unknown role: ${role}" >&2; exit 1 ;;
     esac
