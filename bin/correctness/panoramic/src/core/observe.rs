@@ -320,7 +320,7 @@ impl Sink {
     }
 
     /// Records that the capture broke, so a step does not take the output as whole.
-    fn failed(&self, why: String) {
+    pub(crate) fn failed(&self, why: String) {
         if let Some((observation, process)) = &self.process {
             observation.capture_failed(process, why);
         }
