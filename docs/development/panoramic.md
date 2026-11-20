@@ -86,6 +86,18 @@ target/release/panoramic plan test/integration/cases/adp-cmd-host --subject-os l
 pipeline built. `NAME` is the reference exactly as the case or the participant type writes it. A name given twice is
 an error. A name that no case uses is an error too.
 
+On macOS, `--set` also runs the host-process cases against other builds or installs of ADP and the Agent. This example
+uses a debug build of ADP and the system-wide Agent in `/opt/datadog-agent`:
+
+```bash
+target/release/panoramic run -d test/integration/cases --no-tui \
+  --set target/release/agent-data-plane=target/debug/agent-data-plane \
+  --set /tmp/saluki-dda/datadog-agent/bin/agent/agent=/opt/datadog-agent/bin/agent/agent
+```
+
+`make test-integration-macos-run` sets the two names itself. To give it another Agent, set
+`MACOS_TEST_AGENT_INSTALL_DIR`.
+
 `panoramic list` leaves out a case that does not declare the subject OS. With `--json` it prints one entry for each
 case with its `suite`, its `runtime` and its `timeout`. The `runtime` is `linux`, `mac` or `windows`, or
 `kubernetes_in_docker` for a case that runs pods. The CI generator reads it.
