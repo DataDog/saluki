@@ -1,6 +1,5 @@
 use std::io;
 use std::sync::atomic::AtomicUsize;
-use std::time::Instant;
 
 use axum::body::{Body, Bytes};
 use futures::StreamExt as _;
@@ -20,7 +19,7 @@ use tokio::net::{TcpListener, TcpSocket};
 
 use super::*;
 use crate::common::otlp::test_util::{
-    grpc_frame, grpc_ok, grpc_response, header_map, http_ok, FakeUpstream, RecordingHandler, TestClient, TestServers,
+    grpc_frame, grpc_response, header_map, http_ok, FakeUpstream, RecordingHandler, TestClient, TestServers,
 };
 use crate::common::otlp::{OtlpRoute, OtlpRoutes};
 
@@ -128,10 +127,11 @@ async fn http_request_and_response_pass_through() {
     for dropped in ["x-hop", "proxy-authorization", "connection", "via"] {
         assert!(!seen.headers.contains_key(dropped), "{dropped} should not be forwarded");
     }
-    let Destination::Tcp { port, .. } = &upstream.destination else {
-        panic!("upstream should listen on TCP");
-    };
-    assert_eq!(seen.headers["host"], format!("127.0.0.1:{port}"));
+    let upstream_uri = upstream.destination.base_uri().expect("destination should have a URI");
+    assert_eq!(
+        seen.headers["host"],
+        upstream_uri.authority().expect("URI should have an authority").as_str()
+    );
 
     assert_eq!(
         counter(&recorder, "component_requests_relayed_total", "logs", "http"),
@@ -590,6 +590,8 @@ async fn grpc_upstream_failure_mid_response_is_not_retried() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn connect_timeout_bounds_an_unanswered_connection_attempt() {
+    use std::time::Instant;
+
     const TEST_CONNECT_TIMEOUT: Duration = Duration::from_millis(200);
 
     let socket = TcpSocket::new_v4().expect("socket should open");
@@ -647,6 +649,8 @@ async fn connect_timeout_bounds_an_unanswered_connection_attempt() {
 #[cfg(unix)]
 #[tokio::test]
 async fn forwards_to_unix_socket_destinations() {
+    use crate::common::otlp::test_util::grpc_ok;
+
     let dir = tempfile::tempdir().expect("temp dir should be created");
     let grpc_upstream = FakeUpstream::unix(&dir.path().join("grpc.sock"), grpc_ok).await;
     let http_upstream = FakeUpstream::unix(&dir.path().join("http.sock"), http_ok).await;
