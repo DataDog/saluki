@@ -11,17 +11,17 @@ use std::sync::{
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _, path::PathBuf};
 
 use axum::extract::Request as AxumRequest;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use http::header::{self, HeaderMap};
 use http::uri::{PathAndQuery, Uri};
-use http::{HeaderValue, StatusCode, Version};
+use http::{HeaderValue, Version};
 use rustls::RootCertStore;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::{HttpClient, HttpProtocol};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use super::forwarding::{strip_hop_by_hop_headers, UpstreamClient};
+use crate::common::proxy::{strip_hop_by_hop_headers, Destination, ForwardError, UpstreamClient};
 
 /// Name the relay adds itself to the `Via` header under, so that a request proxied back to the relay is recognized.
 /// See RFC 9110, section 7.6.3.
@@ -52,40 +52,6 @@ pub(super) struct TraceAgentProxy {
     ///
     /// Only the first one is logged as a warning, as every request loops the same way.
     loop_detected: Arc<AtomicBool>,
-}
-
-/// Where the proxy forwards requests to.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Destination {
-    /// A TCP host and port.
-    Tcp { host: String, port: u16 },
-
-    /// A Unix domain socket path.
-    #[cfg(unix)]
-    Unix(PathBuf),
-}
-
-/// Error from forwarding a request to the trace-agent.
-#[derive(Debug)]
-pub(super) enum ForwardError {
-    /// The request's path couldn't be carried over to the trace-agent.
-    InvalidUri,
-
-    /// The trace-agent couldn't be reached, or didn't answer.
-    Unreachable,
-
-    /// The request was already forwarded by the relay, so the destination leads back to the relay.
-    Loop,
-}
-
-impl IntoResponse for ForwardError {
-    fn into_response(self) -> Response {
-        match self {
-            Self::InvalidUri => StatusCode::BAD_REQUEST.into_response(),
-            Self::Unreachable => StatusCode::BAD_GATEWAY.into_response(),
-            Self::Loop => StatusCode::LOOP_DETECTED.into_response(),
-        }
-    }
 }
 
 impl TraceAgentProxy {
@@ -260,8 +226,10 @@ fn was_forwarded_by_relay(headers: &HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use axum::body::{to_bytes, Body};
+    use axum::response::IntoResponse;
     use axum::routing::any;
     use axum::Router;
+    use http::StatusCode;
     use tokio::net::TcpListener;
     use tokio::sync::Mutex as AsyncMutex;
 
