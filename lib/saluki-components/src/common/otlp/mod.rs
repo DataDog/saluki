@@ -424,7 +424,7 @@ impl OtlpRoutes {
     }
 
     /// Returns `true` if any signal is internal.
-    pub fn any_internal(&self) -> bool {
+    pub(crate) fn any_internal(&self) -> bool {
         Signal::ALL
             .into_iter()
             .any(|signal| self.get(signal) == OtlpRoute::Internal)
