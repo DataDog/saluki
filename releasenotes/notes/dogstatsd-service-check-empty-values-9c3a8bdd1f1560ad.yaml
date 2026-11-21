@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    With ``dogstatsd_permissive_decoding`` disabled, DogStatsD service checks with an empty hostname or origin field,
+    such as ``h:`` or ``c:``, are no longer dropped. The empty field is ignored, as it already is for events.
