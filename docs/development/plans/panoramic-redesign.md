@@ -1400,12 +1400,21 @@ endpoints it uses exist, which the plan checks.
 | `dump` | `datadog-intake` | a request to `api` | `compare`, `intake_has_metric` |
 | `config_dump` | `agent-adp` | command `adp` | `config_key_equals`, with `{view: source \| runtime}` |
 | `config_set` | `agent-adp` | command `agent` | `config_set` |
-| `dogstatsd_capture`, `dogstatsd_replay`, `dogstatsd_stats` | `agent-adp` | command `adp` | `dogstatsd_replay` |
+| `dogstatsd_capture` | `agent-adp` | command `adp` | `dogstatsd_replay`, with `{duration_ms}`; answers `{path}` |
+| `dogstatsd_replay` | `agent-adp` | command `adp` | `dogstatsd_replay`, with `{path}`; answers `{}` |
+| `dogstatsd_stats` | `agent-adp` | command `adp` | `dogstatsd_replay`, with `{duration_secs}`; answers `{metrics}` |
 
 `config_dump` runs `agent-data-plane config --json`, with `--runtime` for the runtime view, and parses
 the output as JSON. It does not use the secure API, which stays a literal default of `agent-adp`
 and not an endpoint. When the command fails it reports only the exit code, because the
 configuration holds the API key. `agent-adp` names the command `adp` and, for now, no other.
+
+The three DogStatsD operations run `dogstatsd capture --duration <n>ms --compressed false`,
+`dogstatsd replay --file <path>` and `dogstatsd stats --duration-secs <n>`. Each answers with what it
+parsed, and the step decides: `{path}` is the capture file, read from the line "Data will be
+written to '<path>'", and `{metrics}` is the first cell of every row of the statistics table. A
+command that fails reports only the exit code, except that a capture with no path quotes up to 1 KiB
+of its standard output. Arguments that are not exactly the ones named are a harness error.
 
 The rule for choosing: a plain command line needs no Rust, so it is a `commands` entry run with
 `exec`. An operation exists where the answer must be decoded or the arguments are the software's
@@ -1455,7 +1464,7 @@ making it `errored`. On failure the step quotes the last 4 KiB of the command's 
 | `wait` | action | `duration` | nothing |
 | `config_key_equals` | assertion | `on`, `key`, `value`, `view: source \| runtime` (required), `timeout` | operation `config_dump` |
 | `config_set` | action | `on`, `key`, `value`, `timeout` | operation `config_set` |
-| `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `capture_duration`, `stats_duration`, `expected_metrics`, `timeout` | three operations; the endpoint, to send |
+| `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `payload_interval` (optional), `capture_duration`, `stats_duration` (whole seconds), `expected_metrics`, `timeout` | operations `dogstatsd_capture`, `dogstatsd_replay` and `dogstatsd_stats`; the endpoint, to send |
 | `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
 | `compare` | assertion | `telemetry`, `comparison`, `baseline`, and the options of each telemetry | operation `dump` on both participants |
 
@@ -1639,7 +1648,7 @@ apart. The last column names what the migration rule sends to each PR.
 | 11 | `pod` | Pod backend; migrate the origin detection matrix | 9 | 1.6k / 0.3k | Cases that run in pods: the origin detection matrix |
 | 12 | `linuxrest` | Probe, exec and config steps; finish the Linux-only cases | 8 | 0.7k / 0.1k | Linux-only cases that probe, request, exec or check configuration |
 | 13 | `hostproc` | Host process backend; migrate the macOS and Unix cases that need nothing more | 12 | 1.35k / 0.22k as built | Cases on macOS, alone or with Linux, that need no step beyond the backend's |
-| 13b | `replay` | `dogstatsd_replay`; migrate `dogstatsd-replay-unix` | 13 | 0.35k / 0.05k | Cases on macOS that replay DogStatsD |
+| 13b | `replay` | `dogstatsd_replay`; migrate `dogstatsd-replay-unix` | 13 | 0.39k / 0.07k as built | Cases on macOS that replay DogStatsD |
 | 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13, 13b | 1.0k / 0.4k | Cases on Windows, alone or with Linux; cases on all three OSes |
 | 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above | deletions, docs | none |
 | 16 | `followups` | The os overlay, the intake on macOS and Windows, a case-supplied helper | 15 | 0.55k / 0.1k | Cases that differ only by OS merge; the intake cases gain macOS and Windows; one new case |
@@ -2010,6 +2019,34 @@ Why this order:
   processes stays and gains `/tmp/panoramic`. Cleanup tests here are unit tests and must not bind the
   fixed ports or use `/tmp/panoramic`. `dogstatsd-skip-failed-listener` loses a UDP probe.
   `process_stable_for` watches ADP in these cases.
+
+**13b. `replay`: the `dogstatsd_replay` step**
+
+- **Builds:** the three DogStatsD operations of `agent-adp` and the `dogstatsd_replay` step, then
+  migrates `dogstatsd-replay-unix`. `dogstatsd-replay-windows` stays legacy until `windows`; the same
+  step shape covers it there, as a send through the Windows courier.
+- **What was taken:**
+  - The step sends `payloads` to an `endpoint`. It does not run a sender command, which would make
+    Python a requirement of the host on macOS and of the image on Linux. The legacy sender's pause of
+    one second between its two datagrams stays, as the optional `payload_interval`, so that the
+    capture is still checked to keep traffic that arrives late. The step's budget counts it.
+  - `stats_duration` is whole seconds, and `build` rejects a fraction, because the CLI takes seconds.
+  - The operations answer parsed values, and the step decides from them: `dogstatsd_capture` answers
+    `{path}`, `dogstatsd_replay` answers `{}`, and `dogstatsd_stats` answers `{metrics}`. The
+    matching rule is in one place.
+  - The operations report a failed command's exit code only, as the legacy action redacts the CLI's
+    output. The one exception is a capture with no path, which quotes up to 1 KiB of standard output.
+  - The step keeps the legacy statuses. An error that stops the capture or a send is `stopped`. A
+    replay that exited nonzero counts as a replay that ran. A statistics error is `failed` once a
+    replay ran, and the status of its own error before. At the deadline the step is `failed` if a
+    replay ran and `errored` if not.
+  - In the migrated case the socket is ADP's `dogstatsd_uds` endpoint, owned by the harness, and
+    `process_stable_for` watches `adp`.
+- **Watch out:** the socket moves from `/tmp/saluki-dogstatsd-replay-unix.sock` to
+  `/airlock/adp/shared/dogstatsd_uds.sock` in the Linux container, and to
+  `/tmp/panoramic/adp/shared/dogstatsd_uds.sock` on macOS. The capture file's path is ADP's answer,
+  used where ADP runs, so it needs no mapping. Only CI's macOS jobs show that a send from the runner
+  reaches ADP's socket and that ADP's capture works there.
 
 **14. `windows`: Windows containers and the three-OS cases**
 

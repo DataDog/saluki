@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
+use self::dogstatsd::{Capture, Replay, Stats};
 use super::datadog_agent::{
     self, ListenAt, Listener, With, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE,
     NOT_WINDOWS,
@@ -20,6 +21,8 @@ use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{CommandSpec, Evidence, FileSource, FileSpec, ParticipantSpec, Program, Protocol, Wiring};
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
+
+mod dogstatsd;
 
 const LISTENERS: &[Listener] = &[
     Listener {
@@ -135,6 +138,9 @@ const EMPTY_DATADOG_YAML: FileSource = FileSource::Bytes {
     bytes: b"",
 };
 
+/// What every realization of `agent-adp` offers.
+const OPERATIONS: [&dyn Operation; 4] = [&ConfigDump, &Capture, &Replay, &Stats];
+
 pub(crate) struct AgentAdp;
 
 impl ParticipantType for AgentAdp {
@@ -178,7 +184,7 @@ impl ParticipantType for AgentAdp {
                     env: BTreeMap::new(),
                 },
             )]),
-            operations: &[&ConfigDump],
+            operations: &OPERATIONS,
             ..ParticipantSpec::default()
         };
         add_endpoints(cx, &mut spec)?;
@@ -290,7 +296,7 @@ fn host_processes(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
                 env: BTreeMap::new(),
             },
         )]),
-        operations: &[&ConfigDump],
+        operations: &OPERATIONS,
         ..ParticipantSpec::default()
     };
     add_endpoints(cx, &mut spec)?;
