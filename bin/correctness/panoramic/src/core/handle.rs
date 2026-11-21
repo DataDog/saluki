@@ -334,7 +334,7 @@ impl<'a> Handle<'a> {
             )));
         }
         match route {
-            Reach::PublishedPort => self.published_get(endpoint, path, limit).await,
+            Reach::PublishedPort | Reach::ForwardedPort => self.published_get(endpoint, path, limit).await,
             Reach::CourierInServer => {
                 let address = planned.courier_address(self.name, EndpointOperation::Request);
                 self.courier()?.http_get(&address, path, limit).await
@@ -386,8 +386,8 @@ impl<'a> Handle<'a> {
         Ok(Courier::new(self.realized, path))
     }
 
-    /// Requests `path` from the runner, through the port published for `endpoint` on the runner's loopback address. A
-    /// redirect is a response, as through the courier.
+    /// Requests `path` from the runner, through the port published or forwarded for `endpoint` on the runner's loopback
+    /// address. A redirect is a response, as through the courier.
     async fn published_get(&self, endpoint: &str, path: &str, limit: Duration) -> Result<HttpResponse, HandleError> {
         let port = self.realized.host_port(endpoint).ok_or_else(|| {
             HandleError::Software(format!(
@@ -433,8 +433,7 @@ fn harness(error: impl Into<GenericError>) -> HandleError {
 }
 
 fn not_built(route: Reach) -> HandleError {
-    // TODO: reach pods through forwarded ports with the pod backend, and host processes from the runner with the host
-    // process backend.
+    // TODO: reach host processes from the runner with the host process backend.
     let through = match route {
         Reach::CourierInServer => "the courier in the participant",
         Reach::PublishedPort => "a published port",

@@ -234,6 +234,27 @@ impl CaseScope {
 }
 
 impl Container {
+    /// Opens the container Docker already has under `name`, which belongs to no case scope: it has no case network, so
+    /// [`Self::status`] reports no address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Docker has no such container, or if `deadline` passes first.
+    pub async fn existing(docker: &Docker, name: &str, deadline: Instant) -> Result<Self, GenericError> {
+        let inspect = bounded(Some(deadline), docker.inspect_container(name, None))
+            .await
+            .map_err(|e| generic_error!("Failed to inspect container '{}': {}", name, e))?;
+        let id = inspect
+            .id
+            .ok_or_else(|| generic_error!("Docker reports no ID for container '{}'.", name))?;
+        Ok(Self {
+            docker: docker.clone(),
+            name: name.to_string(),
+            id,
+            network: String::new(),
+        })
+    }
+
     /// Returns the container's name.
     pub fn name(&self) -> &str {
         &self.name

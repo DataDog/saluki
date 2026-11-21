@@ -186,7 +186,7 @@ without running anything.
 A case or a participant type names each image and host program by reference, and a run can replace
 any of them, which is how CI points cases at the images a pipeline built. Before any case starts,
 panoramic checks that each one exists and pulls an image the Docker daemon lacks. A selected case
-whose realization the host cannot provide, such as pods without a kind cluster (Kubernetes in
+whose realization the host cannot provide, such as pods without `kind` (Kubernetes in
 Docker), is a harness error that names the case, and the run stops with exit code 2 before any case
 starts.
 
@@ -275,8 +275,9 @@ realization: {enclosure: kubernetes-pod, options: {host_pid: true, cri_socket: t
 # enclosures: linux-container, windows-container, kubernetes-pod, host-process-group
 # options: host_pid and host_cgroup_namespace on a Linux container; host_pid and cri_socket on a pod
 
-with: {host_view: true}       # agent-adp, agent: mount the host's /proc, cgroup tree and container
-                              # runtime socket, and point the Agent at them. This is the host view.
+with: {host_view: true}       # agent-adp, agent: mount the host's /proc and cgroup tree, and point the
+                              # Agent at them. This is the host view. A container also gets the Docker
+                              # socket. A pod gets the container runtime's socket from the cri_socket option.
 with: {own_ip: {env: [DD_BIND_HOST], hosts: [foo.local]}}
                               # agent-adp: set these variables to the container's address on the case's network, and
                               # map these host names to it, before the software starts
@@ -670,7 +671,7 @@ to every use. A step field may reference any participant's endpoint.
 | A socket path in `endpoints` | at plan; it may refer only to `self.dir`, because the address is built from it |
 | `command`, `args`, `programs`, `env`, a pattern in `ready` | when the participant is created |
 | A template file in a container or as host processes | when the participant is created |
-| A template file in a pod | when the pod is created, or after it starts if the file holds a value that exists only then |
+| A template file in a pod | when the pod is created, or after it starts if the file holds a value of the pod itself that exists only then |
 | `commands`, and the template fields of a step | when the step runs |
 | `image`, a program's `path`, a `files` key, `with`, `mounts`, `collect`, `processes` | never hold references |
 
@@ -681,7 +682,10 @@ fixed. Anything else is a plan error. Three consequences:
   at create and the address exists after start. Where software needs it, the participant type
   provides it from inside the container.
 - A pod's template file that holds an after-start value is written by the pod backend once the
-  values exist, and the pod's command waits for it. Only such a pod waits.
+  values exist, and the pod's command waits for it. Only such a pod waits, and it must set
+  `command`, which runs behind the wait. Only the pod's own values (`self.ip`, `self.container_id`
+  and `self.pod_uid`) are accepted in such a file. An after-start value anywhere else, or of another
+  participant, is a plan error.
 - A value substituted into a `regex: true` pattern is escaped, so a path or an address matches
   itself.
 
@@ -1227,9 +1231,9 @@ realizations, because one container backend covers Linux and Windows containers.
 | --- | --- | --- | --- | --- |
 | Per case | one bridge network, one volume | one `nat` network | one namespace, one directory on the kind node | one state directory under `/tmp` |
 | Launch | image, with the spec's command and args or the image's own | the same | one pod with one container, and a headless Service | each program started so that it and its children can be signalled together, in the participant's directory, with a cleared environment plus `PATH`, `HOME`, `TMPDIR` |
-| Files | one archive placed between create and start | the same, under `C:\` | written on the node before the pod exists, each mounted at its destination | written under the participant's directory |
+| Files | one archive placed between create and start | the same, under `C:\` | written on the node before the pod exists, each mounted at its destination, except a file that holds a value only the started pod has, which the pod's command copies into place from `/panoramic/late` | written under the participant's directory |
 | `{{ self.dir }}` | `/airlock/<p>/shared` on the case's volume, mounted in every container of the case | `C:\airlock\<p>\shared`, inside the container only | `/airlock/<p>/shared` on the node directory every pod of the case mounts | `<state directory>/<p>/shared` |
-| Reserved paths | `/panoramic/courier`, `/airlock/<p>/exit`, `/airlock/<p>/log` | `C:\panoramic\courier.exe`, `C:\airlock\<p>\exit`, `C:\airlock\<p>\log` | as a Linux container | none |
+| Reserved paths | `/panoramic/courier`, `/airlock/<p>/exit`, `/airlock/<p>/log` | `C:\panoramic\courier.exe`, `C:\airlock\<p>\exit`, `C:\airlock\<p>\log` | as a Linux container, and `/panoramic/late` | none |
 | Courier | copied in with the files | copied in with the files | mounted read-only from the node | the library, inside the harness |
 | Exit of a process | the container's exit, or a record file | the same | the container's terminated state, or a record file read through the node | the wait result of the child |
 | Output of a process | the container log, or a log file followed by the courier | the same | the container log, or a log file read through the node | the child's pipes |
@@ -1244,13 +1248,17 @@ The table leaves out five points.
 - **The courier follows log files in containers.** A supervised process writes its output to a file.
   Following it with `sh` and `tail` from the image would make both a hidden requirement on any image
   a case names, so Linux containers use the courier's `follow`, as Windows containers do. A pod's
-  log file is read through the node.
+  log file is followed by the courier on the node. A pod's files are read through the node, and
+  only under `/airlock`, so `millstone` collects nothing in a pod: its capture directory is outside
+  it.
 - **A pod is submitted in the start phase.** Create writes its files and its Service; start submits
   the pod and waits for it to run. A pod's command is wrapped in a shell loop that waits for late
   files only when the participant has a template file holding a value known after start. Among
-  today's cases that is `millstone` in the kind cases. Such a pod's image needs a shell, and that is a
-  stated requirement of the pod realization for a participant with a late-written template file.
-  Every other pod runs its image unwrapped and needs no shell.
+  today's cases that is `millstone` in the kind cases. The loop copies each such file from
+  `/panoramic/late`, a path pods reserve, into place, because a mounted file must exist when the pod
+  is submitted. Such a pod's image needs a shell, and that is a stated requirement of the pod
+  realization for a participant with a late-written template file. Every other pod runs its image
+  unwrapped and needs no shell.
 - **Host-process cases run one at a time.** The scheduler holds one extra permit that a case takes
   when its layout has a host process group. Two invocations on one host can still collide, which
   stays a host rule.
@@ -1464,9 +1472,11 @@ covers it; the courier binary is built by `make build-courier`.
    the image and the cases that use it.
 3. Every host program exists and can be executed, and the courier binary for each participant OS in
    use exists.
-4. For pod cases, the kind cluster exists and holds the images. Images are loaded with
-   `kind load docker-image`, which needs a single-platform image. The host requirement for pod cases
-   is a single-node kind cluster.
+4. For pod cases, the kind cluster exists and holds the images. The harness creates a missing
+   cluster, as the legacy runner does, so `kind` on the `PATH` is the host requirement, and the
+   cluster must have a single node. Setup blocks the run here, outside every case's timeout, where
+   the legacy runner set the cluster up in the background. Images are loaded with
+   `kind load docker-image`, which needs a single-platform image.
 
 Pulling a missing image keeps "run a new container" a one-line change in a case, in CI as well as
 locally. It is also what the harness does today, and the comparison jobs depend on it.
@@ -1483,7 +1493,7 @@ The cases are the main test. A test of the harness alone covers what a passing c
 | Cleanup, containers | A failed start and a cancelled case leave no container, network or volume | Ignored tests beside the container backend and in `airlock` | By hand, `make test-container-daemon` |
 | Cleanup, host processes | The same, for a process group and its directory | Unit tests beside the backend | Unit test jobs on Linux and macOS |
 | Cleanup, Windows containers | The same | Ignored tests | By hand, on a Windows host with Docker |
-| Cleanup, pods | A failed start leaves no namespace or node directory | One ignored test | By hand, `make test-container-daemon` |
+| Cleanup, pods | A failed start leaves no namespace or node directory | One ignored test | By hand, `make test-kind` |
 | Real cases compile | Every case compiles for every OS it declares | One test over every case directory | Unit test jobs |
 | The boundary | `core` names neither `participants` nor `steps`, and those two do not name each other | One rule in `test/architecture` | Unit test jobs |
 
@@ -1855,9 +1865,11 @@ Why this order:
   options, and files written after start for values a pod only has then. Migrates the cases that
   run in pods: the origin detection matrix, which becomes one directory per variant, sharing files.
   Job names do not change.
-- **Watch out:** once `cmprest` has merged, this PR migrates the last legacy comparison case, so it
-  removes `PANORAMIC_IMAGE_OVERRIDES` from the mixins and adds the check that a legacy file in
-  `test/correctness/cases` fails at load. If this PR merges first, `cmprest` does both.
+- **Watch out:** this PR stacks on `cmprest` and migrates the last legacy comparison case. That
+  PR leaves `PANORAMIC_IMAGE_OVERRIDES` in the mixins and adds no check, so this PR removes the
+  override and adds the check that a legacy comparison file, one whose `type` is `correctness` or
+  `correctness_matrix`, fails at load. The check keys on the `type`, not on the directory, because
+  every legacy comparison file lives in `test/correctness/cases`.
   - The comparison runner stays in the tree until `rmlegacy`, with no case to run. The check keeps a
     legacy comparison file that a teammate adds after this PR from running without its image inputs.
   - Every legacy kind case migrates here, so kind setup moves from the `Test` trait to plans in one
@@ -1865,10 +1877,12 @@ Why this order:
   - `kind load` needs a single-platform image. No symlinks: Windows checkouts break them.
   - The pod is submitted in the start phase, and the start gate applies only to a pod with a file
     written after start.
-  - In a pod the load generator's senders exit when they finish and never print the line the
-    container cases wait on. Wait on `millstone stopped.`, or bring `exits_with` forward from
-    `hostproc`.
+  - `compare` gave `millstone` `--completion-file`, so its senders stay alive after they finish and
+    print "Millstone finished sending". Pods wait on that line as containers do, and then on
+    `process_stable_for`.
   - The shared `millstone.yaml` has comments that contain `{{`, which a template file must reword.
+  - The variants share their files through a directory under `cases/` that has no `config.yaml`.
+    Discovery skips it, and so does the test that every real case compiles.
   - Adds the one pod cleanup test.
 
 ### Linux-only cases
@@ -1947,8 +1961,8 @@ Why this order:
 **15. `rmlegacy`: delete the legacy runners and rewrite the testing guide**
 
 - **Builds:** no new code.
-  - Deletes the comparison runner under `bin/correctness/panoramic/src/correctness/`, the
-    comparison schemas, the generator's legacy branch and the baseline mixin.
+  - Deletes the comparison runner under `bin/correctness/panoramic/src/correctness/` and the
+    comparison schemas. The baseline mixin and the generator's baseline branch go in `pod`.
   - Deletes the integration runners, the legacy schema, actions and assertions, `traffic.rs`, the
     routing, `--runtime` and the other legacy flags, `image_override.rs`, airlock's legacy behaviour
     and the temporary guard rule.
