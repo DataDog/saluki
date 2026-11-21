@@ -310,10 +310,6 @@ pub(crate) fn reach(
         (EndpointOperation::Request, Protocol::Http, WindowsContainer) if tls => {
             Err("a request to a Windows container goes through the courier, which does not speak TLS".to_string())
         }
-        // TODO: request TLS endpoints, with `http_check`'s `insecure_skip_verify`, with the first case that does.
-        (EndpointOperation::Request, Protocol::Http, _) if tls => {
-            Err("requests to TLS endpoints are not built".to_string())
-        }
         (EndpointOperation::Request, Protocol::Http, LinuxContainer) => Ok(Reach::PublishedPort),
         (EndpointOperation::Request, Protocol::Http, KubernetesPod) => Ok(Reach::ForwardedPort),
         (EndpointOperation::Request, Protocol::Http, HostProcessGroup) => Ok(Reach::InRunner),

@@ -20,7 +20,7 @@ use tokio::time::{timeout_at, Instant};
 
 use super::backend::{Exec, Realized};
 use super::courier::{Courier, HttpResponse};
-use super::observe::{first_exit, ExitStatus, Observation, ProcessExit};
+use super::observe::{first_exit, ExitStatus, Observation, ProcessExit, CONTAINER_OUTPUT};
 use super::plan::PlannedParticipant;
 use super::reference::Values;
 use super::spec::{ExitChannel, ProcessSpec};
@@ -51,8 +51,6 @@ impl fmt::Display for HandleError {
 }
 
 /// How a command run in a participant ended.
-// TODO: remove the dead_code allowance once a step runs a command.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Exited {
     pub(crate) code: i64,
@@ -66,8 +64,6 @@ pub(crate) struct Handle<'a> {
     planned: &'a PlannedParticipant,
     realized: &'a dyn Realized,
     /// What fills the references of named commands when they run.
-    // TODO: remove the dead_code allowance once a step runs a command.
-    #[allow(dead_code)]
     values: &'a Values,
     observation: &'a Observation,
 }
@@ -104,6 +100,20 @@ impl<'a> Handle<'a> {
             )));
         }
         Ok(processes)
+    }
+
+    /// The outputs a log step searches: those of [`Self::watched`], and the container log too when `process` is `None`
+    /// and the participant's container log is observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::watched`].
+    pub(crate) fn logged(&self, process: Option<&'a str>) -> Result<Vec<&'a str>, HandleError> {
+        let mut logged = self.watched(process)?;
+        if process.is_none() && self.observation.output(CONTAINER_OUTPUT).is_some() {
+            logged.push(CONTAINER_OUTPUT);
+        }
+        Ok(logged)
     }
 
     /// The output `process` has written so far, line by line, which grows as more is captured.
@@ -219,8 +229,6 @@ impl<'a> Handle<'a> {
     ///
     /// Returns a software error if the participant has exited, and a harness error if the command cannot be run
     /// otherwise, or does not exit within `limit`.
-    // TODO: remove the dead_code allowance once a step runs a command.
-    #[allow(dead_code)]
     pub(crate) async fn exec(
         &self, argv: Vec<String>, env: BTreeMap<String, String>, limit: Duration,
     ) -> Result<Exited, HandleError> {
@@ -240,8 +248,6 @@ impl<'a> Handle<'a> {
     ///
     /// Returns a harness error if the participant has no such command or a reference in it has no value yet, and the
     /// errors of [`Self::exec`].
-    // TODO: remove the dead_code allowance once a step runs a command.
-    #[allow(dead_code)]
     pub(crate) async fn command(
         &self, name: &str, args: &[String], env: &BTreeMap<String, String>, limit: Duration,
     ) -> Result<Exited, HandleError> {
@@ -317,14 +323,19 @@ impl<'a> Handle<'a> {
         }
     }
 
-    /// Makes one HTTP `GET` request for `path` at the endpoint. Any status is a response.
+    /// Makes one HTTP `GET` request for `path` at the endpoint, over TLS if the endpoint serves it, and without
+    /// checking the server's certificate if `skip_verify` is set. Any status is a response.
+    ///
+    /// With `read_body` unset, a request through a published or forwarded port returns once the response head
+    /// arrives, with an empty body, so a body that is slow or never ends does not matter. The courier always reads
+    /// the whole body.
     ///
     /// # Errors
     ///
     /// Returns a software error if no response arrives within `limit`, and a harness error if the endpoint cannot be
     /// requested.
     pub(crate) async fn http_get(
-        &self, endpoint: &str, path: &str, limit: Duration,
+        &self, endpoint: &str, path: &str, skip_verify: bool, read_body: bool, limit: Duration,
     ) -> Result<HttpResponse, HandleError> {
         let (planned, route) = self.route(endpoint, EndpointOperation::Request)?;
         if !path.starts_with('/') {
@@ -334,7 +345,15 @@ impl<'a> Handle<'a> {
             )));
         }
         match route {
-            Reach::PublishedPort | Reach::ForwardedPort => self.published_get(endpoint, path, limit).await,
+            Reach::PublishedPort | Reach::ForwardedPort => {
+                self.published_get(endpoint, planned.tls, path, skip_verify, read_body, limit)
+                    .await
+            }
+            // The plan refuses a request to a TLS endpoint through the courier, which does not speak TLS.
+            Reach::CourierInServer if planned.tls => Err(HandleError::Harness(format!(
+                "endpoint '{}' of participant '{}' serves TLS, which the courier does not speak",
+                endpoint, self.name
+            ))),
             Reach::CourierInServer => {
                 let address = planned.courier_address(self.name, EndpointOperation::Request);
                 self.courier()?.http_get(&address, path, limit).await
@@ -386,9 +405,11 @@ impl<'a> Handle<'a> {
         Ok(Courier::new(self.realized, path))
     }
 
-    /// Requests `path` from the runner, through the port published or forwarded for `endpoint` on the runner's loopback
-    /// address. A redirect is a response, as through the courier.
-    async fn published_get(&self, endpoint: &str, path: &str, limit: Duration) -> Result<HttpResponse, HandleError> {
+    /// Requests `path` from the runner, through the port published or forwarded for `endpoint` on the runner's
+    /// loopback address, over HTTPS if `tls`. A redirect is a response, as through the courier.
+    async fn published_get(
+        &self, endpoint: &str, tls: bool, path: &str, skip_verify: bool, read_body: bool, limit: Duration,
+    ) -> Result<HttpResponse, HandleError> {
         let port = self.realized.host_port(endpoint).ok_or_else(|| {
             HandleError::Software(format!(
                 "endpoint '{}' of participant '{}' has no published port: the participant had exited by the time its \
@@ -396,17 +417,20 @@ impl<'a> Handle<'a> {
                 endpoint, self.name
             ))
         })?;
-        // One client for the process, so requests share its connection pool.
-        static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-        let client = match CLIENT.get() {
+        // One client of each kind for the process, so requests share their connection pools.
+        static VERIFYING: OnceLock<reqwest::Client> = OnceLock::new();
+        static NOT_VERIFYING: OnceLock<reqwest::Client> = OnceLock::new();
+        let cell = if skip_verify { &NOT_VERIFYING } else { &VERIFYING };
+        let client = match cell.get() {
             Some(client) => client,
             None => {
                 let client = reqwest::Client::builder()
                     .no_proxy()
                     .redirect(reqwest::redirect::Policy::none())
+                    .danger_accept_invalid_certs(skip_verify)
                     .build()
                     .map_err(harness)?;
-                CLIENT.get_or_init(|| client)
+                cell.get_or_init(|| client)
             }
         };
         let failed = |e: reqwest::Error| {
@@ -416,14 +440,19 @@ impl<'a> Handle<'a> {
                 HandleError::Software(format!("{:#}", GenericError::from(e)))
             }
         };
+        let scheme = if tls { "https" } else { "http" };
         let response = client
-            .get(format!("http://127.0.0.1:{}{}", port, path))
+            .get(format!("{}://127.0.0.1:{}{}", scheme, port, path))
             .timeout(limit)
             .send()
             .await
             .map_err(failed)?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(failed)?.to_vec();
+        let body = if read_body {
+            response.bytes().await.map_err(failed)?.to_vec()
+        } else {
+            Vec::new()
+        };
         Ok(HttpResponse { status, body })
     }
 }

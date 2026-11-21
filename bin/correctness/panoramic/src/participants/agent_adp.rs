@@ -4,12 +4,19 @@
 //! with the entries that only ADP reads.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::Value;
 
 use super::datadog_agent::{
     self, ListenAt, Listener, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE, NOT_WINDOWS,
 };
+use crate::core::handle::{Handle, HandleError};
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
-use crate::core::spec::{Evidence, ParticipantSpec, Protocol, Wiring};
+use crate::core::spec::{CommandSpec, Evidence, ParticipantSpec, Protocol, Wiring};
+use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
 
 const LISTENERS: &[Listener] = &[
@@ -111,6 +118,9 @@ const LISTENERS: &[Listener] = &[
 /// ADP's line once its DogStatsD UDP listener is bound, whatever interface it binds.
 const DOGSTATSD_UDP_STARTED: &str = r#":{{ self.endpoints.dogstatsd_udp.port }}" | DogStatsD listener started."#;
 
+/// ADP's command line, the same in a container and in a pod.
+const ADP_COMMAND: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
+
 pub(crate) struct AgentAdp;
 
 impl ParticipantType for AgentAdp {
@@ -139,9 +149,28 @@ impl ParticipantType for AgentAdp {
             processes: Some(processes),
             aliases: BTreeMap::from([(DATADOG_YAML, DATADOG_YAML_PATH)]),
             consumes: BTreeMap::from([("intake", INTAKE), ("dogstatsd_forward", DOGSTATSD_FORWARD)]),
+            commands: BTreeMap::from([(
+                "adp".to_string(),
+                CommandSpec {
+                    program: None,
+                    argv: vec![Template::parse(ADP_COMMAND)?],
+                    env: BTreeMap::new(),
+                },
+            )]),
+            operations: &[&ConfigDump],
             ..ParticipantSpec::default()
         };
         datadog_agent::add_endpoints(cx, LISTENERS, &mut spec)?;
+        // A case that gives the HTTP receiver a certificate makes it serve TLS.
+        if datadog_agent::case_sets(
+            cx,
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE",
+            "otlp_config.receiver.protocols.http.tls.cert_file",
+        )? {
+            if let Some(endpoint) = spec.endpoints.get_mut("otlp_http") {
+                endpoint.tls = true;
+            }
+        }
         datadog_agent::set_defaults(cx, true, &mut spec)?;
         let enabled = |key| cx.case.env.get(key).is_some_and(|value| value.text() == "true");
         if enabled("DD_DATA_PLANE_ENABLED") && enabled("DD_DATA_PLANE_OTLP_ENABLED") {
@@ -160,5 +189,56 @@ impl ParticipantType for AgentAdp {
             }
         }
         Ok(spec)
+    }
+}
+
+/// Which of ADP's two configuration views `config_dump` answers with.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum View {
+    /// The configuration as ADP read it from its sources.
+    Source,
+    /// The configuration ADP runs with, after Remote Configuration changed it.
+    Runtime,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigDumpArgs {
+    view: View,
+}
+
+/// `config_dump`: ADP's configuration, as JSON, from its `config --json` command. Its argument is `{view: source |
+/// runtime}`.
+#[derive(Debug)]
+struct ConfigDump;
+
+#[async_trait]
+impl Operation for ConfigDump {
+    fn name(&self) -> &'static str {
+        "config_dump"
+    }
+
+    fn uses(&self) -> &'static [Uses] {
+        &[Uses::Command("adp")]
+    }
+
+    async fn run(&self, on: &Handle<'_>, args: Value, limit: Duration) -> Result<Value, HandleError> {
+        let ConfigDumpArgs { view } = serde_json::from_value(args)
+            .map_err(|e| HandleError::Harness(format!("config_dump takes {{view: source | runtime}}: {}", e)))?;
+        let mut argv = vec!["config".to_string(), "--json".to_string()];
+        if matches!(view, View::Runtime) {
+            argv.push("--runtime".to_string());
+        }
+        let exited = on.command("adp", &argv, &BTreeMap::new(), limit).await?;
+        // The configuration holds the API key, so no message here quotes the command's output.
+        if exited.code != 0 {
+            return Err(HandleError::Software(format!(
+                "agent-data-plane config exited with code {}",
+                exited.code
+            )));
+        }
+        serde_json::from_slice(&exited.stdout)
+            .map_err(|e| HandleError::Software(format!("the output of agent-data-plane config is not JSON: {}", e)))
     }
 }

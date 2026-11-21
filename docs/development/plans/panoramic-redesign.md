@@ -691,9 +691,10 @@ fixed. Anything else is a plan error. Three consequences:
 
 **References decide order.** A participant is created after every participant whose `container_id`
 it references in a place fixed at create. A participant starts after every participant it connects
-to, once the endpoint's evidence holds. The two orders are separate on purpose:
-`liveness-container-tags` needs a helper created after the subject and started before it. A cycle in
-either is a plan error that names the chain.
+to, once the endpoint's evidence holds. The two orders are separate on purpose: a helper that
+reads the subject's `container_id` must be created after the subject and started before it. No case
+in the tree needs that yet, since `liveness-container-tags` runs its script as the subject's
+command. A cycle in either is a plan error that names the chain.
 
 Core has one function that visits every piece of text in a spec that may hold a reference, with the
 place it is in, and one resolver. Resolution runs with the same code at plan compile, when a
@@ -1002,10 +1003,12 @@ runner. The way depends on what is done as well as on the protocol and the serve
 
 Two limits are plan errors: a send to a pod, and a request through the courier to an endpoint with
 `tls`. For `agent-adp`'s `otlp_http`, the participant type sets `tls` when the case sets the
-receiver's certificate and key. Until a case needs them, two more are plan errors: a request to a
-`grpc` endpoint, because the only request is an HTTP `GET`, and a request to an endpoint with `tls`,
-which `linuxrest` builds for `otlp-tls`. A send to an `http` or `grpc` endpoint writes its bytes over
-TCP.
+receiver's certificate file, in its environment, the `ADP_` form of that name or `datadog.yaml`. It
+does not consult the key file. A request to an endpoint with `tls` is built for a published or
+forwarded port: the runner's client makes it over HTTPS and checks the server's certificate unless
+the step sets `insecure_skip_verify`. Until a case needs it, one more is a plan error: a request to
+a `grpc` endpoint, because the only request is an HTTP `GET`. A send to an `http` or `grpc` endpoint
+writes its bytes over TCP.
 
 **Runner-host ports.** Every http and grpc endpoint of a Linux container is published on the
 runner's loopback address. Docker chooses each published port and the harness reads it back after
@@ -1290,7 +1293,10 @@ Every process a participant declares has one exit channel and one output channel
   that needs it.
 - **Output.** Output is written under `<log dir>/<participant>/` as it arrives, and each line keeps
   the name of its process. A participant whose processes are all supervised also gets its container
-  log, which holds what the supervisor writes, as `_container.log`, a name no process log takes.
+  log, which holds what the supervisor writes, as `_container.log`, a name no process log takes. It
+  is observed under the name `_container`, which no process can take, so `log_contains` and
+  `log_not_contains` with no `process` search it along with every process. A step that names a
+  process does not.
 - **Reports.** `run.json` and `result.json` keep today's shape and gain fields: the subject OS, the
   skipped outcome with its reason, each participant's realization, per-process exits and output
   paths, reclaim entries and collected files. Exit codes are 0 passed, 1 failed, 2 harness error,
@@ -1378,9 +1384,14 @@ endpoints it uses exist, which the plan checks.
 | Operation | Offered by | Uses | Called by |
 | --- | --- | --- | --- |
 | `dump` | `datadog-intake` | a request to `api` | `compare`, `intake_has_metric` |
-| `config_dump` | `agent-adp` | command `adp` | `config_key_equals` |
+| `config_dump` | `agent-adp` | command `adp` | `config_key_equals`, with `{view: source \| runtime}` |
 | `config_set` | `agent-adp` | command `agent` | `config_set` |
 | `dogstatsd_capture`, `dogstatsd_replay`, `dogstatsd_stats` | `agent-adp` | command `adp` | `dogstatsd_replay` |
+
+`config_dump` runs `agent-data-plane config --json`, with `--runtime` for the runtime view, and parses
+the output as JSON. It does not use the secure API, which stays a literal default of `agent-adp`
+and not an endpoint. When the command fails it reports only the exit code, because the
+configuration holds the API key. `agent-adp` names the command `adp` and, for now, no other.
 
 The rule for choosing: a plain command line needs no Rust, so it is a `commands` entry run with
 `exec`. An operation exists where the answer must be decoded or the arguments are the software's
@@ -1409,11 +1420,16 @@ exits 0 and, if `output_contains` is set, its output holds that text.
 `command` is a list, or the name of one of the participant's `commands`. `args` is appended. `env`
 is added for this command. All three may hold references.
 
+As built, `exec` takes `on`, `command` as a non-empty list, `env` and `timeout`. Naming a command,
+`args` and `output_contains` arrive with the first cases that need them, which replace the legacy
+CLI actions. A command that outlives `timeout` fails the step, as `target_exec` did, rather than
+making it `errored`. On failure the step quotes the last 4 KiB of the command's output.
+
 **The steps.** Every step may carry an `os` overlay.
 
 | Step | Purpose | Fields | Needs |
 | --- | --- | --- | --- |
-| `exec` | action | `on`, `command`, `args`, `env`, `output_contains`, `timeout` | the participant; the command, when named |
+| `exec` | action | `on`, `command`, `env`, `timeout`; later `args` and `output_contains` | the participant; the command, when named |
 | `exits_with` | assertion | `on`, `process`, `code`, `timeout` | the process |
 | `process_stable_for` | assertion | `on`, `process` (optional), `duration` | the participant or the process |
 | `log_contains` | assertion | `on`, `process` (optional), `pattern`, `regex`, `timeout` | the participant or the process |
@@ -1421,9 +1437,9 @@ is added for this command. All three may hold references.
 | `file_contains` | assertion | `on`, `path`, `pattern`, `timeout` | the participant |
 | `port_listening` | assertion | `on`, `endpoint`, `timeout` | the endpoint, to probe |
 | `send` | action | `on`, `endpoint`, `payload`, `repeat`, `timeout` | the endpoint, to send |
-| `http_check` | assertion | `on`, `endpoint`, `path`, `status: {equal \| not_equal}`, `body: {equal}` (optional), `insecure_skip_verify` (optional, default false), `timeout` | the endpoint, to request |
+| `http_check` | assertion | `on`, `endpoint`, `path`, `status: {equal \| not_equal}`, `body: {equal \| contains}` (optional), `insecure_skip_verify` (optional, default false), `timeout` | the endpoint, to request |
 | `wait` | action | `duration` | nothing |
-| `config_key_equals` | assertion | `on`, `key`, `value`, `view`, `timeout` | operation `config_dump` |
+| `config_key_equals` | assertion | `on`, `key`, `value`, `view: source \| runtime` (required), `timeout` | operation `config_dump` |
 | `config_set` | action | `on`, `key`, `value`, `timeout` | operation `config_set` |
 | `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `capture_duration`, `stats_duration`, `expected_metrics`, `timeout` | three operations; the endpoint, to send |
 | `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
@@ -1432,7 +1448,7 @@ is added for this command. All three may hold references.
 `timeout` is required wherever it is listed and has no default. `compare` has none: its budget is
 what remains of the case's timeout. Where `process` is optional, leaving
 it out means every process of the participant. `http_check` passes when the status matches and, if
-`body` is set, the body equals that text exactly. References are allowed in `exec`'s `command`,
+`body` is set, the body equals or contains that text. References are allowed in `exec`'s `command`,
 `args` and `env`, in `file_contains`'s `path`, and in the `pattern` of `log_contains` and
 `log_not_contains`. This table and the legacy step each one replaces are the contract for each
 field.
@@ -1602,7 +1618,7 @@ apart. The last column names what the migration rule sends to each PR.
 | 9 | `compare` | compare, agent and millstone; first DogStatsD cases | 8 | 1.0k / 0.3k, and moves | DogStatsD comparison cases that send metrics over a datagram socket |
 | 10 | `cmprest` | Migrate the remaining comparison cases | 9 | 0.9k / 0.25k | The other DogStatsD comparison cases, OTLP metrics, traces and logs; disabled cases with their family |
 | 11 | `pod` | Pod backend; migrate the origin detection matrix | 9 | 1.6k / 0.3k | Cases that run in pods: the origin detection matrix |
-| 12 | `linuxrest` | Probe, exec and config steps; finish the Linux-only cases | 8 | 1.6k / 0.6k | Linux-only cases that probe, request, exec or check configuration |
+| 12 | `linuxrest` | Probe, exec and config steps; finish the Linux-only cases | 8 | 0.7k / 0.1k | Linux-only cases that probe, request, exec or check configuration |
 | 13 | `hostproc` | Host process backend; migrate macOS and Unix cases | 12 | 1.1k / 0.5k | Cases on macOS, alone or with Linux |
 | 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13 | 1.0k / 0.4k | Cases on Windows, alone or with Linux; cases on all three OSes |
 | 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above | deletions, docs | none |
@@ -1890,31 +1906,40 @@ Why this order:
 **12. `linuxrest`: probes, exec, configuration checks and case-supplied scripts**
 
 - **Builds:** what the remaining Linux-only cases need, in two parts.
-  - `port_listening`, `http_check`, `exec` of a command the case writes with `args` and `env`, and
-    `config_key_equals` with the operation it needs. Migrates the Linux-only cases that need them,
-    such as `adp-rc-core-disabled`, `otlp-tls`, `dogstatsd-top` and `dogstatsd-remote-commands`.
-  - What `liveness-container-tags` and `dogstatsd-forwarding` need, and the host cgroup namespace as
-    a Linux container option. In both cases the container runs a Python script the case supplies,
-    which then starts the Agent itself.
-- **Watch out:** the first part makes named changes, and the second part has a choice that decides
-  its size.
-  - The UDP probes in `dogstatsd-top` and `dogstatsd-remote-commands` become log lines, as every UDP
-    probe does in the PR that migrates its case.
-  - `otlp-tls` serves TLS on its endpoint. The cases here that set ADP's OTLP receivers to literal
-    ports today write references instead.
-  - There are two ways to port each script case. The first is as today: the script stays the
-    command of the `agent-adp` participant. It needs only that a case may replace a participant
-    type's command, with the guard that it restates its processes: the s6 records if the script
-    still starts s6, or the one container process if it does not. Coverage is the script's,
-    unchanged.
-  - The second is as a helper beside `agent-adp`, a participant with no participant type. That is
-    the first real case to run one, and it needs create order beside start order, a reference to
-    another participant's container ID, and an image that has Python. The tools image on `main` has
-    none.
-  - The scripts hold ports and socket paths as literals. Keep the addresses they expect, or pass
-    them in by reference.
-  - Build only what the chosen port uses. Neither port gets a participant type or a step of its own.
-    `dogstatsd-forwarding` loses a UDP probe.
+  - `port_listening`, `http_check` with TLS requests, `exec` of a command the case writes with
+    `env`, and `config_key_equals` with `agent-adp`'s `config_dump` and its command `adp`. Migrates
+    `adp-rc-core-disabled`, `adp-rc-no-products`, `otlp-tls`, `dogstatsd-top` and
+    `dogstatsd-remote-commands`.
+  - The host cgroup namespace as a Linux container option, and the two cases whose Python script
+    replaces the image's entrypoint and starts the Agent itself: `dogstatsd-forwarding` and
+    `liveness-container-tags`.
+- **What was taken:**
+  - Each script case is ported as today. The script is the `agent-adp` participant's `command`, and
+    the case restates `processes`: the s6 records and logs, because the script still starts s6.
+    The case needs the guard's `processes` and, for `liveness-container-tags`, the option.
+    Coverage is the script's, unchanged.
+  - The helper port is not built. A helper beside `agent-adp` needs create order beside start
+    order, a reference to another participant's `container_id` from a helper, and an image that has
+    Python, which the tools image lacks. No case in the tree needs them, so they wait for one.
+  - The scripts take harness-owned addresses from their environment: the two `exec` scripts read
+    `DOGSTATSD_PORT` from the step's `env`, and the forwarding script reads the `DD_*` variables the
+    participant already has. An address that is not an endpoint stays a literal: the secure API,
+    liveness's own fakes and the forwarding script's client socket.
+  - Each new step carries the contract of the legacy step it replaces and nothing more. `http_check`
+    takes the legacy step's matchers: `status` is `equal` or `not_equal`, and `body` is `equal` or `contains`.
+  - The UDP probes in `dogstatsd-top`, `dogstatsd-remote-commands` and `dogstatsd-forwarding`
+    become ADP's listener log line, as every UDP probe does in the PR that migrates its case.
+  - The OTLP receivers write references. `otlp-tls` serves TLS on `otlp_http`, which `agent-adp`
+    marks when the case sets the receiver's certificate file.
+- **Watch out:**
+  - A script case with no `processes` is a plan error from the supervision guard.
+  - With the script as the command, `_container.log` is not written. The script's output is the
+    process `script`'s log.
+  - The two sockets of `dogstatsd-forwarding` move from `/tmp` to the participant's shared
+    directory, because they are references now.
+  - A realization option is written in a case only when it is under test, as
+    `liveness-container-tags` does for the cgroup namespace. If CI shows that case needs the host
+    view or the host PID namespace as well, add them one at a time and name what was needed.
 
 ### Other platforms
 
