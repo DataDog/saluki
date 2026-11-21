@@ -1,6 +1,6 @@
 type: integration
 name: "otlp-traces-enabled"
-description: "Verifies OTLP pipeline starts with native trace handling and proxying for metrics/logs"
+description: "Verifies OTLP pipeline starts with native trace handling, metrics proxied to the Agent, and logs refused because OTLP logs are disabled"
 timeout: 120s
 runtimes: [linux, mac, windows]
 

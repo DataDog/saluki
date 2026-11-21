@@ -97,6 +97,7 @@ pub trait DatadogConfigWitness {
     fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool);
     fn consume_data_plane_enabled(&mut self, value: bool);
     fn consume_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(&mut self, value: String);
+    fn consume_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint(&mut self, value: String);
     fn consume_data_plane_experimental_otlp_proxy_logs(&mut self, value: bool);
     fn consume_data_plane_experimental_otlp_proxy_metrics(&mut self, value: bool);
     fn consume_data_plane_experimental_otlp_proxy_traces(&mut self, value: bool);
@@ -448,6 +449,15 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .otlp
             .proxy
             .agent_receiver_grpc_endpoint
+            .clone(),
+    );
+    consumer.consume_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint(
+        config
+            .data_plane
+            .experimental
+            .otlp
+            .proxy
+            .agent_receiver_http_endpoint
             .clone(),
     );
     consumer.consume_data_plane_experimental_otlp_proxy_logs(config.data_plane.experimental.otlp.proxy.logs.clone());

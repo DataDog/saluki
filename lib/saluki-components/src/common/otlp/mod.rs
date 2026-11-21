@@ -398,6 +398,13 @@ impl OtlpRoutes {
         traces: OtlpRoute::Internal,
     };
 
+    /// Every signal disabled.
+    pub const ALL_DISABLED: Self = Self {
+        metrics: OtlpRoute::Disabled,
+        logs: OtlpRoute::Disabled,
+        traces: OtlpRoute::Disabled,
+    };
+
     const fn get(&self, signal: Signal) -> OtlpRoute {
         match signal {
             Signal::Metrics => self.metrics,
@@ -407,10 +414,17 @@ impl OtlpRoutes {
     }
 
     /// Returns `true` if any signal is proxied.
-    pub(crate) fn any_proxied(&self) -> bool {
+    pub fn any_proxied(&self) -> bool {
         Signal::ALL
             .into_iter()
             .any(|signal| self.get(signal) == OtlpRoute::Proxied)
+    }
+
+    /// Returns `true` if any signal is internal.
+    pub(crate) fn any_internal(&self) -> bool {
+        Signal::ALL
+            .into_iter()
+            .any(|signal| self.get(signal) == OtlpRoute::Internal)
     }
 }
 

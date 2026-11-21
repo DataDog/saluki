@@ -3,19 +3,13 @@
 use std::time::Duration;
 
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::server::http::Http2Config;
+use saluki_io::net::{server::http::Http2Config, ListenAddress};
 
 use super::{CorsConfiguration, OtlpTlsConfiguration};
 
 /// Settings of the OTLP receiver's gRPC and HTTP servers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OtlpReceiver {
-    /// Whether OTLP logs are accepted.
-    pub logs_enabled: bool,
-
-    /// Whether OTLP metrics are accepted.
-    pub metrics_enabled: bool,
-
     /// gRPC server settings.
     pub grpc: OtlpGrpcReceiver,
 
@@ -89,7 +83,7 @@ pub struct OtlpHttpReceiver {
     /// Address the server listens on, without a scheme. If empty, the server doesn't start.
     pub endpoint: String,
 
-    /// Listen address scheme the relay uses with `endpoint`, such as `tcp`.
+    /// Listen address scheme of `endpoint`, such as `tcp` or `unix`.
     pub transport: String,
 
     /// CORS settings.
@@ -174,6 +168,15 @@ impl OtlpReceiverTls {
 }
 
 impl OtlpGrpcReceiver {
+    /// Returns the address the server listens on, or `None` if the endpoint is empty.
+    ///
+    /// # Errors
+    ///
+    /// If the transport and endpoint don't make a valid listen address, an error is returned.
+    pub fn listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
+        listen_address(self.transport.as_str(), &self.endpoint, "gRPC")
+    }
+
     /// Converts the connection settings into HTTP/2 server settings.
     ///
     /// The keepalive interval and timeout map across directly. The connection age limits and `max_concurrent_streams`
@@ -195,6 +198,28 @@ impl OtlpGrpcReceiver {
     }
 }
 
+impl OtlpHttpReceiver {
+    /// Returns the address the server listens on, or `None` if the endpoint is empty.
+    ///
+    /// # Errors
+    ///
+    /// If the transport and endpoint don't make a valid listen address, an error is returned.
+    pub fn listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
+        listen_address(&self.transport, &self.endpoint, "HTTP")
+    }
+}
+
+fn listen_address(transport: &str, endpoint: &str, protocol: &str) -> Result<Option<ListenAddress>, GenericError> {
+    if endpoint.is_empty() {
+        return Ok(None);
+    }
+
+    let address = format!("{transport}://{endpoint}");
+    ListenAddress::try_from(address.as_str())
+        .map(Some)
+        .map_err(|e| generic_error!("Invalid OTLP/{protocol} listen address `{address}`: {e}"))
+}
+
 /// Returns receiver settings with every server unset and no signal enabled.
 #[cfg(test)]
 pub(crate) fn receiver() -> OtlpReceiver {
@@ -204,8 +229,6 @@ pub(crate) fn receiver() -> OtlpReceiver {
         ca_file: String::new(),
     };
     OtlpReceiver {
-        logs_enabled: false,
-        metrics_enabled: false,
         grpc: OtlpGrpcReceiver {
             endpoint: String::new(),
             max_recv_msg_size_mib: 0,
@@ -279,5 +302,45 @@ mod tests {
                 "{cert_file:?} {key_file:?} {ca_file:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn listen_addresses_combine_the_transport_and_endpoint() {
+        let mut receiver = receiver();
+        assert_eq!(receiver.grpc.listen_address().unwrap(), None);
+        assert_eq!(receiver.http.listen_address().unwrap(), None);
+
+        receiver.grpc.endpoint = "0.0.0.0:4317".to_string();
+        receiver.http.endpoint = "127.0.0.1:4318".to_string();
+        assert_eq!(
+            receiver.grpc.listen_address().unwrap().unwrap().to_string(),
+            "tcp://0.0.0.0:4317"
+        );
+        assert_eq!(
+            receiver.http.listen_address().unwrap().unwrap().to_string(),
+            "tcp://127.0.0.1:4318"
+        );
+
+        receiver.grpc.transport = GrpcTransport::Tcp;
+        receiver.grpc.endpoint = "not an address".to_string();
+        assert!(receiver.grpc.listen_address().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listen_addresses_combine_the_unix_transport_and_endpoint() {
+        let mut receiver = receiver();
+        receiver.grpc.transport = GrpcTransport::Unix;
+        receiver.grpc.endpoint = "/tmp/otlp-grpc.sock".to_string();
+        receiver.http.transport = "unix".to_string();
+        receiver.http.endpoint = "/tmp/otlp-http.sock".to_string();
+        assert_eq!(
+            receiver.grpc.listen_address().unwrap().unwrap().to_string(),
+            "unix:///tmp/otlp-grpc.sock"
+        );
+        assert_eq!(
+            receiver.http.listen_address().unwrap().unwrap().to_string(),
+            "unix:///tmp/otlp-http.sock"
+        );
     }
 }

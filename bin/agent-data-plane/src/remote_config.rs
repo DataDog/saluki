@@ -8,12 +8,15 @@
 //! derived from them. Without a subscription, components use configured sampling settings and the
 //! mappings embedded in ADP.
 
-use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config::domains::remote_configuration;
 use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
 use datadog_agent_runtime::facade::{Initialized, RemoteAgent};
 use saluki_error::GenericError;
 
-use crate::{config::DataPlaneConfiguration, internal::AgentDataPlane};
+use crate::{
+    config::{DataPlaneConfiguration, OtlpPlan},
+    internal::AgentDataPlane,
+};
 
 /// The trace products ADP requests from the Agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,19 +41,20 @@ impl RcProducts {
     }
 }
 
-/// Chooses which trace products to subscribe to from `config`.
+/// Chooses which trace products to subscribe to, from the pipelines that `dp` runs for `otlp` and the product switches
+/// in `rc`.
 ///
 /// Each subscription requires the corresponding product switch. Sampling settings also require a local trace pipeline,
 /// and attribute mappings a local trace pipeline or the APM relay, as the peer tags on `/info` follow them like the
 /// trace-agent's do. Connected mode and the global Remote Configuration switch are checked by the remote agent runtime.
-pub(crate) fn enabled_products(config: &SalukiConfiguration) -> RcProducts {
-    let dp = DataPlaneConfiguration::from_configuration(config);
-    let traces_pipeline = dp.traces_pipeline_required();
+pub(crate) fn enabled_products(
+    dp: &DataPlaneConfiguration<'_>, otlp: &OtlpPlan, rc: &remote_configuration::Domain,
+) -> RcProducts {
+    let traces_pipeline = dp.traces_pipeline_required(otlp);
     if !traces_pipeline && !dp.apm_enabled() {
         return RcProducts::NONE;
     }
 
-    let rc = &config.domains.remote_configuration;
     RcProducts {
         sampling: traces_pipeline && rc.apm_sampling_enabled,
         semantics: rc.apm_semantics_enabled,
@@ -66,7 +70,7 @@ pub(crate) struct RemoteConfigSubscriptions {
     /// Sampling settings for the trace sampler, if `APM_SAMPLING` is enabled.
     pub trace_sampling: Option<TraceSamplingSubscription>,
 
-    /// Attribute mappings shared by the OTLP source, OTLP decoder, and APM stats.
+    /// Attribute mappings shared by the OTLP source and APM stats.
     pub semantic_registry: SemanticRegistryProvider,
 }
 
@@ -104,6 +108,8 @@ impl RemoteConfigSubscriptions {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::SalukiConfiguration;
+
     use super::*;
 
     struct Case {
@@ -142,8 +148,8 @@ mod tests {
         expected: BOTH,
     };
 
-    #[test]
-    fn enabled_products_requires_a_product_key_and_a_consumer() {
+    #[tokio::test]
+    async fn enabled_products_requires_a_product_key_and_a_consumer() {
         let cases = [
             Case { name: "all on", ..ON },
             Case {
@@ -217,12 +223,15 @@ mod tests {
             config.domains.remote_configuration.apm_semantics_enabled = case.semantics;
             config.control.otlp = case.otlp;
             config.control.apm = case.apm;
-            // OTLP needs at least one signal to run.
+            // OTLP needs at least one signal to run, and traces need their own.
             config.domains.otlp.receiver.metrics_enabled = true;
+            config.domains.otlp.traces.enabled = true;
             config.domains.otlp.proxy.metrics_enabled = case.otlp_proxy_metrics;
             config.domains.otlp.proxy.traces_enabled = case.otlp_proxy_traces;
 
-            let products = enabled_products(&config);
+            let dp = DataPlaneConfiguration::from_configuration(&config);
+            let otlp = OtlpPlan::resolve(&dp).await;
+            let products = enabled_products(&dp, &otlp, &config.domains.remote_configuration);
             assert_eq!(products, case.expected, "{}", case.name);
             assert_eq!(
                 products.any(),
