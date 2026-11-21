@@ -10,9 +10,7 @@ use saluki_components::sources::{
     OtlpKeepalive, OtlpMetricsSettings, OtlpProxyDestinations, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings,
     ProxyDestination, SummaryMode,
 };
-#[cfg(not(unix))]
-use saluki_error::generic_error;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 use super::origin_tag_cardinality;
 
@@ -55,8 +53,8 @@ pub(crate) fn otlp_receiver(receiver: &otlp::Receiver) -> OtlpReceiver {
 
 /// Builds the OTLP proxy destinations, the Agent's relocated OTLP receivers.
 ///
-/// Each destination follows the transport of its protocol's receiver: a `host:port` address, or a Unix domain socket
-/// path.
+/// Each destination follows the transport of its protocol's receiver: a `host:port` address, or an absolute Unix domain
+/// socket path.
 ///
 /// # Errors
 ///
@@ -79,8 +77,18 @@ pub(crate) fn otlp_proxy_destinations(otlp: &otlp::Domain) -> Result<OtlpProxyDe
 
 fn proxy_destination(address: &str, unix: bool, key: &str) -> Result<ProxyDestination, GenericError> {
     if unix {
+        // The default destination is a `host:port` address, which as a path is relative.
         #[cfg(unix)]
-        return Ok(ProxyDestination::Unix(PathBuf::from(address)));
+        {
+            let path = PathBuf::from(address);
+            if !path.is_absolute() {
+                return Err(generic_error!(
+                    "Invalid OTLP proxy destination `{key}` ({address}): the OTLP receiver transport is `unix`, so set \
+                     it to the absolute path of the Agent's relocated OTLP receiver socket."
+                ));
+            }
+            return Ok(ProxyDestination::Unix(path));
+        }
         #[cfg(not(unix))]
         return Err(generic_error!(
             "Invalid OTLP proxy destination `{key}`: Unix domain sockets aren't supported on this platform."
@@ -317,6 +325,10 @@ mod tests {
                 http: ProxyDestination::Unix(PathBuf::from("/run/agent/otlp-http.sock")),
             }
         );
+
+        otlp.proxy.grpc_endpoint = "127.0.0.1:4319".to_string();
+        let error = otlp_proxy_destinations(&otlp).unwrap_err();
+        assert!(error.to_string().contains("agent_receiver_grpc_endpoint"), "{error}");
     }
 
     #[test]
