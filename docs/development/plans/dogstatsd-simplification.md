@@ -46,7 +46,7 @@ abstraction would have one caller.
 - [x] **7. Codec:** `ClientOrigin` and the `field()` helper. The shared extension-field loop was dropped: since #3071
   and #3073 the three loops differ on purpose (empty and unknown fields are handled per packet type to match the
   Agent), so one loop would need as many knobs as it saves lines. Tag-limit removal is still awaiting approval.
-- [ ] **8. Split `mod.rs` production code** into `config`/`listener`/`decoder`/`packets`.
+- [x] **8. Split `mod.rs` production code** into `config`/`listener`/`decoder`/`packets`. Pure move.
 
 ## Tier 1: easy (local, mechanical, low risk)
 
