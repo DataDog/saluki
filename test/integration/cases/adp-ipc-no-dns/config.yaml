@@ -32,6 +32,7 @@ participants:
 procedure:
   - parallel:
       - {step: process_stable_for, on: adp, process: adp, duration: 10s}
+      - {step: log_contains, on: adp, pattern: "Successfully registered with the Datadog Agent.", timeout: 60s}
       - {step: log_contains, on: adp, pattern: "Topology healthy", timeout: 60s}
       - step: log_not_contains
         on: adp
