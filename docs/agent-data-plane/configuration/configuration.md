@@ -1836,7 +1836,8 @@ environment variable counts as unset. If both receiver endpoints are empty, ADP 
 ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
 doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols for
 which a key under `otlp_config.receiver.protocols.<protocol>` is set. An environment variable for such a key
-counts.
+counts. ADP differs because it gets each key with its default value applied, so it can't tell whether the
+configuration lists a protocol.
 
 ### `otlp_config.receiver.protocols.grpc.tls.ca_file`
 
@@ -1866,7 +1867,8 @@ environment variable counts as unset. If both receiver endpoints are empty, ADP 
 ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
 doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols for
 which a key under `otlp_config.receiver.protocols.<protocol>` is set. An environment variable for such a key
-counts.
+counts. ADP differs because it gets each key with its default value applied, so it can't tell whether the
+configuration lists a protocol.
 
 ### `otlp_config.receiver.protocols.http.tls.ca_file`
 
