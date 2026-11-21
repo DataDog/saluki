@@ -313,3 +313,4 @@ unprefixed
 [Nn]ightl(y|ies)
 RC(s?)
 DMG(s?)
+CMake

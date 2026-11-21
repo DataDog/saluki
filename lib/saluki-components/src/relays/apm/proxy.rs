@@ -266,6 +266,16 @@ mod tests {
     use tokio::sync::Mutex as AsyncMutex;
 
     use super::*;
+    use crate::common::datadog::test_util::init_tls;
+
+    /// Builds a proxy like the relay does, after installing the TLS crypto provider as application bootstrap does.
+    ///
+    /// Without it, a FIPS build falls back to a provider whose cipher suites aren't all FIPS-approved, and the HTTP
+    /// client refuses to build.
+    fn from_destination(destination: &str) -> Result<TraceAgentProxy, saluki_error::GenericError> {
+        init_tls();
+        TraceAgentProxy::from_destination(destination)
+    }
 
     /// What the fake trace-agent saw of the last request it received.
     #[derive(Clone, Debug, Default)]
@@ -329,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn forwards_the_request_and_relays_the_response() {
         let (destination, seen) = spawn_tcp_trace_agent().await;
-        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+        let proxy = from_destination(&destination).expect("destination should parse");
 
         let response = proxy
             .forward(request(
@@ -356,7 +366,7 @@ mod tests {
     #[tokio::test]
     async fn strips_hop_by_hop_headers_in_both_directions() {
         let (destination, seen) = spawn_tcp_trace_agent().await;
-        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+        let proxy = from_destination(&destination).expect("destination should parse");
 
         let response = proxy
             .forward(request(
@@ -384,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn forwards_an_http2_request_over_http1() {
         let (destination, seen) = spawn_tcp_trace_agent().await;
-        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+        let proxy = from_destination(&destination).expect("destination should parse");
 
         let mut http2_request = request("GET", "/info", &[], "");
         *http2_request.version_mut() = Version::HTTP_2;
@@ -397,7 +407,7 @@ mod tests {
     #[tokio::test]
     async fn adds_the_relay_to_the_via_header() {
         let (destination, seen) = spawn_tcp_trace_agent().await;
-        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+        let proxy = from_destination(&destination).expect("destination should parse");
 
         let response = proxy
             .forward(request("GET", "/info", &[("via", "1.1 some-proxy")], ""))
@@ -413,7 +423,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_request_the_relay_already_forwarded() {
         let (destination, seen) = spawn_tcp_trace_agent().await;
-        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+        let proxy = from_destination(&destination).expect("destination should parse");
 
         for via in [
             "1.1 agent-data-plane",
@@ -434,7 +444,7 @@ mod tests {
 
     #[test]
     fn accepts_a_destination_with_a_trailing_slash() {
-        assert!(TraceAgentProxy::from_destination("http://127.0.0.1:8127/").is_ok());
+        assert!(from_destination("http://127.0.0.1:8127/").is_ok());
     }
 
     #[cfg(unix)]
@@ -447,8 +457,7 @@ mod tests {
         let router = fake_trace_agent(Arc::clone(&seen));
         tokio::spawn(async move { axum::serve(listener, router).await });
 
-        let proxy = TraceAgentProxy::from_destination(&format!("unix://{}", socket_path.display()))
-            .expect("destination should parse");
+        let proxy = from_destination(&format!("unix://{}", socket_path.display())).expect("destination should parse");
         let response = proxy.forward(request("GET", "/info", &[], "")).await.into_response();
 
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -466,7 +475,7 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, router).await });
 
         let destination = format!("unix://{}", socket_path.display()).replace(' ', "%20");
-        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+        let proxy = from_destination(&destination).expect("destination should parse");
         let response = proxy.forward(request("GET", "/info", &[], "")).await.into_response();
 
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -481,7 +490,7 @@ mod tests {
         let addr = listener.local_addr().expect("listener should have a local address");
         drop(listener);
 
-        let proxy = TraceAgentProxy::from_destination(&format!("http://{addr}")).expect("destination should parse");
+        let proxy = from_destination(&format!("http://{addr}")).expect("destination should parse");
         let response = proxy.forward(request("GET", "/info", &[], "")).await.into_response();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
@@ -502,7 +511,7 @@ mod tests {
             "unix:///var/run/datadog/apm.socket?key=value",
         ] {
             assert!(
-                TraceAgentProxy::from_destination(destination).is_err(),
+                from_destination(destination).is_err(),
                 "expected `{destination}` to be rejected"
             );
         }
@@ -510,7 +519,7 @@ mod tests {
 
     #[test]
     fn accepts_ipv6_destinations() {
-        let proxy = TraceAgentProxy::from_destination("http://[::1]:8127").expect("destination should parse");
+        let proxy = from_destination("http://[::1]:8127").expect("destination should parse");
         assert_eq!(proxy.base_uri.authority().unwrap().as_str(), "[::1]:8127");
     }
 }
