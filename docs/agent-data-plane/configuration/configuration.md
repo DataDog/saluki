@@ -1250,8 +1250,6 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                     |                       |
 | `data_plane.experimental.apm.enabled`                           | Run the experimental APM proxy in front of the trace-agent | false                 |
 | `data_plane.experimental.apm.proxy_destination`                 | HTTP or Unix socket URL of the relocated trace-agent       | http://127.0.0.1:8127 |
-| `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                              | localhost:6317        |
-| `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                              | localhost:6318        |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                        | true                  |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT                 | false                 |
 | `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count                               | 32768                 |
@@ -1289,14 +1287,6 @@ Prefer an `http://` destination. Over a `unix://` destination, the trace-agent a
 
 > [!WARNING]
 > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
-
-### `data_plane.otlp.receiver_grpc_endpoint_temporary`
-
-Temporary development key for setting ADP's OTLP listen endpoints independently from the Agent's.
-
-### `data_plane.otlp.receiver_http_endpoint_temporary`
-
-Temporary development key for setting ADP's OTLP listen endpoints independently from the Agent's.
 
 ### `dogstatsd_minimum_sample_rate`
 
@@ -1531,7 +1521,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `otlp_config.metrics.sums.initial_cumulative_monotonic_value`                              | Initial cumulative sum reporting behavior.         |
 | `otlp_config.metrics.tag_cardinality`                                                      | Tag cardinality for OTLP metric entity enrichment. |
 | `otlp_config.metrics.tags`                                                                 | Comma-separated tags for all OTLP metrics.         |
-| `otlp_config.receiver.protocols.grpc.endpoint`                                             | otlp_config.receiver.protocols.grpc.endpoint       |
+| `otlp_config.receiver.protocols.grpc.endpoint`                                             | OTLP gRPC receiver listen address                  |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age`       | gRPC keepalive: max connection age                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace` | gRPC keepalive: max conn age grace                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time`                     | gRPC keepalive: ping time                          |
@@ -1546,7 +1536,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `otlp_config.receiver.protocols.http.cors.allowed_origins`                                 | HTTP CORS allowed origins                          |
 | `otlp_config.receiver.protocols.http.cors.exposed_headers`                                 | HTTP CORS exposed headers                          |
 | `otlp_config.receiver.protocols.http.cors.max_age`                                         | HTTP CORS max age                                  |
-| `otlp_config.receiver.protocols.http.endpoint`                                             | otlp_config.receiver.protocols.http.endpoint       |
+| `otlp_config.receiver.protocols.http.endpoint`                                             | OTLP HTTP receiver listen address                  |
 | `otlp_config.receiver.protocols.http.max_request_body_size`                                | HTTP max request body size in bytes (0 = 20 MiB)   |
 | `otlp_config.receiver.protocols.http.tls.ca_file`                                          | HTTP TLS CA file path                              |
 | `otlp_config.receiver.protocols.http.tls.cert_file`                                        | HTTP TLS cert file path                            |
@@ -1837,6 +1827,18 @@ Controls the cardinality of entity and global tags added to OTLP metrics. The de
 low-cardinality workload tags. Set this to `orchestrator` or `high` only when the resulting additional metric
 series are acceptable. Set it to `none` to disable entity and global tag enrichment.
 
+### `otlp_config.receiver.protocols.grpc.endpoint`
+
+Address that ADP listens on for OTLP gRPC requests. Defaults to `localhost:4317`.
+An empty value in `datadog.yaml` or the Agent configuration stream disables the gRPC receiver. An empty
+environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
+
+ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
+doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols for
+which a key under `otlp_config.receiver.protocols.<protocol>` is set. An environment variable for such a key
+counts. ADP differs because it gets each key with its default value applied, so it can't tell whether the
+configuration lists a protocol.
+
 ### `otlp_config.receiver.protocols.grpc.tls.ca_file`
 
 Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
@@ -1855,6 +1857,18 @@ ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.
 Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
 certificate in `cert_file`. Defaults to empty (TLS disabled).
 ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
+
+### `otlp_config.receiver.protocols.http.endpoint`
+
+Address that ADP listens on for OTLP HTTP requests. Defaults to `localhost:4318`.
+An empty value in `datadog.yaml` or the Agent configuration stream disables the HTTP receiver. An empty
+environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
+
+ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
+doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols for
+which a key under `otlp_config.receiver.protocols.<protocol>` is set. An environment variable for such a key
+counts. ADP differs because it gets each key with its default value applied, so it can't tell whether the
+configuration lists a protocol.
 
 ### `otlp_config.receiver.protocols.http.tls.ca_file`
 

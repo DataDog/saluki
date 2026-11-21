@@ -3344,7 +3344,17 @@ inventory:
   otlp_config.receiver.protocols.grpc.endpoint:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.receiver.protocols.grpc.endpoint"
+    description: "OTLP gRPC receiver listen address"
+    documentation: |-
+      Address that ADP listens on for OTLP gRPC requests. Defaults to `localhost:4317`.
+      An empty value in `datadog.yaml` or the Agent configuration stream disables the gRPC receiver. An empty
+      environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
+
+      ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
+      doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols for
+      which a key under `otlp_config.receiver.protocols.<protocol>` is set. An environment variable for such a key
+      counts. ADP differs because it gets each key with its default value applied, so it can't tell whether the
+      configuration lists a protocol.
 
   otlp_config.receiver.protocols.grpc.include_metadata:
     support: none
@@ -3680,7 +3690,17 @@ inventory:
   otlp_config.receiver.protocols.http.endpoint:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.receiver.protocols.http.endpoint"
+    description: "OTLP HTTP receiver listen address"
+    documentation: |-
+      Address that ADP listens on for OTLP HTTP requests. Defaults to `localhost:4318`.
+      An empty value in `datadog.yaml` or the Agent configuration stream disables the HTTP receiver. An empty
+      environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
+
+      ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
+      doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols for
+      which a key under `otlp_config.receiver.protocols.<protocol>` is set. An environment variable for such a key
+      counts. ADP differs because it gets each key with its default value applied, so it can't tell whether the
+      configuration lists a protocol.
 
   otlp_config.receiver.protocols.http.idle_timeout:
     support: unknown
