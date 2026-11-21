@@ -9,9 +9,9 @@ use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use saluki_common::sync::live::Live;
 use saluki_components::config::AgentEnv;
-use saluki_components::relays::apm::{
-    ApmRelayConfiguration, InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation,
-    InfoReplaceRule, InfoTagFilter, InfoTagFilters, TracerFlareConfiguration,
+use saluki_components::sources::{
+    ApmConfiguration, InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation, InfoReplaceRule,
+    InfoTagFilter, InfoTagFilters, TracerFlareConfiguration,
 };
 use saluki_env::workload::CaptureEntityResolver;
 use saluki_env::WorkloadProvider;
@@ -28,12 +28,12 @@ pub(crate) fn apm_relay_configuration(
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>, api_key: Live<String>,
     agent_client: Option<RemoteAgentClientConfiguration>, semantic_registry: SemanticRegistryProvider,
-) -> ApmRelayConfiguration {
+) -> ApmConfiguration {
     let apm = &config.domains.apm;
     let shared = &config.shared;
     let (bind_host, non_local_traffic) = apm.listen_host(&shared.bind_host, containerized);
 
-    ApmRelayConfiguration {
+    ApmConfiguration {
         receiver_socket: apm.receiver_socket.clone().unwrap_or_default(),
         proxy_destination: apm.proxy_destination.clone(),
         capture_entity_resolver,
@@ -194,7 +194,7 @@ mod tests {
         }
     }
 
-    fn relay_configuration(config: &SalukiConfiguration, containerized: bool) -> ApmRelayConfiguration {
+    fn relay_configuration(config: &SalukiConfiguration, containerized: bool) -> ApmConfiguration {
         apm_relay_configuration(
             config,
             containerized,

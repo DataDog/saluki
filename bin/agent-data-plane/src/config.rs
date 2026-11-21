@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn standalone_apm_only_requires_no_baseline_pipelines() {
-        // The traces pipeline would have no events source to feed it, so the relay connects to the forwarder alone.
+        // The APM source emits no traces yet, so it needs no baseline pipeline to feed.
         let mut config = pipeline_configuration(false, false, false, Proxy::default());
         config.control.apm = true;
         config.control.standalone_mode = true;
