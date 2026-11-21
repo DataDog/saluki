@@ -84,7 +84,7 @@ impl APIHandler for DogStatsDCaptureAPIHandler {
 mod tests {
     use super::super::test_support::{temp_dir, wait_until_inactive};
     use super::*;
-    use crate::sources::dogstatsd::replay::DogStatsDCaptureControl;
+    use crate::common::dogstatsd_capture::DogStatsDCaptureControl;
 
     fn trigger_body(duration: &str) -> CaptureTriggerBody {
         CaptureTriggerBody {
