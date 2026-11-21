@@ -16,8 +16,6 @@ target:
     DD_METRICS_LEVEL: trace
     DD_DATA_PLANE_OTLP_ENABLED: "true"
     DD_OTLP_CONFIG: "{}"
-    DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: localhost:6317
-    DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: localhost:6318
   profiling_environment:
     DD_SERVICE: agent-data-plane
     DD_PROFILING_NATIVE_PRESET: cpu_live_heap

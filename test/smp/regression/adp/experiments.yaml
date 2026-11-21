@@ -401,12 +401,6 @@ templates:
         DD_DATA_PLANE_OTLP_ENABLED: "true"
         DD_OTLP_CONFIG: "{}"
 
-        # TODO(#2177): Remove these two keys and move the lading targets to `4317`/`4318` once every SMP
-        # baseline build listens on the `otlp_config` receiver endpoints. A baseline from an older `main`
-        # listens on its `6317`/`6318` defaults and ignores these keys. This build listens where they point.
-        DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "localhost:6317"
-        DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "localhost:6318"
-
   # Base template for OTLP traces experiments at 5 MiB/s with a realistic service topology
   otlp_traces_5mb_base:
     extends: otlp_base
@@ -414,7 +408,7 @@ templates:
       generator:
         - grpc:
             seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            target_uri: "http://localhost:6317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
+            target_uri: "http://localhost:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
             bytes_per_second: "5 MiB"
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "10 MiB"
@@ -793,7 +787,7 @@ experiments:
       generator:
         - grpc:
             seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            target_uri: "http://localhost:6317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+            target_uri: "http://localhost:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
             bytes_per_second: "5 MiB"
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "512 MiB"
@@ -822,7 +816,7 @@ experiments:
             seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
             headers:
               content-type: "application/x-protobuf"
-            target_uri: "http://localhost:6318/v1/logs"
+            target_uri: "http://localhost:4318/v1/logs"
             bytes_per_second: "5 MiB"
             parallel_connections: 1
             method:
