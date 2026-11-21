@@ -1,7 +1,6 @@
 //! Host programs as process groups, with streamed output and an exit that reports its signal.
 //!
-//! This is the host process primitive of the participant backends. [`unix`][crate::unix] serves the legacy runner and
-//! keeps its own shape: it pushes lines into a sink and loses the signal of an exit.
+//! This is the host process primitive of the participant backends.
 //!
 //! A [`HostProcess`] leads a process group, so it and its descendants can be signalled together. Its output is an
 //! [`OutputStream`] of what the program writes to its standard output and error, and its exit is a watch that holds

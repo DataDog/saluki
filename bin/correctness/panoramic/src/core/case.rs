@@ -486,15 +486,6 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
     };
 
     let text = fs::read_to_string(&file).map_err(|e| vec![error(None, format!("cannot be read: {}", e))])?;
-    let shape: Value = serde_saphyr::from_str(&text).map_err(|e| vec![error(None, e.to_string())])?;
-    if shape.get("type").is_some() {
-        return Err(vec![error(
-            None,
-            "this is a legacy case file (it has a top-level 'type'), which the participant case schema does not \
-             read"
-                .to_string(),
-        )]);
-    }
     let case: CaseFile = serde_saphyr::from_str(&text).map_err(|e| vec![error(None, e.to_string())])?;
     let suite = dir
         .canonicalize()

@@ -1,5 +1,5 @@
-//! `agent-adp` in a Windows container: the Agent and ADP run under an entrypoint of the harness's, which the image's
-//! own entrypoint does not do.
+//! `agent-adp` in a Windows container: the Agent and ADP run under an entrypoint the harness places, which replaces the
+//! base image's entrypoint.
 //!
 //! The entrypoint starts the Agent, then ADP, writes each one's log file and exit record, restarts nothing, and keeps
 //! the container up after both exit.
@@ -15,7 +15,7 @@ use crate::core::template::Template;
 /// The ADP-only image the Windows integration script builds.
 const IMAGE: &str = "saluki-images/agent-data-plane:testing-windows";
 
-/// Where the entrypoint is placed. It replaces the image's own, which stays in the image.
+/// Where the entrypoint is placed.
 const ENTRYPOINT_PATH: &str = "C:\\adp\\panoramic-entrypoint.ps1";
 const ENTRYPOINT: &[u8] = include_bytes!("../../../../../../ci/tooling/windows-adp-entrypoint-panoramic.ps1");
 
