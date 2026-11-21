@@ -230,7 +230,8 @@ impl Target {
         }
     }
 
-    /// A name for a file that is safe on every host, and differs for every selection of a case.
+    /// A file name that is safe on every host. Two steps share it if they have the same telemetry, sender and selector,
+    /// or selectors that differ only in replaced characters or after the first 60.
     fn file_name(&self, sender: Sender) -> String {
         let selector: String = self
             .selector
