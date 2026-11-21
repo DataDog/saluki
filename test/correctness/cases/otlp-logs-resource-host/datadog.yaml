@@ -23,7 +23,8 @@ otlp_config:
   receiver:
     protocols:
       grpc:
-        endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"
+        # No endpoint here: the adp participant's environment sets it for ADP and the Agent alike. The agent
+        # participant takes the harness default.
         max_recv_msg_size_mib: 4
   logs:
     enabled: true
