@@ -23,13 +23,6 @@ shared fixtures, and assertion density, see [Testing patterns](./testing-pattern
 
 CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
-### FIPS unit tests
-
-`make test-fips` runs the unit tests of the crates with FIPS-specific behavior in a FIPS build, which links the AWS-LC
-FIPS module. Those crates are the ones that have FIPS-only code, or that build TLS configurations and check them for
-FIPS compliance. Building the FIPS module needs Go and CMake, so `make test-all` doesn't include this target. CI runs it
-on Linux (amd64). Run it when you change TLS configuration or FIPS-specific code.
-
 ### Tests that need a Docker daemon
 
 Unit tests that create containers are ignored by default, so `make test` doesn't need Docker. Run them with

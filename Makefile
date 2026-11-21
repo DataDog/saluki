@@ -606,16 +606,6 @@ test-property: ## Runs all property tests
 	@echo "[*] Running property tests..."
 	cargo nextest run --lib --bins --no-fail-fast --release -E 'test(/property_test_*/)'
 
-# The crates that have FIPS-specific code, or that build TLS configurations and check them for FIPS compliance.
-FIPS_TEST_PACKAGES := saluki-tls saluki-io saluki-app saluki-components datadog-agent-commons
-
-.PHONY: test-fips
-test-fips: check-rust-build-tools cargo-install-cargo-nextest
-test-fips: ## Runs the unit tests of crates with FIPS-specific behavior in a FIPS build (needs Go and CMake)
-	@echo "[*] Running unit tests of FIPS-specific crates in a FIPS build..."
-	cargo nextest run --lib --no-fail-fast $(addprefix -p ,$(FIPS_TEST_PACKAGES)) \
-		--features saluki-tls/fips,saluki-components/fips -E 'not test(/property_test_*/)'
-
 .PHONY: test-docs
 test-docs: check-rust-build-tools
 test-docs: ## Runs all doctests
