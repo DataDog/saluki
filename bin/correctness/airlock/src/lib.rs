@@ -4,6 +4,7 @@ pub mod docker;
 pub mod driver;
 pub mod exec;
 pub mod files;
+pub mod host;
 pub mod image;
 mod removal;
 pub mod scope;

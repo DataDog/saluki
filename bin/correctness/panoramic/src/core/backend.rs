@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::handle::HandleError;
 use super::ledger::ResourceLedger;
-use super::observe::Sink;
+use super::observe::{ProcessExit, Sink};
 use super::participant::Enclosure;
 use super::plan::PlannedParticipant;
 use super::reference::Values;
@@ -49,6 +49,9 @@ pub(crate) struct Facts {
     pub(crate) per_case: &'static str,
     /// The directory under which each participant gets its own directories, or `None` where it is not fixed at plan.
     pub(crate) root: Option<&'static str>,
+    /// Whether the backend gives each participant a supervisor's exit and log directories. Without them, processes are
+    /// observed through the realization alone.
+    pub(crate) supervised: bool,
     /// The separator of file paths in the participant.
     pub(crate) separator: char,
     /// Where the backend places the courier in the participant.
@@ -75,12 +78,12 @@ impl Facts {
 
     /// The directory a supervisor in the participant writes exit records to, as [`EXIT_DIR_ENV`].
     pub(crate) fn exit_dir(&self, participant: &str) -> Option<String> {
-        self.root.map(|root| self.under(root, participant, "exit"))
+        self.supervised_dir(participant, "exit")
     }
 
     /// The directory a supervisor in the participant writes log files to, as [`LOG_DIR_ENV`].
     pub(crate) fn log_dir(&self, participant: &str) -> Option<String> {
-        self.root.map(|root| self.under(root, participant, "log"))
+        self.supervised_dir(participant, "log")
     }
 
     /// Paths the harness reserves in the participant: the courier, the directory of late files, and the participant's
@@ -92,6 +95,12 @@ impl Facts {
             .into_iter()
             .flatten()
             .collect()
+    }
+
+    fn supervised_dir(&self, participant: &str, dir: &str) -> Option<String> {
+        self.root
+            .filter(|_| self.supervised)
+            .map(|root| self.under(root, participant, dir))
     }
 
     fn under(&self, root: &str, participant: &str, dir: &str) -> String {
@@ -112,6 +121,7 @@ const ALL_BUT_PIPES: &[Protocol] = &[
 const LINUX_CONTAINER: Facts = Facts {
     per_case: "one bridge network and one volume",
     root: Some("/airlock"),
+    supervised: true,
     separator: '/',
     courier: Some("/panoramic/courier"),
     late: None,
@@ -126,6 +136,7 @@ const LINUX_CONTAINER: Facts = Facts {
 const WINDOWS_CONTAINER: Facts = Facts {
     per_case: "one nat network",
     root: Some("C:\\airlock"),
+    supervised: true,
     separator: '\\',
     courier: Some("C:\\panoramic\\courier.exe"),
     late: None,
@@ -144,6 +155,7 @@ const WINDOWS_CONTAINER: Facts = Facts {
 const KUBERNETES_POD: Facts = Facts {
     per_case: "one namespace and one directory on the kind node",
     root: Some("/airlock"),
+    supervised: true,
     separator: '/',
     courier: Some("/panoramic/courier"),
     late: Some("/panoramic/late"),
@@ -154,10 +166,12 @@ const KUBERNETES_POD: Facts = Facts {
     options: &[HOST_PID, CRI_SOCKET],
 };
 
-// TODO: fix the state directory at plan with the host process backend, so `{{ self.dir }}` has a value.
+// One path for every case and runner host, so it is short enough for a macOS socket address, which the system's
+// temporary directory is not. Host process cases run one at a time, and their ports are fixed anyway.
 const HOST_PROCESS_GROUP: Facts = Facts {
-    per_case: "one state directory under /tmp",
-    root: None,
+    per_case: "the state directory /tmp/panoramic",
+    root: Some("/tmp/panoramic"),
+    supervised: false,
     separator: '/',
     courier: None,
     late: None,
@@ -215,6 +229,13 @@ pub(crate) trait Realized: fmt::Debug + Send + Sync {
     ///
     /// Returns a harness error if the file cannot be read, or `deadline` passes first.
     async fn read_file(&self, path: &str, deadline: Instant) -> Result<Option<Vec<u8>>, HandleError>;
+
+    /// The exit of `process` as the realization reports it apart from the participant's own, as each program of a host
+    /// process group has. `None` where the realization reports one exit, the participant's, which is its only
+    /// process's.
+    fn reported_exit(&self, _process: &str) -> Option<ProcessExit> {
+        None
+    }
 
     /// The runner host's port for the participant's published `endpoint`, or `None` if it has none. A participant that
     /// exited before its ports were read back has none.

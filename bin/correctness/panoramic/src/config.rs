@@ -724,12 +724,12 @@ where
 /// overrides apply across this entire scope, before the caller selects tests by name.
 ///
 /// Every participant case is included, for `subject_os`: a case that does not declare it is skipped when it runs. `set`
-/// holds the run's replacements of the images participant cases name.
+/// holds the run's replacements of the images and host programs participant cases name.
 ///
 /// # Errors
 ///
 /// Returns an error if a test directory cannot be read, an image override is duplicate or unmatched, a participant
-/// case does not load or plan, or `set` replaces an image no participant case uses.
+/// case does not load or plan, or `set` replaces an image or host program no participant case uses.
 pub fn discover_tests(
     dirs: &[PathBuf], integration_runtime: &str, image_overrides: &[crate::image_override::ImageOverride],
     subject_os: Os, set: &BTreeMap<String, String>,
@@ -759,8 +759,8 @@ pub fn discover_tests(
                     match ParticipantCase::load(&path, subject_os, set, &registry) {
                         // Loaded and planned all the same, so a disabled case cannot rot.
                         Ok((case, _)) if case.disabled => {}
-                        Ok((case, images)) => {
-                            replaced.extend(images.into_iter().filter(|image| set.contains_key(image)));
+                        Ok((case, references)) => {
+                            replaced.extend(references.into_iter().filter(|reference| set.contains_key(reference)));
                             tests.push(Box::new(case));
                         }
                         Err(errors) => case_errors.extend(errors.iter().map(ToString::to_string)),
@@ -788,17 +788,16 @@ pub fn discover_tests(
     }
 
     // The loop does not return on a participant case that fails to load or plan: it collects the errors in
-    // `case_errors`, so a run reports every bad case at once. `replaced` holds each `--set` image some discovered
+    // `case_errors`, so a run reports every bad case at once. `replaced` holds each `--set` name some discovered
     // participant case uses, so every `--set` name left out of it is one no case uses, and is an error too. Only when
     // every case loaded: a case that failed may be the one that uses the name, so `replaced` is incomplete then. All
     // the errors are returned together.
     if case_errors.is_empty() {
-        case_errors.extend(set.keys().filter(|name| !replaced.contains(*name)).map(|name| {
-            format!(
-                "--set names image '{}', which no discovered participant case uses.",
-                name
-            )
-        }));
+        case_errors.extend(
+            set.keys()
+                .filter(|name| !replaced.contains(*name))
+                .map(|name| format!("--set names '{}', which no discovered participant case uses.", name)),
+        );
     }
     if !case_errors.is_empty() {
         return Err(generic_error!("{}", case_errors.join("\n")));
