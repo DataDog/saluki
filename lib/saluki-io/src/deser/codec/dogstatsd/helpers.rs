@@ -1,7 +1,7 @@
 use nom::{
-    bytes::complete::{tag, take_while1},
+    bytes::complete::tag,
     character::complete::u64 as parse_u64,
-    combinator::{all_consuming, map, rest},
+    combinator::{all_consuming, rest},
     error::{Error, ErrorKind},
     sequence::preceded,
     IResult, Parser as _,
@@ -9,6 +9,23 @@ use nom::{
 use saluki_core::data_model::{origin::OriginTagCardinality, tags::RawTags};
 
 use super::DogStatsDCodecConfiguration;
+
+/// Parses one or more bytes matching `pred` and returns them as a string.
+///
+/// `pred` must only accept ASCII bytes, which makes the unchecked UTF-8 conversion sound. The literal names the call
+/// site's Antithesis assertion of that invariant.
+macro_rules! ascii_while1 {
+    ($input:expr, $pred:expr, $message:literal) => {
+        ::nom::Parser::parse(
+            &mut ::nom::combinator::map(::nom::bytes::complete::take_while1($pred), |b: &[u8]| {
+                saluki_antithesis::always!(b.is_ascii(), $message);
+                // SAFETY: `pred` only accepts ASCII bytes, which are valid UTF-8.
+                unsafe { std::str::from_utf8_unchecked(b) }
+            }),
+            $input,
+        )
+    };
+}
 
 /// DogStatsD message type.
 #[derive(Eq, PartialEq)]
@@ -103,16 +120,11 @@ pub fn non_empty_utf8(input: &[u8]) -> IResult<&[u8], &str> {
 #[inline]
 pub fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'_' || c == b'-' || c == b'.';
-    map(take_while1(valid_char), |b: &[u8]| {
-        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
-        // interpret the bytes directly as UTF-8.
-        saluki_antithesis::always!(
-            b.is_ascii(),
-            "DogStatsD name bytes are ASCII before unchecked UTF-8 conversion"
-        );
-        unsafe { std::str::from_utf8_unchecked(b) }
-    })
-    .parse(input)
+    ascii_while1!(
+        input,
+        valid_char,
+        "DogStatsD name bytes are ASCII before unchecked UTF-8 conversion"
+    )
 }
 
 /// Extracts as many raw tags from the input slice as possible, up to the configured limit.
@@ -177,16 +189,11 @@ pub fn local_data(input: &[u8]) -> IResult<&[u8], &str> {
     //
     // In some cases, it might contain _multiple_ of these values, separated by a comma.
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b',';
-    map(take_while1(valid_char), |b: &[u8]| {
-        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
-        // interpret the bytes directly as UTF-8.
-        saluki_antithesis::always!(
-            b.is_ascii(),
-            "DogStatsD local-data bytes are ASCII before unchecked UTF-8 conversion"
-        );
-        unsafe { std::str::from_utf8_unchecked(b) }
-    })
-    .parse(input)
+    ascii_while1!(
+        input,
+        valid_char,
+        "DogStatsD local-data bytes are ASCII before unchecked UTF-8 conversion"
+    )
 }
 
 /// Parses External Data from the input slice.
@@ -203,16 +210,11 @@ pub fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
     // We don't go the full nine yards with enforcing the "starts with a letter and number" bit.. but we _do_ allow
     // commas since individual items in the External Data string are comma-separated.
     let valid_char = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b',';
-    map(take_while1(valid_char), |b: &[u8]| {
-        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
-        // interpret the bytes directly as UTF-8.
-        saluki_antithesis::always!(
-            b.is_ascii(),
-            "DogStatsD external-data bytes are ASCII before unchecked UTF-8 conversion"
-        );
-        unsafe { std::str::from_utf8_unchecked(b) }
-    })
-    .parse(input)
+    ascii_while1!(
+        input,
+        valid_char,
+        "DogStatsD external-data bytes are ASCII before unchecked UTF-8 conversion"
+    )
 }
 
 /// Parses `OriginTagCardinality` from the input slice.
