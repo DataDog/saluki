@@ -1,15 +1,21 @@
-# Removes our build containers and panoramic's containers and networks. Assumes the runner
+# Removes our build containers, then the containers, volumes and networks panoramic started.
+# Build containers go first so panoramic can't start more while we list them. Assumes the runner
 # instance runs one job at a time. Cleanup errors do not fail the job.
 .windows-reap-ci-containers: &windows-reap-ci-containers
   - |
+    $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $ids = @(docker ps -aq --filter "label=saluki-windows-ci") + @(docker ps -aq --filter "label=created_by=airlock") | Sort-Object -Unique
-    if ($ids) {
-      Write-Host "Removing leftover CI containers: $ids"
-      docker rm -f $ids
+    foreach ($label in @("saluki-windows-ci", "created_by=airlock")) {
+      $ids = @(docker ps -aq --filter "label=$label")
+      if ($ids) {
+        Write-Host "Removing leftover CI containers ($label): $ids"
+        docker rm -f $ids
+      }
     }
+    docker volume ls -q --filter "label=created_by=airlock" | ForEach-Object { docker volume rm $_ }
     docker network ls -q --filter "label=created_by=airlock" | ForEach-Object { docker network rm $_ }
-    # Not `exit 0`: this runs in the same script as the git fetch.
+    # Not `exit 0`, and restore the preference: this runs in the same script as the git fetch.
+    $ErrorActionPreference = $previousErrorActionPreference
     $global:LASTEXITCODE = 0
 
 .windows-amd64-test-job:
