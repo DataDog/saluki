@@ -106,12 +106,13 @@ pub async fn handle_run_command(
     // Every pipeline decision below comes from this one configuration and check.
     let config = agent.config().system().config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
-    let otlp = OtlpPlan::resolve(&dp).await;
 
     if !agent.is_standalone() && !dp.enabled() {
         info!("Agent Data Plane is not enabled. Exiting.");
         return Ok(());
     }
+
+    let otlp = OtlpPlan::resolve(&dp).await;
 
     agent
         .config()
