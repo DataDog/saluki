@@ -32,8 +32,10 @@ use self::interconnect::{Consumer, Dispatcher};
 #[cfg(test)]
 pub(super) mod test_util;
 
+/// Capacity of [`EventsBuffer`], the default event buffer.
+pub const DEFAULT_EVENTS_BUFFER_CAPACITY: usize = 1024;
+
 // SAFETY: These are obviously non-zero.
-const DEFAULT_EVENTS_BUFFER_CAPACITY: usize = 1024;
 pub(crate) const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(128).unwrap();
 
 // Topology-wide defaults.

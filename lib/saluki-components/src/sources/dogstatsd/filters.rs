@@ -1,66 +1,53 @@
 use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 
-/// Filters payloads based on whether or not they're enabled.
-///
-/// All payloads are allowed by default.
-#[derive(Copy, Clone)]
-pub struct EnablePayloadsFilter {
-    allow_series: bool,
-    allow_sketches: bool,
-    allow_events: bool,
-    allow_service_checks: bool,
+/// Controls which payload types are forwarded to the backend.
+#[derive(Clone, Copy)]
+pub struct EnablePayloadsConfiguration {
+    /// Whether or not to enable sending series (counter/gauge/rate) payloads.
+    pub series: bool,
+
+    /// Whether or not to enable sending sketch (distribution) payloads.
+    pub sketches: bool,
+
+    /// Whether or not to enable sending event payloads.
+    pub events: bool,
+
+    /// Whether or not to enable sending service check payloads.
+    pub service_checks: bool,
 }
 
-impl Default for EnablePayloadsFilter {
-    fn default() -> Self {
-        EnablePayloadsFilter {
-            allow_series: true,
-            allow_sketches: true,
-            allow_events: true,
-            allow_service_checks: true,
+#[cfg(test)]
+impl EnablePayloadsConfiguration {
+    /// Creates a fixture configuration with every payload type enabled.
+    pub(super) fn for_test() -> Self {
+        Self {
+            series: true,
+            sketches: true,
+            events: true,
+            service_checks: true,
         }
     }
 }
 
-impl EnablePayloadsFilter {
-    pub fn with_allow_series(mut self, allow_series: bool) -> Self {
-        self.allow_series = allow_series;
-        self
-    }
-
-    pub fn with_allow_sketches(mut self, allow_sketches: bool) -> Self {
-        self.allow_sketches = allow_sketches;
-        self
-    }
-
-    pub fn with_allow_events(mut self, allow_events: bool) -> Self {
-        self.allow_events = allow_events;
-        self
-    }
-
-    pub fn with_allow_service_checks(mut self, allow_service_checks: bool) -> Self {
-        self.allow_service_checks = allow_service_checks;
-        self
-    }
-
-    pub fn allow_metric(&self, metric: &MetricPacket<'_>) -> bool {
-        if !self.allow_series && metric.values.is_serie() {
+impl EnablePayloadsConfiguration {
+    pub(super) fn allow_metric(&self, metric: &MetricPacket<'_>) -> bool {
+        if !self.series && metric.values.is_serie() {
             return false;
         }
 
-        if !self.allow_sketches && metric.values.is_sketch() {
+        if !self.sketches && metric.values.is_sketch() {
             return false;
         }
 
         true
     }
 
-    pub fn allow_event(&self, _event: &EventPacket) -> bool {
-        self.allow_events
+    pub(super) fn allow_event(&self, _event: &EventPacket) -> bool {
+        self.events
     }
 
-    pub fn allow_service_check(&self, _service_check: &ServiceCheckPacket) -> bool {
-        self.allow_service_checks
+    pub(super) fn allow_service_check(&self, _service_check: &ServiceCheckPacket) -> bool {
+        self.service_checks
     }
 }
 
@@ -122,34 +109,43 @@ mod tests {
     }
 
     #[test]
-    fn enable_payloads_filter_allows_only_enabled_payload_types() {
-        let default = EnablePayloadsFilter::default;
+    fn enable_payloads_allows_only_enabled_payload_types() {
+        let enabled = |series, sketches, events, service_checks| EnablePayloadsConfiguration {
+            series,
+            sketches,
+            events,
+            service_checks,
+        };
         // Expected verdicts for a series, a sketch, an event, and a service check.
         let cases = [
-            ("default", default(), [true, true, true, true]),
+            (
+                "default",
+                EnablePayloadsConfiguration::for_test(),
+                [true, true, true, true],
+            ),
             (
                 "series off",
-                default().with_allow_series(false),
+                enabled(false, true, true, true),
                 [false, true, true, true],
             ),
             (
                 "sketches off",
-                default().with_allow_sketches(false),
+                enabled(true, false, true, true),
                 [true, false, true, true],
             ),
             (
                 "series and sketches off",
-                default().with_allow_series(false).with_allow_sketches(false),
+                enabled(false, false, true, true),
                 [false, false, true, true],
             ),
             (
                 "events off",
-                default().with_allow_events(false),
+                enabled(true, true, false, true),
                 [true, true, false, true],
             ),
             (
                 "service checks off",
-                default().with_allow_service_checks(false),
+                enabled(true, true, true, false),
                 [true, true, true, false],
             ),
         ];
