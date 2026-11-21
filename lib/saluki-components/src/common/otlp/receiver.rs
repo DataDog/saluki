@@ -23,10 +23,27 @@ pub struct OtlpReceiver {
     pub http: OtlpHttpReceiver,
 }
 
+impl OtlpReceiver {
+    /// Checks that at least one server has an endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gRPC and HTTP endpoints are both empty.
+    pub(crate) fn check_endpoints(&self) -> Result<(), GenericError> {
+        if self.grpc.endpoint.is_empty() && self.http.endpoint.is_empty() {
+            return Err(generic_error!(
+                "The OTLP gRPC and HTTP receiver endpoints are both empty, so no OTLP server can start."
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 /// Settings of the OTLP receiver's gRPC server.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OtlpGrpcReceiver {
-    /// Address the server listens on, without a scheme.
+    /// Address the server listens on, without a scheme. If empty, the server doesn't start.
     pub endpoint: String,
 
     /// Maximum size of a received message, in MiB.
@@ -68,7 +85,7 @@ impl GrpcTransport {
 /// Settings of the OTLP receiver's HTTP server.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OtlpHttpReceiver {
-    /// Address the server listens on, without a scheme.
+    /// Address the server listens on, without a scheme. If empty, the server doesn't start.
     pub endpoint: String,
 
     /// Listen address scheme the relay uses with `endpoint`, such as `tcp`.
