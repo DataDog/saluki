@@ -14,6 +14,7 @@ use crate::core::step::StepReport;
 pub(crate) mod analysis;
 mod compare;
 mod config_key_equals;
+mod config_set;
 mod dogstatsd_replay;
 mod exec;
 mod exits_with;
@@ -40,6 +41,7 @@ const EXEC_SLACK: Duration = Duration::from_secs(5);
 pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(compare::CompareFactory));
     registry.add_step(Box::new(config_key_equals::ConfigKeyEqualsFactory));
+    registry.add_step(Box::new(config_set::ConfigSetFactory));
     registry.add_step(Box::new(dogstatsd_replay::DogstatsdReplayFactory));
     registry.add_step(Box::new(exec::ExecFactory));
     registry.add_step(Box::new(exits_with::ExitsWithFactory));
@@ -78,9 +80,9 @@ fn described(on: &str, process: Option<&str>) -> String {
 
 /// One participant, `app`, for the steps' failing-check tests: a process `main` observed through its container, a
 /// supervised process `job` with an exit record, a UDP endpoint `statsd`, and operations that answer with what a file
-/// holds: `dump` with [`DUMP_FILE`], `config_dump` with [`CONFIG_FILE`], and `dogstatsd_capture`, `dogstatsd_replay` and
-/// `dogstatsd_stats` with [`CAPTURE_FILE`], [`REPLAY_FILE`] and [`STATS_FILE`]. A second participant, `peer`, offers
-/// the same operations, for steps that read two.
+/// holds: `dump` with [`DUMP_FILE`], `config_dump` with [`CONFIG_FILE`], `config_set` with [`CONFIG_SET_FILE`], and
+/// `dogstatsd_capture`, `dogstatsd_replay` and `dogstatsd_stats` with [`CAPTURE_FILE`], [`REPLAY_FILE`] and
+/// [`STATS_FILE`]. A second participant, `peer`, offers the same operations, for steps that read two.
 #[cfg(test)]
 mod scripted {
     use std::collections::BTreeMap;
@@ -106,6 +108,9 @@ mod scripted {
 
     /// The file whose contents `app`'s `config_dump` answers with.
     pub(super) const CONFIG_FILE: &str = "/scripted/config.json";
+
+    /// The file whose contents `app`'s `config_set` answers with.
+    pub(super) const CONFIG_SET_FILE: &str = "/scripted/config_set.json";
 
     /// What the participant's files read as, by path, and how every command run in it exits, with what it writes to
     /// standard error. A path not here holds no file; with no exit, a command cannot run.
@@ -219,6 +224,10 @@ procedure: []
                 &Answers {
                     name: "config_dump",
                     file: CONFIG_FILE,
+                },
+                &Answers {
+                    name: "config_set",
+                    file: CONFIG_SET_FILE,
                 },
                 &Answers {
                     name: "dogstatsd_capture",

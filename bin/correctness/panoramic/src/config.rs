@@ -714,14 +714,11 @@ where
 /// Discover all test cases across one or more directories.
 ///
 /// A `config.yaml` found in a direct subdirectory is routed by its shape. One with a top-level `type` field is a
-/// legacy case: `type` must be `"integration"`, `"correctness"`, or `"correctness_matrix"`, and a legacy file with an
-/// unknown `type` causes a panic. One without it is a participant case, loaded and planned for every OS it declares.
-/// Multiple test types may coexist freely within the same directory.
+/// legacy case. Legacy cases of type `"integration"`, `"correctness"`, and `"correctness_matrix"` are not run:
+/// discovery fails with an error that names the file. A legacy file with an unknown `type` causes a panic. One without
+/// `type` is a participant case, loaded and planned for every OS it declares.
 ///
-/// `integration_runtime` scopes integration-test discovery to a single runtime: an integration
-/// test is included if and only if its `runtimes:` list contains this value. Correctness tests
-/// are unaffected by runtime scoping, but cases marked `disabled: true` are omitted. Image
-/// overrides apply across this entire scope, before the caller selects tests by name.
+/// `integration_runtime` and `image_overrides` are inputs of the legacy loaders, which no discovered case reaches.
 ///
 /// Every participant case is included, for `subject_os`: a case that does not declare it is skipped when it runs. `set`
 /// holds the run's replacements of the images and host programs participant cases name.
@@ -766,10 +763,11 @@ pub fn discover_tests(
                         Err(errors) => case_errors.extend(errors.iter().map(ToString::to_string)),
                     }
                 } else if config_path.exists() {
-                    if is_comparison_case(&config_path)? {
+                    if let Some(kind) = retired_legacy_kind(&config_path)? {
                         case_errors.push(format!(
-                            "{}: legacy comparison cases no longer run; write it as a participant case",
-                            config_path.display()
+                            "{}: legacy {} cases no longer run; write it as a participant case",
+                            config_path.display(),
+                            kind
                         ));
                         continue;
                     }
@@ -826,13 +824,15 @@ pub(crate) fn is_legacy_case(config_path: &Path) -> Result<bool, GenericError> {
     legacy_type(config_path).map(|legacy| legacy.is_some())
 }
 
-/// Whether the case file at `config_path` is a legacy comparison case, which no longer runs.
-fn is_comparison_case(config_path: &Path) -> Result<bool, GenericError> {
+/// The kind of legacy case the file at `config_path` is, if it is one that no longer runs: `"comparison"` for a
+/// `correctness` or `correctness_matrix` type, and `"integration"` for an `integration` type.
+fn retired_legacy_kind(config_path: &Path) -> Result<Option<&'static str>, GenericError> {
     let legacy = legacy_type(config_path)?;
-    Ok(matches!(
-        legacy.as_ref().and_then(Value::as_str),
-        Some("correctness" | "correctness_matrix")
-    ))
+    Ok(match legacy.as_ref().and_then(Value::as_str) {
+        Some("correctness" | "correctness_matrix") => Some("comparison"),
+        Some("integration") => Some("integration"),
+        _ => None,
+    })
 }
 
 /// Load one or more test cases from a config file, dispatching on the top-level `type` field.
@@ -1113,85 +1113,6 @@ timeout: 30s
         assert_eq!(stats_duration_secs, 3);
         assert_eq!(expected_metrics, vec!["replay.one", "replay.two"]);
         assert_eq!(timeout.0, Duration::from_secs(30));
-    }
-
-    #[test]
-    fn windows_runtime_is_valid_for_integration_discovery() {
-        let base_dir = create_test_case_dir(
-            "windows-smoke",
-            r#"
-type: integration
-name: windows-smoke
-timeout: 10s
-runtimes: [windows]
-procedure: []
-"#,
-        );
-
-        let tests = discover_tests(
-            &[base_dir.path().to_path_buf()],
-            "windows",
-            &[],
-            Os::Linux,
-            &BTreeMap::new(),
-        )
-        .unwrap();
-
-        assert_eq!(tests.len(), 1);
-        assert_eq!(tests[0].name(), "windows-smoke");
-        assert_eq!(tests[0].runtime(), "windows");
-    }
-
-    #[test]
-    fn windows_runtime_reports_harness_owned_container_image() {
-        let base_dir = create_test_case_dir(
-            "windows-smoke",
-            r#"
-type: integration
-name: windows-smoke
-timeout: 10s
-runtimes: [windows]
-procedure: []
-"#,
-        );
-
-        let tests = discover_tests(
-            &[base_dir.path().to_path_buf()],
-            "windows",
-            &[],
-            Os::Linux,
-            &BTreeMap::new(),
-        )
-        .unwrap();
-        let images = tests[0].images();
-
-        assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_TARGET_IMAGE.to_string()));
-    }
-
-    #[test]
-    fn linux_runtime_reports_harness_owned_container_image() {
-        let base_dir = create_test_case_dir(
-            "linux-smoke",
-            r#"
-type: integration
-name: linux-smoke
-timeout: 10s
-runtimes: [linux]
-procedure: []
-"#,
-        );
-
-        let tests = discover_tests(
-            &[base_dir.path().to_path_buf()],
-            "linux",
-            &[],
-            Os::Linux,
-            &BTreeMap::new(),
-        )
-        .unwrap();
-        let images = tests[0].images();
-
-        assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
     }
 
     #[test]
@@ -1485,42 +1406,19 @@ procedure:
     }
 
     #[test]
-    fn discovery_scopes_integration_images_to_runtime() {
-        let integration = create_test_case_dir(
-            "portable",
-            "type: integration\nname: portable\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
-        );
-        let dirs = [integration.path().to_path_buf()];
-        for (runtime, target) in [
-            (LINUX_RUNTIME, Some(DEFAULT_LINUX_TARGET_IMAGE)),
-            (WINDOWS_RUNTIME, Some(DEFAULT_WINDOWS_TARGET_IMAGE)),
-            (MAC_RUNTIME, None),
+    fn a_legacy_case_fails_discovery() {
+        let comparison =
+            "runtime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n";
+        for (kind, body, expected) in [
+            ("correctness", comparison, "comparison"),
+            ("correctness_matrix", comparison, "comparison"),
+            (
+                "integration",
+                "timeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+                "integration",
+            ),
         ] {
-            let cases = discover_tests(&dirs, runtime, &[], Os::Linux, &BTreeMap::new()).unwrap();
-            assert_eq!(cases.len(), 1);
-            assert_eq!(cases[0].runtime(), runtime);
-            let expected: BTreeMap<&str, String> = target
-                .into_iter()
-                .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
-                .collect();
-            assert_eq!(cases[0].images(), expected);
-        }
-        let override_entry = ["container=target:override".parse().unwrap()];
-        let error = discover_tests(&dirs, MAC_RUNTIME, &override_entry, Os::Linux, &BTreeMap::new())
-            .err()
-            .expect("no eligible target image");
-        assert!(error
-            .to_string()
-            .contains("No test in this run uses a container named 'container'"));
-    }
-
-    #[test]
-    fn a_legacy_comparison_case_fails_discovery() {
-        for kind in ["correctness", "correctness_matrix"] {
-            let dir = create_test_case_dir(
-                "comparison",
-                &format!("type: {kind}\nruntime: docker\nanalysis_mode: metrics\nbaseline: {{image: base}}\ncomparison: {{image: comp}}\n"),
-            );
+            let dir = create_test_case_dir("legacy", &format!("type: {kind}\n{body}"));
             let error = discover_tests(
                 &[dir.path().to_path_buf()],
                 LINUX_RUNTIME,
@@ -1532,7 +1430,9 @@ procedure:
             .unwrap_or_else(|| panic!("a {kind} case should fail discovery"));
             let error = error.to_string();
             assert!(
-                error.contains("legacy comparison cases no longer run; write it as a participant case"),
+                error.contains(&format!(
+                    "legacy {expected} cases no longer run; write it as a participant case"
+                )),
                 "{error}"
             );
         }
