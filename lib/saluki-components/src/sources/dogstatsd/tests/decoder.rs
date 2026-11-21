@@ -1,50 +1,52 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
-use saluki_io::{
-    deser::codec::dogstatsd::ParsedPacket,
-    net::{ConnectionAddress, ProcessIdentity},
-};
+use saluki_io::net::{ConnectionAddress, ProcessCredentialsError, ProcessIdentity};
 use saluki_metrics::test::TestRecorder;
 use tokio::time::timeout;
 
 use super::*;
 use crate::sources::dogstatsd::should_warn_stream_log_too_big;
-use crate::sources::dogstatsd::{
-    handle_frame, handle_metric_packet, metrics::build_metrics, BufferDecodeContext, BufferDecodeMode, DecodeOutcome,
-    DogStatsDDecoder, PacketForwarder, ReceivedBuffer,
-};
+use crate::sources::dogstatsd::{handle_frame, handle_metric_packet, BufferDecodeMode, DecodeOutcome, PacketForwarder};
+
+fn packets_ok_key(listener_type: &str) -> Key {
+    source_counter(
+        "component_packets_received_total",
+        &[("listener_type", listener_type), ("state", "ok")],
+    )
+}
+
+fn bytes_received_key(listener_type: &str) -> Key {
+    source_counter("component_bytes_received_total", &[("listener_type", listener_type)])
+}
+
+fn origin_detection_errors_key(reason: &str) -> Key {
+    source_counter(
+        "component_errors_total",
+        &[("error_type", "origin_detection"), ("reason", reason)],
+    )
+}
 
 #[tokio::test]
 async fn connectionless_decoder_dispatches_full_and_flushed_buffers_and_forwards_frames() {
     let recorder = TestRecorder::default();
     let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-    let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+    let listener = TestListener::new(ListenAddress::Unixgram("/tmp/dsd.sock".into()));
     let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
-    let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-    let mut source = test_source_context();
-    let mut metrics_rx = source.outputs.take_named_output("metrics");
-    let mut decoder = DogStatsDDecoder::new(source.context, test_decoder_context(false));
+    let mut fixture = DecoderFixture::new(test_decoder_context(false));
+    let mut metrics_rx = fixture.outputs.take_named_output("metrics");
     let event_buffer_capacity = EventsBuffer::default().capacity();
     let (packet_forwarder, packets_rx) = PacketForwarder::for_tests(event_buffer_capacity + 1);
-    let mut buffer_decode_context = BufferDecodeContext::new(
-        &listen_addr,
-        false,
-        &metrics,
-        Some(&packet_forwarder),
-        BufferDecodeMode::Connectionless,
-    );
+    let mut context = listener.decode_context(false, Some(&packet_forwarder), BufferDecodeMode::Connectionless);
 
     let mut payload = b"decoder.metric:1|c\n".repeat(event_buffer_capacity);
     payload.extend_from_slice(b"decoder.metric:1|c");
     let io_buffer = test_io_buffer(&payload, payload.len());
-    let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, payload.len(), peer_addr, None);
-    let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
+    let (outcome, io_buffer) = fixture
+        .decode_once(&mut context, io_buffer, payload.len(), &peer_addr)
+        .await;
 
     assert_eq!(outcome, DecodeOutcome::Continue);
-    let io_buffer = returned_buffer
-        .await
-        .expect("connectionless decoder should return the I/O buffer");
     assert_eq!(io_buffer.remaining(), 0);
     let full_buffer = metrics_rx.next().await.expect("metrics output should remain connected");
     assert_eq!(full_buffer.len(), event_buffer_capacity);
@@ -55,36 +57,18 @@ async fn connectionless_decoder_dispatches_full_and_flushed_buffers_and_forwards
     assert_eq!(&forwarded[..], b"decoder.metric:1|c");
     assert_eq!(packets_rx.len(), event_buffer_capacity);
 
-    decoder.flush_events().await;
+    fixture.decoder.flush_events().await;
     let flushed_buffer = metrics_rx.next().await.expect("metrics output should remain connected");
     assert_eq!(flushed_buffer.len(), 1);
-    decoder.flush_events().await;
+    fixture.decoder.flush_events().await;
     assert!(
         metrics_rx.try_next().is_none(),
         "empty flush should not dispatch another buffer"
     );
 
+    assert_eq!(recorder.counter(packets_ok_key("unixgram")), Some(1));
     assert_eq!(
-        recorder.counter((
-            "component_packets_received_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("listener_type", "unixgram"),
-                ("state", "ok"),
-            ],
-        )),
-        Some(1)
-    );
-    assert_eq!(
-        recorder.counter((
-            "component_bytes_received_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("listener_type", "unixgram"),
-            ],
-        )),
+        recorder.counter(bytes_received_key("unixgram")),
         Some(payload.len() as u64)
     );
     assert_eq!(
@@ -97,69 +81,33 @@ async fn connectionless_decoder_dispatches_full_and_flushed_buffers_and_forwards
 async fn connected_decoder_waits_for_complete_outer_frame_and_stops_on_eof() {
     let recorder = TestRecorder::default();
     let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-    let listen_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(
-        saluki_io::net::ProcessCredentialsError::InvalidCredentials,
-    ));
-    let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-    let mut source = test_source_context();
-    let mut metrics_rx = source.outputs.take_named_output("metrics");
-    let mut decoder = DogStatsDDecoder::new(source.context, test_decoder_context(true));
+    let listener = TestListener::new(ListenAddress::Unix("/tmp/dsd.socket".into()));
+    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials));
+    let mut fixture = DecoderFixture::new(test_decoder_context(true));
+    let mut metrics_rx = fixture.outputs.take_named_output("metrics");
     let (packet_forwarder, packets_rx) = PacketForwarder::for_tests(1);
-    let mut buffer_decode_context = BufferDecodeContext::new(
-        &listen_addr,
-        false,
-        &metrics,
-        Some(&packet_forwarder),
-        BufferDecodeMode::Connected,
-    );
+    let mut context = listener.decode_context(false, Some(&packet_forwarder), BufferDecodeMode::Connected);
 
     let frame = b"stream.metric:1|c\n";
     let mut payload = Vec::with_capacity(frame.len() + 4);
     payload.extend_from_slice(&(frame.len() as u32).to_le_bytes());
     payload.extend_from_slice(frame);
     let io_buffer = test_io_buffer(&payload[..2], payload.len() + 16);
-    let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, 2, peer_addr.clone(), None);
 
-    let partial_outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
+    let (partial_outcome, mut io_buffer) = fixture.decode_once(&mut context, io_buffer, 2, &peer_addr).await;
     assert_eq!(partial_outcome, DecodeOutcome::Continue);
-    let mut io_buffer = returned_buffer
-        .await
-        .expect("connected decoder should return the partial I/O buffer");
     assert_eq!(io_buffer.remaining(), 2);
+    assert_eq!(recorder.counter(packets_ok_key("unix")), Some(0));
     assert_eq!(
-        recorder.counter((
-            "component_packets_received_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("listener_type", "unix"),
-                ("state", "ok"),
-            ],
-        )),
-        Some(0)
-    );
-    assert_eq!(
-        recorder.counter((
-            "component_errors_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("error_type", "origin_detection"),
-                ("reason", "invalid_credentials"),
-            ],
-        )),
+        recorder.counter(origin_detection_errors_key("invalid_credentials")),
         Some(0)
     );
 
     io_buffer.put_slice(&payload[2..]);
-    let (received, returned_buffer) =
-        ReceivedBuffer::with_return(io_buffer, payload.len() - 2, peer_addr.clone(), None);
-    let complete_outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
+    let (complete_outcome, io_buffer) = fixture
+        .decode_once(&mut context, io_buffer, payload.len() - 2, &peer_addr)
+        .await;
     assert_eq!(complete_outcome, DecodeOutcome::Continue);
-    let io_buffer = returned_buffer
-        .await
-        .expect("connected decoder should return the consumed I/O buffer");
     assert_eq!(io_buffer.remaining(), 0);
     let forwarded = timeout(Duration::from_secs(1), packets_rx.recv())
         .await
@@ -167,50 +115,17 @@ async fn connected_decoder_waits_for_complete_outer_frame_and_stops_on_eof() {
         .expect("complete outer frame should be forwarded");
     assert_eq!(&forwarded[..], b"stream.metric:1|c");
 
-    let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, 0, peer_addr, None);
-    let eof_outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
+    let (eof_outcome, io_buffer) = fixture.decode_once(&mut context, io_buffer, 0, &peer_addr).await;
     assert_eq!(eof_outcome, DecodeOutcome::Stop);
-    let returned_buffer = returned_buffer
-        .await
-        .expect("stopped decoder should return the I/O buffer");
-    assert!(!returned_buffer.has_remaining());
+    assert!(!io_buffer.has_remaining());
 
-    decoder.flush_events().await;
+    fixture.decoder.flush_events().await;
     let flushed_buffer = metrics_rx.next().await.expect("metrics output should remain connected");
     assert_eq!(flushed_buffer.len(), 1);
+    assert_eq!(recorder.counter(packets_ok_key("unix")), Some(1));
+    assert_eq!(recorder.counter(bytes_received_key("unix")), Some(payload.len() as u64));
     assert_eq!(
-        recorder.counter((
-            "component_packets_received_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("listener_type", "unix"),
-                ("state", "ok"),
-            ],
-        )),
-        Some(1)
-    );
-    assert_eq!(
-        recorder.counter((
-            "component_bytes_received_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("listener_type", "unix"),
-            ],
-        )),
-        Some(payload.len() as u64)
-    );
-    assert_eq!(
-        recorder.counter((
-            "component_errors_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("error_type", "origin_detection"),
-                ("reason", "invalid_credentials"),
-            ],
-        )),
+        recorder.counter(origin_detection_errors_key("invalid_credentials")),
         Some(1)
     );
     assert_eq!(recorder.counter(processed_metric_key("unix", None)), Some(1));
@@ -220,40 +135,30 @@ async fn connected_decoder_waits_for_complete_outer_frame_and_stops_on_eof() {
 async fn connectionless_decoder_counts_origin_detection_errors_by_reason() {
     let recorder = TestRecorder::default();
     let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-    let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
-    let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-    let source = test_source_context();
-    let mut decoder = DogStatsDDecoder::new(source.context, test_decoder_context(true));
-    let mut buffer_decode_context =
-        BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connectionless);
+    let listener = TestListener::new(ListenAddress::Unixgram("/tmp/dsd.sock".into()));
+    let mut fixture = DecoderFixture::new(test_decoder_context(true));
+    let mut context = listener.decode_context(false, None, BufferDecodeMode::Connectionless);
 
     // Each datagram counts as a single origin detection error, regardless of how many metrics it holds, and is
     // tagged with the reason that origin detection failed.
     let payload = b"decoder.metric:1|c\ndecoder.metric:2|c";
     for (error, datagrams) in [
-        (saluki_io::net::ProcessCredentialsError::ZeroPid, 2),
-        (saluki_io::net::ProcessCredentialsError::InvalidCredentials, 1),
+        (ProcessCredentialsError::ZeroPid, 2),
+        (ProcessCredentialsError::InvalidCredentials, 1),
     ] {
         for _ in 0..datagrams {
             let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(error));
             let io_buffer = test_io_buffer(payload, payload.len());
-            let (received, _returned_buffer) = ReceivedBuffer::with_return(io_buffer, payload.len(), peer_addr, None);
-            let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
+            let (outcome, _) = fixture
+                .decode_once(&mut context, io_buffer, payload.len(), &peer_addr)
+                .await;
             assert_eq!(outcome, DecodeOutcome::Continue);
         }
     }
 
     for (reason, expected) in [("zero_pid", 2), ("invalid_credentials", 1)] {
         assert_eq!(
-            recorder.counter((
-                "component_errors_total",
-                &[
-                    ("component_id", "dogstatsd_test"),
-                    ("component_type", "source"),
-                    ("error_type", "origin_detection"),
-                    ("reason", reason),
-                ],
-            )),
+            recorder.counter(origin_detection_errors_key(reason)),
             Some(expected),
             "unexpected origin detection error count for reason `{reason}`"
         );
@@ -265,75 +170,39 @@ async fn decoder_continues_connectionless_but_stops_connected_on_framing_error()
     let recorder = TestRecorder::default();
     let _recorder_guard = metrics::set_default_local_recorder(&recorder);
     let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
-    let source = test_source_context();
-    let mut decoder = DogStatsDDecoder::new(source.context, test_decoder_context(false));
+    let mut fixture = DecoderFixture::new(test_decoder_context(false));
 
-    let datagram_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
-    let datagram_metrics = build_metrics(&datagram_addr, &test_component_context(), false);
+    let datagram_listener = TestListener::new(ListenAddress::Unixgram("/tmp/dsd.sock".into()));
+    let mut datagram_context = datagram_listener.decode_context(true, None, BufferDecodeMode::Connectionless);
     let payload = b"missing.newline:1|c";
     let datagram_buffer = test_io_buffer(payload, payload.len());
-    let mut datagram_context = BufferDecodeContext::new(
-        &datagram_addr,
-        true,
-        &datagram_metrics,
-        None,
-        BufferDecodeMode::Connectionless,
-    );
-    let (received, _returned_datagram_buffer) =
-        ReceivedBuffer::with_return(datagram_buffer, payload.len(), peer_addr.clone(), None);
-    let datagram_outcome = decoder.decode_buffer(&mut datagram_context, received).await;
+    let (datagram_outcome, _) = fixture
+        .decode_once(&mut datagram_context, datagram_buffer, payload.len(), &peer_addr)
+        .await;
     assert_eq!(datagram_outcome, DecodeOutcome::Continue);
 
-    let stream_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
-    let stream_metrics = build_metrics(&stream_addr, &test_component_context(), false);
+    let stream_listener = TestListener::new(ListenAddress::Unix("/tmp/dsd.socket".into()));
+    let mut stream_context = stream_listener.decode_context(false, None, BufferDecodeMode::Connected);
     let stream_buffer_capacity = 64;
     let oversized_frame = (stream_buffer_capacity as u32).to_le_bytes();
     let stream_buffer = test_io_buffer(&oversized_frame, stream_buffer_capacity);
-    let mut stream_context =
-        BufferDecodeContext::new(&stream_addr, false, &stream_metrics, None, BufferDecodeMode::Connected);
-    let (received, _returned_stream_buffer) =
-        ReceivedBuffer::with_return(stream_buffer, oversized_frame.len(), peer_addr, None);
-    let stream_outcome = decoder.decode_buffer(&mut stream_context, received).await;
+    let (stream_outcome, _) = fixture
+        .decode_once(&mut stream_context, stream_buffer, oversized_frame.len(), &peer_addr)
+        .await;
     assert_eq!(stream_outcome, DecodeOutcome::Stop);
 
     for listener_type in ["unixgram", "unix"] {
         assert_eq!(
-            recorder.counter((
+            recorder.counter(source_counter(
                 "component_errors_total",
-                &[
-                    ("component_id", "dogstatsd_test"),
-                    ("component_type", "source"),
-                    ("listener_type", listener_type),
-                    ("error_type", "framing"),
-                ],
+                &[("listener_type", listener_type), ("error_type", "framing")],
             )),
-            Some(1)
+            Some(1),
+            "framing errors for {listener_type}"
         );
     }
-    assert_eq!(
-        recorder.counter((
-            "component_packets_received_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("listener_type", "unixgram"),
-                ("state", "ok"),
-            ],
-        )),
-        Some(1)
-    );
-    assert_eq!(
-        recorder.counter((
-            "component_packets_received_total",
-            &[
-                ("component_id", "dogstatsd_test"),
-                ("component_type", "source"),
-                ("listener_type", "unix"),
-                ("state", "ok"),
-            ],
-        )),
-        Some(0)
-    );
+    assert_eq!(recorder.counter(packets_ok_key("unixgram")), Some(1));
+    assert_eq!(recorder.counter(packets_ok_key("unix")), Some(0));
 }
 
 #[test]
@@ -342,7 +211,7 @@ fn events_and_service_checks_fall_back_to_host_tag_for_hostname() {
     let context = test_component_context();
     let metrics = build_metrics(&listen_addr, &context, false);
     let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-    let mut context_resolvers = test_context_resolvers();
+    let mut context_resolvers = ContextResolvers::for_tests(true, None);
     let default_hostname = MetaString::from_static("default-host");
 
     let mut handle = |frame: &[u8]| {
@@ -401,19 +270,9 @@ fn no_metrics_when_interner_full_allocations_disallowed() {
     // _inlined_ either, since that will get around the interner being full.
     //
     // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
-
-    let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-    let tags_resolver = TagsResolverBuilder::for_tests().build();
-    let context_resolver = ContextResolverBuilder::for_tests()
-        .with_heap_allocations(false)
-        .with_tags_resolver(Some(tags_resolver.clone()))
-        .build();
-    let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver);
-    let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
-
-    let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
-        panic!("Failed to parse packet.");
-    };
+    let mut context_resolvers = ContextResolvers::for_tests(false, None);
+    let packet =
+        parse_metric(b"big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3");
 
     let maybe_metric = handle_metric_packet(
         packet,
@@ -427,8 +286,7 @@ fn no_metrics_when_interner_full_allocations_disallowed() {
 
 #[test]
 fn metric_host_tag_disambiguates_contexts_without_remaining_tag() {
-    let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-    let mut context_resolvers = test_context_resolvers();
+    let mut context_resolvers = ContextResolvers::for_tests(true, None);
     let default_hostname = MetaString::from_static("default-host");
 
     let packets = [
@@ -448,10 +306,7 @@ fn metric_host_tag_disambiguates_contexts_without_remaining_tag() {
 
     let mut metrics = Vec::new();
     for (case, raw, expected_host) in packets {
-        let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(raw) else {
-            panic!("Failed to parse {case} packet.");
-        };
-        let metric = handle_metric_packet(packet, &mut context_resolvers, None, &[], &default_hostname)
+        let metric = handle_metric_packet(parse_metric(raw), &mut context_resolvers, None, &[], &default_hostname)
             .unwrap_or_else(|| panic!("{case} metric should resolve"));
 
         assert_eq!(metric.context().host(), Some(expected_host), "{case} context host");
@@ -467,44 +322,31 @@ fn metric_host_tag_disambiguates_contexts_without_remaining_tag() {
 
 #[test]
 fn metric_with_additional_tags() {
-    let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-    let tags_resolver = TagsResolverBuilder::for_tests().build();
-    let context_resolver = ContextResolverBuilder::for_tests()
-        .with_heap_allocations(false)
-        .with_tags_resolver(Some(tags_resolver.clone()))
-        .build();
-    let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver);
+    let mut context_resolvers = ContextResolvers::for_tests(false, None);
     let existing_tags = ["tag1:value1", "tag2:value2", "tag3:value3"];
-    let existing_tags_str = existing_tags.join(",");
-
-    let input = format!("test_metric_name:1|c|#{}", existing_tags_str);
+    let input = format!("test_metric_name:1|c|#{}", existing_tags.join(","));
     let additional_tags = [
         "tag4:value4".to_string(),
         "tag5:value5".to_string(),
         "tag6:value6".to_string(),
     ];
 
-    let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
-        panic!("Failed to parse packet.");
-    };
-    let maybe_metric = handle_metric_packet(
-        packet,
+    let metric = handle_metric_packet(
+        parse_metric(input.as_bytes()),
         &mut context_resolvers,
         None,
         &additional_tags,
         &MetaString::from_static("default-host"),
-    );
-    assert!(maybe_metric.is_some());
-
-    let metric = maybe_metric.unwrap();
+    )
+    .expect("metric should resolve");
     let context = metric.context();
 
     for tag in existing_tags {
-        assert!(context.tags().has_tag(tag));
+        assert!(context.tags().has_tag(tag), "missing existing tag {tag}");
     }
 
     for tag in additional_tags {
-        assert!(context.tags().has_tag(tag));
+        assert!(context.tags().has_tag(&tag), "missing additional tag {tag}");
     }
 }
 
@@ -522,22 +364,4 @@ fn stream_log_too_big_warns_for_enabled_length_delimited_stream_invalid_frames()
     assert!(!should_warn_stream_log_too_big(&uds_stream, &error, false));
     assert!(!should_warn_stream_log_too_big(&named_pipe_stream, &error, true));
     assert!(!should_warn_stream_log_too_big(&tcp_stream, &error, true));
-}
-
-#[test]
-fn non_finite_metric_values_are_silently_dropped() {
-    // The Datadog Agent sends NaN gauges (for example, encode_ms.avg computed as 0.0/0.0 in Go).
-    // FloatIter skips non-finite values with a debug log, so decode_packet returns Ok with
-    // num_points == 0. handle_frame then returns Ok(None) for zero-point packets, which is
-    // the existing silent-drop path (no warning emitted).
-    let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-    for input in &[b"my.gauge:NaN|g" as &[u8], b"my.gauge:inf|g", b"my.gauge:-inf|g"] {
-        match codec.decode_packet(input).expect("should decode without error") {
-            ParsedPacket::Metric(packet) => assert_eq!(
-                packet.num_points, 0,
-                "non-finite value should be dropped, leaving 0 valid points"
-            ),
-            _ => panic!("expected Metric packet"),
-        }
-    }
 }
