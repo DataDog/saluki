@@ -23,6 +23,8 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool);
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool);
     fn consume_apm_config_connection_limit(&mut self, value: i64);
+    fn consume_apm_config_decoder_timeout(&mut self, value: i64);
+    fn consume_apm_config_decoders(&mut self, value: i64);
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool);
     fn consume_apm_config_env(&mut self, value: String);
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
@@ -328,6 +330,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_apm_non_local_traffic(config.apm_config.apm_non_local_traffic.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
     consumer.consume_apm_config_connection_limit(config.apm_config.connection_limit.clone());
+    consumer.consume_apm_config_decoder_timeout(config.apm_config.decoder_timeout.clone());
+    consumer.consume_apm_config_decoders(config.apm_config.decoders.clone());
     consumer.consume_apm_config_enable_rare_sampler(config.apm_config.enable_rare_sampler.clone());
     consumer.consume_apm_config_env(config.apm_config.env.clone());
     consumer.consume_apm_config_error_tracking_standalone_enabled(
