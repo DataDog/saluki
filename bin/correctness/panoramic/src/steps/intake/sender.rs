@@ -658,9 +658,9 @@ impl Step for IntakeFrom {
         )]
     }
 
-    /// The wait for the first success, the settle after it, and the read that ends the watch.
+    /// The wait for the first success, the read that can end after it, the settle, and the read that ends the watch.
     fn budget(&self) -> Duration {
-        self.timeout.duration + self.settle.duration + PROBE_TIMEOUT
+        self.timeout.duration + self.settle.duration + PROBE_TIMEOUT * 2
     }
 
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
@@ -1228,12 +1228,15 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_covers_the_timeout_the_settle_and_the_last_read() {
+    fn the_budget_covers_the_timeout_the_settle_and_two_reads() {
         let default_settle = step("{on: i, telemetry: logs, select: {service: fx}, sender: adp, timeout: 2m}");
-        assert_eq!(default_settle.budget(), Duration::from_secs(120 + 20) + PROBE_TIMEOUT);
+        assert_eq!(
+            default_settle.budget(),
+            Duration::from_secs(120 + 20) + PROBE_TIMEOUT * 2
+        );
         assert_eq!(
             adp_step(Telemetry::Logs).budget(),
-            Duration::from_secs(12) + PROBE_TIMEOUT
+            Duration::from_secs(12) + PROBE_TIMEOUT * 2
         );
     }
 
