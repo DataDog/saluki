@@ -266,13 +266,14 @@ mod tests {
     use tokio::sync::Mutex as AsyncMutex;
 
     use super::*;
+    use crate::common::datadog::test_util::init_tls;
 
     /// Builds a proxy like the relay does, after installing the TLS crypto provider as application bootstrap does.
     ///
     /// Without it, a FIPS build falls back to a provider whose cipher suites aren't all FIPS-approved, and the HTTP
     /// client refuses to build.
     fn from_destination(destination: &str) -> Result<TraceAgentProxy, saluki_error::GenericError> {
-        crate::common::datadog::test_util::init_tls();
+        init_tls();
         TraceAgentProxy::from_destination(destination)
     }
 
