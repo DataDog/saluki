@@ -1,6 +1,28 @@
+# Removes our build containers and panoramic's containers and networks. Assumes the runner
+# instance runs one job at a time. Cleanup errors do not fail the job.
+.windows-reap-ci-containers: &windows-reap-ci-containers
+  - |
+    $ErrorActionPreference = "Continue"
+    $ids = @(docker ps -aq --filter "label=saluki-windows-ci") + @(docker ps -aq --filter "label=created_by=airlock") | Sort-Object -Unique
+    if ($ids) {
+      Write-Host "Removing leftover CI containers: $ids"
+      docker rm -f $ids
+    }
+    docker network ls -q --filter "label=created_by=airlock" | ForEach-Object { docker network rm $_ }
+    # Not `exit 0`: this runs in the same script as the git fetch.
+    $global:LASTEXITCODE = 0
+
 .windows-amd64-test-job:
   tags: ["windows-v2:2025"]
   interruptible: true
+  # A cancelled job's container keeps running against the bind-mounted checkout. Windows can't
+  # delete its running executables, so the next job on the instance fails in `get_sources`. Reap
+  # at job end, and again before the next fetch in case `after_script` did not run.
+  hooks:
+    pre_get_sources_script:
+      - *windows-reap-ci-containers
+  after_script:
+    - *windows-reap-ci-containers
   variables:
     ARCH: "x64"
     # Use the Windows LTSC2022 build image pre-cached on the Windows runner image.
@@ -44,6 +66,7 @@ unit-tests-windows-amd64:
     - *windows-build-image-pull-script
     - >
       docker run --rm
+      --label saluki-windows-ci
       -m 24576M
       --storage-opt "size=50GB"
       -v "$(Get-Location):c:\mnt"
@@ -114,6 +137,7 @@ test-integration-windows-amd64:
       Write-Host "Using WINDOWS_ADP_BASE_IMAGE=$WindowsAdpBaseImage"
     - >
       docker run --rm
+      --label saluki-windows-ci
       -m 24576M
       --storage-opt "size=50GB"
       -v "$(Get-Location):c:\mnt"
@@ -180,6 +204,7 @@ test-integration-windows-amd64:
     - *windows-build-image-pull-script
     - >
       docker run --rm
+      --label saluki-windows-ci
       -m 24576M
       --storage-opt "size=50GB"
       -v "$(Get-Location):c:\mnt"
