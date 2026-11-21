@@ -1,0 +1,55 @@
+{
+  "comment": "Peer-tags grouping: spans with identical group keys are grouped by the FNV hash of their matched peer tags; identical sets merge, a different set creates a second group. (Cardinality-collapse branches are unreachable: all caps are zero/no-ops in the agent by design.)",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "db.query",
+            "resource": "SELECT 1",
+            "type": "sql",
+            "kind": "client",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "peer.service": "orders-db"
+            }
+          },
+          {
+            "span_id": 2,
+            "parent_id": 0,
+            "service": "web",
+            "name": "db.query",
+            "resource": "SELECT 1",
+            "type": "sql",
+            "kind": "client",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "peer.service": "orders-db"
+            }
+          },
+          {
+            "span_id": 3,
+            "parent_id": 0,
+            "service": "web",
+            "name": "db.query",
+            "resource": "SELECT 1",
+            "type": "sql",
+            "kind": "client",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "peer.service": "billing-db"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "peer_split_grouping"
+}

@@ -1,0 +1,26 @@
+{
+  "comment": "MongoDB branch: attribute-based (mongodb.query) JSON obfuscation for mongodb span types.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "mongo",
+            "name": "mongodb.query",
+            "resource": "find users",
+            "type": "mongodb",
+            "start": "-2s",
+            "duration": "15ms",
+            "attributes": {
+              "mongodb.query": "{\"find\": \"users\", \"filter\": {\"email\": \"a@b.com\"}}"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "mongodb"
+}

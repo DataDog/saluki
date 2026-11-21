@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "lang": "python",
+    "lang_version": "3.12.0",
+    "tracer_version": "2.0.0",
+    "app_version": "1.2.3",
+    "env": "prod"
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "comment": "Malformed timestamp repair: one span per validateAndFixStartTimeV1/DurationV1 branch: pre-2000 start (invalid -> start=now-duration), duration overflowing int64 (invalid -> duration=0), pre-2000 start + huge valid duration (now-duration underflows -> start=now). Absolute start '1000' ns is pre-year-2000.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "pre2000.start",
+            "type": "web",
+            "start": 1000,
+            "duration": "10ms"
+          },
+          {
+            "span_id": 2,
+            "parent_id": 0,
+            "service": "web",
+            "name": "overflow.duration",
+            "type": "web",
+            "start": 1000,
+            "duration": 9500000000000000000
+          },
+          {
+            "span_id": 3,
+            "parent_id": 0,
+            "service": "web",
+            "name": "underflow.start",
+            "type": "web",
+            "start": 1000,
+            "duration": 1800000000000000000
+          },
+          {
+            "span_id": 4,
+            "parent_id": 0,
+            "service": "web",
+            "name": "valid.span",
+            "type": "web",
+            "start": "-2s",
+            "duration": "30ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "malformed_times"
+}

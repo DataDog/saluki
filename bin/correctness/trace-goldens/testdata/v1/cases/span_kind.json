@@ -1,0 +1,35 @@
+{
+  "comment": "Span-kind branch: OTEL-style span.kind on both spans. compute_stats_by_span_kind is on by default, so the kind-eligible child gets stats without being top-level.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /kind",
+            "type": "web",
+            "kind": "server",
+            "start": "-2s",
+            "duration": "80ms"
+          },
+          {
+            "span_id": 2,
+            "parent_id": 1,
+            "service": "web",
+            "name": "db.query",
+            "resource": "SELECT 1",
+            "type": "db",
+            "kind": "client",
+            "start": "-1.99s",
+            "duration": "20ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "span_kind"
+}

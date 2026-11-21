@@ -1,0 +1,35 @@
+{
+  "comment": "Measured span: a non-top-level child marked with _dd.measured=1 is still eligible for stats via IsMeasuredMetricsV1 (in addition to the top-level root).",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /measured",
+            "type": "web",
+            "start": "-2s",
+            "duration": "80ms"
+          },
+          {
+            "span_id": 2,
+            "parent_id": 1,
+            "service": "web",
+            "name": "child.work",
+            "resource": "work",
+            "start": "-1.99s",
+            "duration": "25ms",
+            "attributes": {
+              "_dd.measured": 1
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "measured_span"
+}

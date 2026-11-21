@@ -1,0 +1,26 @@
+{
+  "comment": "SQL obfuscation with quantizable literals: SQL quantizer (values -> ?), dbms-specific branch (db.type tag), sql.tables metadata extraction.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "db",
+            "name": "sql.query",
+            "resource": "SELECT * FROM users WHERE id = 42 AND email = 'a@b.com'",
+            "type": "sql",
+            "start": "-2s",
+            "duration": "40ms",
+            "attributes": {
+              "db.type": "postgresql"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "sql_obfuscation"
+}

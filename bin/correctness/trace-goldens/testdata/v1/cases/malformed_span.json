@@ -1,0 +1,20 @@
+{
+  "comment": "Malformed-span branch: over-long name (truncated to max_service_len=100) and empty service (defaulted). Pins the normalizer's fix-not-drop behavior.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+            "start": "-2s",
+            "duration": "10ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "malformed_span"
+}

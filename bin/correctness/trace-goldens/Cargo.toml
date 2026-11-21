@@ -1,0 +1,25 @@
+[package]
+name = "trace-goldens"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+datadog-protos = { workspace = true }
+ddsketch = { workspace = true }
+go-duration = { workspace = true }
+protobuf = { workspace = true }
+rmp = { workspace = true }
+saluki-error = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+stele = { workspace = true }
+
+[dev-dependencies]
+saluki-components = { workspace = true }
+saluki-core = { workspace = true }

@@ -1,0 +1,30 @@
+{
+  "comment": "First-trace onboarding tags: with an install signature configured, the agent stamps the first trace of every service with _dd.install.id/type/time. Only visible in the trace writer output, so pinned by the wire-level trace capture.",
+  "config": {
+    "install_signature": {
+      "install_id": "install-abc123",
+      "install_type": "manual",
+      "install_time": 1700000000
+    }
+  },
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /first-trace",
+            "type": "web",
+            "start": "-2s",
+            "duration": "50ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "first_trace_tags"
+}

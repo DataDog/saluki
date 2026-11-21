@@ -1,0 +1,41 @@
+{
+  "comment": "Base scenario: web root + sql child, priority 1 (user keep). All other cases build on the branches this covers (decode, normalize, top-level compute, priority sampling, basic stats aggregation).",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /home",
+            "type": "web",
+            "start": "-2s",
+            "duration": "100ms",
+            "attributes": {
+              "http.method": "GET",
+              "http.status_code": "200",
+              "http.url": "http://example.com/home"
+            }
+          },
+          {
+            "span_id": 2,
+            "parent_id": 1,
+            "service": "web-db",
+            "name": "sql.query",
+            "resource": "SELECT * FROM users",
+            "type": "sql",
+            "start": "-1.99s",
+            "duration": "50ms",
+            "attributes": {
+              "db.system": "postgres"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "default"
+}
