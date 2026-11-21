@@ -32,7 +32,8 @@ impl OtlpReceiver {
     pub(crate) fn check_endpoints(&self) -> Result<(), GenericError> {
         if self.grpc.endpoint.is_empty() && self.http.endpoint.is_empty() {
             return Err(generic_error!(
-                "The OTLP gRPC and HTTP receiver endpoints are both empty, so no OTLP server can start."
+                "The OTLP gRPC and HTTP receiver endpoints are both empty, so no OTLP server can start. Set \
+                 `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`."
             ));
         }
 

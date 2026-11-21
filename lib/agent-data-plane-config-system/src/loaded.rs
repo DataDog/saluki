@@ -627,6 +627,28 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_otlp_endpoint_disables_its_receiver_only_from_the_file() {
+        // An empty variable is unset, as in the Agent, so it keeps the default endpoint. An empty file value
+        // disables the receiver.
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_otlp_empty_endpoint_{}.yaml", std::process::id()));
+        std::fs::write(
+            &path,
+            "otlp_config:\n  receiver:\n    protocols:\n      grpc:\n        endpoint: \"\"\n",
+        )
+        .unwrap();
+        std::env::set_var("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT", "");
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+
+        std::env::remove_var("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT");
+        std::fs::remove_file(&path).ok();
+        let receiver = &loaded.local().domains.otlp.receiver;
+        assert_eq!(receiver.grpc.endpoint, "");
+        assert_eq!(receiver.http.endpoint, "localhost:4318");
+    }
+
+    #[test]
     fn trace_env_environment_variables_reach_the_model() {
         // The trace environment picks its source by whether a key was configured. An empty variable is
         // unset, as in the Agent, so it must not block a lower-precedence source. Global tags reach
