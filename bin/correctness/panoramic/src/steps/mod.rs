@@ -41,6 +41,7 @@ pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(exec::ExecFactory));
     registry.add_step(Box::new(file_contains::FileContainsFactory));
     registry.add_step(Box::new(http_check::HttpCheckFactory));
+    registry.add_step(Box::new(intake::IntakeFromFactory));
     registry.add_step(Box::new(intake_has_metric::IntakeHasMetricFactory));
     registry.add_step(Box::new(log::LogContainsFactory));
     registry.add_step(Box::new(log::LogNotContainsFactory));
