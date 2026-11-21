@@ -1,15 +1,33 @@
-use std::{collections::VecDeque, fmt};
+use std::fmt;
 
 use crate::{
-    data_model::event::{Event, EventKind, EventType},
+    data_model::event::{
+        eventd::EventD, log::Log, metric::Metric, service_check::ServiceCheck, trace::Trace, trace_stats::TraceStats,
+        Event, EventKind, EventType,
+    },
     topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
 };
 
 /// A fixed-size event buffer.
+///
+/// Events are stored in a separate collection per event type, rather than as a single collection of [`Event`]. `Event`
+/// is as large as its largest variant, so storing events by type means each event only takes up as much space as its
+/// own type, and code that handles a single event type can work on that collection directly.
+///
+/// The buffer holds at most `N` events in total, across all event types. Each per-type collection is allocated the
+/// first time an event of that type is pushed, with room for the remaining capacity of the buffer, so a buffer that
+/// holds a single event type makes exactly one allocation.
+///
+/// Iterating over the buffer yields events grouped by type, in a fixed type order, and in insertion order within each
+/// type. Relative order between events of different types isn't preserved.
 #[derive(Clone)]
 pub struct FixedSizeEventBuffer<const N: usize> {
-    events: VecDeque<Event>,
-    seen_event_types: EventType,
+    metrics: Vec<Metric>,
+    eventds: Vec<EventD>,
+    service_checks: Vec<ServiceCheck>,
+    logs: Vec<Log>,
+    traces: Vec<Trace>,
+    trace_stats: Vec<TraceStats>,
 }
 
 impl<const N: usize> FixedSizeEventBuffer<N> {
@@ -19,106 +37,122 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
     }
 
     /// Returns the number of events in the event buffer.
+    #[inline]
     pub fn len(&self) -> usize {
-        self.events.len()
+        self.metrics.len()
+            + self.eventds.len()
+            + self.service_checks.len()
+            + self.logs.len()
+            + self.traces.len()
+            + self.trace_stats.len()
     }
 
     /// Returns `true` if the event buffer contains no events.
     pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
+        self.len() == 0
     }
 
     /// Returns `true` if the event buffer has no remaining capacity.
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.len() == self.capacity()
     }
 
+    /// Returns the set of event types currently present in the event buffer.
+    pub fn event_types(&self) -> EventType {
+        let mut event_types = EventType::none();
+        if !self.metrics.is_empty() {
+            event_types |= EventType::Metric;
+        }
+        if !self.eventds.is_empty() {
+            event_types |= EventType::EventD;
+        }
+        if !self.service_checks.is_empty() {
+            event_types |= EventType::ServiceCheck;
+        }
+        if !self.logs.is_empty() {
+            event_types |= EventType::Log;
+        }
+        if !self.traces.is_empty() {
+            event_types |= EventType::Trace;
+        }
+        if !self.trace_stats.is_empty() {
+            event_types |= EventType::TraceStats;
+        }
+        event_types
+    }
+
     /// Returns `true` if this event buffer contains one or more events of the given event type.
     pub fn has_event_type(&self, event_type: EventType) -> bool {
-        self.seen_event_types.contains(event_type)
+        self.event_types().intersects(event_type)
     }
 
-    /// Clears the event buffer, removing all events and resetting the seen event types.
+    /// Clears the event buffer, removing all events.
+    ///
+    /// Allocated capacity is retained.
     pub fn clear(&mut self) {
-        self.events.clear();
-        self.seen_event_types = EventType::none();
+        self.metrics.clear();
+        self.eventds.clear();
+        self.service_checks.clear();
+        self.logs.clear();
+        self.traces.clear();
+        self.trace_stats.clear();
     }
 
-    /// Attempts to append an event to the back of the event buffer.
+    /// Attempts to append an event to the event buffer.
     ///
     /// If the event buffer is full, `Some` is returned with the original event.
+    #[inline]
     pub fn try_push(&mut self, event: Event) -> Option<Event> {
-        if self.len() == self.capacity() {
+        if self.is_full() {
             return Some(event);
         }
 
-        self.seen_event_types |= event.event_type();
-        self.events.push_back(event);
+        let remaining = N - self.len();
+        match event {
+            Event::Metric(metric) => push_reserving(&mut self.metrics, remaining, metric),
+            Event::EventD(eventd) => push_reserving(&mut self.eventds, remaining, eventd),
+            Event::ServiceCheck(service_check) => push_reserving(&mut self.service_checks, remaining, service_check),
+            Event::Log(log) => push_reserving(&mut self.logs, remaining, log),
+            Event::Trace(trace) => push_reserving(&mut self.traces, remaining, trace),
+            Event::TraceStats(stats) => push_reserving(&mut self.trace_stats, remaining, stats),
+        }
         None
     }
 
     /// Returns an iterator over the events of type `T` in the event buffer.
     pub fn events<T: EventKind>(&self) -> impl Iterator<Item = &T> {
-        // Skip the scan entirely when no events of this type are present.
-        let len = if self.has_event_type(T::EVENT_TYPE) {
-            self.events.len()
-        } else {
-            0
-        };
-        self.events.range(..len).filter_map(T::try_from_event_ref)
+        T::storage(self).iter()
     }
 
     /// Returns an iterator over mutable references to the events of type `T` in the event buffer.
     pub fn events_mut<T: EventKind>(&mut self) -> impl Iterator<Item = &mut T> {
-        // Skip the scan entirely when no events of this type are present.
-        let len = if self.has_event_type(T::EVENT_TYPE) {
-            self.events.len()
-        } else {
-            0
-        };
-        self.events.range_mut(..len).filter_map(T::try_from_event_mut)
+        T::storage_mut(self).iter_mut()
     }
 
     /// Consumes the event buffer, returning an iterator over the events of type `T` it held.
     ///
     /// Events of other types are dropped.
-    pub fn into_events<T: EventKind>(self) -> impl Iterator<Item = T> {
-        self.events
-            .into_iter()
-            .filter_map(|event| T::try_from_event(event).ok())
+    pub fn into_events<T: EventKind>(mut self) -> impl Iterator<Item = T> {
+        std::mem::take(T::storage_mut(&mut self)).into_iter()
     }
 
     /// Retains only the events of type `T` for which `predicate` returns `true`.
     ///
     /// Events of other types are kept. The remaining events keep their relative order.
-    pub fn retain_events<T, F>(&mut self, mut predicate: F)
+    pub fn retain_events<T, F>(&mut self, predicate: F)
     where
         T: EventKind,
         F: FnMut(&mut T) -> bool,
     {
-        if !self.has_event_type(T::EVENT_TYPE) {
-            return;
-        }
-
-        let mut seen_event_types = EventType::none();
-        self.events.retain_mut(|event| {
-            let keep = match T::try_from_event_mut(event) {
-                Some(value) => predicate(value),
-                None => true,
-            };
-            if keep {
-                seen_event_types |= event.event_type();
-            }
-            keep
-        });
-        self.seen_event_types = seen_event_types;
+        T::storage_mut(self).retain_mut(predicate);
     }
 
     /// Removes all events of type `T` from the event buffer, returning them.
     ///
     /// Events of other types are kept. Event order isn't preserved.
     pub fn take_events<T: EventKind>(&mut self) -> impl Iterator<Item = T> {
-        self.extract_events(|_: &T| true)
+        std::mem::take(T::storage_mut(self)).into_iter()
     }
 
     /// Removes the events of type `T` for which `predicate` returns `true`, returning them.
@@ -129,37 +163,62 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         T: EventKind,
         F: FnMut(&T) -> bool,
     {
-        let mut extracted = Vec::new();
-        if !self.has_event_type(T::EVENT_TYPE) {
-            return extracted.into_iter();
-        }
-
-        // Check each event in place, and only move the ones we extract.
-        let mut seen_event_types = EventType::none();
-        let mut i = 0;
-        while i < self.events.len() {
-            if T::try_from_event_ref(&self.events[i]).is_some_and(&mut predicate) {
-                // This moves the last event into slot `i`, so we check the same index again next.
-                let event = self.events.swap_remove_back(i).expect("index is in bounds");
-                let Ok(value) = T::try_from_event(event) else {
-                    unreachable!("event was already checked to be of type `T`");
-                };
-                extracted.push(value);
-            } else {
-                seen_event_types |= self.events[i].event_type();
-                i += 1;
-            }
-        }
-        self.seen_event_types = seen_event_types;
+        let extracted: Vec<T> = T::storage_mut(self).extract_if(.., |value| predicate(value)).collect();
         extracted.into_iter()
     }
+}
+
+/// Selects the collection that holds an event type in a [`FixedSizeEventBuffer`].
+///
+/// Every [`EventKind`] implements this trait, which lets the buffer's typed views go straight to the right
+/// collection. As it can't be named outside of this crate, it also keeps `EventKind` from being implemented elsewhere.
+pub trait EventStorage: Sized {
+    /// Returns the collection of this event type in the given event buffer.
+    fn storage<const N: usize>(buffer: &FixedSizeEventBuffer<N>) -> &Vec<Self>;
+
+    /// Returns the collection of this event type in the given event buffer, mutably.
+    fn storage_mut<const N: usize>(buffer: &mut FixedSizeEventBuffer<N>) -> &mut Vec<Self>;
+}
+
+macro_rules! impl_event_storage {
+    ($ty:ty, $field:ident) => {
+        impl EventStorage for $ty {
+            fn storage<const N: usize>(buffer: &FixedSizeEventBuffer<N>) -> &Vec<Self> {
+                &buffer.$field
+            }
+
+            fn storage_mut<const N: usize>(buffer: &mut FixedSizeEventBuffer<N>) -> &mut Vec<Self> {
+                &mut buffer.$field
+            }
+        }
+    };
+}
+
+impl_event_storage!(Metric, metrics);
+impl_event_storage!(EventD, eventds);
+impl_event_storage!(ServiceCheck, service_checks);
+impl_event_storage!(Log, logs);
+impl_event_storage!(Trace, traces);
+impl_event_storage!(TraceStats, trace_stats);
+
+/// Pushes `item` onto `items`, reserving room for `remaining` items if this is the first allocation.
+#[inline]
+fn push_reserving<T>(items: &mut Vec<T>, remaining: usize, item: T) {
+    if items.capacity() == 0 {
+        items.reserve_exact(remaining);
+    }
+    items.push(item);
 }
 
 impl<const N: usize> Default for FixedSizeEventBuffer<N> {
     fn default() -> Self {
         Self {
-            events: VecDeque::with_capacity(N),
-            seen_event_types: EventType::none(),
+            metrics: Vec::new(),
+            eventds: Vec::new(),
+            service_checks: Vec::new(),
+            logs: Vec::new(),
+            traces: Vec::new(),
+            trace_stats: Vec::new(),
         }
     }
 }
@@ -191,16 +250,72 @@ impl<const N: usize> fmt::Debug for FixedSizeEventBuffer<N> {
         f.debug_struct("FixedSizeEventBuffer")
             .field("cap", &N)
             .field("len", &self.len())
+            .field("event_types", &self.event_types())
             .finish()
     }
 }
 
+/// An owning iterator over the events in a [`FixedSizeEventBuffer`].
+pub struct EventBufferIntoIter {
+    metrics: std::vec::IntoIter<Metric>,
+    eventds: std::vec::IntoIter<EventD>,
+    service_checks: std::vec::IntoIter<ServiceCheck>,
+    logs: std::vec::IntoIter<Log>,
+    traces: std::vec::IntoIter<Trace>,
+    trace_stats: std::vec::IntoIter<TraceStats>,
+}
+
+impl Iterator for EventBufferIntoIter {
+    type Item = Event;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        // Events are yielded type by type, so build each event directly from the first non-empty collection rather
+        // than chaining iterators, which would move each event through every level of the chain.
+        if let Some(metric) = self.metrics.next() {
+            return Some(Event::Metric(metric));
+        }
+        if let Some(eventd) = self.eventds.next() {
+            return Some(Event::EventD(eventd));
+        }
+        if let Some(service_check) = self.service_checks.next() {
+            return Some(Event::ServiceCheck(service_check));
+        }
+        if let Some(log) = self.logs.next() {
+            return Some(Event::Log(log));
+        }
+        if let Some(trace) = self.traces.next() {
+            return Some(Event::Trace(trace));
+        }
+        self.trace_stats.next().map(Event::TraceStats)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.metrics.len()
+            + self.eventds.len()
+            + self.service_checks.len()
+            + self.logs.len()
+            + self.traces.len()
+            + self.trace_stats.len();
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for EventBufferIntoIter {}
+
 impl<const N: usize> IntoIterator for FixedSizeEventBuffer<N> {
     type Item = Event;
-    type IntoIter = std::collections::vec_deque::IntoIter<Event>;
+    type IntoIter = EventBufferIntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.events.into_iter()
+        EventBufferIntoIter {
+            metrics: self.metrics.into_iter(),
+            eventds: self.eventds.into_iter(),
+            service_checks: self.service_checks.into_iter(),
+            logs: self.logs.into_iter(),
+            traces: self.traces.into_iter(),
+            trace_stats: self.trace_stats.into_iter(),
+        }
     }
 }
 
@@ -487,6 +602,58 @@ mod tests {
 
         let remaining: Vec<_> = buffer.into_iter().collect();
         assert_eq!(remaining, [event1, event4]);
+    }
+
+    #[test]
+    fn allocates_each_event_type_once_with_remaining_capacity() {
+        let mut buffer = FixedSizeEventBuffer::<8>::default();
+        assert_eq!(buffer.metrics.capacity(), 0);
+        assert_eq!(buffer.eventds.capacity(), 0);
+
+        // The first event of a type reserves room for the rest of the buffer, so a buffer holding a single event type
+        // makes exactly one allocation.
+        assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 1.0))).is_none());
+        assert_eq!(buffer.metrics.capacity(), 8);
+
+        // A second event type only reserves what's left.
+        assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 2.0))).is_none());
+        assert!(buffer.try_push(Event::EventD(EventD::new("title", "text"))).is_none());
+        assert_eq!(buffer.eventds.capacity(), 6);
+
+        // Filling the rest of the buffer with metrics doesn't reallocate.
+        for i in 0..5 {
+            assert!(buffer
+                .try_push(Event::Metric(Metric::counter("foo", i as f64)))
+                .is_none());
+        }
+        assert!(buffer.is_full());
+        assert_eq!(buffer.metrics.capacity(), 8);
+        assert_eq!(buffer.eventds.capacity(), 6);
+    }
+
+    #[test]
+    fn iterates_grouped_by_event_type_in_insertion_order() {
+        let mut buffer = FixedSizeEventBuffer::<8>::default();
+        let events = [
+            Event::EventD(EventD::new("a", "a")),
+            Event::Metric(Metric::counter("b", 1.0)),
+            Event::ServiceCheck(ServiceCheck::new("c", CheckStatus::Ok)),
+            Event::Metric(Metric::counter("d", 1.0)),
+            Event::EventD(EventD::new("e", "e")),
+        ];
+        for event in events.iter().cloned() {
+            assert!(buffer.try_push(event).is_none());
+        }
+
+        let expected = vec![
+            events[1].clone(),
+            events[3].clone(),
+            events[0].clone(),
+            events[4].clone(),
+            events[2].clone(),
+        ];
+        let owned: Vec<Event> = buffer.into_iter().collect();
+        assert_eq!(owned, expected);
     }
 
     #[test]

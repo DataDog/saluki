@@ -4,6 +4,8 @@ use std::fmt;
 
 use bitmask_enum::bitmask;
 
+use crate::topology::interconnect::EventStorage;
+
 pub mod metric;
 use self::metric::Metric;
 
@@ -86,15 +88,40 @@ impl fmt::Display for EventType {
     }
 }
 
-mod sealed {
-    pub trait Sealed {}
+impl EventType {
+    /// Returns the combined in-memory size, in bytes, of one item of each event type in this set.
+    ///
+    /// Event buffers store each event type in its own collection, so this is the per-item cost of a buffer that may
+    /// hold every event type in this set. For a single event type, this is the size of that event type alone.
+    pub fn combined_item_size(self) -> usize {
+        let mut size = 0;
+        if self.contains(Self::Metric) {
+            size += std::mem::size_of::<Metric>();
+        }
+        if self.contains(Self::EventD) {
+            size += std::mem::size_of::<EventD>();
+        }
+        if self.contains(Self::ServiceCheck) {
+            size += std::mem::size_of::<ServiceCheck>();
+        }
+        if self.contains(Self::Log) {
+            size += std::mem::size_of::<Log>();
+        }
+        if self.contains(Self::Trace) {
+            size += std::mem::size_of::<Trace>();
+        }
+        if self.contains(Self::TraceStats) {
+            size += std::mem::size_of::<TraceStats>();
+        }
+        size
+    }
 }
 
 /// A type of telemetry event, such as [`Metric`] or [`Trace`].
 ///
 /// This lets code work with one event type generically: for example, event buffers provide typed views over just the
 /// events of a given type. It's implemented for each type an [`Event`] can hold, and can't be implemented elsewhere.
-pub trait EventKind: sealed::Sealed + Sized + 'static {
+pub trait EventKind: EventStorage + 'static {
     /// The event type.
     const EVENT_TYPE: EventType;
 
@@ -116,8 +143,6 @@ pub trait EventKind: sealed::Sealed + Sized + 'static {
 
 macro_rules! impl_event_kind {
     ($ty:ty, $variant:ident) => {
-        impl sealed::Sealed for $ty {}
-
         impl EventKind for $ty {
             const EVENT_TYPE: EventType = EventType::$variant;
 

@@ -1,0 +1,7 @@
+---
+enhancements:
+  - |
+    Reduce the memory used by metrics waiting to be processed. Each metric now takes up only as much memory as a
+    metric needs, rather than as much as the largest type of event, which roughly halves the memory held by queued
+    metrics when a downstream component falls behind. The calculated memory bounds reported at startup are lower to
+    match.
