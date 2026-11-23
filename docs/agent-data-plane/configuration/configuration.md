@@ -605,54 +605,53 @@ translate, such as a port above 65535.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                                                       | Description                                     |
-| ---------------------------------------------------------------- | ----------------------------------------------- |
-| `additional_endpoints`                                           | Dual-ship to extra endpoints                    |
-| `aggregator_stop_timeout`                                        | Timeout (s) for aggregator flush on stop        |
-| `apm_config.connection_limit`                                    | APM receiver connection limit                   |
-| `apm_config.features`                                            | Beta APM feature flags                          |
-| `apm_config.filter_tags.reject`                                  | Tags that drop a trace                          |
-| `apm_config.filter_tags.require`                                 | Tags a trace must have to be kept               |
-| `apm_config.filter_tags_regex.reject`                            | Tag patterns that drop a trace                  |
-| `apm_config.filter_tags_regex.require`                           | Tag patterns a trace must match to be kept      |
-| `apm_config.ignore_resources`                                    | Resource patterns whose traces are dropped      |
-| `apm_config.max_cpu_percent`                                     | trace-agent CPU target, in percent              |
-| `apm_config.max_memory`                                          | trace-agent memory target, in bytes             |
-| `apm_config.max_payload_size`                                    | Maximum trace payload size, in bytes            |
-| `apm_config.obfuscation.sql_exec_plan.enabled`                   | Obfuscate SQL execution plans                   |
-| `apm_config.obfuscation.sql_exec_plan_normalize.enabled`         | Normalize SQL execution plans                   |
-| `apm_config.receiver_timeout`                                    | APM receiver request timeout, in seconds        |
-| `apm_config.sql_obfuscation_mode`                                | SQL obfuscator mode                             |
-| `apm_config.telemetry.enabled`                                   | Enable the tracer telemetry proxy               |
-| `cri_socket_path`                                                | containerd/CRI socket path                      |
-| `data_plane.experimental.otlp.proxy.logs`                        | Proxy OTLP logs to the Agent                    |
-| `data_plane.experimental.otlp.proxy.metrics`                     | Proxy OTLP metrics to the Agent                 |
-| `data_plane.experimental.otlp.proxy.traces`                      | Proxy OTLP traces to the Agent                  |
-| `dd_url`                                                         | Override intake endpoint URL                    |
-| `dogstatsd_mapper_cache_size`                                    | Mapper result LRU cache size                    |
-| `dogstatsd_metrics_stats_enable`                                 | Enable per-metric debug stats                   |
-| `dogstatsd_queue_size`                                           | Packet channel buffer size                      |
-| `dogstatsd_workers_count`                                        | Number of DSD processing workers                |
-| `env`                                                            | Agent environment name                          |
-| `experimental.metrics_endpoint_routing.metric_allowlist`         | Per-endpoint metric allow lists                 |
-| `experimental.metrics_endpoint_routing.metric_prefix_allowlist`  | Per-endpoint metric-prefix allow lists          |
-| `forwarder_apikey_validation_interval`                           | API key check interval (minutes)                |
-| `forwarder_high_prio_buffer_size`                                | High-priority request queue size                |
-| `forwarder_num_workers`                                          | Concurrent forwarder workers                    |
-| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         |
-| `log_enabled`                                                    | Deprecated name for `logs_enabled`              |
-| `log_level`                                                      | Log verbosity directives                        |
-| `logs_enabled`                                                   | Enable the logs agent                           |
-| `min_tls_version`                                                | Minimum TLS version for HTTPS connections       |
-| `multi_region_failover.enabled`                                  | Enable multi-region failover mode               |
-| `otlp_config.logs.enabled`                                       | Enable OTLP logs ingestion                      |
-| `secret_backend_command`                                         | Path to the Agent secret-fetch executable       |
-| `secret_refresh_on_api_key_failure_interval`                     | Minutes between secret refreshes after a 403    |
-| `serializer_experimental_use_v3_api.sketches.shadow_sample_rate` | V3 sketches shadow sample rate                  |
-| `serializer_zstd_compressor_level`                               | Zstd compression level (Agent)                  |
-| `skip_ssl_validation`                                            | Skip TLS cert validation                        |
-| `statsd_forward_host`                                            | UDP packet forwarding destination host          |
-| `telemetry.dogstatsd_origin`                                     | Per-origin processed metrics and context counts |
+| Config Key                                                      | Description                                     |
+| --------------------------------------------------------------- | ----------------------------------------------- |
+| `additional_endpoints`                                          | Dual-ship to extra endpoints                    |
+| `aggregator_stop_timeout`                                       | Timeout (s) for aggregator flush on stop        |
+| `apm_config.connection_limit`                                   | APM receiver connection limit                   |
+| `apm_config.features`                                           | Beta APM feature flags                          |
+| `apm_config.filter_tags.reject`                                 | Tags that drop a trace                          |
+| `apm_config.filter_tags.require`                                | Tags a trace must have to be kept               |
+| `apm_config.filter_tags_regex.reject`                           | Tag patterns that drop a trace                  |
+| `apm_config.filter_tags_regex.require`                          | Tag patterns a trace must match to be kept      |
+| `apm_config.ignore_resources`                                   | Resource patterns whose traces are dropped      |
+| `apm_config.max_cpu_percent`                                    | trace-agent CPU target, in percent              |
+| `apm_config.max_memory`                                         | trace-agent memory target, in bytes             |
+| `apm_config.max_payload_size`                                   | Maximum trace payload size, in bytes            |
+| `apm_config.obfuscation.sql_exec_plan.enabled`                  | Obfuscate SQL execution plans                   |
+| `apm_config.obfuscation.sql_exec_plan_normalize.enabled`        | Normalize SQL execution plans                   |
+| `apm_config.receiver_timeout`                                   | APM receiver request timeout, in seconds        |
+| `apm_config.sql_obfuscation_mode`                               | SQL obfuscator mode                             |
+| `apm_config.telemetry.enabled`                                  | Enable the tracer telemetry proxy               |
+| `cri_socket_path`                                               | containerd/CRI socket path                      |
+| `data_plane.experimental.otlp.proxy.logs`                       | Proxy OTLP logs to the Agent                    |
+| `data_plane.experimental.otlp.proxy.metrics`                    | Proxy OTLP metrics to the Agent                 |
+| `data_plane.experimental.otlp.proxy.traces`                     | Proxy OTLP traces to the Agent                  |
+| `dd_url`                                                        | Override intake endpoint URL                    |
+| `dogstatsd_mapper_cache_size`                                   | Mapper result LRU cache size                    |
+| `dogstatsd_metrics_stats_enable`                                | Enable per-metric debug stats                   |
+| `dogstatsd_queue_size`                                          | Packet channel buffer size                      |
+| `dogstatsd_workers_count`                                       | Number of DSD processing workers                |
+| `env`                                                           | Agent environment name                          |
+| `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                 |
+| `experimental.metrics_endpoint_routing.metric_prefix_allowlist` | Per-endpoint metric-prefix allow lists          |
+| `forwarder_apikey_validation_interval`                          | API key check interval (minutes)                |
+| `forwarder_high_prio_buffer_size`                               | High-priority request queue size                |
+| `forwarder_num_workers`                                         | Concurrent forwarder workers                    |
+| `forwarder_stop_timeout`                                        | Timeout (s) for forwarder graceful stop         |
+| `log_enabled`                                                   | Deprecated name for `logs_enabled`              |
+| `log_level`                                                     | Log verbosity directives                        |
+| `logs_enabled`                                                  | Enable the logs agent                           |
+| `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
+| `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
+| `otlp_config.logs.enabled`                                      | Enable OTLP logs ingestion                      |
+| `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
+| `secret_refresh_on_api_key_failure_interval`                    | Minutes between secret refreshes after a 403    |
+| `serializer_zstd_compressor_level`                              | Zstd compression level (Agent)                  |
+| `skip_ssl_validation`                                           | Skip TLS cert validation                        |
+| `statsd_forward_host`                                           | UDP packet forwarding destination host          |
+| `telemetry.dogstatsd_origin`                                    | Per-origin processed metrics and context counts |
 
 ### `additional_endpoints`
 
@@ -1152,10 +1151,6 @@ ADP does not observe the interval itself: it does not pace, delay, or count retr
 timing continues to come from the forwarder's own `forwarder_backoff_*` settings. A negative value is
 clamped to `0` with a warning, matching the Agent's own tolerance of the value.
 
-### `serializer_experimental_use_v3_api.sketches.shadow_sample_rate`
-
-ADP defaults to `0.001` (0.1%) instead of the Core Agent's `0`, including when Core streams its default. Explicit values are honored: zero or negative values disable shadowing; values at least `1` sample every batch. Samples eligible V2 sketch batches independently per destination. Authoritative V3 sketches are not shadowed.
-
 ### `serializer_zstd_compressor_level`
 
 The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`; when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
@@ -1569,6 +1564,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `serializer_experimental_use_v3_api.sketches.max_compressed_payload_size`                  | Max compressed V3 sketch payload size              |
 | `serializer_experimental_use_v3_api.sketches.max_points_per_payload`                       | Max data points per V3 sketch payload              |
 | `serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size`                | Max uncompressed V3 sketch payload size            |
+| `serializer_experimental_use_v3_api.sketches.shadow_sample_rate`                           | V3 sketches shadow sample rate                     |
 | `serializer_experimental_use_v3_api.sketches.shadow_sites`                                 | V3 sketches shadow sites                           |
 | `serializer_max_payload_size`                                                              | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                                                       | Max compressed V2 series payload size              |
@@ -1904,6 +1900,10 @@ Defaults to `0`. Zero or negative values disable the sketch point limit.
 ### `serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size`
 
 Defaults to `0`. Zero or negative values use `serializer_max_uncompressed_payload_size`.
+
+### `serializer_experimental_use_v3_api.sketches.shadow_sample_rate`
+
+ADP defaults to `0.001` (0.1%) instead of the Core Agent's `0`, including when Core streams its default. Explicit values are honored: zero or negative values disable shadowing; values at least `1` sample every batch. Samples eligible V2 sketch batches independently per destination. Authoritative V3 sketches are not shadowed.
 
 ### `serializer_experimental_use_v3_api.sketches.shadow_sites`
 

@@ -40,6 +40,8 @@ use tracing::warn;
 
 use crate::source::SourceTree;
 
+const DEFAULT_SKETCH_SHADOW_SAMPLE_RATE: f64 = 0.001;
+
 /// Translates a [`DatadogConfiguration`] into a [`SalukiConfiguration`].
 ///
 /// Construct with [`DatadogTranslator::new`] and call [`DatadogTranslator::translate`]: it drives
@@ -1899,7 +1901,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         {
             value
         } else {
-            0.001
+            DEFAULT_SKETCH_SHADOW_SAMPLE_RATE
         };
     }
 
@@ -2084,7 +2086,7 @@ mod tests {
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use serde_json::{json, Value};
 
-    use super::DatadogTranslator;
+    use super::{DatadogTranslator, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE};
     use crate::saluki_only::SalukiOnly;
     use crate::source::SourceTree;
 
@@ -2115,12 +2117,15 @@ mod tests {
         let key = "serializer_experimental_use_v3_api.sketches.shadow_sample_rate";
         let (config, errors) = translate_explicit(json!({}));
         assert!(errors.is_none(), "{errors:?}");
-        assert_eq!(config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate, 0.001);
+        assert_eq!(
+            config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate,
+            DEFAULT_SKETCH_SHADOW_SAMPLE_RATE
+        );
 
         // A streamed Core default must not disable ADP sampling; an explicit zero must still opt out.
         for (value, provenance, expected) in [
-            (0.0, StreamProvenance::Default, 0.001),
-            (0.001, StreamProvenance::Default, 0.001),
+            (0.0, StreamProvenance::Default, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE),
+            (0.001, StreamProvenance::Default, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE),
             (0.0, StreamProvenance::Explicit, 0.0),
             (0.5, StreamProvenance::Explicit, 0.5),
             (-1.0, StreamProvenance::Explicit, -1.0),
