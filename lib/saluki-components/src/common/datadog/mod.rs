@@ -125,9 +125,9 @@ pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
 
 /// Returns the env a trace is sampled under.
 ///
-/// A Datadog trace is sampled under its tracer payload's env, as `processedTraceV1` sets `TracerEnv` from
-/// `TracerPayload.Env()` (`agent.go`): the env attributes a v0.x payload's spans keep are ignored. An OTLP trace is
-/// sampled under its root span's env, else the first span env, else the payload env, as `traceutil.GetEnv`.
+/// A Datadog trace is sampled under its tracer payload's env, as in the trace-agent: the env attributes a v0.x
+/// payload's spans keep are ignored. An OTLP trace is sampled under its root span's env, else the first span env, else
+/// the payload env, as the trace-agent does.
 pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
     if trace.ingest_info() == TraceIngestInfo::Datadog {
         return (!trace.payload.env.is_empty()).then_some(&trace.payload.env);
@@ -348,7 +348,7 @@ mod tests {
             receiver_sampling_rate: 1.0,
         };
 
-        // A v0.4 span keeps its `env` tag as an attribute; the normalized payload env wins, as `TracerEnv` does.
+        // A v0.4 span keeps its `env` tag as an attribute; the normalized payload env wins, as in the trace-agent.
         let datadog = trace(TraceIngestInfo::Datadog, "payload-env");
         assert_eq!(get_trace_env(&datadog, 0).map(|env| env.as_ref()), Some("payload-env"));
         assert_eq!(get_trace_env(&trace(TraceIngestInfo::Datadog, ""), 0), None);

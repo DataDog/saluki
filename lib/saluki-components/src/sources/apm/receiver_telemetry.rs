@@ -101,7 +101,7 @@ pub(super) enum DropReason {
     PayloadTooLarge,
     Timeout,
     UnexpectedEof,
-    /// The MessagePack body ended before the value being read was complete, the reference's `msgp.ErrShortBytes`.
+    /// The MessagePack body ended before the value being read was complete.
     MsgpShortBytes,
 }
 
@@ -127,7 +127,7 @@ impl DropReason {
 
     /// Returns the `error` tag value of `receiver.error`, as the trace-agent names it.
     ///
-    /// The trace-agent doesn't single out short input there, so it is a `decoding-error`.
+    /// The trace-agent doesn't single out short input in this tag, so it is a `decoding-error`.
     pub(super) fn error_tag(self) -> &'static str {
         match self {
             Self::DecodingError | Self::MsgpShortBytes => "decoding-error",
@@ -329,7 +329,7 @@ impl ReceiverTelemetry {
             events.push(counter(METRIC_ERROR, tag_set, value, interval));
         }
 
-        // `httpFormatError` tags its count differently from `httpDecodingError`.
+        // The trace-agent tags media type errors differently from decoding errors.
         for (version, value) in window.format_errors {
             let mut tag_set = TagSet::with_capacity(2);
             tag_set.insert_tag(MetaString::from_static("error:format-error"));

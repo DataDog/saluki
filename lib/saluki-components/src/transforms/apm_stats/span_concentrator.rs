@@ -344,7 +344,7 @@ fn align_ts(ts: u64, bsize: u64) -> u64 {
     ts - ts % bsize
 }
 
-/// Returns the start of the bucket a span counts in, as the trace-agent's `addSpan` computes it.
+/// Returns the start of the bucket a span counts in, as the trace-agent computes it.
 ///
 /// The trace-agent's stat spans hold `int64` times, so a start past `i64::MAX` is negative there, and the end wraps
 /// rather than overflows; `%` truncates toward zero in both languages. An end before the oldest bucket counts in the
@@ -532,7 +532,6 @@ mod tests {
         assert_eq!(buckets, [align_ts(now, B)]);
     }
 
-    // `TestConcentratorFutureClamp` in `concentrator_test.go`.
     #[test]
     fn a_span_that_ends_in_the_future_counts_in_the_current_bucket() {
         let now = 1_000 * BUCKET_DURATION_NS + 3;

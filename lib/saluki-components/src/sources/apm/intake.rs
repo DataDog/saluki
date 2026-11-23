@@ -131,25 +131,25 @@ impl EndpointVersion {
         }
     }
 
-    /// Returns whether the endpoint rejects MessagePack bodies, as `handleWithVersion` does below v0.3.
+    /// Returns whether the endpoint rejects MessagePack bodies, as the trace-agent does below v0.3.
     fn rejects_msgpack(self) -> bool {
         matches!(self, Self::V02)
     }
 
-    /// Returns whether the endpoint answers `OK` rather than the rates, as `replyOK` does below v0.4.
+    /// Returns whether the endpoint answers `OK` rather than the rates, as the trace-agent does below v0.4.
     fn replies_ok(self) -> bool {
         matches!(self, Self::V02 | Self::V03)
     }
 }
 
-/// Body of the `415 Unsupported Media Type` answer to a MessagePack body on an endpoint that doesn't take one, as
-/// `httpFormatError` writes it.
+/// Body of the `415 Unsupported Media Type` answer to a MessagePack body on an endpoint that doesn't take one, as the
+/// trace-agent writes it.
 const UNSUPPORTED_MSGPACK_MESSAGE: &str = "unsupported media type: \"application/msgpack\"";
 
-/// Body of the `400 Bad Request` answer to a MessagePack body that ends early, `msgp.ErrShortBytes`'s message.
+/// Body of the `400 Bad Request` answer to a MessagePack body that ends early, the trace-agent's message.
 const MSGP_SHORT_BYTES_MESSAGE: &str = "msgp: too few bytes left to read object";
 
-/// Returns whether a request's body is MessagePack, as the trace-agent's `getMediaType` reads `Content-Type`.
+/// Returns whether a request's body is MessagePack, as the trace-agent reads `Content-Type`.
 ///
 /// Only a bare `application/msgpack`, in any case and with surrounding whitespace, counts. Go also reads one with
 /// parameters as MessagePack, if they parse; such a request isn't served natively, so the trace-agent still answers it
@@ -262,7 +262,7 @@ impl TraceIntake {
             Ok(decoded) => decoded,
             Err(error) => {
                 debug!(%error, "Cannot decode {version:?} traces payload.");
-                // `msgp.ErrShortBytes` is counted apart, and answered with its own message.
+                // Short input is counted apart, and answered with its own message.
                 let (reason, message) = match error {
                     DecodeError::ShortBytes { .. } => (DropReason::MsgpShortBytes, MSGP_SHORT_BYTES_MESSAGE.into()),
                     error => (DropReason::DecodingError, error.to_string()),
@@ -273,8 +273,8 @@ impl TraceIntake {
         };
         let mut traces = decoded.traces;
 
-        // A v0.x payload has no tracer fields of its own: as `decodeConvertedTracerPayload`, they come from the
-        // request headers, as sent.
+        // A v0.x payload has no tracer fields of its own: as in the trace-agent, they come from the request headers,
+        // as sent.
         if version != EndpointVersion::V10 {
             let header = |name: &HeaderName| shared_meta(header_str(headers, name).unwrap_or_default());
             let (lang, lang_version, tracer_version) = (
@@ -290,7 +290,7 @@ impl TraceIntake {
         }
 
         // A v1.0 payload's own container ID wins over the request's. A v0.x payload has none, so its container is
-        // the request's, as `decodeConvertedTracerPayload` sets it.
+        // the request's, as in the trace-agent.
         let payload_container_id = traces.first().map(|trace| trace.payload.container_id.clone());
         let container = match payload_container_id {
             Some(container_id) if !container_id.is_empty() => {
@@ -763,12 +763,11 @@ mod tests {
         }
     }
 
-    // `TestHandleWithVersionRejectCrossSite` and the v0.2 case of `TestReceiverMsgpackDecoder` in `api_test.go`.
     #[tokio::test]
     async fn a_msgpack_payload_on_v02_is_an_unsupported_media_type() {
         let (intake, mut traces) = intake(config());
 
-        // As `handleWithVersion`, the media type is checked before the cross-site header.
+        // As in the trace-agent, the media type is checked before the cross-site header.
         let headers = [MSGPACK, ("Sec-Fetch-Site", "cross-site")];
         let (status, response_headers, body) =
             send_to(&intake, EndpointVersion::V02, sized_request(&headers, v04_payload(1))).await;
@@ -805,7 +804,7 @@ mod tests {
         assert_eq!(body, PUBLISHED_RATES_BODY);
         assert_eq!(traces.try_recv().unwrap().len(), 1);
 
-        // `replyOK` sizes `OK` too.
+        // The `OK` reply is sized too.
         let events = intake.telemetry.take_window_events();
         let endpoints: Vec<_> = events
             .iter()

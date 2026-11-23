@@ -284,8 +284,8 @@ impl ApmStats {
         };
         let hostname = tracer_hostname.cloned().unwrap_or_else(|| self.agent_hostname.clone());
 
-        // Datadog traces read the version, git commit SHA and language from the tracer payload alone, as
-        // `processedTraceV1` does (agent.go): the `version` and `_dd.git.commit.sha` attributes a v0.x payload's spans
+        // Datadog traces read the version, git commit SHA and language from the tracer payload alone, as the
+        // trace-agent does: the `version` and `_dd.git.commit.sha` attributes a v0.x payload's spans
         // keep are ignored. The container's tags fill in what the payload leaves empty.
         let is_datadog = trace.ingest_info() == TraceIngestInfo::Datadog;
 
@@ -319,7 +319,7 @@ impl ApmStats {
 
         // For OTLP traces, the commit SHA set on the tracer payload wins over the root span's. Datadog traces carry their
         // tracer payload attributes on the receiver metadata, and a payload SHA that's present wins even when empty, as
-        // in `processedTraceV1` (agent.go). The container's tag comes last.
+        // in the trace-agent. The container's tag comes last.
         let git_commit_sha = if is_datadog {
             trace
                 .payload
@@ -1981,8 +1981,8 @@ mod tests {
     #[test]
     fn datadog_payload_git_commit_sha_wins_over_container_tags_even_when_empty() {
         let transform = transform_with_workload_provider(None);
-        // `processedTraceV1` (agent.go) lets a payload attribute that's present override the container's SHA, even an
-        // empty one; only an absent attribute falls back to the container's tag.
+        // As in the trace-agent, a payload attribute that's present overrides the container's SHA, even an empty one;
+        // only an absent attribute falls back to the container's tag.
         let git_commit_sha = |payload_sha: Option<&str>| {
             let mut trace = Trace::new(vec![make_test_span("svc", "op", "res")], TraceIngestInfo::Datadog);
             let mut receiver = ReceiverMetadata::new();
@@ -2189,7 +2189,7 @@ mod tests {
 
         assert_eq!(key.version, "payload-version");
         assert_eq!(key.git_commit_sha, "payload-sha");
-        // No `Datadog-Meta-Lang` header: the language stays empty, as `TracerPayload.LanguageName()` would be.
+        // No `Datadog-Meta-Lang` header: the language stays empty, as in the trace-agent.
         assert_eq!(key.lang, "");
     }
 
