@@ -1,5 +1,4 @@
-//! Telemetry received by a `datadog-intake` server, its normalization, the criteria a metric is matched against, and
-//! the attribution of requests to their sender.
+//! Telemetry received by a `datadog-intake` server and the steps that assert on it.
 
 mod collected;
 pub use self::collected::CollectedData;
