@@ -9,6 +9,4 @@ otlp_config:
   receiver:
     protocols:
       grpc:
-        # No endpoint here: the adp participant's environment sets it for ADP and the Agent alike. The agent
-        # participant takes the harness default.
         max_recv_msg_size_mib: 4
