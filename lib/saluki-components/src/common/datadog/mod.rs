@@ -199,8 +199,8 @@ pub fn get_root_span_index(spans: &[Span]) -> Option<usize> {
 /// Marks the spans the tracer flagged as top-level (`_dd.top_level` = 1) with `_top_level`, in-place.
 ///
 /// Used instead of [`compute_top_level`] when the client already computed top-level spans. Datadog traces read the
-/// flag as Go's `traceutil.UpdateTracerTopLevelV1` does, through [`as_double_value`]. OTLP traces read it as a number
-/// only, as `traceutil.UpdateTracerTopLevel` reads span metrics on Go's OTLP path.
+/// flag through [`as_double_value`]. OTLP traces read it as a number only, as the trace-agent reads span metrics on
+/// its OTLP path.
 pub fn update_tracer_top_level(spans: &mut [Span], ingest_info: TraceIngestInfo) {
     let read_flag = match ingest_info {
         TraceIngestInfo::Datadog => as_double_value,
@@ -214,11 +214,11 @@ pub fn update_tracer_top_level(spans: &mut [Span], ingest_info: TraceIngestInfo)
     }
 }
 
-/// Reads an attribute as a float the way Go's `idx.AnyValue.AsDoubleValue` does: numbers as-is, a string parsed as a
-/// float, and a bool as 1 or 0. Other types read as `None`.
+/// Reads an attribute as a float the way the trace-agent does: numbers as-is, a string parsed as a float, and a bool
+/// as 1 or 0. Other types read as `None`.
 ///
-/// shortcut: Rust's float parsing rejects Go's hexadecimal (`0x1p0`) and underscore forms, upgrade if a tracer sends
-/// them.
+/// shortcut: Rust's float parsing rejects the hexadecimal (`0x1p0`) and underscore forms the trace-agent accepts,
+/// upgrade if a tracer sends them.
 pub fn as_double_value(value: &AttributeValue) -> Option<f64> {
     match value {
         AttributeValue::String(s) => s.parse().ok(),

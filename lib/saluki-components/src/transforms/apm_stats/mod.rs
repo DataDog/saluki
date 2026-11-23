@@ -172,7 +172,7 @@ impl ApmStats {
     }
 
     fn process_trace(&mut self, trace: &Trace) {
-        // The client already sent stats for this payload (agent.go `ProcessV1`).
+        // The client already sent stats for this payload.
         if trace.payload.receiver().client_computed_stats {
             return;
         }
@@ -270,8 +270,8 @@ impl ApmStats {
             });
 
         // OTLP traces use the payload hostname, then the root span's `_dd.hostname`. Datadog traces use only the tracer
-        // payload hostname, as `processedTraceV1` does (agent.go); the decoders promote a v0.x root `_dd.hostname` onto
-        // the payload. Both fall back to the agent hostname (concentrator.go).
+        // payload hostname, as the trace-agent does; the decoders promote a v0.x root `_dd.hostname` onto the payload.
+        // Both fall back to the agent hostname.
         let tracer_hostname = match trace.ingest_info() {
             TraceIngestInfo::Otlp { .. } => get_tracer_hostname(trace),
             TraceIngestInfo::Datadog => Some(&trace.payload.hostname).filter(|hostname| !hostname.is_empty()),
@@ -825,7 +825,7 @@ mod tests {
             receiver_sampling_rate: 1.0,
         };
 
-        // Datadog traces ignore the root span's `_dd.hostname`, as Go's `processedTraceV1` does.
+        // Datadog traces ignore the root span's `_dd.hostname`, as the trace-agent does.
         assert_eq!(hostname(TraceIngestInfo::Datadog, "payload-host"), "payload-host");
         assert_eq!(hostname(TraceIngestInfo::Datadog, ""), "agent-host");
         // OTLP traces fall back to it when the payload has no hostname.

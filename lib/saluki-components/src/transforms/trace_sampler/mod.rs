@@ -1238,7 +1238,7 @@ mod tests {
             ]
         };
 
-        // Datadog traces read the flag as `AsDoubleValue` does: numbers, numeric strings, and bools.
+        // Datadog traces read the flag from numbers, numeric strings, and bools.
         let mut trace = with_receiver(create_test_trace(spans()), client_computed_top_level());
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
         sampler.backfill_trace_metadata(&mut trace, root_idx);
@@ -1247,7 +1247,7 @@ mod tests {
         assert_eq!(top_level_mark(&trace, 4), Some(1.0));
         assert_eq!(top_level_mark(&trace, 5), None);
 
-        // OTLP traces read it as a number only, as Go reads span metrics.
+        // OTLP traces read it as a number only, as the trace-agent reads span metrics.
         let mut trace = with_receiver(create_otlp_test_trace(spans(), 1.0, 1), client_computed_top_level());
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
         sampler.backfill_trace_metadata(&mut trace, root_idx);

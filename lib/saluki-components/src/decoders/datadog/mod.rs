@@ -45,7 +45,7 @@ pub struct DecodedV1 {
     /// One trace per trace chunk. Each trace's attributes are its chunk's attributes only.
     pub traces: Vec<Trace>,
     /// The tracer payload's own attributes, kept apart from the chunk attributes so that payload-level values win
-    /// where the reference receiver reads only the payload (`getProcessTagsV1`, `getSDKOtlpExportV1`), and so that
+    /// where the trace-agent's receiver reads only the payload (process tags, SDK export mode), and so that
     /// they can be written back on the tracer payload rather than on every chunk.
     pub payload_attributes: FastHashMap<MetaString, AttributeValue>,
 }
