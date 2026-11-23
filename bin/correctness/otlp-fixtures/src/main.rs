@@ -159,6 +159,30 @@ fn main() -> ExitCode {
             "test/integration/cases/otlp-routing-mixed-http/millstone-logs-http.yaml",
             || routing::logs_fixture("mixed-http", "http"),
         ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-metrics-grpc.yaml",
+            || routing::metrics_fixture("internal", "grpc"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-traces-grpc.yaml",
+            || routing::traces_fixture("internal", "grpc", 3),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-logs-grpc.yaml",
+            || routing::logs_fixture("internal", "grpc"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-metrics-http.yaml",
+            || routing::metrics_fixture("internal", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-traces-http.yaml",
+            || routing::traces_fixture("internal", "http", 4),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-logs-http.yaml",
+            || routing::logs_fixture("internal", "http"),
+        ),
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");

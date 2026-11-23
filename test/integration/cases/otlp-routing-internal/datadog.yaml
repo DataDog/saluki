@@ -1,0 +1,23 @@
+# The Agent builds its OTLP logs pipeline only when the logs agent and OTLP logs are both on. The Agent and ADP read
+# this file.
+logs_enabled: true
+
+# Send the logs agent's logs to the intake over HTTP. The logs agent collects nothing else, since no log sources exist.
+logs_config:
+  logs_dd_url: "{{ self.connections.intake.host }}:{{ self.connections.intake.port }}"
+  logs_no_ssl: true
+  force_use_http: true
+
+otlp_config:
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+        # TODO: enable once OTLP receiver TLS has working integration coverage; keep this case plaintext until then.
+        # tls:
+        #   cert_file: /etc/datadog-agent/certs/otlp.crt
+        #   key_file: /etc/datadog-agent/certs/otlp.key
+      http:
+        endpoint: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+  logs:
+    enabled: true
