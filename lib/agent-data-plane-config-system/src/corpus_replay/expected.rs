@@ -11,6 +11,7 @@
 //!   also rejects.
 //! - `wire-number-loss`: the wire format loses numeric precision.
 //! - `nil-map-element`: ADP cannot represent nil maps.
+//! - `object-array-normalization`: ADP stores an object-array setting as an array; raw Agent `Get` keeps the map.
 //! - `numeric-map-representation`: ADP reads numeric map values as floats instead of integers.
 //! - `schema-enforce-unsupported`: ADP does not revert values that fail schema validation.
 //!
@@ -1264,32 +1265,23 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             ),
             cause: COLLECTION_SHAPE_MISMATCH,
         }),
-        known_bug(Entry {
+        intentional(Entry {
             origin: "depth-yaml-empty-map",
             tier: Leaf,
             at: "snapshot",
             getter: "Get",
             key: "apm_config.replace_tags",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: COLLECTION_SHAPE_MISMATCH,
+            adp: Adp::value("[]"),
+            cause: OBJECT_ARRAY_NORMALIZATION,
         }),
-        known_bug(Entry {
+        intentional(Entry {
             origin: "depth-yaml-empty-map",
             tier: Leaf,
             at: "snapshot",
             getter: "Get",
             key: "dogstatsd_mapper_profiles",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: COLLECTION_SHAPE_MISMATCH,
-        }),
-        known_bug(Entry {
-            origin: "depth-yaml-empty-map",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "Get",
-            key: "metric_filterlist_prefix",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: COLLECTION_SHAPE_MISMATCH,
+            adp: Adp::value("[]"),
+            cause: OBJECT_ARRAY_NORMALIZATION,
         }),
         known_bug(Entry {
             origin: "depth-yaml-empty-map",
@@ -1356,32 +1348,23 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error("invalid type: map, expected a sequence or a string list"),
             cause: COLLECTION_SHAPE_MISMATCH,
         }),
-        known_bug(Entry {
+        intentional(Entry {
             origin: "depth-yaml-empty-map",
             tier: Bootstrap,
             at: "snapshot",
             getter: "Get",
             key: "apm_config.replace_tags",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: COLLECTION_SHAPE_MISMATCH,
+            adp: Adp::value("[]"),
+            cause: OBJECT_ARRAY_NORMALIZATION,
         }),
-        known_bug(Entry {
+        intentional(Entry {
             origin: "depth-yaml-empty-map",
             tier: Bootstrap,
             at: "snapshot",
             getter: "Get",
             key: "dogstatsd_mapper_profiles",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: COLLECTION_SHAPE_MISMATCH,
-        }),
-        known_bug(Entry {
-            origin: "depth-yaml-empty-map",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "Get",
-            key: "metric_filterlist_prefix",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: COLLECTION_SHAPE_MISMATCH,
+            adp: Adp::value("[]"),
+            cause: OBJECT_ARRAY_NORMALIZATION,
         }),
         known_bug(Entry {
             origin: "depth-yaml-empty-map",
@@ -1508,17 +1491,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             tier: Deserialize,
             at: "snapshot",
             getter: "-",
-            key: "apm_config.replace_tags",
-            adp: Adp::error(
-                "data did not match any variant of untagged enum JsonArrayOrString",
-            ),
-            cause: COLLECTION_SHAPE_MISMATCH,
-        }),
-        known_bug(Entry {
-            origin: "depth-yaml-empty-map",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
             key: "cri_connection_timeout",
             adp: Adp::error(
                 "invalid type: map, expected an integer, a numeric string, or a boolean",
@@ -1530,31 +1502,11 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             tier: Deserialize,
             at: "snapshot",
             getter: "-",
-            key: "dogstatsd_mapper_profiles",
-            adp: Adp::error(
-                "data did not match any variant of untagged enum JsonArrayOrString",
-            ),
-            cause: COLLECTION_SHAPE_MISMATCH,
-        }),
-        known_bug(Entry {
-            origin: "depth-yaml-empty-map",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
             key: "expected_tags_duration",
             adp: Adp::error(
                 "invalid type: map, expected a duration as integer nanoseconds, a Go duration string (for example \"10s\"), or a bare number of nanoseconds as a string",
             ),
             cause: SCALAR_GIVEN_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "depth-yaml-empty-map",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "metric_filterlist_prefix",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: COLLECTION_SHAPE_MISMATCH,
         }),
         intentional(Entry {
             origin: "depth-yaml-map-int-values",
@@ -2393,6 +2345,12 @@ const NON_STRING_MAP_VALUE: Cause = Cause {
     name: "non-string-map-value",
     why: "a non-string value in a string map; the Agent's getter stringifies it, ADP rejects",
     issue: Some(2752),
+};
+
+const OBJECT_ARRAY_NORMALIZATION: Cause = Cause {
+    name: "object-array-normalization",
+    why: "ADP reads an empty object as an empty array, as the Agent's structured consumer does; raw Get preserves the object",
+    issue: None,
 };
 
 const NIL_MAP_ELEMENT: Cause = Cause {

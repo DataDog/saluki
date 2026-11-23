@@ -545,7 +545,7 @@ fn platform_defaults_module(platform_defaults: &BTreeMap<String, PlatformDefault
 /// String lists arrive as a real sequence from a file or the remote Agent stream, but as a single
 /// space-separated string from an environment variable (`DD_DOGSTATSD_TAGS="a b"`), so each field
 /// must accept both. Map values containing string lists may likewise arrive as either one scalar or
-/// a sequence. Object arrays also accept a JSON-encoded string, whether their items stay
+/// a sequence. Object arrays also accept a single object or a JSON-encoded array, whether their items stay
 /// free-form (`serde_json::Value`) or are typed (`Vec<HashMap<String, String>>`, for example
 /// `apm_config.replace_tags`).
 ///

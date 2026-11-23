@@ -296,7 +296,7 @@ fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfi
     struct RawProfile {
         name: String,
         prefix: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "datadog_agent_config::deserialize_object_array")]
         mappings: Vec<RawMapping>,
     }
 
@@ -431,7 +431,7 @@ fn parse_metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Valu
 ///
 /// Like the Agent, a field value that does not convert drops every rule instead of failing the
 /// configuration: on a decode error the Agent logs it and discards the entries `mapstructure` did
-/// decode. A value that is not a list of objects never reaches this: it fails to deserialize.
+/// decode. The source decoder wraps a single object in a list and reads an empty object as no rules.
 ///
 /// https://github.com/DataDog/datadog-agent/blob/a682da124ffbc9ec820c118e3b2daaadff97623c/comp/filterlist/impl/filterlist.go#L103-L108
 pub(crate) fn metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Value>]) -> Vec<MetricPrefixRule> {
@@ -2888,7 +2888,7 @@ mod tests {
     }
 
     #[test]
-    fn dogstatsd_mapper_profiles_translate_from_a_sequence_or_json_string() {
+    fn dogstatsd_mapper_profiles_translate_from_supported_shapes() {
         let profiles = json!([{
             "name": "workers",
             "prefix": "worker.",
@@ -2900,7 +2900,15 @@ mod tests {
             }]
         }]);
 
-        for source in [profiles.clone(), Value::String(profiles.to_string())] {
+        let mut singleton_mappings = profiles[0].clone();
+        singleton_mappings["mappings"] = singleton_mappings["mappings"][0].clone();
+        for source in [
+            profiles.clone(),
+            Value::String(profiles.to_string()),
+            profiles[0].clone(),
+            json!([singleton_mappings]),
+            singleton_mappings,
+        ] {
             let (config, errors) = translate_explicit(json!({ "dogstatsd_mapper_profiles": source }));
 
             assert!(errors.is_none());
@@ -2942,13 +2950,18 @@ mod tests {
 
     #[test]
     fn mapper_profile_without_mappings_is_accepted() {
-        let (config, errors) = translate_explicit(json!({
-            "dogstatsd_mapper_profiles": [{ "name": "workers", "prefix": "worker." }]
-        }));
+        for profile in [
+            json!({ "name": "workers", "prefix": "worker." }),
+            json!({ "name": "workers", "prefix": "worker.", "mappings": {} }),
+            json!({ "name": "workers", "prefix": "worker.", "mappings": null }),
+            json!({ "name": "workers", "prefix": "worker.", "mappings": [] }),
+        ] {
+            let (config, errors) = translate_explicit(json!({ "dogstatsd_mapper_profiles": profile }));
 
-        assert!(errors.is_none());
-        assert_eq!(config.domains.dogstatsd.mapper.profiles.len(), 1);
-        assert!(config.domains.dogstatsd.mapper.profiles[0].mappings.is_empty());
+            assert!(errors.is_none());
+            assert_eq!(config.domains.dogstatsd.mapper.profiles.len(), 1);
+            assert!(config.domains.dogstatsd.mapper.profiles[0].mappings.is_empty());
+        }
     }
 
     #[test]

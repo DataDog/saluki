@@ -2,7 +2,8 @@
 //!
 //! String lists can arrive as sequences or space-separated environment strings. Map values
 //! containing string lists can likewise arrive as scalars or sequences. Free-form object arrays can
-//! arrive as sequences or JSON-encoded strings. These adapters normalize each form at the boundary.
+//! arrive as sequences, single objects, or JSON-encoded arrays. These adapters normalize each form
+//! at the boundary.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -70,12 +71,12 @@ where
     deserializer.deserialize_any(SpaceSeparatedOrSeq)
 }
 
-/// Deserialize a JSON array from either a sequence or a JSON-encoded string.
+/// Deserialize an object array from a sequence, a single object, or a JSON-encoded array.
 ///
 /// The element type is inferred from the field; an element that does not fit it is a type error,
 /// so the schema's item shape is enforced at the boundary. A null array is an empty array, and a
 /// null element is the element type's default: the Agent reads a null in a `[]map[string]string`
-/// as a nil (empty) map.
+/// as a nil (empty) map. An empty object is an empty array. JSON strings must encode arrays.
 pub(crate) fn deserialize_json_array_or_string<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     T: DeserializeOwned + Default,
@@ -86,6 +87,7 @@ where
     enum JsonArrayOrString<T> {
         Array(Vec<Option<T>>),
         String(String),
+        Object(serde_json::Map<String, serde_json::Value>),
     }
 
     let values = match Option::<JsonArrayOrString<T>>::deserialize(deserializer)? {
@@ -94,8 +96,35 @@ where
         Some(JsonArrayOrString::String(value)) => {
             serde_json::from_str::<Vec<Option<T>>>(&value).map_err(de::Error::custom)?
         }
+        Some(JsonArrayOrString::Object(value)) => {
+            deserialize_object_array(serde_json::Value::Object(value)).map_err(de::Error::custom)?
+        }
     };
     Ok(values.into_iter().map(Option::unwrap_or_default).collect())
+}
+
+/// Deserialize an array of objects or one object, as the Agent's structured decoder does.
+///
+/// A nonempty object becomes one element. An empty object or null becomes an empty array.
+/// Array elements are deserialized as `T` without further normalization. This follows
+/// [`structure.UnmarshalKey`](https://github.com/DataDog/datadog-agent/blob/d22eedcd06ef9fcedad3d43bcab45795068b8ecc/pkg/config/structure/unmarshal.go#L131-L135),
+/// which enables `WeaklyTypedInput` in `mapstructure`.
+///
+/// # Errors
+///
+/// Returns an error for a scalar input or an element that cannot be deserialized as `T`.
+pub fn deserialize_object_array<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    T: DeserializeOwned,
+    D: Deserializer<'de>,
+{
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::Object(object) if object.is_empty() => Ok(Vec::new()),
+        value @ serde_json::Value::Object(_) => T::deserialize(value).map(|value| vec![value]),
+        value => Vec::<T>::deserialize(value),
+    }
+    .map_err(de::Error::custom)
 }
 
 /// Deserialize string-list map values from either scalar strings or sequences.
@@ -265,6 +294,21 @@ mod tests {
     }
 
     #[test]
+    fn json_array_wraps_a_single_object() {
+        let holder: JsonArrayHolder = serde_json::from_str(r#"{"values":{"name":"one"}}"#).unwrap();
+        assert_eq!(holder.values, [serde_json::json!({ "name": "one" })]);
+    }
+
+    #[test]
+    fn json_array_distinguishes_an_empty_object_from_an_empty_object_element() {
+        let empty: JsonArrayHolder = serde_json::from_str(r#"{"values":{}}"#).unwrap();
+        let element: JsonArrayHolder = serde_json::from_str(r#"{"values":[{}]}"#).unwrap();
+
+        assert!(empty.values.is_empty());
+        assert_eq!(element.values, [serde_json::json!({})]);
+    }
+
+    #[test]
     fn json_array_reads_null_as_empty() {
         let holder: JsonArrayHolder = serde_json::from_str(r#"{"values":null}"#).unwrap();
         assert!(holder.values.is_empty());
@@ -298,6 +342,54 @@ mod tests {
 
     #[test]
     fn json_array_rejects_a_non_array_encoded_string() {
-        assert!(serde_json::from_str::<JsonArrayHolder>(r#"{"values":"{\"name\":\"one\"}"}"#).is_err());
+        for value in [
+            serde_json::json!(r#"{"name":"one"}"#),
+            serde_json::json!("{}"),
+            serde_json::json!("not-json"),
+            serde_json::json!(""),
+            serde_json::json!(5),
+            serde_json::json!(true),
+        ] {
+            assert!(serde_json::from_value::<JsonArrayHolder>(serde_json::json!({ "values": value })).is_err());
+        }
+    }
+
+    #[test]
+    fn string_map_array_checks_singleton_element_types() {
+        let holder: StringMapArrayHolder = serde_json::from_str(r#"{"values":{"name":"one"}}"#).unwrap();
+        assert_eq!(
+            holder.values,
+            [HashMap::from([("name".to_string(), "one".to_string())])]
+        );
+        assert!(serde_json::from_str::<StringMapArrayHolder>(r#"{"values":{"name":5}}"#).is_err());
+    }
+
+    #[test]
+    fn structured_object_array_does_not_decode_json_strings() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct Entry {
+            name: String,
+        }
+
+        for value in [serde_json::json!({"name": "one"}), serde_json::json!([{"name": "one"}])] {
+            let entries: Vec<Entry> = deserialize_object_array(value).unwrap();
+            assert_eq!(
+                entries,
+                [Entry {
+                    name: "one".to_string()
+                }]
+            );
+        }
+        for value in [serde_json::json!({}), Value::Null, serde_json::json!([])] {
+            assert!(deserialize_object_array::<_, Entry>(value).unwrap().is_empty());
+        }
+        for value in [
+            serde_json::json!(r#"[{"name":"one"}]"#),
+            serde_json::json!({"other": "one"}),
+            serde_json::json!(5),
+            serde_json::json!(true),
+        ] {
+            assert!(deserialize_object_array::<_, Entry>(value).is_err());
+        }
     }
 }

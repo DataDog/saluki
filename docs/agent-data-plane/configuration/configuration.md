@@ -1599,6 +1599,11 @@ With `data_plane.experimental.apm.enabled` set, ADP binds the trace receiver's T
 `data_plane.experimental.apm.proxy_destination`. `0` disables the TCP listener, as it does for
 the trace-agent.
 
+### `apm_config.replace_tags`
+
+Accepts an array of rule objects or a single rule object. An empty object is an empty array,
+as in the core Agent. A JSON-encoded string must contain an array.
+
 ### `container_cgroup_root`
 
 ADP reads the cgroups hierarchy from this root. When the key is not set explicitly, ADP
@@ -1708,6 +1713,12 @@ This debug log differs from the `dogstatsd_capture_*` settings. The debug log re
 metric summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic
 for packet-level investigation, and they remain tracked separately under [#1381].
 
+### `dogstatsd_mapper_profiles`
+
+Accepts an array of profile objects or a single profile object. Each profile's `mappings`
+also accepts an array of mapping objects or a single mapping object. An empty object is an
+empty array, as in the core Agent. A JSON-encoded profile string must contain an array.
+
 ### UDS origin detection on macOS
 
 ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
@@ -1787,8 +1798,9 @@ they do not widen to `service`.
 Each entry is an object, decoded as the Agent decodes it: a missing `prefix` is the empty
 prefix, and unknown fields are ignored. When a field holds a value that cannot be converted,
 such as a list where a string is expected, ADP logs a warning and applies no prefix rules.
-ADP rejects a value that is not a list of objects; a null entry is an empty entry and matches
-every metric, as in the Agent.
+A single rule object is a one-element list. An empty object is an empty list, but an empty
+object inside a list remains a rule. A null entry is an empty entry and matches every metric,
+as in the Agent. A JSON-encoded string must contain an array.
 
 Exceptions apply across this whole key: a metric excepted by one rule is kept even when it
 matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the
@@ -1796,6 +1808,11 @@ metric.
 
 The empty `prefix` matches every stored metric name. The empty `except_prefix` keeps every
 stored metric name, making the rule a no-op.
+
+### `metric_tag_filterlist`
+
+Accepts an array of filter objects or a single filter object. An empty object is an empty
+array, as in the core Agent. A JSON-encoded string must contain an array.
 
 ### `otlp_config.metrics.delta_ttl`
 
