@@ -2146,7 +2146,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.api_key:
     support: none
@@ -2161,7 +2161,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.batch_max_concurrent_send:
     support: none
@@ -2175,8 +2175,8 @@ inventory:
       pipelines * this value instead of pipelines * 10; in legacy mode it is the per-sender concurrency.
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.batch_max_content_size:
     support: none
@@ -2190,8 +2190,8 @@ inventory:
       larger than this is dropped by the batcher (must be > 0, else default).
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.batch_max_size:
     support: none
@@ -2205,8 +2205,8 @@ inventory:
       flushed (must be > 0, else default).
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.batch_wait:
     support: none
@@ -2220,8 +2220,8 @@ inventory:
       invalid falls back to the default with a warning).
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.compression_kind:
     support: none
@@ -2237,7 +2237,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.compression_level:
     support: none
@@ -2252,7 +2252,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.connection_reset_interval:
     support: none
@@ -2266,8 +2266,8 @@ inventory:
       TCP: the connection manager closes and reconnects after it. 0 disables.
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.dd_port:
     support: none
@@ -2281,7 +2281,7 @@ inventory:
       well-known agent-intake hosts.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.dd_url:
@@ -2299,7 +2299,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.dd_url_443:
     support: none
@@ -2312,7 +2312,7 @@ inventory:
       In the core Agent's OTLP logs path: TCP only: host used when `use_port_443` is true.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.delegated_auth.org_uuid:
@@ -2329,7 +2329,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.delegated_auth.refresh_interval_mins:
     support: none
@@ -2343,7 +2343,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.dev_mode_no_ssl:
     support: none
@@ -2358,7 +2358,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.dev_mode_use_proto:
     support: none
@@ -2372,7 +2372,7 @@ inventory:
       protobuf encoder instead of the raw encoder.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.disable_distributed_senders:
@@ -2387,8 +2387,8 @@ inventory:
       distributed sender.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.force_use_http:
     support: none
@@ -2402,7 +2402,7 @@ inventory:
       endpoints.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.force_use_tcp:
@@ -2417,7 +2417,7 @@ inventory:
       (raw, newline/length-delimited stream, no compression or batching).
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.http_connectivity_retry_interval_max:
@@ -2433,7 +2433,7 @@ inventory:
       when it succeeds; 0 or less disables the loop.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.http_protocol:
@@ -2448,8 +2448,8 @@ inventory:
       to HTTP/1.1; any other value warns and uses auto.
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.http_timeout:
     support: none
@@ -2463,8 +2463,8 @@ inventory:
       startup connectivity check uses a fixed 5s timeout instead.
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.logs_dd_url:
     support: none
@@ -2481,7 +2481,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.logs_no_ssl:
     support: none
@@ -2499,7 +2499,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.message_channel_size:
     support: none
@@ -2512,8 +2512,8 @@ inventory:
       and the strategy input channel.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.payload_channel_size:
     support: none
@@ -2526,8 +2526,8 @@ inventory:
       strategy and the sender workers.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.pipeline_failover.enabled:
     support: none
@@ -2542,8 +2542,8 @@ inventory:
       logs use more than one pipeline.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.pipeline_failover.router_channel_size:
     support: none
@@ -2556,8 +2556,8 @@ inventory:
       `pipeline_failover.enabled` is true.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.pipelines:
     support: none
@@ -2570,8 +2570,8 @@ inventory:
       it also scales default HTTP sender concurrency (pipelines * 10) and the sync sender concurrency.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.processing_rules:
     support: none
@@ -2588,7 +2588,7 @@ inventory:
 
       ADP ignores this key and applies no processing rules to logs, so logs that the Agent would drop or
       mask are sent as they are. This only matters for the logs ADP handles itself: native OTLP logs and
-      check logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      check logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.sender_backoff_base:
     support: none
@@ -2602,8 +2602,8 @@ inventory:
       retryable errors (must be > 0, else default).
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.sender_backoff_factor:
     support: none
@@ -2616,8 +2616,8 @@ inventory:
       In the core Agent's OTLP logs path: backoff growth factor (must be >= 2, else default).
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.sender_backoff_max:
     support: none
@@ -2631,8 +2631,8 @@ inventory:
       default).
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.sender_recovery_interval:
     support: none
@@ -2646,8 +2646,8 @@ inventory:
       (must be > 0, else default).
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.sender_recovery_reset:
     support: none
@@ -2661,8 +2661,8 @@ inventory:
       zero instead of decrementing it.
 
       ADP ignores this key: it batches and sends logs with the settings of its shared forwarder. This
-      only matters for the logs ADP handles itself: native OTLP logs and check logs. When ADP proxies OTLP logs,
-      the core Agent processes them and applies this key.
+      only matters for the logs ADP handles itself: native OTLP logs and check logs. In proxy mode, the
+      core Agent processes OTLP logs and applies this key.
 
   logs_config.socks5_proxy_address:
     support: none
@@ -2676,7 +2676,7 @@ inventory:
       every TCP connection is dialed through the SOCKS5 proxy. It does not proxy HTTP logs.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.stop_grace_period:
@@ -2691,8 +2691,8 @@ inventory:
       seconds and closes them.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.tag_filters:
     support: none
@@ -2707,7 +2707,7 @@ inventory:
       encoder emits `Origin.TransportTags()`, so `ddtags` of OTLP logs are filtered.
 
       ADP ignores this key and filters no tags on logs. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.use_compression:
@@ -2723,7 +2723,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.use_http:
     support: none
@@ -2737,7 +2737,7 @@ inventory:
       when the connectivity check fails or a TCP setting is set.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.use_port_443:
@@ -2752,7 +2752,7 @@ inventory:
       TLS.
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.use_tcp:
@@ -2767,7 +2767,7 @@ inventory:
       selects TCP (stream strategy, no compression, no batching).
 
       ADP ignores this key: it always sends logs over HTTP. This only matters for the logs ADP handles
-      itself: native OTLP logs and check logs. When ADP proxies OTLP logs, the core Agent processes them and
+      itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
       applies this key.
 
   logs_config.use_v2_api:
@@ -2784,7 +2784,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_config.zstd_compression_level:
     support: none
@@ -2799,7 +2799,7 @@ inventory:
 
       ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
       `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-      logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
   logs_enabled:
     support: partial
@@ -3046,8 +3046,8 @@ inventory:
       disables the MRF destination.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   multi_region_failover.failover_metrics:
     support: full
@@ -3066,8 +3066,8 @@ inventory:
       list are flagged for MRF destinations; empty means all logs.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   multi_region_failover.metric_allowlist:
     support: full
@@ -3097,8 +3097,8 @@ inventory:
       inheriting main's v2 API and compression settings.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   observability_pipelines_worker.logs.dual_ship_reliable:
     support: none
@@ -3112,8 +3112,8 @@ inventory:
       applies backpressure to the pipeline; warns and has no effect unless `dual_ship` is true.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   observability_pipelines_worker.logs.enabled:
     support: none
@@ -3128,8 +3128,8 @@ inventory:
       http(s)://host[:port] or host:port.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   observability_pipelines_worker.logs.url:
     support: none
@@ -3143,8 +3143,8 @@ inventory:
       building fail, so the logs agent does not start.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   observability_pipelines_worker.metrics.enabled:
     support: full
@@ -3198,8 +3198,8 @@ inventory:
       exporter: time after which a partial batch is flushed.
 
       ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
-      as it arrives. This only matters when ADP handles OTLP logs itself: when ADP proxies them, the core
-      Agent processes the logs and applies this key.
+      as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
 
       The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
       ADP runs only checks and the core Agent handles OTLP logs. Narrowing the warning to native OTLP
@@ -3217,8 +3217,8 @@ inventory:
       exporter (0 means unlimited).
 
       ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
-      as it arrives. This only matters when ADP handles OTLP logs itself: when ADP proxies them, the core
-      Agent processes the logs and applies this key.
+      as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
 
       The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
       ADP runs only checks and the core Agent handles OTLP logs. Narrowing the warning to native OTLP
@@ -3236,8 +3236,8 @@ inventory:
       exporter: minimum batch size that triggers a flush.
 
       ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
-      as it arrives. This only matters when ADP handles OTLP logs itself: when ADP proxies them, the core
-      Agent processes the logs and applies this key.
+      as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
 
       The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
       ADP runs only checks and the core Agent handles OTLP logs. Narrowing the warning to native OTLP
@@ -3254,9 +3254,8 @@ inventory:
       receiver at all.
 
       Like the core Agent, ADP serves OTLP logs only when `otlp_config.logs.enabled` and `logs_enabled`
-      are both `true`, whether it processes them itself or proxies them. ADP doesn't yet apply the
-      Agent's check that starts no OTLP receiver at all when `logs_enabled` isn't `true`: ADP still serves
-      OTLP metrics and traces then.
+      are both `true`. ADP doesn't yet apply the Agent's check that starts no OTLP receiver at all when
+      `logs_enabled` isn't `true`: ADP still serves OTLP metrics and traces then.
     issue: "#2969"
 
   otlp_config.logs.infra_attributes.tags_as_ddtags:
@@ -3271,7 +3270,7 @@ inventory:
       infraattributes processor, so custom tagger tags, such as Kubernetes labels that the tagger adds
       as tags, become the `ddtags` log attribute instead of resource attributes.
 
-      ADP ignores this key. This only matters when ADP handles OTLP logs itself: when ADP proxies them, the core
+      ADP ignores this key. This only matters when ADP handles OTLP logs itself: in proxy mode, the core
       Agent processes the logs and applies this key.
 
       The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
@@ -3344,8 +3343,7 @@ inventory:
     description: "Promote infrastructure attributes to tags"
     documentation: |-
       ADP always adds resolved workload and global tags to native OTLP metrics. It does not currently honor this
-      setting's control over custom tag promotion. When ADP proxies OTLP metrics, the downstream core Agent owns this
-      processing.
+      setting's control over custom tag promotion. In proxy mode, the downstream core Agent owns this processing.
 
   otlp_config.metrics.instrumentation_scope_metadata_as_tags:
     support: full
@@ -3990,10 +3988,6 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Trace-agent OTLP port"
-    documentation: |-
-      The Agent sends the OTLP traces that its own OTLP receiver ingests to the trace-agent on this port.
-      ADP doesn't send to it: it proxies OTLP traces to the Agent's relocated OTLP receiver, which passes
-      them on to the trace-agent.
 
   otlp_config.traces.probabilistic_sampler.sampling_percentage:
     support: full
@@ -4389,8 +4383,8 @@ inventory:
       inheriting main's v2 API and compression settings.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   vector.logs.dual_ship_reliable:
     support: none
@@ -4404,8 +4398,8 @@ inventory:
       applies backpressure to the pipeline; warns and has no effect unless `dual_ship` is true.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   vector.logs.enabled:
     support: none
@@ -4420,8 +4414,8 @@ inventory:
       http(s)://host[:port] or host:port.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   vector.logs.url:
     support: none
@@ -4435,8 +4429,8 @@ inventory:
       makes endpoint building fail, so the logs agent does not start.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
-      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-      ADP proxies OTLP logs, the core Agent processes them and applies this key.
+      for logs. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+      proxy mode, the core Agent processes OTLP logs and applies this key.
 
   vector.metrics.enabled:
     support: full

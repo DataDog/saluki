@@ -361,7 +361,7 @@ key-rotation callback.
 
 ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
 `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.delegated_auth.refresh_interval_mins`
 
@@ -370,7 +370,7 @@ In the core Agent's OTLP logs path: refresh interval of the delegated-auth insta
 
 ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
 `site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
-logs. When ADP proxies OTLP logs, the core Agent processes them and applies this key.
+logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.disable_distributed_senders`
 
@@ -379,8 +379,8 @@ per pipeline, and per-sender concurrency from `batch_max_concurrent_send`, inste
 distributed sender.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-ADP proxies OTLP logs, the core Agent processes them and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.message_channel_size`
 
@@ -388,8 +388,8 @@ In the core Agent's OTLP logs path: buffer size of the pipeline input channel (p
 and the strategy input channel.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-ADP proxies OTLP logs, the core Agent processes them and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.payload_channel_size`
 
@@ -397,8 +397,8 @@ In the core Agent's OTLP logs path: buffer size of the channel of payloads betwe
 strategy and the sender workers.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-ADP proxies OTLP logs, the core Agent processes them and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.pipeline_failover.enabled`
 
@@ -408,8 +408,8 @@ blocked. The OTLP exporter requests only one channel at startup, so this key is 
 logs use more than one pipeline.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-ADP proxies OTLP logs, the core Agent processes them and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.pipeline_failover.router_channel_size`
 
@@ -417,8 +417,8 @@ In the core Agent's OTLP logs path: buffer size of each failover router channel;
 `pipeline_failover.enabled` is true.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-ADP proxies OTLP logs, the core Agent processes them and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.pipelines`
 
@@ -426,8 +426,8 @@ In the core Agent's OTLP logs path: number of processor/strategy pipelines built
 it also scales default HTTP sender concurrency (pipelines * 10) and the sync sender concurrency.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-ADP proxies OTLP logs, the core Agent processes them and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.stop_grace_period`
 
@@ -436,8 +436,8 @@ time. After this many seconds, it makes destinations flush without sending, then
 seconds and closes them.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. When
-ADP proxies OTLP logs, the core Agent processes them and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `otlp_config.metrics.batch.flush_timeout`
 
@@ -1091,9 +1091,8 @@ When it's `true` but `logs_enabled` isn't, the Agent logs an error and starts no
 receiver at all.
 
 Like the core Agent, ADP serves OTLP logs only when `otlp_config.logs.enabled` and `logs_enabled`
-are both `true`, whether it processes them itself or proxies them. ADP doesn't yet apply the
-Agent's check that starts no OTLP receiver at all when `logs_enabled` isn't `true`: ADP still serves
-OTLP metrics and traces then.
+are both `true`. ADP doesn't yet apply the Agent's check that starts no OTLP receiver at all when
+`logs_enabled` isn't `true`: ADP still serves OTLP metrics and traces then.
 
 ### `secret_backend_command`
 
@@ -1971,12 +1970,6 @@ carry only the prefixed copy. Convention keys and already-prefixed keys are exem
 Controls whether entity and global tags from the workload metadata store are enriched onto OTLP traces.
 The default `true` attaches the tags the local metadata store holds for the resource's container. When
 `false`, traces carry only the resource attributes the sender provided.
-
-### `otlp_config.traces.internal_port`
-
-The Agent sends the OTLP traces that its own OTLP receiver ingests to the trace-agent on this port.
-ADP doesn't send to it: it proxies OTLP traces to the Agent's relocated OTLP receiver, which passes
-them on to the trace-agent.
 
 ### `otlp_config.traces.span_name_as_resource_name`
 
