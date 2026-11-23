@@ -43,27 +43,30 @@ jobs:
             // Grab the "## Validations" section, up to the next level-two heading.
             const validationsMatch = doc.match(/^## Validations\s*$([\s\S]*?)(?=^## )/m);
 
+            // Entries are bullets of the form "* <module name>: certificate [#NNNN](...)". Match only the module
+            // name, so that certificate numbers such as #5146 don't count.
+            const entries = (validationsMatch ? validationsMatch[1] : '')
+              .split('\n')
+              .filter((line) => line.trim().startsWith('*'));
+            const moduleName = (entry) => entry.split(':')[0];
+
             // Fail loudly if the document no longer looks the way we expect, rather than silently never finding a
-            // match. The 3.1 static module has a certificate, so it should always be listed.
-            if (!validationsMatch || !/AWS-LC-FIPS v3\.1 \(static/.test(validationsMatch[1])) {
+            // match. The 3.1 static module has a certificate, so the parsed entries should always include it.
+            if (!entries.some((entry) => /AWS-LC-FIPS v3\.1 \(static/.test(moduleName(entry)))) {
               core.setFailed(
-                `Could not find the expected "Validations" section in ${fipsDocUrl}. ` +
+                `Could not find the expected "Validations" entries in ${fipsDocUrl}. ` +
                 'The document format may have changed; update this workflow to match.'
               );
               return;
             }
 
-            // We ship a static FIPS build, so the static library certificate is the one that matters. Entries have
-            // the form "<module name>: certificate [#NNNN](...)". Only match the module name, so that certificate
-            // numbers such as #5146 don't count. AWS-LC names modules both as "AWS-LC-FIPS v5.0 (static library)" and
-            // as "AWS-LC 5 Cryptographic Module (static)", so accept either form.
-            const certified = validationsMatch[1]
-              .split('\n')
-              .filter((line) => line.trim().startsWith('*'))
-              .filter((line) => {
-                const moduleName = line.split(':')[0];
-                return /AWS-LC(-FIPS)?\s+v?5(\.\d+)*\b/.test(moduleName) && /\bstatic\b/i.test(moduleName);
-              });
+            // We ship a static FIPS build, so the static library certificate is the one that matters. AWS-LC names
+            // modules both as "AWS-LC-FIPS v5.0 (static library)" and as "AWS-LC 5 Cryptographic Module (static)", so
+            // accept either form.
+            const certified = entries.filter((entry) => {
+              const name = moduleName(entry);
+              return /AWS-LC(-FIPS)?\s+v?5(\.\d+)*\b/.test(name) && /\bstatic\b/i.test(name);
+            });
 
             if (certified.length === 0) {
               console.log('AWS-LC-FIPS 5.x (static) is not yet listed under "Validations".');
