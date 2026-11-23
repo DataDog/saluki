@@ -712,7 +712,6 @@ impl Visitor<'_> for BoolVisitor {
     fn visit_str<E: de::Error>(self, value: &str) -> Result<bool, E> {
         Ok(parse_bool(value).unwrap_or_else(|_| {
             tracing::warn!(
-                value,
                 "Invalid boolean string. Reading it as false, as the Datadog Agent does. Use true or false."
             );
             false
@@ -1009,6 +1008,9 @@ mod tests {
         impl<S: tracing::Subscriber> Layer<S> for Warnings {
             fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
                 assert_eq!(*event.metadata().level(), tracing::Level::WARN);
+                event.record(&mut |_field: &tracing::field::Field, value: &dyn fmt::Debug| {
+                    assert!(!format!("{value:?}").contains("secret-api-key"));
+                });
                 self.0.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -1016,14 +1018,17 @@ mod tests {
         let warnings = Arc::new(AtomicUsize::new(0));
         let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
         tracing::subscriber::with_default(subscriber, || {
-            for (index, raw) in ["yes", "on", "", " true ", "TrUe", "no", "2"].iter().enumerate() {
+            for (index, raw) in ["yes", "on", "", " true ", "TrUe", "no", "2", "secret-api-key"]
+                .iter()
+                .enumerate()
+            {
                 assert!(parse_bool(raw).is_err(), "{raw:?}");
                 assert_eq!(as_bool(json!(raw)), Ok(false), "{raw:?}");
                 assert_eq!(warnings.load(Ordering::Relaxed), index + 1);
             }
             assert_eq!(as_bool(json!("true")), Ok(true));
             assert_eq!(as_bool(json!("false")), Ok(false));
-            assert_eq!(warnings.load(Ordering::Relaxed), 7);
+            assert_eq!(warnings.load(Ordering::Relaxed), 8);
         });
     }
 
