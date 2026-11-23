@@ -555,6 +555,7 @@ async fn find_otlp_proxy_loop(otlp: &otlp::Domain, destinations: &OtlpProxyDesti
 mod tests {
     use agent_data_plane_config::domains::otlp::Proxy;
     use datadog_agent_commons::platform::PlatformSettings;
+    #[cfg(unix)]
     use saluki_components::sources::ProxyDestination;
 
     use super::*;
