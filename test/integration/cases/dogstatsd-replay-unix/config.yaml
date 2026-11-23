@@ -27,7 +27,8 @@ procedure:
       - "integration.replay.unix.one:1|c"
       - "integration.replay.unix.two:1|c"
     payload_interval: 1s
-    capture_duration: 3s
+    # Each payload is its own send, so the window covers both sends and the interval with room to spare.
+    capture_duration: 5s
     stats_duration: 3s
     expected_metrics:
       - "integration.replay.unix.one"
