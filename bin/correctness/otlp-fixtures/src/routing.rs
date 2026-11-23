@@ -193,17 +193,57 @@ mod tests {
 
     #[test]
     fn fixtures_of_other_cases_and_protocols_share_no_name() {
-        let first = metrics_fixture("internal", "grpc");
-        let other_case = metrics_fixture("mixed-grpc", "grpc");
-        let other_protocol = metrics_fixture("internal", "http");
+        // The case and protocol of each fixture that the `otlp-routing-*` cases send.
+        let fixtures = [
+            ("internal", "grpc"),
+            ("internal", "http"),
+            ("mixed-grpc", "grpc"),
+            ("mixed-http", "http"),
+        ];
+        for (seed, (case, protocol)) in (1..).zip(fixtures) {
+            let metrics = ExportMetricsServiceRequest::decode(metrics_fixture(case, protocol).as_slice()).unwrap();
+            let logs = ExportLogsServiceRequest::decode(logs_fixture(case, protocol).as_slice()).unwrap();
+            let traces = ExportTraceServiceRequest::decode(traces_fixture(case, protocol, seed).as_slice()).unwrap();
+            let names: Vec<&str> = metrics.resource_metrics[0].scope_metrics[0]
+                .metrics
+                .iter()
+                .map(|metric| metric.name.as_str())
+                .collect();
+            let services = [
+                service_name(&metrics.resource_metrics[0].resource),
+                service_name(&logs.resource_logs[0].resource),
+                service_name(&traces.resource_spans[0].resource),
+            ];
 
-        assert_ne!(first, other_case);
-        assert_ne!(first, other_protocol);
-        assert_ne!(logs_fixture("internal", "grpc"), logs_fixture("internal", "http"));
-        assert_ne!(
-            traces_fixture("internal", "grpc", 3),
-            traces_fixture("internal", "http", 4)
-        );
+            // Each fixture matches the selections of its own `intake_from` steps, and no other fixture's.
+            for (other_case, other_protocol) in fixtures {
+                let own = (other_case, other_protocol) == (case, protocol);
+                let prefix = format!("otlp.routing.{}.{}.", other_case, other_protocol);
+                let service = format!("otlp-routing-{}-{}", other_case, other_protocol);
+                for name in &names {
+                    assert_eq!(
+                        name.starts_with(&prefix),
+                        own,
+                        "{} of {}/{} against {}",
+                        name,
+                        case,
+                        protocol,
+                        prefix
+                    );
+                }
+                for found in services {
+                    assert_eq!(
+                        found == service,
+                        own,
+                        "{} of {}/{} against {}",
+                        found,
+                        case,
+                        protocol,
+                        service
+                    );
+                }
+            }
+        }
     }
 
     #[test]
