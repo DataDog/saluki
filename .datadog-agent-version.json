@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "target": "7.87",
   "integration": {
     "kind": "nightly",
     "version": "7.87.0-devel+git.1007.92824ec.pipeline.155037692",
