@@ -1,9 +1,9 @@
 //! Normalizer telemetry, emitted as metric events.
 //!
-//! This matches the trace-agent's normalizer counters, which it publishes as `datadog.trace_agent.normalizer.traces_dropped` and `datadog.trace_agent.normalizer.spans_malformed`
-//! with a `reason` tag, plus the tracer tags of the payload. As with the trace sampler, counts accumulate for one
-//! window and are reported through the transform's metrics output, so the metrics reach the backend under their
-//! published names.
+//! This matches the trace-agent's normalizer counters, which it publishes as
+//! `datadog.trace_agent.normalizer.traces_dropped` and `datadog.trace_agent.normalizer.spans_malformed` with a `reason`
+//! tag, plus the tracer tags of the payload. As with the trace sampler, counts accumulate for one window and are
+//! reported through the transform's metrics output, so the metrics reach the backend under their published names.
 
 use std::time::Duration;
 

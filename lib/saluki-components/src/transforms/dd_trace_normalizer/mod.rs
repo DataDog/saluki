@@ -1,8 +1,9 @@
 //! Datadog trace normalizer transform.
 //!
 //! Normalizes Datadog-origin trace chunks the way the trace-agent does before processing them. Repairable spans are
-//! fixed in place and counted under `datadog.trace_agent.normalizer.spans_malformed`; chunks that can't be repaired are dropped and
-//! counted under `datadog.trace_agent.normalizer.traces_dropped`. The counts are reported on the `metrics` output.
+//! fixed in place and counted under `datadog.trace_agent.normalizer.spans_malformed`; chunks that can't be repaired
+//! are dropped and counted under `datadog.trace_agent.normalizer.traces_dropped`. The counts are reported on the
+//! `metrics` output.
 //!
 //! OTLP traces are normalized by the OTLP translator instead, with an OTLP-specific service fallback.
 
@@ -304,8 +305,8 @@ fn attribute_as_string(value: &AttributeValue) -> Cow<'_, str> {
         AttributeValue::Bool(b) => Cow::Borrowed(if *b { "true" } else { "false" }),
         AttributeValue::Int(i) => Cow::Owned(i.to_string()),
         AttributeValue::Float(f) => Cow::Owned(format_float(*f)),
-        // shortcut: invalid UTF-8 is replaced rather than kept byte for byte as the trace-agent does; the result only feeds
-        // validation and name normalization, which discard non-ASCII bytes either way.
+        // shortcut: invalid UTF-8 is replaced rather than kept byte for byte as the trace-agent does; the result only
+        // feeds validation and name normalization, which discard non-ASCII bytes either way.
         AttributeValue::Bytes(b) => String::from_utf8_lossy(b),
         AttributeValue::Array(values) => {
             let values: Vec<_> = values.iter().map(attribute_as_string).collect();

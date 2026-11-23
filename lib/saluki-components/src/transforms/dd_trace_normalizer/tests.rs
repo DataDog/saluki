@@ -363,7 +363,8 @@ fn test_normalize_span_link_name_v1() {
     }
 }
 
-/// The trace ID is already a fixed pair of 64-bit halves here, so only the zero check applies: the coercion of short and over-long IDs to 16 bytes belongs to the decoder.
+/// The trace ID is already a fixed pair of 64-bit halves here, so only the zero check applies: the coercion of short
+/// and over-long IDs to 16 bytes belongs to the decoder.
 #[test]
 fn test_normalize_trace_chunk_v1_trace_id() {
     for (name, high, low, want_drop) in [
