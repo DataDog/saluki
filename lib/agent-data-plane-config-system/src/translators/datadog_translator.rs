@@ -4336,6 +4336,8 @@ mod tests {
             ("basic", DebugVerbosity::Basic),
             ("normal", DebugVerbosity::Normal),
             ("detailed", DebugVerbosity::Detailed),
+            ("Basic", DebugVerbosity::Basic),
+            ("DETAILED", DebugVerbosity::Detailed),
         ] {
             let (config, errors) = translate_explicit(json!({
                 "otlp_config": { "debug": { "verbosity": configured } }
