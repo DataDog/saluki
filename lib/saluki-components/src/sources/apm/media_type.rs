@@ -1,10 +1,9 @@
 //! The format of a v0.x trace payload, read from its `Content-Type` as the trace-agent reads it.
 //!
-//! The trace-agent takes the media type from `getMediaType` (`pkg/trace/api/api.go`), which is Go's
-//! `mime.ParseMediaType` (`mime/mediatype.go`), except that a value it can't parse, an absent one included, reads as
-//! `application/json`. Parsing lowercases the type, trims whitespace around it, and checks the parameters after it, so
-//! `Application/MsgPack ; charset=utf-8` is MessagePack while `application/msgpack; charset` (a parameter without a
-//! value) is JSON. Its quirks are kept on purpose:
+//! The trace-agent parses the media type with Go's `mime.ParseMediaType` (`mime/mediatype.go`), except that a value it
+//! can't parse, an absent one included, reads as `application/json`. Parsing lowercases the type, trims whitespace
+//! around it, and checks the parameters after it, so `Application/MsgPack ; charset=utf-8` is MessagePack while
+//! `application/msgpack; charset` (a parameter without a value) is JSON. Its quirks are kept on purpose:
 //!
 //! - Lowercasing is Unicode's, so `K` (U+212A, the Kelvin sign) reads as `k` and `İ` (U+0130) as `i`.
 //! - Whitespace is Unicode's, so a no-break space around the type is trimmed.
@@ -16,7 +15,7 @@ use std::collections::HashMap;
 use http::header::CONTENT_TYPE;
 use http::HeaderMap;
 
-/// How a v0.x trace payload is decoded, as `decodeConvertedTracerPayload` chooses.
+/// How a v0.x trace payload is decoded, as the trace-agent chooses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PayloadFormat {
     /// `application/msgpack`.
@@ -204,7 +203,7 @@ mod tests {
     fn content_types_select_the_format_as_get_media_type_does() {
         use PayloadFormat::*;
 
-        // Each value was checked against the trace-agent's `getMediaType` (Go 1.26.11).
+        // Each value was checked against the trace-agent (Go 1.26.11).
         let cases: &[(&[u8], PayloadFormat)] = &[
             (b"", Json),
             (b"application/json", Json),

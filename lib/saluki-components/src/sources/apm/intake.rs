@@ -723,10 +723,9 @@ mod tests {
 
     const MSGPACK: (&str, &str) = ("Content-Type", "application/msgpack");
 
-    /// `testutil.GetTestTraces(1, 1, false)` as `json.Marshal` writes it.
+    /// A test trace, as Go's `json.Marshal` writes it.
     const GO_TEST_TRACES_JSON: &str = r#"[[{"service":"fennel_IS amazing!","name":"something &&<@# that should be a metric!","resource":"NOT touched because it is going to be hashed","trace_id":42,"span_id":52,"parent_id":42,"start":9223372036854775807,"duration":9223372036854775807,"error":0,"meta":{"http.host":"192.168.0.1"},"metrics":{"http.monitor":41.99},"type":"web","span_links":[{"trace_id":42,"trace_id_high":32,"span_id":52,"attributes":{"a1":"v1","a2":"v2"},"tracestate":"dd=s:2;o:rum,congo=baz123","flags":2147483649}]}]]"#;
 
-    // `TestReceiverJSONDecoder` in `api_test.go`.
     #[tokio::test]
     async fn json_payloads_are_decoded_on_every_v0_endpoint() {
         for version in [EndpointVersion::V02, EndpointVersion::V03, EndpointVersion::V04] {
@@ -802,7 +801,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
-    // `TestReceiverDecodingError` in `api_test.go`, and `io.ErrUnexpectedEOF` from the JSON decoder.
+    // A body the JSON decoder can't decode, and one that ends early (`io.ErrUnexpectedEOF`).
     #[tokio::test]
     async fn json_decoding_errors_are_classified_as_http_decoding_error_does() {
         let cases: [(&[u8], &str, &str, &str); 4] = [

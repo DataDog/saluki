@@ -17,8 +17,8 @@ pub enum DecodeError {
 
     /// A JSON body ended before its first value was complete.
     ///
-    /// The counterpart of the `io.EOF` and `io.ErrUnexpectedEOF` that the reference's JSON decoder returns, which the
-    /// receiver counts apart from other decoding errors (`error:unexpected-eof`).
+    /// The counterpart of the `io.EOF` and `io.ErrUnexpectedEOF` that Go's JSON decoder returns, which the
+    /// trace-agent's receiver counts apart from other decoding errors (`error:unexpected-eof`).
     #[snafu(display("unexpected end of JSON input"))]
     UnexpectedEof,
 

@@ -1,8 +1,8 @@
 //! Tests for the classic tracer payload conversion.
 //!
-//! These port the reference's `converter_test.go` for what a JSON body can't express: chunk and payload fields, chunk
+//! These cover what a JSON body can't express: chunk and payload fields, chunk
 //! and payload tags, and span event values of every type. The span-level behaviors are also covered end to end by the
-//! JSON decoder's fixtures, which come from the reference itself.
+//! JSON decoder's fixtures, which come from the trace-agent itself.
 
 use datadog_protos::traces::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AttributeAnyValue,
@@ -308,7 +308,7 @@ fn integers_parse_as_strconv_parse_uint() {
     assert_eq!(parse_uint(b"99999999999x", 10, 32), Err(u64::from(u32::MAX)));
     assert_eq!(parse_uint(b"1x", 10, 32), Err(0));
 
-    // `ConvertToIdx` keeps whatever `ParseUint` returns, error or not.
+    // The trace-agent keeps whatever `ParseUint` returns, error or not.
     assert_eq!(parse_decision_maker("-4"), 4);
     assert_eq!(parse_decision_maker("--4"), 0);
     assert_eq!(parse_decision_maker("-99999999999"), u32::MAX);

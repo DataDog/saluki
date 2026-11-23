@@ -18,8 +18,8 @@
 //!   out of range is a type error.
 //! - `meta_struct` values (`[]byte`) are standard base64 with padding, ignoring line breaks, or arrays of bytes.
 //! - Lone surrogate escapes become U+FFFD. Invalid UTF-8 is repaired before decoding, one U+FFFD per byte.
-//! - `null` spans, span links, span events and attribute values are dropped, as `ConvertToIdx` drops them, and traces
-//!   without spans are dropped as it drops chunks without spans.
+//! - `null` spans, span links, span events and attribute values are dropped, as the trace-agent drops them, and
+//!   traces without spans are dropped as it drops chunks without spans.
 //!
 //! A type error ends decoding, where Go carries on and reports it at the end: either way the payload is rejected.
 
@@ -76,7 +76,7 @@ impl<'de> Visitor<'de> for TracesVisitor {
         let mut chunks = Vec::new();
         while let Some(spans) = seq.next_element_seed(TraceSeed)? {
             if !spans.is_empty() {
-                // As `traceChunksFromTraces` builds them.
+                // As the trace-agent builds them.
                 chunks.push(TraceChunk {
                     priority: PRIORITY_NONE,
                     spans,

@@ -1,9 +1,9 @@
 //! Tests for the v0.4 JSON decoder.
 //!
 //! The primary test is a table-driven run over `testdata/v04_json_cases.json`. Each case's expected value is what the
-//! trace-agent's receiver decodes from the same body: the fixtures were produced by running its
-//! `decodeConvertedTracerPayload` (Go 1.26.11, the toolchain the Agent pins) on each body, and dumping the resulting
-//! tracer payload or classifying the error as `httpDecodingError` does. The remaining tests cover the syntax pass, the
+//! trace-agent's receiver decodes from the same body: the fixtures were produced by running its decoder (Go 1.26.11,
+//! the toolchain the Agent pins) on each body, and dumping the resulting tracer payload or classifying the error as
+//! the receiver does. The remaining tests cover the syntax pass, the
 //! nesting limit, and allocation bounds.
 
 use base64::{engine::general_purpose, Engine as _};
@@ -46,7 +46,7 @@ enum Expected {
     Error { tag: String, reason: String },
 }
 
-/// Classifies an error as the receiver's `httpDecodingError` tags it and as it counts the dropped traces.
+/// Classifies an error as the trace-agent's receiver tags it and as it counts the dropped traces.
 fn classify(error: &DecodeError) -> (&'static str, &'static str) {
     match error {
         DecodeError::UnexpectedEof => ("unexpected-eof", "unexpected_eof"),
@@ -267,7 +267,7 @@ fn nested(depth: usize) -> Vec<u8> {
 
 #[test]
 fn nesting_is_limited_as_go_s_scanner_limits_it() {
-    // Checked against the reference: 10,000 levels decode, and 10,001 are a syntax error.
+    // Checked against the trace-agent: 10,000 levels decode, and 10,001 are a syntax error.
     let decoded = decode_v04_json(&nested(10_000)).unwrap();
     assert_eq!(decoded.traces.len(), 1);
     assert!(matches!(
@@ -304,7 +304,7 @@ fn empty_span_payloads_allocate_in_proportion_to_their_size() {
     let body = format!("[[{}]]", vec!["{}"; 20_000].join(","));
     let (decoded, peak) = alloc_tracking::peak_during(|| decode_v04_json(body.as_bytes()).unwrap());
     assert_eq!(decoded.traces[0].spans().len(), 20_000);
-    // Each 3-byte span is a classic span, then a unified one: the cost of the data model, as in the reference.
+    // Each 3-byte span is a classic span, then a unified one: the cost of the data model, as in the trace-agent.
     let per_span = std::mem::size_of::<datadog_protos::traces::Span>() + std::mem::size_of::<Span>() + 64;
     let bound = 2 * 20_000 * per_span;
     assert!(peak <= bound, "peak {peak} bytes (bound {bound})");

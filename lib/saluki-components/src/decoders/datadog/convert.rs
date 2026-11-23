@@ -1,7 +1,7 @@
 //! Conversion of the classic tracer payload model (`datadog_protos::traces::TracerPayload`) into unified traces.
 //!
-//! [`convert_tracer_payload`] mirrors the reference receiver's `ConvertToIdx` (`pkg/trace/api/converter.go`), which
-//! converts the bodies of `/v0.2`-`/v0.4` in JSON, `/v0.1/spans`, `/spans` and `/v0.7/traces` into the v1.0 model. It
+//! [`convert_tracer_payload`] converts the classic model as the trace-agent's receiver does
+//! for the bodies of `/v0.2`-`/v0.4` in JSON, `/v0.1/spans`, `/spans` and `/v0.7/traces`. It
 //! produces the same output as [`decode_v1_payload`](super::decode_v1_payload).
 //!
 //! # Promoted fields
@@ -48,15 +48,15 @@ use super::DecodedV1;
 #[cfg(test)]
 mod tests;
 
-/// The `meta` keys promoted to span fields, and so never kept as attributes (`isPromotedTag`).
+/// The `meta` keys promoted to span fields, and so never kept as attributes.
 fn is_promoted_tag(key: &str) -> bool {
     matches!(key, "env" | "version" | "component" | "span.kind")
 }
 
-/// Converts a classic tracer payload into unified trace events, as `ConvertToIdx` does.
+/// Converts a classic tracer payload into unified trace events, as the trace-agent does.
 ///
 /// `converted_from` names the payload's original format in each span's `_dd.convertedv1` attribute (`v04-json`,
-/// `v01-json`, `v07-pb`), as `ConvertToIdx`'s `originPayloadVersion`. If it is empty, no such attribute is set.
+/// `v01-json`, `v07-pb`), as the trace-agent names it. If it is empty, no such attribute is set.
 pub fn convert_tracer_payload(payload: TracerPayload, converted_from: &'static str) -> DecodedV1 {
     let mut payload_attributes = string_attributes(payload.tags);
     let mut promoted = PayloadPromoted::default();
@@ -67,7 +67,7 @@ pub fn convert_tracer_payload(payload: TracerPayload, converted_from: &'static s
         }
     }
 
-    // `InternalTracerPayload.ApplyPromotedFields`: the payload's own fields win, the promoted attributes don't.
+    // As in the trace-agent, the payload's own fields win, the promoted attributes don't.
     let or_promoted = |own: String, promoted: MetaString| if own.is_empty() { promoted } else { meta(own) };
     let fields = PayloadFields {
         container_id: meta(payload.containerID),
@@ -140,7 +140,7 @@ fn convert_span(
     span: ClassicSpan, promoted: &mut ChunkPromoted, root: &mut RootPriority, converted_from: &'static str,
 ) -> Span {
     if let Some(priority) = span.metrics.get("_sampling_priority_v1") {
-        // Go's `int32(float64)`; out-of-range values saturate here, where Go's result is platform-dependent.
+        // Out-of-range values saturate here, where the trace-agent's conversion is platform-dependent.
         promoted.sampling_priority = *priority as i32;
     }
     root.reconcile(promoted, span.parentID);
@@ -233,7 +233,7 @@ fn convert_event(event: ClassicSpanEvent) -> SpanEvent {
     SpanEvent::new(event.time_unix_nano, meta(event.name)).with_attributes(attributes)
 }
 
-/// Converts a span event attribute, or returns `None` for an unknown type, as `convertSpanEventAttributes` drops it.
+/// Converts a span event attribute, or returns `None` for an unknown type, as the trace-agent drops it.
 fn convert_any_value(value: AttributeAnyValue) -> Option<AttributeValue> {
     Some(match value.type_.value() {
         0 => AttributeValue::String(meta(value.string_value)),
@@ -283,7 +283,7 @@ fn trace_id_128(span: &ClassicSpan) -> (u64, u64) {
     (high.unwrap_or(0), span.traceID)
 }
 
-/// Parses a `_dd.p.dm` value, with or without a leading `-`, as `ConvertToIdx` does: the value
+/// Parses a `_dd.p.dm` value, with or without a leading `-`, as the trace-agent does: the value
 /// `strconv.ParseUint(s, 10, 32)` returns, error or not.
 fn parse_decision_maker(value: &str) -> u32 {
     let value = value.strip_prefix('-').unwrap_or(value);
