@@ -781,6 +781,13 @@ impl MetaString {
     }
 }
 
+#[cfg(feature = "trace-model")]
+impl libdd_trace_model::TraceText for MetaString {
+    fn from_static(s: &'static str) -> Self {
+        MetaString::from_static(s)
+    }
+}
+
 impl Default for MetaString {
     fn default() -> Self {
         Self::empty()

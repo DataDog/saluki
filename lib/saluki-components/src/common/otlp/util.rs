@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
+use saluki_core::data_model::event::trace::AttributeValueExt;
 use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, tags::TagSet};
 use stringtheory::interning::Interner;
 use stringtheory::MetaString;

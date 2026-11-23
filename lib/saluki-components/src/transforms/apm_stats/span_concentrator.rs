@@ -2,6 +2,7 @@
 
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use saluki_common::collections::FastHashMap;
+use saluki_core::data_model::event::trace::AttributeValueExt;
 use saluki_core::data_model::{
     event::{
         trace::{AttributeValue, Span},

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::metric::context::Context;
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt, Span, Trace};
 use saluki_core::data_model::event::{metric::Metric, Event};
 use saluki_core::data_model::tags::TagSet;
 use stringtheory::MetaString;

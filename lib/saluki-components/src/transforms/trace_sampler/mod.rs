@@ -13,6 +13,7 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use datadog_agent_apm::sampling::{RemoteSampling, SamplerSettings, TraceSamplingSubscription};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::trace::AttributeValueExt;
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
