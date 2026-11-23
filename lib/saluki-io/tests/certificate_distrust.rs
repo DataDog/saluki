@@ -1,9 +1,11 @@
 //! Checks that direct connections, HTTPS proxies, and CONNECT destinations all verify server certificates through the
 //! `saluki-tls` client configuration, which rejects distrusted certificate authorities (RUSTSEC-2026-0382).
 //!
-//! A server that presents `dv-g3b-emudhra.pem` must fail the handshake with `CertDistrusted`. The server doesn't have
-//! the private key of that leaf and signs with an unrelated key, but the client checks the certificate chain first, so
-//! the chain decides the result.
+//! A server that presents the intermediates from `dv-g3b-emudhra.pem` must fail the handshake with `CertDistrusted`. The
+//! server leaves out the leaf, so the distrusted `EM DV TLS CA - G3B` intermediate is the first certificate. The client
+//! checks the distrust list on that certificate before it checks validity dates or the server name, so the result
+//! doesn't depend on the current date. The server signs with an unrelated key, but the client checks the certificate
+//! chain first, so the chain decides the result.
 
 use std::{env, sync::Arc, time::Duration};
 
@@ -35,7 +37,9 @@ const DEADLINE: Duration = Duration::from_secs(5);
 /// with the private key of the self-signed certificate.
 fn server_config(cert: &SelfSignedCert, affected: bool) -> Arc<ServerConfig> {
     let certificates = if affected {
+        // Skip the leaf, which expires on 2027-05-03. See the module documentation.
         CertificateDer::pem_slice_iter(AFFECTED_CHAIN)
+            .skip(1)
             .collect::<Result<Vec<_>, _>>()
             .unwrap()
     } else {

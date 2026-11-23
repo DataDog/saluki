@@ -2,8 +2,7 @@
 //! intermediate, even when the root of that chain is trusted.
 //!
 //! `rustls-webpki` distrusts the public keys of eight compromised intermediate certificate authorities
-//! (RUSTSEC-2026-0382). This test catches a
-//! downgrade of `rustls-webpki` or a client verifier that skips this check.
+//! (RUSTSEC-2026-0382). This test catches a downgrade of `rustls-webpki` or a client verifier that skips this check.
 //!
 //! `data/distrusted/dv-g3b-emudhra.pem` holds the public chain that `dv-g3b-emudhra.we-have-a-problem.com` served on
 //! October 20, 2026. The chain has the leaf, the distrusted `EM DV TLS CA - G3B` intermediate, and the
