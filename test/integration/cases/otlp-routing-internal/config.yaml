@@ -14,6 +14,9 @@ participants:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "false"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read these. The endpoints are the harness's, not the default ones.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
     files:
       datadog.yaml: {from: datadog.yaml, template: true}
     connect: {intake: intake.api}
@@ -56,6 +59,7 @@ participants:
     connect: {otlp: adp.otlp_http}
 
 procedure:
+  # ADP listens on the endpoints that env sets. Each sender starts only once its endpoint accepts connections.
   - parallel:
       - step: log_contains
         on: adp

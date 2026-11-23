@@ -15,6 +15,9 @@ participants:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "false"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read this. The endpoint is the harness's, not the default one. The Agent moves its receiver
+      # off it.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "true"
       # The Agent and ADP both read these. Proxied metrics reaching the intake from the Agent shows that ADP uses the
       # HTTP address, and an Agent that starts without a relocation conflict shows that the gRPC address is valid.

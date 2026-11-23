@@ -15,6 +15,9 @@ participants:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "false"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read this. The endpoint is the harness's, not the default one. The Agent moves its receiver
+      # off it.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "true"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "true"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"

@@ -9,9 +9,5 @@ logs_config:
   force_use_http: true
 
 otlp_config:
-  receiver:
-    protocols:
-      http:
-        endpoint: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
   logs:
     enabled: true
