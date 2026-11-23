@@ -147,6 +147,18 @@ fn main() -> ExitCode {
             "test/integration/cases/otlp-routing-mixed-grpc/millstone-logs-grpc.yaml",
             || routing::logs_fixture("mixed-grpc", "grpc"),
         ),
+        (
+            "test/integration/cases/otlp-routing-mixed-http/millstone-metrics-http.yaml",
+            || routing::metrics_fixture("mixed-http", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-mixed-http/millstone-traces-http.yaml",
+            || routing::traces_fixture("mixed-http", "http", 2),
+        ),
+        (
+            "test/integration/cases/otlp-routing-mixed-http/millstone-logs-http.yaml",
+            || routing::logs_fixture("mixed-http", "http"),
+        ),
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
