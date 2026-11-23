@@ -105,6 +105,10 @@ impl ResourceLogsIter {
                 Some(log_record) => {
                     // A host or service found on a record sticks for the rest of the resource's
                     // records, across scopes.
+                    //
+                    // TODO: Until a host is found, the source detectors run on every record of a resource without a
+                    // host, and some of them still allocate: lowercasing `cloud.platform` for the Azure checks, and
+                    // parsing `cloud.resource_id`.
                     if self.host.is_none() {
                         self.host = host_from_attributes(&log_record.attributes);
                     }
