@@ -628,22 +628,14 @@ mod tests {
     use tower::service_fn;
     use tower::ServiceExt;
 
+    use super::proxy::test_proxy;
     use super::*;
     use crate::common::datadog::test_util::init_tls;
-
-    /// Builds a proxy like the relay does, after installing the TLS crypto provider as application bootstrap does.
-    ///
-    /// Without it, a FIPS build falls back to a provider whose cipher suites aren't all FIPS-approved, and the HTTP
-    /// client refuses to build.
-    fn from_destination(destination: &str) -> Result<TraceAgentProxy, saluki_error::GenericError> {
-        init_tls();
-        TraceAgentProxy::from_destination(destination)
-    }
 
     /// A proxy whose trace-agent is not listening, so a proxied request is answered `502 Bad Gateway`. That makes
     /// "was this request proxied?" observable without running a trace-agent.
     fn unreachable_proxy() -> TraceAgentProxy {
-        from_destination("http://127.0.0.1:1").expect("destination should parse")
+        test_proxy("http://127.0.0.1:1").expect("destination should parse")
     }
 
     fn build_router(state: RelayState) -> Router {
@@ -855,7 +847,7 @@ mod tests {
             }),
         );
         tokio::spawn(async move { axum::serve(listener, router).await });
-        from_destination(&format!("http://{addr}")).expect("destination should parse")
+        test_proxy(&format!("http://{addr}")).expect("destination should parse")
     }
 
     async fn send(router: &Router, method: &str, path: &str) -> axum::response::Response {
@@ -1096,7 +1088,7 @@ mod tests {
 
         relay_router
             .set(build_router(RelayState {
-                proxy: from_destination(&format!("http://{bound_addr}")).expect("destination should parse"),
+                proxy: test_proxy(&format!("http://{bound_addr}")).expect("destination should parse"),
                 tracer_flare: unreachable_tracer_flare(),
                 info: test_info(),
                 container_tags: ContainerTagsHasher::default(),
