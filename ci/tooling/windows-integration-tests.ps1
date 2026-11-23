@@ -70,7 +70,13 @@ if (-not $env:APP_GIT_HASH) {
 # regardless of $env:BUILD_PROFILE. ADP tracks $env:BUILD_PROFILE so a tagged release pipeline
 # (BUILD_PROFILE=optimized-release in .gitlab-ci.yml) tests the same binary it ships, mirroring
 # the linux/darwin flows.
-Invoke-Native cargo build --release --package panoramic
+Invoke-Native cargo build --release --package panoramic --package panoramic-courier
+# The Windows container backend copies the courier into every container, from where panoramic looks for it.
+$Courier = Join-Path $env:CARGO_TARGET_DIR "release\courier.exe"
+Assert-NoDynamicVCRuntimeImports -BinaryPath $Courier
+$CourierDir = Join-Path $RepoRoot "target\x86_64-pc-windows-msvc\release"
+New-Item -ItemType Directory -Force $CourierDir | Out-Null
+Copy-Item -Force $Courier $CourierDir
 Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plane
 
 $ImageTag = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
@@ -97,7 +103,7 @@ $PanoramicArgs = @(
     "run",
     "-d", $TestDir,
     "--runtime", "windows",
-    "--image-override", "container=$ImageTag",
+    "--set", "saluki-images/agent-data-plane:testing-windows=$ImageTag",
     "--no-tui",
     "-p", "4",
     "-l", $env:PANORAMIC_LOG_DIR

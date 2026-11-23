@@ -5,6 +5,7 @@ host-process-with-a-log-file: {subject_os: macos, error: "observed through its p
 malformed-reference-in-template-file: {subject_os: linux, error: "is not a reference"}
 millstone-file-not-a-template: {subject_os: linux, error: "the case must place it with template: true"}
 own-ip-at-create: {subject_os: linux, error: "has a value once participant 'app' starts"}
+own-ip-key-in-env: {subject_os: linux, error: "with.own_ip.env names DD_BIND_HOST, which env sets too: leave it out of env"}
 pod-file-needs-a-command: {subject_os: linux, error: "the file holds a value that exists once the pod starts, so the pod's command runs behind a wait for the file: set 'command'"}
 reserved-path: {subject_os: linux, error: "is reserved by the harness"}
 socket-path-too-long: {subject_os: linux, error: "and a Unix socket path on linux holds at most 107"}
