@@ -297,6 +297,14 @@ impl Runner {
             // Drop the body before cleanup; its tracked background tasks are handled below.
         };
 
+        // Cleanup does not change the outcome, and a second signal can end the run during it, so the plan of a case that
+        // did not pass is written first.
+        if let Some(plan) = test.participant_case().and_then(|case| case.plan.as_ref().ok()) {
+            if !result.outcome.is_passed() {
+                write_plan(plan, &log_dir);
+            }
+        }
+
         // Cleanup has its own budget because the test token may already be cancelled. Give tracked tasks time to stop
         // and mark interrupted creations before reclaim reads the ledger.
         let reclaim_started = Instant::now();
@@ -326,11 +334,6 @@ impl Runner {
         result.case_path = Some(test.case_path());
         result.log_dir = Some(log_dir.clone());
 
-        if let Some(plan) = test.participant_case().and_then(|case| case.plan.as_ref().ok()) {
-            if !result.outcome.is_passed() {
-                write_plan(plan, &log_dir);
-            }
-        }
         write_result_log(&result, &log_dir);
         crate::machine_output::write_test_report(&result, &log_dir);
 
