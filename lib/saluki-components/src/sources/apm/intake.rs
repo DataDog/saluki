@@ -248,7 +248,7 @@ impl TraceIntake {
 
         let decoded = match (version, format) {
             (EndpointVersion::V10, _) => decode_v1_payload(&body),
-            // As `decodeConvertedTracerPayload`'s `v01` case, which decodes JSON whatever the media type.
+            // As in the trace-agent, a v0.1 body is decoded as JSON whatever the media type.
             (EndpointVersion::V01, _) => decode_v01_json(&body),
             // `/v0.2/traces` never gets here with MessagePack: it is rejected above.
             (_, PayloadFormat::MessagePack) => decode_v04_payload(&body),
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(errors, 1.0);
     }
 
-    // The v0.1 case of `TestReceiverMsgpackDecoder` in `api_test.go`: `/v0.1/spans` and `/spans` are both `v01`.
+    // `/v0.1/spans` and `/spans` are both `v01`.
     #[tokio::test]
     async fn a_msgpack_payload_on_v01_is_an_unsupported_media_type() {
         let (intake, mut traces) = intake(config());

@@ -13,8 +13,8 @@
 //!
 //! [`decode_v04_any`] is the trace-agent's "do our best" branch for any other media type: JSON first, then MessagePack.
 //!
-//! [`decode_v01_json`] mirrors the reference's `v01` branch the same way, with `traceChunksFromSpans` grouping the spans
-//! into chunks by trace ID. The reference decodes a v0.1 body as JSON whatever its media type.
+//! [`decode_v01_json`] decodes v0.1 bodies the same way, grouping the spans into chunks by trace ID. The trace-agent
+//! decodes a v0.1 body as JSON whatever its media type.
 //!
 //! # Limits
 //!

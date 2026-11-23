@@ -92,9 +92,9 @@ impl<'de> Visitor<'de> for TracesVisitor {
 
 /// Decodes a JSON `[]*pb.Span` value, the body of `/v0.1/spans`, into one chunk per trace ID.
 ///
-/// The chunks are grouped as `traceChunksFromSpans` groups them: `nil` spans are skipped, the spans of a chunk keep
-/// their order in the list, and each chunk gets no priority and no tags. Go builds the chunks from a map, so their
-/// order varies from one request to the next; here they come in the order their trace IDs first appear.
+/// The chunks are grouped as the trace-agent groups them: `nil` spans are skipped, the spans of a chunk keep their
+/// order in the list, and each chunk gets no priority and no tags. The trace-agent builds the chunks from a map, so
+/// their order varies from one request to the next; here they come in the order their trace IDs first appear.
 ///
 /// The input must be one syntactically valid JSON value in valid UTF-8, so that any error is a type error.
 pub(super) fn decode_spans(json: &[u8]) -> Result<Vec<TraceChunk>, serde_json::Error> {
