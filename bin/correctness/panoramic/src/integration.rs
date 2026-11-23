@@ -127,6 +127,10 @@ impl Test for IntegrationTestCase {
         self.active_runtime.clone()
     }
 
+    fn runs_host_processes(&self) -> bool {
+        self.active_runtime == MAC_RUNTIME
+    }
+
     async fn run(&self, tctx: TestContext) -> TestResult {
         match self.active_runtime.as_str() {
             MAC_RUNTIME => {

@@ -1169,6 +1169,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tag_items_that_are_not_strings_do_not_stop_the_load() {
+        // The Agent runs with this file: it casts scalar items to strings and map items to empty strings. ADP must load
+        // it too, because it reads the file at startup even when `data_plane.enabled` is false.
+        let loaded = load_from_file(
+            "non_string_tags",
+            "data_plane:\n  enabled: false\ntags:\n  - product: contentcontrol\n  - env:prod\n  - 123\nextra_tags:\n  - team: core\n  - true\n",
+        )
+        .await;
+
+        let tags = &loaded.local().shared.tags;
+        assert_eq!(tags.tags, ["", "env:prod", "123"]);
+        assert_eq!(tags.extra_tags, ["", "true"]);
+    }
+
+    #[tokio::test]
     async fn additional_endpoints_keys_reach_the_model_as_the_agent_renders_them() {
         let loaded = load_from_file(
             "agent_endpoint_keys",

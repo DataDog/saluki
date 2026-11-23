@@ -29,11 +29,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::container::{CaseContainers, ContainerBackend, RealizedContainer};
+use super::backend::{Backends, Created, Preparing, Running, Scope};
 use super::deadline::{Budget, Deadline};
 use super::handle::{Handle, HandleError};
 use super::ledger::ResourceLedger;
-use super::observe::{self, Collected, Kept, Observation, ProcessExit, Sink, CONTAINER_LOG};
+use super::observe::{self, Collected, Kept, Observation, ProcessExit, Sink, CONTAINER_LOG, CONTAINER_OUTPUT};
 use super::participant::Enclosure;
 use super::plan::{CasePlan, PlannedStep};
 use super::record::{CaseRecord, RunningStep, StepResult, StepStatus, Verdict};
@@ -62,8 +62,8 @@ const EXIT_WATCH_TIME: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// What the runner gives one case's run.
 pub(crate) struct CaseRun<'a> {
-    /// Realizes the case's Linux containers.
-    pub(crate) containers: &'a ContainerBackend,
+    /// Realizes the case's participants, by enclosure.
+    pub(crate) backends: &'a Backends,
     pub(crate) ledger: &'a ResourceLedger,
     /// Where output capture and exit watches run. The runner stops them before reclaim.
     pub(crate) tasks: &'a CaseTasks,
@@ -85,6 +85,7 @@ pub(crate) async fn run(plan: &CasePlan, run: &CaseRun<'_>) -> TestResult {
         run,
         values: Values::of_plan(&plan.participants),
         kept: Kept::new(run.log_dir),
+        scopes: BTreeMap::new(),
         created: BTreeMap::new(),
         started: BTreeMap::new(),
         finish_capture: run.tasks.stop.child_token(),
@@ -131,8 +132,10 @@ struct Case<'a> {
     values: Values,
     /// The files steps keep.
     kept: Kept,
+    /// What each backend the case uses prepared, by enclosure.
+    scopes: BTreeMap<Enclosure, Box<dyn Scope>>,
     /// Participants created and not started yet.
-    created: BTreeMap<String, RealizedContainer>,
+    created: BTreeMap<String, Box<dyn Created>>,
     started: BTreeMap<String, Started>,
     /// Tells every capture to take its last output and finish, once the procedure is over or the case's tasks are
     /// stopped. A capture ends this way, never by cancellation, so it always gets its last read.
@@ -141,7 +144,7 @@ struct Case<'a> {
 
 /// A started participant, and what observes it.
 struct Started {
-    realized: Arc<RealizedContainer>,
+    realized: Arc<dyn Running>,
     observation: Observation,
     /// Where each process's output is captured on the runner host.
     outputs: BTreeMap<String, PathBuf>,
@@ -150,16 +153,16 @@ struct Started {
 }
 
 impl Case<'_> {
-    /// Prepares the case's scope, then creates and starts its participants.
+    /// Prepares the case's scopes, then creates and starts its participants.
     async fn set_up(&mut self) -> Result<(), String> {
         let phases = self.run.phases;
         let phase = phases.enter("prepare");
         let prepared = self.prepare().await;
         phase.finish();
-        let containers = prepared?;
+        prepared?;
 
         let phase = phases.enter("create");
-        let created = self.create(&containers).await;
+        let created = self.create().await;
         phase.finish();
         created?;
 
@@ -169,40 +172,36 @@ impl Case<'_> {
         started
     }
 
-    async fn prepare(&self) -> Result<CaseContainers, String> {
-        // TODO: prepare the scopes of the other enclosures with their backends.
-        if let Some(enclosure) = self
-            .plan
-            .scope
-            .keys()
-            .find(|&&enclosure| enclosure != Enclosure::LinuxContainer)
-        {
-            return Err(format!("The case has a {}, and that backend is not built.", enclosure));
+    /// Prepares one scope for each enclosure the case uses.
+    async fn prepare(&mut self) -> Result<(), String> {
+        let run = self.run;
+        let cx = Preparing {
+            ledger: run.ledger,
+            tasks: run.tasks,
+            cancel: run.cancel,
+            deadline: run.deadline.at,
+        };
+        for &enclosure in self.plan.scope.keys() {
+            let backend = run.backends.get(enclosure).map_err(|e| format!("{:#}", e))?;
+            let scope = backend.prepare(&cx).await.map_err(|e| format!("{:#}", e))?;
+            self.scopes.insert(enclosure, scope);
         }
-        self.run
-            .containers
-            .prepare(self.run.ledger, self.run.cancel, self.run.deadline.at)
-            .await
-            .map_err(|e| format!("{:#}", e))
+        Ok(())
     }
 
     /// Creates the participants level by level in create order, and records each one's identity.
-    async fn create(&mut self, containers: &CaseContainers) -> Result<(), String> {
+    async fn create(&mut self) -> Result<(), String> {
         let plan = self.plan;
         for level in &plan.create_order {
             let created = join_all(level.iter().map(|name| {
-                containers.create(
-                    name,
-                    &plan.participants[name],
-                    &self.values,
-                    self.run.cancel,
-                    self.run.deadline.at,
-                )
+                let planned = &plan.participants[name];
+                let scope = &self.scopes[&planned.realization.enclosure];
+                scope.create(name, planned, &self.values, self.run.cancel, self.run.deadline.at)
             }))
             .await;
             for (name, created) in level.iter().zip(created) {
                 let created = created.map_err(|e| format!("Failed to create participant '{}': {:#}", name, e))?;
-                self.values.created(name, created.container.id());
+                self.values.identify(name, &created.identities());
                 self.created.insert(name.clone(), created);
             }
         }
@@ -226,22 +225,21 @@ impl Case<'_> {
                 .collect();
             self.release(gates).await?;
 
-            let mut starting: Vec<(&String, RealizedContainer)> = level
+            let starting: Vec<(&String, Box<dyn Created>)> = level
                 .iter()
                 .filter_map(|name| self.created.remove(name).map(|created| (name, created)))
                 .collect();
             let run = self.run;
-            let results = join_all(
-                starting
-                    .iter_mut()
-                    .map(|(_, created)| created.start(run.cancel, run.deadline.at)),
-            )
+            let values = &self.values;
+            let results = join_all(starting.into_iter().map(|(name, created)| async move {
+                (name, created.start(values, run.cancel, run.deadline.at).await)
+            }))
             .await;
             // Every participant that started is observed, even when another of its level failed.
             let mut failed = None;
-            for ((name, realized), result) in starting.into_iter().zip(results) {
+            for (name, result) in results {
                 let observed = match result {
-                    Ok(()) => self.observe_started(name, realized).await,
+                    Ok(running) => self.observe_started(name, running).await,
                     Err(e) => Err(format!("Failed to start participant '{}': {:#}", name, e)),
                 };
                 if let Err(e) = observed {
@@ -322,7 +320,7 @@ impl Case<'_> {
                 Ok(match &gate.evidence {
                     Evidence::None => Ok(()),
                     Evidence::Accepts | Evidence::Exists => handle.probe(endpoint, GATE_ATTEMPT).await,
-                    Evidence::Http { path } => match handle.http_get(endpoint, path, GATE_ATTEMPT).await {
+                    Evidence::Http { path } => match handle.http_get(endpoint, path, false, true, GATE_ATTEMPT).await {
                         Ok(response) if response.status == 200 => Ok(()),
                         Ok(response) => Err(HandleError::Software(format!("it answered {}", response.status))),
                         Err(e) => Err(e),
@@ -402,21 +400,28 @@ impl Case<'_> {
     }
 
     /// Records what is known of `name` once it has started, and observes its exit and the output of each process.
-    async fn observe_started(&mut self, name: &str, realized: RealizedContainer) -> Result<(), String> {
+    async fn observe_started(&mut self, name: &str, running: Arc<dyn Running>) -> Result<(), String> {
         let plan = self.plan;
         let planned = &plan.participants[name];
-        if let Some(ip) = &realized.ip {
-            self.values.started(name, ip);
-        }
-        let observation = Observation::new(planned.processes.iter().map(ProcessSpec::name));
-        let realized = Arc::new(realized);
-        let (container, watched) = (realized.container.clone(), observation.clone());
+        self.values.identify(name, &running.identities());
+        let through_container = planned
+            .processes
+            .iter()
+            .any(|process| matches!(process.output(), OutputChannel::Container));
+        let observation = Observation::new(
+            planned
+                .processes
+                .iter()
+                .map(ProcessSpec::name)
+                .chain((!through_container).then_some(CONTAINER_OUTPUT)),
+        );
+        let (watching, watched) = (running.clone(), observation.clone());
         self.run.tasks.spawn(async move {
-            let exit = container.wait(Instant::now() + EXIT_WATCH_TIME).await;
+            let exit = watching.wait(Instant::now() + EXIT_WATCH_TIME).await;
             watched.exited(exit.map_err(|e| format!("{:#}", e)));
         });
         let mut started = Started {
-            realized,
+            realized: running,
             observation,
             outputs: BTreeMap::new(),
             capture: Vec::new(),
@@ -426,19 +431,21 @@ impl Case<'_> {
         captured
     }
 
-    /// Captures the output of each process of `name` under its log directory, and the container log when no process
-    /// is observed through it.
+    /// Captures the output of each process of `name` under its log directory, and the participant's own log when no
+    /// process is observed through it. That log is observed as [`CONTAINER_OUTPUT`].
     async fn capture(&self, name: &str, started: &mut Started) -> Result<(), String> {
         let planned = &self.plan.participants[name];
         let dir = self.run.log_dir.join(name);
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|e| format!("Failed to create '{}': {}", dir.display(), e))?;
-        let facts = planned.realization.enclosure.facts();
         let limit = self.run.deadline.at.saturating_duration_since(Instant::now());
         let tasks = self.run.tasks;
-        let mut through_container = false;
         for process in &planned.processes {
+            started
+                .realized
+                .check_capture(name, process)
+                .map_err(|e| format!("{:#}", e))?;
             let output = dir.join(format!("{}.log", process.name()));
             let sink = Sink::create(
                 output.clone(),
@@ -446,30 +453,21 @@ impl Case<'_> {
             )
             .await?;
             started.outputs.insert(process.name().to_string(), output);
-            let task = match process.output() {
-                OutputChannel::Container => {
-                    through_container = true;
-                    tasks
-                        .spawn_cooperative(sink.capture(started.realized.container.logs(), self.finish_capture.clone()))
-                }
-                OutputChannel::File { file } => {
-                    let (Some(courier), Some(log_dir)) = (facts.courier, facts.log_dir(name)) else {
-                        return Err(format!(
-                            "Participant '{}' is a {}, which has no courier or log directory.",
-                            name, planned.realization.enclosure
-                        ));
-                    };
-                    let path = format!("{}{}{}", log_dir, facts.separator, file);
-                    let (realized, finish) = (started.realized.clone(), self.finish_capture.clone());
-                    tasks.spawn_cooperative(async move { sink.follow(&*realized, courier, &path, limit, finish).await })
-                }
-            };
+            let (running, finish) = (started.realized.clone(), self.finish_capture.clone());
+            let (participant, process) = (name.to_string(), process.clone());
+            let task = tasks.spawn_cooperative(async move {
+                running.capture(&participant, &process, sink, limit, finish).await;
+            });
             started.capture.push(task);
         }
-        if !through_container {
-            let sink = Sink::create(dir.join(CONTAINER_LOG), None).await?;
-            let task =
-                tasks.spawn_cooperative(sink.capture(started.realized.container.logs(), self.finish_capture.clone()));
+        if started.observation.output(CONTAINER_OUTPUT).is_some() {
+            let sink = Sink::create(
+                dir.join(CONTAINER_LOG),
+                Some((started.observation.clone(), CONTAINER_OUTPUT.to_string())),
+            )
+            .await?;
+            let (running, finish) = (started.realized.clone(), self.finish_capture.clone());
+            let task = tasks.spawn_cooperative(async move { running.capture_log(sink, finish).await });
             started.capture.push(task);
         }
         Ok(())
@@ -598,17 +596,14 @@ impl Case<'_> {
             .values()
             .filter(|started| started.observation.exit().is_none())
             .map(|started| async move {
-                let container = &started.realized.container;
-                match container.status(deadline).await {
-                    Ok(status) if !status.running => {
-                        let exit = container.wait(deadline).await;
-                        started.observation.exited(exit.map_err(|e| format!("{:#}", e)));
-                    }
-                    // Nothing else may check the container after this, so its state is undetermined.
+                match started.realized.exit_now(deadline).await {
+                    Ok(Some(code)) => started.observation.exited(Ok(code)),
+                    Ok(None) => {}
+                    // Nothing else may check the participant after this, so its state is undetermined.
                     Err(e) if started.observation.exit().is_none() => {
-                        started.observation.exited(Err(format!("{:#}", e)));
+                        started.observation.exited(Err(format!("{:#}", e)))
                     }
-                    _ => {}
+                    Err(_) => {}
                 }
             });
         join_all(refreshed).await;

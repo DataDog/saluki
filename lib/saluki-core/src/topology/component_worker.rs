@@ -32,6 +32,7 @@ use crate::components::{
     transforms::{Transform, TransformContext},
     ComponentContext,
 };
+use crate::health::LivenessResponder;
 use crate::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 use crate::topology::ids::get_component_relative_identifier;
 
@@ -55,6 +56,9 @@ pub(crate) trait RunnableComponent: Send + 'static {
     const WANTS_SHUTDOWN_SIGNAL: bool;
 
     /// Consumes the component and its context, returning the future that runs the component.
+    ///
+    /// The future answers the liveness probes of the component while the component runs, so that a component that
+    /// waits on backpressure stays live. See [`LivenessResponder`].
     ///
     /// `process_shutdown` is the shutdown signal of the component's worker. The run-future's allocations are attributed
     /// to the component's resource group by the process it runs in: the worker is named for the component, so no
@@ -150,6 +154,7 @@ macro_rules! runnable_component {
         /// Pairs a built component with its context for supervised execution.
         pub(crate) struct $name {
             pub(crate) component: Box<dyn $component + Send>,
+            pub(crate) liveness: LivenessResponder,
             pub(crate) context: $context,
         }
 
@@ -159,10 +164,11 @@ macro_rules! runnable_component {
             fn run_with_shutdown(self, process_shutdown: ShutdownHandle) -> SupervisorFuture {
                 let Self {
                     component,
+                    liveness,
                     mut context,
                 } = self;
                 context.set_shutdown_handle(process_shutdown);
-                Box::pin(component.run(context))
+                Box::pin(liveness.drive(component.run(context)))
             }
         }
     };
@@ -170,6 +176,7 @@ macro_rules! runnable_component {
         /// Pairs a built component with its context for supervised execution.
         pub(crate) struct $name {
             pub(crate) component: Box<dyn $component + Send>,
+            pub(crate) liveness: LivenessResponder,
             pub(crate) context: $context,
         }
 
@@ -178,8 +185,12 @@ macro_rules! runnable_component {
 
             fn run_with_shutdown(self, _process_shutdown: ShutdownHandle) -> SupervisorFuture {
                 // This kind has no shutdown handle of its own: it stops when its upstream channels close.
-                let Self { component, context } = self;
-                Box::pin(component.run(context))
+                let Self {
+                    component,
+                    liveness,
+                    context,
+                } = self;
+                Box::pin(liveness.drive(component.run(context)))
             }
         }
     };

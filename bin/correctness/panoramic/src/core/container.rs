@@ -4,8 +4,9 @@
 //! and, where the container OS has one, a volume mounted at the shared root in every container, which holds each
 //! participant's own directories. Per participant, it creates a container from the planned participant alone, places
 //! the participant's files and the courier as one archive, starts the container, and reads back the address and the
-//! host port of each published endpoint. Every resource is entered in the ledger before it is made, and the ledger
-//! reclaims the scope: its containers, then its volume, then its network.
+//! host port of each published endpoint. A started container reports its exit and its output as the container's own.
+//! Every resource is entered in the ledger before it is made, and the ledger reclaims the scope: its containers, then
+//! its volume, then its network.
 //!
 //! What differs between container OSes is data: the planning facts of the enclosure, and a [`ContainerOs`] row
 //! for the rest.
@@ -15,6 +16,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -30,13 +32,17 @@ use tokio::io::AsyncWrite;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::backend::{Exec, Facts, Realized, EXIT_DIR_ENV, HOST_PID, LOG_DIR_ENV};
+use super::backend::{
+    Backend, Created, Exec, Facts, Identities, Preparing, Realized, Running, Scope, EXIT_DIR_ENV,
+    HOST_CGROUP_NAMESPACE, HOST_PID, LOG_DIR_ENV,
+};
 use super::handle::HandleError;
 use super::ledger::{random_id, ResourceLedger};
+use super::observe::Sink;
 use super::participant::Enclosure;
 use super::plan::{Launch, PlannedParticipant};
 use super::reference::Values;
-use super::spec::Contents;
+use super::spec::{Contents, OutputChannel, ProcessSpec};
 use super::template::Template;
 use super::wiring::PlannedAddress;
 
@@ -80,6 +86,12 @@ pub(crate) const LINUX: ContainerOs = ContainerOs {
 };
 
 impl ContainerOs {
+    /// The courier and the log directory of `participant`, which follow the output of a process written to a file.
+    fn file_capture(&self, participant: &str) -> Option<(&'static str, String)> {
+        let facts = self.facts();
+        Some((facts.courier?, facts.log_dir(participant)?))
+    }
+
     fn facts(&self) -> &'static Facts {
         self.enclosure.facts()
     }
@@ -123,33 +135,29 @@ impl ContainerBackend {
     pub(crate) fn new(docker: Docker, os: &'static ContainerOs, courier: Bytes) -> Self {
         Self { docker, os, courier }
     }
+}
 
-    /// Prepares the scope of one case, entered in `ledger` before anything is made.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if Docker cannot make the scope, if `cancel` fires first, or if `deadline` passes first.
-    pub(crate) async fn prepare(
-        &self, ledger: &ResourceLedger, cancel: &CancellationToken, deadline: Instant,
-    ) -> Result<CaseContainers, GenericError> {
+#[async_trait]
+impl Backend for ContainerBackend {
+    async fn prepare(&self, cx: &Preparing<'_>) -> Result<Box<dyn Scope>, GenericError> {
         let scope = CaseScope::new(self.docker.clone(), random_id(), self.os.platform());
-        ledger.case_scope(scope.clone());
+        cx.ledger.case_scope(scope.clone());
         let name = scope.resource_name();
-        ledger
-            .create_by(&name, cancel, deadline, scope.prepare(deadline))
+        cx.ledger
+            .create_by(&name, cx.cancel, cx.deadline, scope.prepare(cx.deadline))
             .await
             .ok_or_else(|| generic_error!("Cancelled while preparing case scope '{}'.", name))??;
-        Ok(CaseContainers {
+        Ok(Box::new(CaseContainers {
             scope,
             os: self.os,
             courier: self.courier.clone(),
-            ledger: ledger.clone(),
-        })
+            ledger: cx.ledger.clone(),
+        }))
     }
 }
 
 /// The containers of one case.
-pub(crate) struct CaseContainers {
+struct CaseContainers {
     scope: CaseScope,
     os: &'static ContainerOs,
     courier: Bytes,
@@ -157,62 +165,6 @@ pub(crate) struct CaseContainers {
 }
 
 impl CaseContainers {
-    /// Creates the container of participant `name` from its plan, and places its files and the courier. Nothing runs
-    /// yet.
-    ///
-    /// `values` fills every reference left in the plan, so each participant whose container ID `name` refers to must
-    /// be created, and recorded in `values`, first.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the plan holds something this backend cannot honor or a reference with no value yet, if
-    /// Docker refuses the container or its files, for example because the image is missing, if `cancel` fires first, or
-    /// if `deadline` passes first.
-    pub(crate) async fn create(
-        &self, name: &str, planned: &PlannedParticipant, values: &Values, cancel: &CancellationToken, deadline: Instant,
-    ) -> Result<RealizedContainer, GenericError> {
-        if planned.realization.enclosure != self.os.enclosure {
-            return Err(generic_error!(
-                "Participant '{}' is a {}, and this backend creates {}s.",
-                name,
-                planned.realization.enclosure,
-                self.os.enclosure
-            ));
-        }
-        let (spec, published) = self.spec(name, planned, values)?;
-        // Filled before the container exists, so a reference with no value makes nothing.
-        let archive = self.archive(name, planned, values)?;
-
-        let scope = self.scope.resource_name();
-        let cancelled = || {
-            generic_error!(
-                "Cancelled while creating participant '{}' in case scope '{}'.",
-                name,
-                scope
-            )
-        };
-        let container = self
-            .ledger
-            .create_by(
-                &scope,
-                cancel,
-                deadline,
-                self.scope.create_container(name, spec, deadline),
-            )
-            .await
-            .ok_or_else(cancelled)??;
-        cancel
-            .run_until_cancelled(container.place(self.os.archive_root, archive, deadline))
-            .await
-            .ok_or_else(cancelled)??;
-        Ok(RealizedContainer {
-            container,
-            published,
-            host_ports: BTreeMap::new(),
-            ip: None,
-        })
-    }
-
     /// What the container of participant `name` runs, and the container port of each endpoint it publishes.
     fn spec(
         &self, name: &str, planned: &PlannedParticipant, values: &Values,
@@ -267,6 +219,9 @@ impl CaseContainers {
         if planned.options.get(HOST_PID) == Some(&true) {
             spec = spec.with_host_pid();
         }
+        if planned.options.get(HOST_CGROUP_NAMESPACE) == Some(&true) {
+            spec = spec.with_host_cgroup_namespace();
+        }
         Ok((spec, published))
     }
 
@@ -294,61 +249,160 @@ impl CaseContainers {
     }
 }
 
+#[async_trait]
+impl Scope for CaseContainers {
+    async fn create(
+        &self, name: &str, planned: &PlannedParticipant, values: &Values, cancel: &CancellationToken, deadline: Instant,
+    ) -> Result<Box<dyn Created>, GenericError> {
+        if planned.realization.enclosure != self.os.enclosure {
+            return Err(generic_error!(
+                "Participant '{}' is a {}, and this backend creates {}s.",
+                name,
+                planned.realization.enclosure,
+                self.os.enclosure
+            ));
+        }
+        let (spec, published) = self.spec(name, planned, values)?;
+        // Filled before the container exists, so a reference with no value makes nothing.
+        let archive = self.archive(name, planned, values)?;
+
+        let scope = self.scope.resource_name();
+        let cancelled = || {
+            generic_error!(
+                "Cancelled while creating participant '{}' in case scope '{}'.",
+                name,
+                scope
+            )
+        };
+        let container = self
+            .ledger
+            .create_by(
+                &scope,
+                cancel,
+                deadline,
+                self.scope.create_container(name, spec, deadline),
+            )
+            .await
+            .ok_or_else(cancelled)??;
+        cancel
+            .run_until_cancelled(container.place(self.os.archive_root, archive, deadline))
+            .await
+            .ok_or_else(cancelled)??;
+        Ok(Box::new(CreatedContainer {
+            container,
+            os: self.os,
+            published,
+        }))
+    }
+}
+
 /// Fills every reference of `template`, held by participant `name`.
-fn fill(values: &Values, name: &str, template: &Template) -> Result<String, GenericError> {
+pub(super) fn fill(values: &Values, name: &str, template: &Template) -> Result<String, GenericError> {
     values
         .fill(name, template)
         .map_err(|e| generic_error!("Participant '{}': {}", name, e))
 }
 
-/// A participant's container.
-#[derive(Debug)]
-pub(crate) struct RealizedContainer {
-    pub(crate) container: Container,
+/// A participant's container, created and not started.
+struct CreatedContainer {
+    container: Container,
+    os: &'static ContainerOs,
     /// The container port of each published endpoint.
     published: BTreeMap<String, u16>,
-    /// The host port of each published endpoint, once the container has started.
-    host_ports: BTreeMap<String, u16>,
-    /// The container's address on the case network, once it has started.
-    pub(crate) ip: Option<String>,
 }
 
-impl RealizedContainer {
-    /// Starts the container, then reads back its address and the host port of each published endpoint. A container
-    /// that has already exited by then has neither.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if Docker cannot start the container, for example because its command does not exist, if
-    /// Docker reports no host port for a published endpoint of a running container, if `cancel` fires first, or if
-    /// `deadline` passes first.
-    pub(crate) async fn start(&mut self, cancel: &CancellationToken, deadline: Instant) -> Result<(), GenericError> {
-        let cancelled = || generic_error!("Cancelled while starting container '{}'.", self.container.name());
+#[async_trait]
+impl Created for CreatedContainer {
+    fn identities(&self) -> Identities {
+        Identities {
+            container_id: Some(self.container.id().to_string()),
+            ..Identities::default()
+        }
+    }
+
+    /// Reads back the container's address and the host port of each published endpoint. A container that has already
+    /// exited by then has neither.
+    async fn start(
+        self: Box<Self>, _values: &Values, cancel: &CancellationToken, deadline: Instant,
+    ) -> Result<Arc<dyn Running>, GenericError> {
+        let Self {
+            container,
+            os,
+            published,
+        } = *self;
+        let cancelled = || generic_error!("Cancelled while starting container '{}'.", container.name());
         cancel
-            .run_until_cancelled(self.container.start(deadline))
+            .run_until_cancelled(container.start(deadline))
             .await
             .ok_or_else(cancelled)??;
         let status = cancel
-            .run_until_cancelled(self.container.status(deadline))
+            .run_until_cancelled(container.status(deadline))
             .await
             .ok_or_else(cancelled)??;
-        if !status.running {
-            return Ok(());
+        let mut host_ports = BTreeMap::new();
+        let mut ip = None;
+        if status.running {
+            for (endpoint, port) in &published {
+                let host_port = status.published_ports.get(port).ok_or_else(|| {
+                    generic_error!(
+                        "Docker reports no host port for endpoint '{}' (port {}) of container '{}'.",
+                        endpoint,
+                        port,
+                        container.name()
+                    )
+                })?;
+                host_ports.insert(endpoint.clone(), *host_port);
+            }
+            ip = status.ip;
         }
-        for (endpoint, port) in &self.published {
-            let host_port = status.published_ports.get(port).ok_or_else(|| {
-                generic_error!(
-                    "Docker reports no host port for endpoint '{}' (port {}) of container '{}'.",
-                    endpoint,
-                    port,
-                    self.container.name()
-                )
-            })?;
-            self.host_ports.insert(endpoint.clone(), *host_port);
-        }
-        self.ip = status.ip;
-        Ok(())
+        Ok(Arc::new(RealizedContainer {
+            container,
+            os,
+            host_ports,
+            ip,
+        }))
     }
+}
+
+/// A participant's started container.
+#[derive(Debug)]
+struct RealizedContainer {
+    container: Container,
+    os: &'static ContainerOs,
+    /// The host port of each published endpoint.
+    host_ports: BTreeMap<String, u16>,
+    /// The container's address on the case network.
+    ip: Option<String>,
+}
+
+/// Why a command run in a container did not return an exit code.
+pub(super) struct ExecFailure {
+    pub(super) message: String,
+    /// Whether the runner's own writer failed, so the participant is not to blame.
+    pub(super) writing: bool,
+}
+
+/// Runs `exec` in `container`, writes its output to `stdout` and `stderr` as it arrives, and returns its exit code.
+pub(super) async fn exec_in(
+    container: &Container, exec: Exec, stdout: &mut (dyn AsyncWrite + Send + Unpin),
+    stderr: &mut (dyn AsyncWrite + Send + Unpin), deadline: Instant,
+) -> Result<i64, ExecFailure> {
+    let mut request = ExecRequest::new(exec.argv);
+    for (key, value) in &exec.env {
+        request = request.with_env_var(key, value);
+    }
+    if let Some(stdin) = exec.stdin {
+        request = request.with_stdin(stdin);
+    }
+    let mut stdout = Watched::new(stdout);
+    let mut stderr = Watched::new(stderr);
+    container
+        .exec_into(request, &mut stdout, &mut stderr, deadline)
+        .await
+        .map_err(|e| ExecFailure {
+            message: format!("{:#}", e),
+            writing: stdout.failed || stderr.failed,
+        })
 }
 
 #[async_trait]
@@ -357,35 +411,22 @@ impl Realized for RealizedContainer {
         &self, exec: Exec, stdout: &mut (dyn AsyncWrite + Send + Unpin), stderr: &mut (dyn AsyncWrite + Send + Unpin),
         deadline: Instant,
     ) -> Result<i64, HandleError> {
-        let mut request = ExecRequest::new(exec.argv);
-        for (key, value) in &exec.env {
-            request = request.with_env_var(key, value);
-        }
-        if let Some(stdin) = exec.stdin {
-            request = request.with_stdin(stdin);
-        }
-        let mut stdout = Watched::new(stdout);
-        let mut stderr = Watched::new(stderr);
-        let error = match self
-            .container
-            .exec_into(request, &mut stdout, &mut stderr, deadline)
-            .await
-        {
+        let failure = match exec_in(&self.container, exec, stdout, stderr, deadline).await {
             Ok(code) => return Ok(code),
-            Err(e) => format!("{:#}", e),
+            Err(failure) => failure,
         };
-        if stdout.failed || stderr.failed {
-            return Err(HandleError::Harness(error));
+        if failure.writing {
+            return Err(HandleError::Harness(failure.message));
         }
         // Docker runs no command in a stopped container, and a participant that exited is the software's fault.
         if self.has_exited().await {
             Err(HandleError::Software(format!(
                 "container '{}' has exited: {}",
                 self.container.name(),
-                error
+                failure.message
             )))
         } else {
-            Err(HandleError::Harness(error))
+            Err(HandleError::Harness(failure.message))
         }
     }
 
@@ -403,6 +444,62 @@ impl Realized for RealizedContainer {
 
     fn host_port(&self, endpoint: &str) -> Option<u16> {
         self.host_ports.get(endpoint).copied()
+    }
+}
+
+#[async_trait]
+impl Running for RealizedContainer {
+    fn identities(&self) -> Identities {
+        Identities {
+            container_id: Some(self.container.id().to_string()),
+            ip: self.ip.clone(),
+            ..Identities::default()
+        }
+    }
+
+    async fn wait(&self, deadline: Instant) -> Result<i64, GenericError> {
+        self.container.wait(deadline).await
+    }
+
+    async fn exit_now(&self, deadline: Instant) -> Result<Option<i64>, GenericError> {
+        let status = self.container.status(deadline).await?;
+        if status.running {
+            return Ok(None);
+        }
+        self.wait(deadline).await.map(Some)
+    }
+
+    fn check_capture(&self, participant: &str, process: &ProcessSpec) -> Result<(), GenericError> {
+        match process.output() {
+            OutputChannel::Container => Ok(()),
+            OutputChannel::File { .. } => self.os.file_capture(participant).map(|_| ()).ok_or_else(|| {
+                generic_error!(
+                    "Participant '{}' is a {}, which has no courier or log directory.",
+                    participant,
+                    self.os.enclosure
+                )
+            }),
+        }
+    }
+
+    async fn capture(
+        &self, participant: &str, process: &ProcessSpec, sink: Sink, limit: Duration, finish: CancellationToken,
+    ) {
+        match process.output() {
+            OutputChannel::Container => sink.capture(self.container.logs(), finish).await,
+            OutputChannel::File { file } => {
+                let Some((courier, log_dir)) = self.os.file_capture(participant) else {
+                    sink.failed(format!("a {} has no courier or log directory", self.os.enclosure));
+                    return;
+                };
+                let path = format!("{}{}{}", log_dir, self.os.facts().separator, file);
+                sink.follow(self, courier, &path, limit, finish).await;
+            }
+        }
+    }
+
+    async fn capture_log(&self, sink: Sink, finish: CancellationToken) {
+        sink.capture(self.container.logs(), finish).await;
     }
 }
 

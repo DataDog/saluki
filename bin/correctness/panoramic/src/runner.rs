@@ -17,7 +17,7 @@ use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::pin;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, Semaphore, SemaphorePermit};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -211,7 +211,43 @@ pub(crate) struct Runner {
     tests: Vec<Box<dyn Test>>,
     log_base_dir: PathBuf,
     settings: RunnerSettings,
-    kind_ready: Option<crate::test::KindReadyReceiver>,
+}
+
+/// What bounds how many tests run at once.
+struct Permits {
+    /// One for each test that runs.
+    general: Semaphore,
+    /// One for the test that runs host processes, whose fixed ports another such test would collide with.
+    host: Semaphore,
+}
+
+/// A test's hold on the runner's permits, released when it is dropped.
+struct Held<'a> {
+    _general: SemaphorePermit<'a>,
+    _host: Option<SemaphorePermit<'a>>,
+}
+
+impl Permits {
+    fn new(parallelism: usize) -> Self {
+        Self {
+            general: Semaphore::new(parallelism),
+            host: Semaphore::new(1),
+        }
+    }
+
+    /// Waits for what `test` needs. A test that runs host processes takes the host permit first, so it does not hold a
+    /// general permit while it waits for the host. The permits are held until the test has run and reclaimed.
+    async fn acquire(&self, test: &dyn Test) -> Held<'_> {
+        let host = if test.runs_host_processes() {
+            Some(self.host.acquire().await.unwrap())
+        } else {
+            None
+        };
+        Held {
+            _general: self.general.acquire().await.unwrap(),
+            _host: host,
+        }
+    }
 }
 
 impl Runner {
@@ -220,13 +256,7 @@ impl Runner {
             tests: Vec::new(),
             log_base_dir: log_base_dir.into(),
             settings,
-            kind_ready: None,
         }
-    }
-
-    pub(crate) fn with_kind_ready(mut self, rx: crate::test::KindReadyReceiver) -> Self {
-        self.kind_ready = Some(rx);
-        self
     }
 
     /// Register a test. Returns an error if the test name is a duplicate.
@@ -258,47 +288,31 @@ impl Runner {
         });
 
         let parallelism = parallelism.get();
-        let semaphore = Arc::new(Semaphore::new(parallelism));
+        let permits = Arc::new(Permits::new(parallelism));
 
         if fail_fast {
-            self.run_fail_fast(&tests, &semaphore, &event_sender, &cancel_all).await;
+            self.run_fail_fast(&tests, &permits, &event_sender, &cancel_all).await;
         } else {
-            self.run_parallel(&tests, parallelism, &semaphore, &event_sender, &cancel_all)
+            self.run_parallel(&tests, parallelism, &permits, &event_sender, &cancel_all)
                 .await;
         }
     }
 
     async fn run_fail_fast(
-        &self, tests: &[&dyn Test], semaphore: &Semaphore, event_sender: &EventSender, cancel_all: &CancellationToken,
+        &self, tests: &[&dyn Test], permits: &Permits, event_sender: &EventSender, cancel_all: &CancellationToken,
     ) {
         for test in tests {
             if cancel_all.is_cancelled() {
                 break;
             }
 
-            // Kind tests wait for cluster readiness before acquiring a concurrency slot.
-            if test.runtime() == "kubernetes_in_docker" {
-                if let Some(mut rx) = self.kind_ready.clone() {
-                    loop {
-                        if rx.borrow().is_some() {
-                            break;
-                        }
-                        tokio::select! {
-                            _ = cancel_all.cancelled() => break,
-                            result = rx.changed() => { if result.is_err() { break; } }
-                        }
-                    }
-                }
-            }
-
-            let _permit = semaphore.acquire().await.unwrap();
+            let _permits = permits.acquire(*test).await;
             let result = Self::run_one(
                 *test,
                 event_sender,
                 cancel_all,
                 self.log_base_dir.clone(),
                 self.settings.clone(),
-                self.kind_ready.clone(),
             )
             .await;
 
@@ -309,49 +323,28 @@ impl Runner {
     }
 
     async fn run_parallel(
-        &self, tests: &[&dyn Test], parallelism: usize, semaphore: &Arc<Semaphore>, event_sender: &EventSender,
+        &self, tests: &[&dyn Test], parallelism: usize, permits: &Arc<Permits>, event_sender: &EventSender,
         cancel_all: &CancellationToken,
     ) {
         let mut futures = stream::FuturesUnordered::new();
 
         for test in tests {
-            let semaphore = semaphore.clone();
+            let permits = permits.clone();
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
             let settings = self.settings.clone();
-            let mut kind_ready = self.kind_ready.clone();
             futures.push(async move {
                 if cancel.is_cancelled() {
                     return;
                 }
 
-                // Kind tests wait for cluster readiness before acquiring a concurrency slot
-                // so they don't starve Docker tests while the cluster is being set up.
-                if test.runtime() == "kubernetes_in_docker" {
-                    if let Some(ref mut rx) = kind_ready {
-                        loop {
-                            if rx.borrow().is_some() {
-                                break;
-                            }
-                            tokio::select! {
-                                _ = cancel.cancelled() => break,
-                                result = rx.changed() => { if result.is_err() { break; } }
-                            }
-                        }
-                    }
-                }
+                let _permits = permits.acquire(*test).await;
 
                 if cancel.is_cancelled() {
                     return;
                 }
 
-                let _permit = semaphore.acquire().await.unwrap();
-
-                if cancel.is_cancelled() {
-                    return;
-                }
-
-                Self::run_one(*test, event_sender, &cancel, log_base_dir, settings, kind_ready).await;
+                Self::run_one(*test, event_sender, &cancel, log_base_dir, settings).await;
             });
 
             while futures.len() >= parallelism {
@@ -364,7 +357,7 @@ impl Runner {
 
     async fn run_one(
         test: &dyn Test, event_sender: &EventSender, cancel_all: &CancellationToken, log_base_dir: PathBuf,
-        settings: RunnerSettings, kind_ready: Option<crate::test::KindReadyReceiver>,
+        settings: RunnerSettings,
     ) -> TestResult {
         let name = test.name();
         let suite = test.suite();
@@ -395,12 +388,7 @@ impl Runner {
         }
 
         let case = Deadline::after(Budget::Case, timeout);
-        let mut tctx = TestContext::new(test_cancel.clone(), case, log_dir.clone(), settings);
-        if test.runtime() == "kubernetes_in_docker" {
-            if let Some(rx) = kind_ready {
-                tctx = tctx.with_kind_ready(rx);
-            }
-        }
+        let tctx = TestContext::new(test_cancel.clone(), case, log_dir.clone(), settings);
 
         let _ = event_sender.send(TestEvent::TestStarted { name: name.clone() });
 
@@ -1436,7 +1424,7 @@ pub(crate) mod test_support {
             adp_binary_path: PathBuf::new(),
             core_agent_binary_path: PathBuf::new(),
             alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
-            containers: None,
+            backends: crate::core::backend::Backends::default(),
         }
     }
 }
@@ -1475,7 +1463,7 @@ mod tests {
 
         tokio::time::timeout(
             bound,
-            Runner::run_one(test, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None),
+            Runner::run_one(test, &tx, cancel_all, log_base_dir.to_path_buf(), settings),
         )
         .await
         .expect("the runner should finish the test within the bound")
@@ -1555,7 +1543,6 @@ mod tests {
             &CancellationToken::new(),
             occupied_base_dir.path().to_path_buf(),
             test_runner_settings(mounts_dir.path()),
-            None,
         )
         .await;
 

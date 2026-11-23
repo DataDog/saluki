@@ -5,24 +5,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::assertions::LogBuffer;
-use crate::core::container::ContainerBackend;
+use crate::core::backend::Backends;
 use crate::core::deadline::Deadline;
 use crate::core::ledger::ResourceLedger;
 use crate::core::record::CaseRecord;
 use crate::core::result::{PhaseTracker, TestResult};
 use crate::core::tasks::CaseTasks;
 use crate::participant_case::ParticipantCase;
-
-/// Signal used to notify kind-runtime tests when the cluster is ready.
-///
-/// The receiver holds `None` until setup completes, then `Some(Ok(()))` on success or
-/// `Some(Err(message))` on failure. `watch::Receiver` implements `Clone`, so each task
-/// gets its own independent receiver with its own "last seen" mark—no mutex needed.
-pub(crate) type KindReadyReceiver = watch::Receiver<Option<Result<(), String>>>;
 
 #[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,8 +43,8 @@ pub(crate) struct RunnerSettings {
     /// The Alpine image used for the short-lived shared-volume permission fix-up container.
     pub(crate) alpine_image: String,
 
-    /// Realizes the Linux containers of participant cases, once the checks before the first case have passed.
-    pub(crate) containers: Option<ContainerBackend>,
+    /// Realizes the participants of participant cases, once the checks before the first case have passed.
+    pub(crate) backends: Backends,
 }
 
 /// Carries information that a test needs at runtime such as the logging directory and the cancellation channel.
@@ -71,10 +63,6 @@ pub(crate) struct TestContext {
 
     /// Settings shared by every test in the run.
     pub(crate) settings: RunnerSettings,
-
-    /// For kind-runtime tests: a shared channel that fires when the cluster is ready (or has failed).
-    /// Non-kind tests leave this as `None` and proceed immediately.
-    pub(crate) kind_ready: Option<KindReadyReceiver>,
 
     /// Where a test marks the phase it is executing, so the runner can name it if a deadline fires.
     pub(crate) phases: PhaseTracker,
@@ -102,17 +90,11 @@ impl TestContext {
             deadline,
             log_dir,
             settings,
-            kind_ready: None,
             phases: PhaseTracker::default(),
             record: CaseRecord::default(),
             ledger: ResourceLedger::default(),
             host_logs: Arc::default(),
         }
-    }
-
-    pub(crate) fn with_kind_ready(mut self, rx: KindReadyReceiver) -> Self {
-        self.kind_ready = Some(rx);
-        self
     }
 
     pub(crate) fn test_cancel_token(&self) -> CancellationToken {
@@ -156,6 +138,12 @@ pub(crate) trait Test: Send + Sync {
     /// Used by the CI pipeline generator to select the appropriate job template. Defaults to `"docker"`.
     fn runtime(&self) -> String {
         "docker".to_string()
+    }
+
+    /// Whether the test runs host processes. Their ports are fixed, so the runner runs one such test at a time, however
+    /// many tests run in parallel.
+    fn runs_host_processes(&self) -> bool {
+        false
     }
 
     /// The test as a participant case, which the run treats apart in three ways: the checks before the first case
