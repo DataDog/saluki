@@ -1084,9 +1084,9 @@ mod tests {
     /// Watches an intake for the step on metrics, and returns the watch with the start and limit of each read.
     ///
     /// The intake holds the three items that the step expects. If `late` is set, one more item arrives then. The read
-    /// that starts 1.5s into the watch, just before the 2s settle ends, takes 0.6s. The answer shows the items that the
-    /// intake held when the read started. If `honors_limit` is set, a read stops at its limit with an error. Otherwise,
-    /// it overruns its limit.
+    /// that starts 1.5 seconds into the watch, just before the 2-second settle ends, takes 0.6 seconds. The answer shows
+    /// the items that the intake held when the read started. If `honors_limit` is set, a read stops at its limit with an
+    /// error. Otherwise, it overruns its limit.
     async fn watch_slow_read(
         honors_limit: bool, late: Option<Duration>,
     ) -> (Result<Watched, HandleError>, Vec<(Duration, Duration)>) {
