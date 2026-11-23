@@ -82,113 +82,107 @@
 <a href=#82 id=82 data-nosnippet>82</a>        })
 <a href=#83 id=83 data-nosnippet>83</a>    }
 <a href=#84 id=84 data-nosnippet>84</a>
-<a href=#85 id=85 data-nosnippet>85</a>    <span class="attr">#[cfg(test)]
-<a href=#86 id=86 data-nosnippet>86</a>    </span><span class="kw">pub fn </span>manual(primary: ContextResolver, no_agg: ContextResolver, tags: TagsResolver) -&gt; <span class="self">Self </span>{
-<a href=#87 id=87 data-nosnippet>87</a>        ContextResolvers {
-<a href=#88 id=88 data-nosnippet>88</a>            primary,
-<a href=#89 id=89 data-nosnippet>89</a>            no_agg,
-<a href=#90 id=90 data-nosnippet>90</a>            tags,
-<a href=#91 id=91 data-nosnippet>91</a>            origin_tags: <span class="prelude-val">None</span>,
-<a href=#92 id=92 data-nosnippet>92</a>        }
-<a href=#93 id=93 data-nosnippet>93</a>    }
-<a href=#94 id=94 data-nosnippet>94</a>
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="attr">#[cfg(all(test, target_os = <span class="string">"linux"</span>))]
-<a href=#96 id=96 data-nosnippet>96</a>    </span><span class="kw">pub fn </span>manual_with_origin(
-<a href=#97 id=97 data-nosnippet>97</a>        primary: ContextResolver, no_agg: ContextResolver, tags: TagsResolver, origin_tags: DogStatsDOriginTagResolver,
-<a href=#98 id=98 data-nosnippet>98</a>    ) -&gt; <span class="self">Self </span>{
-<a href=#99 id=99 data-nosnippet>99</a>        ContextResolvers {
-<a href=#100 id=100 data-nosnippet>100</a>            primary,
-<a href=#101 id=101 data-nosnippet>101</a>            no_agg,
-<a href=#102 id=102 data-nosnippet>102</a>            tags,
-<a href=#103 id=103 data-nosnippet>103</a>            origin_tags: <span class="prelude-val">Some</span>(origin_tags),
-<a href=#104 id=104 data-nosnippet>104</a>        }
-<a href=#105 id=105 data-nosnippet>105</a>    }
-<a href=#106 id=106 data-nosnippet>106</a>
-<a href=#107 id=107 data-nosnippet>107</a>    <span class="doccomment">/// Returns a mutable reference to the primary context resolver.
-<a href=#108 id=108 data-nosnippet>108</a>    ///
-<a href=#109 id=109 data-nosnippet>109</a>    /// This context resolver should be used for "regular" metrics that require aggregation.
-<a href=#110 id=110 data-nosnippet>110</a>    </span><span class="kw">pub fn </span>primary(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;mut </span>ContextResolver {
-<a href=#111 id=111 data-nosnippet>111</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>.primary
-<a href=#112 id=112 data-nosnippet>112</a>    }
-<a href=#113 id=113 data-nosnippet>113</a>
-<a href=#114 id=114 data-nosnippet>114</a>    <span class="doccomment">/// Returns a mutable reference to the no-aggregation context resolver.
-<a href=#115 id=115 data-nosnippet>115</a>    ///
-<a href=#116 id=116 data-nosnippet>116</a>    /// This context resolver should be used for metrics that don't require aggregation, which implies the metrics had
-<a href=#117 id=117 data-nosnippet>117</a>    /// a timestamp specified in the payload.
-<a href=#118 id=118 data-nosnippet>118</a>    </span><span class="kw">pub fn </span>no_agg(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;mut </span>ContextResolver {
-<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>.no_agg
-<a href=#120 id=120 data-nosnippet>120</a>    }
-<a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Returns a mutable reference to the tags resolver.
-<a href=#123 id=123 data-nosnippet>123</a>    </span><span class="kw">pub fn </span>tags(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;mut </span>TagsResolver {
-<a href=#124 id=124 data-nosnippet>124</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>.tags
-<a href=#125 id=125 data-nosnippet>125</a>    }
-<a href=#126 id=126 data-nosnippet>126</a>
-<a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// Resolves origin tags using the sender identity pinned when the packet was received.
-<a href=#128 id=128 data-nosnippet>128</a>    </span><span class="kw">pub fn </span>resolve_origin_tags(<span class="kw-2">&amp;</span><span class="self">self</span>, origin: RawOrigin&lt;<span class="lifetime">'_</span>&gt;, process_origin: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>ProcessOrigin&gt;) -&gt; SharedTagSet {
-<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw">match </span><span class="kw-2">&amp;</span><span class="self">self</span>.origin_tags {
-<a href=#130 id=130 data-nosnippet>130</a>            <span class="prelude-val">Some</span>(resolver) =&gt; resolver.resolve_origin_tags_with_process_origin(origin, process_origin),
-<a href=#131 id=131 data-nosnippet>131</a>            <span class="prelude-val">None </span>=&gt; <span class="self">self</span>.tags.resolve_origin_tags(<span class="prelude-val">Some</span>(origin)),
-<a href=#132 id=132 data-nosnippet>132</a>        }
-<a href=#133 id=133 data-nosnippet>133</a>    }
-<a href=#134 id=134 data-nosnippet>134</a>}
-<a href=#135 id=135 data-nosnippet>135</a>
-<a href=#136 id=136 data-nosnippet>136</a><span class="attr">#[cfg(test)]
-<a href=#137 id=137 data-nosnippet>137</a></span><span class="kw">mod </span>tests {
-<a href=#138 id=138 data-nosnippet>138</a>    <span class="kw">use </span>bytesize::ByteSize;
-<a href=#139 id=139 data-nosnippet>139</a>
-<a href=#140 id=140 data-nosnippet>140</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#141 id=141 data-nosnippet>141</a>    <span class="kw">use </span><span class="kw">crate</span>::sources::dogstatsd::DogStatsDConfiguration;
-<a href=#142 id=142 data-nosnippet>142</a>
-<a href=#143 id=143 data-nosnippet>143</a>    <span class="kw">fn </span>test_context() -&gt; ComponentContext {
-<a href=#144 id=144 data-nosnippet>144</a>        ComponentContext::test_source(<span class="string">"dogstatsd_resolver_test"</span>)
-<a href=#145 id=145 data-nosnippet>145</a>    }
-<a href=#146 id=146 data-nosnippet>146</a>
-<a href=#147 id=147 data-nosnippet>147</a>    <span class="attr">#[test]
-<a href=#148 id=148 data-nosnippet>148</a>    </span><span class="kw">fn </span>new_rejects_zero_interner_size() {
-<a href=#149 id=149 data-nosnippet>149</a>        <span class="comment">// Documented `# Errors`: an invalid (zero-byte) string interner size must be rejected.
-<a href=#150 id=150 data-nosnippet>150</a>        </span><span class="kw">let </span>config = DogStatsDConfiguration {
-<a href=#151 id=151 data-nosnippet>151</a>            context_string_interner_size_bytes: <span class="prelude-val">Some</span>(ByteSize::b(<span class="number">0</span>)),
-<a href=#152 id=152 data-nosnippet>152</a>            ..DogStatsDConfiguration::for_test()
-<a href=#153 id=153 data-nosnippet>153</a>        };
-<a href=#154 id=154 data-nosnippet>154</a>
-<a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>err = ContextResolvers::new(<span class="kw-2">&amp;</span>config, <span class="kw-2">&amp;</span>test_context(), <span class="prelude-val">None</span>)
-<a href=#156 id=156 data-nosnippet>156</a>            .err()
-<a href=#157 id=157 data-nosnippet>157</a>            .expect(<span class="string">"a zero interner size must be rejected"</span>);
-<a href=#158 id=158 data-nosnippet>158</a>        <span class="macro">assert!</span>(
-<a href=#159 id=159 data-nosnippet>159</a>            err.to_string()
-<a href=#160 id=160 data-nosnippet>160</a>                .contains(<span class="string">"context_string_interner_size must be greater than 0"</span>),
-<a href=#161 id=161 data-nosnippet>161</a>            <span class="string">"unexpected error: {}"</span>,
-<a href=#162 id=162 data-nosnippet>162</a>            err
-<a href=#163 id=163 data-nosnippet>163</a>        );
-<a href=#164 id=164 data-nosnippet>164</a>    }
-<a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="attr">#[tokio::test]
-<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">async fn </span>new_builds_working_resolvers_from_the_shared_interner() {
-<a href=#168 id=168 data-nosnippet>168</a>        <span class="comment">// Exercises the real production constructor (rather than the `manual` test bypass): a valid config yields
-<a href=#169 id=169 data-nosnippet>169</a>        // usable primary and no-aggregation resolvers. The three resolvers share one interner, but that sharing isn't
-<a href=#170 id=170 data-nosnippet>170</a>        // observable through the public API, so we assert instead that both resolvers construct and resolve contexts
-<a href=#171 id=171 data-nosnippet>171</a>        // correctly from it.
-<a href=#172 id=172 data-nosnippet>172</a>        </span><span class="kw">let </span>config = DogStatsDConfiguration {
-<a href=#173 id=173 data-nosnippet>173</a>            context_string_interner_size_bytes: <span class="prelude-val">Some</span>(ByteSize::kib(<span class="number">64</span>)),
-<a href=#174 id=174 data-nosnippet>174</a>            ..DogStatsDConfiguration::for_test()
-<a href=#175 id=175 data-nosnippet>175</a>        };
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">let </span><span class="kw-2">mut </span>resolvers =
-<a href=#177 id=177 data-nosnippet>177</a>            ContextResolvers::new(<span class="kw-2">&amp;</span>config, <span class="kw-2">&amp;</span>test_context(), <span class="prelude-val">None</span>).expect(<span class="string">"valid config should build resolvers"</span>);
-<a href=#178 id=178 data-nosnippet>178</a>
-<a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">let </span>primary = resolvers
-<a href=#180 id=180 data-nosnippet>180</a>            .primary()
-<a href=#181 id=181 data-nosnippet>181</a>            .resolve(<span class="string">"my.metric"</span>, [<span class="string">"env:prod"</span>], <span class="prelude-val">None</span>)
-<a href=#182 id=182 data-nosnippet>182</a>            .expect(<span class="string">"primary resolver should resolve a context"</span>);
-<a href=#183 id=183 data-nosnippet>183</a>        <span class="macro">assert_eq!</span>(primary.name(), <span class="string">"my.metric"</span>);
-<a href=#184 id=184 data-nosnippet>184</a>        <span class="macro">assert!</span>(primary.tags().has_tag(<span class="string">"env:prod"</span>));
-<a href=#185 id=185 data-nosnippet>185</a>
-<a href=#186 id=186 data-nosnippet>186</a>        <span class="kw">let </span>no_agg = resolvers
-<a href=#187 id=187 data-nosnippet>187</a>            .no_agg()
-<a href=#188 id=188 data-nosnippet>188</a>            .resolve(<span class="string">"my.metric"</span>, [<span class="string">"env:prod"</span>], <span class="prelude-val">None</span>)
-<a href=#189 id=189 data-nosnippet>189</a>            .expect(<span class="string">"no-agg resolver should resolve a context"</span>);
-<a href=#190 id=190 data-nosnippet>190</a>        <span class="macro">assert_eq!</span>(no_agg.name(), <span class="string">"my.metric"</span>);
-<a href=#191 id=191 data-nosnippet>191</a>        <span class="macro">assert!</span>(no_agg.tags().has_tag(<span class="string">"env:prod"</span>));
-<a href=#192 id=192 data-nosnippet>192</a>    }
-<a href=#193 id=193 data-nosnippet>193</a>}
+<a href=#85 id=85 data-nosnippet>85</a>    <span class="doccomment">/// Creates test resolvers, where the primary and no-aggregation resolvers are the same resolver.
+<a href=#86 id=86 data-nosnippet>86</a>    </span><span class="attr">#[cfg(test)]
+<a href=#87 id=87 data-nosnippet>87</a>    </span><span class="kw">pub fn </span>for_tests(heap_allocations: bool, origin_tags: <span class="prelude-ty">Option</span>&lt;DogStatsDOriginTagResolver&gt;) -&gt; <span class="self">Self </span>{
+<a href=#88 id=88 data-nosnippet>88</a>        <span class="kw">let </span>tags = TagsResolverBuilder::for_tests().build();
+<a href=#89 id=89 data-nosnippet>89</a>        <span class="kw">let </span>primary = ContextResolverBuilder::for_tests()
+<a href=#90 id=90 data-nosnippet>90</a>            .with_heap_allocations(heap_allocations)
+<a href=#91 id=91 data-nosnippet>91</a>            .with_tags_resolver(<span class="prelude-val">Some</span>(tags.clone()))
+<a href=#92 id=92 data-nosnippet>92</a>            .build();
+<a href=#93 id=93 data-nosnippet>93</a>        ContextResolvers {
+<a href=#94 id=94 data-nosnippet>94</a>            no_agg: primary.clone(),
+<a href=#95 id=95 data-nosnippet>95</a>            primary,
+<a href=#96 id=96 data-nosnippet>96</a>            tags,
+<a href=#97 id=97 data-nosnippet>97</a>            origin_tags,
+<a href=#98 id=98 data-nosnippet>98</a>        }
+<a href=#99 id=99 data-nosnippet>99</a>    }
+<a href=#100 id=100 data-nosnippet>100</a>
+<a href=#101 id=101 data-nosnippet>101</a>    <span class="doccomment">/// Returns a mutable reference to the primary context resolver.
+<a href=#102 id=102 data-nosnippet>102</a>    ///
+<a href=#103 id=103 data-nosnippet>103</a>    /// This context resolver should be used for "regular" metrics that require aggregation.
+<a href=#104 id=104 data-nosnippet>104</a>    </span><span class="kw">pub fn </span>primary(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;mut </span>ContextResolver {
+<a href=#105 id=105 data-nosnippet>105</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>.primary
+<a href=#106 id=106 data-nosnippet>106</a>    }
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="doccomment">/// Returns a mutable reference to the no-aggregation context resolver.
+<a href=#109 id=109 data-nosnippet>109</a>    ///
+<a href=#110 id=110 data-nosnippet>110</a>    /// This context resolver should be used for metrics that don't require aggregation, which implies the metrics had
+<a href=#111 id=111 data-nosnippet>111</a>    /// a timestamp specified in the payload.
+<a href=#112 id=112 data-nosnippet>112</a>    </span><span class="kw">pub fn </span>no_agg(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;mut </span>ContextResolver {
+<a href=#113 id=113 data-nosnippet>113</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>.no_agg
+<a href=#114 id=114 data-nosnippet>114</a>    }
+<a href=#115 id=115 data-nosnippet>115</a>
+<a href=#116 id=116 data-nosnippet>116</a>    <span class="doccomment">/// Returns a mutable reference to the tags resolver.
+<a href=#117 id=117 data-nosnippet>117</a>    </span><span class="kw">pub fn </span>tags(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;mut </span>TagsResolver {
+<a href=#118 id=118 data-nosnippet>118</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>.tags
+<a href=#119 id=119 data-nosnippet>119</a>    }
+<a href=#120 id=120 data-nosnippet>120</a>
+<a href=#121 id=121 data-nosnippet>121</a>    <span class="doccomment">/// Resolves origin tags using the sender identity pinned when the packet was received.
+<a href=#122 id=122 data-nosnippet>122</a>    </span><span class="kw">pub fn </span>resolve_origin_tags(<span class="kw-2">&amp;</span><span class="self">self</span>, origin: RawOrigin&lt;<span class="lifetime">'_</span>&gt;, process_origin: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>ProcessOrigin&gt;) -&gt; SharedTagSet {
+<a href=#123 id=123 data-nosnippet>123</a>        <span class="kw">match </span><span class="kw-2">&amp;</span><span class="self">self</span>.origin_tags {
+<a href=#124 id=124 data-nosnippet>124</a>            <span class="prelude-val">Some</span>(resolver) =&gt; resolver.resolve_origin_tags_with_process_origin(origin, process_origin),
+<a href=#125 id=125 data-nosnippet>125</a>            <span class="prelude-val">None </span>=&gt; <span class="self">self</span>.tags.resolve_origin_tags(<span class="prelude-val">Some</span>(origin)),
+<a href=#126 id=126 data-nosnippet>126</a>        }
+<a href=#127 id=127 data-nosnippet>127</a>    }
+<a href=#128 id=128 data-nosnippet>128</a>}
+<a href=#129 id=129 data-nosnippet>129</a>
+<a href=#130 id=130 data-nosnippet>130</a><span class="attr">#[cfg(test)]
+<a href=#131 id=131 data-nosnippet>131</a></span><span class="kw">mod </span>tests {
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="kw">use </span>bytesize::ByteSize;
+<a href=#133 id=133 data-nosnippet>133</a>
+<a href=#134 id=134 data-nosnippet>134</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#135 id=135 data-nosnippet>135</a>    <span class="kw">use </span><span class="kw">crate</span>::sources::dogstatsd::DogStatsDConfiguration;
+<a href=#136 id=136 data-nosnippet>136</a>
+<a href=#137 id=137 data-nosnippet>137</a>    <span class="kw">fn </span>test_context() -&gt; ComponentContext {
+<a href=#138 id=138 data-nosnippet>138</a>        ComponentContext::test_source(<span class="string">"dogstatsd_resolver_test"</span>)
+<a href=#139 id=139 data-nosnippet>139</a>    }
+<a href=#140 id=140 data-nosnippet>140</a>
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="attr">#[test]
+<a href=#142 id=142 data-nosnippet>142</a>    </span><span class="kw">fn </span>new_rejects_zero_interner_size() {
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="comment">// Documented `# Errors`: an invalid (zero-byte) string interner size must be rejected.
+<a href=#144 id=144 data-nosnippet>144</a>        </span><span class="kw">let </span>config = DogStatsDConfiguration {
+<a href=#145 id=145 data-nosnippet>145</a>            context_string_interner_size_bytes: <span class="prelude-val">Some</span>(ByteSize::b(<span class="number">0</span>)),
+<a href=#146 id=146 data-nosnippet>146</a>            ..DogStatsDConfiguration::for_test()
+<a href=#147 id=147 data-nosnippet>147</a>        };
+<a href=#148 id=148 data-nosnippet>148</a>
+<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">let </span>err = ContextResolvers::new(<span class="kw-2">&amp;</span>config, <span class="kw-2">&amp;</span>test_context(), <span class="prelude-val">None</span>)
+<a href=#150 id=150 data-nosnippet>150</a>            .err()
+<a href=#151 id=151 data-nosnippet>151</a>            .expect(<span class="string">"a zero interner size must be rejected"</span>);
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="macro">assert!</span>(
+<a href=#153 id=153 data-nosnippet>153</a>            err.to_string()
+<a href=#154 id=154 data-nosnippet>154</a>                .contains(<span class="string">"context_string_interner_size must be greater than 0"</span>),
+<a href=#155 id=155 data-nosnippet>155</a>            <span class="string">"unexpected error: {}"</span>,
+<a href=#156 id=156 data-nosnippet>156</a>            err
+<a href=#157 id=157 data-nosnippet>157</a>        );
+<a href=#158 id=158 data-nosnippet>158</a>    }
+<a href=#159 id=159 data-nosnippet>159</a>
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="attr">#[tokio::test]
+<a href=#161 id=161 data-nosnippet>161</a>    </span><span class="kw">async fn </span>new_builds_working_resolvers_from_the_shared_interner() {
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="comment">// Exercises the real production constructor (rather than the `manual` test bypass): a valid config yields
+<a href=#163 id=163 data-nosnippet>163</a>        // usable primary and no-aggregation resolvers. The three resolvers share one interner, but that sharing isn't
+<a href=#164 id=164 data-nosnippet>164</a>        // observable through the public API, so we assert instead that both resolvers construct and resolve contexts
+<a href=#165 id=165 data-nosnippet>165</a>        // correctly from it.
+<a href=#166 id=166 data-nosnippet>166</a>        </span><span class="kw">let </span>config = DogStatsDConfiguration {
+<a href=#167 id=167 data-nosnippet>167</a>            context_string_interner_size_bytes: <span class="prelude-val">Some</span>(ByteSize::kib(<span class="number">64</span>)),
+<a href=#168 id=168 data-nosnippet>168</a>            ..DogStatsDConfiguration::for_test()
+<a href=#169 id=169 data-nosnippet>169</a>        };
+<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">let </span><span class="kw-2">mut </span>resolvers =
+<a href=#171 id=171 data-nosnippet>171</a>            ContextResolvers::new(<span class="kw-2">&amp;</span>config, <span class="kw-2">&amp;</span>test_context(), <span class="prelude-val">None</span>).expect(<span class="string">"valid config should build resolvers"</span>);
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a>        <span class="kw">let </span>primary = resolvers
+<a href=#174 id=174 data-nosnippet>174</a>            .primary()
+<a href=#175 id=175 data-nosnippet>175</a>            .resolve(<span class="string">"my.metric"</span>, [<span class="string">"env:prod"</span>], <span class="prelude-val">None</span>)
+<a href=#176 id=176 data-nosnippet>176</a>            .expect(<span class="string">"primary resolver should resolve a context"</span>);
+<a href=#177 id=177 data-nosnippet>177</a>        <span class="macro">assert_eq!</span>(primary.name(), <span class="string">"my.metric"</span>);
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="macro">assert!</span>(primary.tags().has_tag(<span class="string">"env:prod"</span>));
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a>        <span class="kw">let </span>no_agg = resolvers
+<a href=#181 id=181 data-nosnippet>181</a>            .no_agg()
+<a href=#182 id=182 data-nosnippet>182</a>            .resolve(<span class="string">"my.metric"</span>, [<span class="string">"env:prod"</span>], <span class="prelude-val">None</span>)
+<a href=#183 id=183 data-nosnippet>183</a>            .expect(<span class="string">"no-agg resolver should resolve a context"</span>);
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="macro">assert_eq!</span>(no_agg.name(), <span class="string">"my.metric"</span>);
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="macro">assert!</span>(no_agg.tags().has_tag(<span class="string">"env:prod"</span>));
+<a href=#186 id=186 data-nosnippet>186</a>    }
+<a href=#187 id=187 data-nosnippet>187</a>}
 </code></pre></div></section></main></body></html>
