@@ -229,7 +229,7 @@ impl MetricValues {
         let mut points = ScalarPoints::new();
         for value in iter {
             let value = value?;
-            points.push_untimestamped(value * sample_rate.raw_weight());
+            points.add_point(None, value * sample_rate.raw_weight());
         }
         Ok(Self::Counter(points))
     }
@@ -249,7 +249,7 @@ impl MetricValues {
     {
         let mut points = ScalarPoints::new();
         for value in iter {
-            points.push_untimestamped(value?);
+            points.add_point(None, value?);
         }
         Ok(Self::Gauge(points))
     }
