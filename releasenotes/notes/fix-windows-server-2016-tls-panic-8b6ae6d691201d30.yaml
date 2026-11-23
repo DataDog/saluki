@@ -4,6 +4,7 @@ fixes:
     Fix Agent Data Plane crashing at startup on Windows Server 2016. Every TLS 1.3 connection needs HKDF, and the
     Windows cryptography library on Windows Server 2016 does not provide it, so Agent Data Plane panicked on its first
     connection to the Datadog Agent and restarted repeatedly. On such hosts, Agent Data Plane now builds HKDF from the
-    library's HMAC implementation. This implementation is not FIPS-validated, so in FIPS mode Agent Data Plane does
-    not use TLS 1.3 on Windows Server 2016. Agent Data Plane also no longer offers ChaCha20-Poly1305 cipher suites on
-    hosts whose Windows cryptography library does not support them.
+    library's HMAC implementation. This implementation is not FIPS-validated, so in FIPS mode on Windows Server 2016,
+    Agent Data Plane connects to the Datadog Agent over TLS 1.2 with the Extended Master Secret extension instead of
+    TLS 1.3. Agent Data Plane also no longer offers ChaCha20-Poly1305 cipher suites on hosts whose Windows cryptography
+    library does not support them.
