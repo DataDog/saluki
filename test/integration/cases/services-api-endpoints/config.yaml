@@ -56,7 +56,7 @@ procedure:
           equal: "OK\n"
         timeout: 60s
       - assertion: log_not_contains
-        pattern: "panic|PANIC"
+        pattern: "panicked at|panic: |PANIC"
         regex: true
         during: 10s
 

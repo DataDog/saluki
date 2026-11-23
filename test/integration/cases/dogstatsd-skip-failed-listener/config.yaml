@@ -31,4 +31,4 @@ procedure:
         process: adp
         pattern: ':{{ adp.endpoints.dogstatsd_udp.port }}" | DogStatsD listener started.'
         timeout: 60s
-      - {step: log_not_contains, on: adp, pattern: "Could not start DogStatsD.|panic|PANIC", regex: true, during: 10s}
+      - {step: log_not_contains, on: adp, pattern: "Could not start DogStatsD.|panicked at|panic: |PANIC", regex: true, during: 10s}

@@ -173,7 +173,7 @@ procedure:
     - assertion: process_stable_for
       duration: 5s
     - assertion: log_not_contains
-      pattern: "panic|PANIC"
+      pattern: "panicked at|panic: |PANIC"
       regex: true
       during: 5s
 ```
@@ -302,7 +302,7 @@ Verifies a pattern does NOT appear in the logs for a duration.
 
 ```yaml
 - assertion: log_not_contains
-  pattern: "panic|PANIC"
+  pattern: "panicked at|panic: |PANIC"
   regex: true
   during: 15s
   stream: both
