@@ -14,11 +14,6 @@ dogstatsd_socket: "{{ self.endpoints.dogstatsd_uds.path }}"
 # Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
 dogstatsd_origin_detection: false
 
-# Gauges can be processed out-of-order when multiple workers are used, while ADP does not use multiple workers, so ADP
-# always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
-# four updates ago, etc etc.
-dogstatsd_workers_count: 1
-
 dogstatsd_mapper_profiles:
   name: singleton-mapper-correctness
   prefix: mapper.singleton.
