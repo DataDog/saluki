@@ -995,7 +995,6 @@ mod tests {
     async fn an_empty_endpoint_leaves_its_tls_settings_unused() {
         // The server with no endpoint doesn't start, so these settings are neither valid nor readable and don't matter.
         let mut config = source_configuration();
-        config.receiver.logs_enabled = true;
         config.receiver.grpc.endpoint = String::new();
         config.receiver.grpc.tls.cert_file = "/missing/cert.pem".to_string();
         config.receiver.grpc.tls.ca_file = "/missing/ca.pem".to_string();
