@@ -1,8 +1,8 @@
 name: Check AWS-LC-FIPS 5.x Certification
 
-# FIPS builds use the AWS-LC-FIPS 4.x module, which is FIPS 140-3 certified. A future `aws-lc-rs` release is expected to
-# move the `fips` feature to the AWS-LC-FIPS 5.x module (`aws-lc-fips-sys` 0.15+), which has been submitted for FIPS
-# 140-3 validation but is not yet certified. The `aws-lc-fips-sys` ban in deny.toml and ci/tooling/check-fips-module.sh
+# FIPS builds use the AWS-LC-FIPS 4.x module, which is FIPS 140-3 certified. We expect a future `aws-lc-rs` release to
+# move the `fips` feature to the AWS-LC-FIPS 5.x module (`aws-lc-fips-sys` 0.15+). AWS-LC submitted 5.x for FIPS 140-3
+# validation, but it is not yet certified. The `aws-lc-fips-sys` ban in deny.toml and ci/tooling/check-fips-module.sh
 # keep FIPS builds off 5.x until then.
 #
 # AWS-LC tracks certification status in its FIPS.md, listing certified modules under "Validations". This workflow
