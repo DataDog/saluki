@@ -1298,6 +1298,7 @@ mod tests {
                 let mut config = SalukiConfiguration::default();
                 config.control.otlp = true;
                 config.control.standalone_mode = standalone_mode;
+                config.domains.otlp.receiver.grpc.endpoint = "localhost:4317".to_string();
                 config.domains.otlp.receiver.metrics_enabled = metrics != Disabled;
                 config.domains.otlp.receiver.logs_enabled = logs != Disabled;
                 config.control.logs_enabled = logs != Disabled;

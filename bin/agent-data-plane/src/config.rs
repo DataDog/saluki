@@ -180,6 +180,18 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.otlp_proxy_mode() && (receiver.grpc.tls_configured || receiver.http.tls_configured)
     }
 
+    /// Returns `true` if ADP accepts an OTLP signal, but the gRPC and HTTP receiver endpoints are both empty.
+    ///
+    /// It is `false` when receiver TLS blocks OTLP ingest or no signal is accepted, so ADP logs one error.
+    const fn otlp_without_endpoints(&self) -> bool {
+        let receiver = &self.config.domains.otlp.receiver;
+        self.config.control.otlp
+            && !self.otlp_tls_blocked()
+            && self.otlp_signals_enabled()
+            && receiver.grpc.endpoint.is_empty()
+            && receiver.http.endpoint.is_empty()
+    }
+
     /// Returns the OTLP signals that ADP accepts.
     ///
     /// Like the Agent, ADP only accepts a signal whose pipeline it builds, and doesn't serve the others at all.
@@ -323,8 +335,14 @@ impl OtlpPlan {
         }
 
         let otlp = &dp.config.domains.otlp;
-        let tls_blocked = dp.otlp_tls_blocked();
-        let enabled = dp.config.control.otlp && !tls_blocked;
+        let blocked = if dp.otlp_tls_blocked() {
+            Some(OtlpBlock::tls(otlp))
+        } else if dp.otlp_without_endpoints() {
+            Some(OtlpBlock::NoEndpoints)
+        } else {
+            None
+        };
+        let enabled = dp.config.control.otlp && blocked.is_none();
         let signals = dp.otlp_signals();
         let proxy = &otlp.proxy;
         Self {
@@ -333,7 +351,7 @@ impl OtlpPlan {
                 logs: route(enabled && signals.logs, proxy.logs_enabled),
                 traces: route(enabled && signals.traces, proxy.traces_enabled),
             },
-            blocked: tls_blocked.then(|| OtlpBlock::tls(otlp)),
+            blocked,
         }
     }
 
@@ -373,6 +391,11 @@ pub enum OtlpBlock {
         /// Configuration keys of the proxy flags that are `true`.
         proxy_keys: Vec<&'static str>,
     },
+
+    /// The gRPC and HTTP receiver endpoints are both empty, so no OTLP server can start.
+    ///
+    /// The Agent also runs without OTLP ingest when its OTLP receiver has no protocol.
+    NoEndpoints,
 
     /// A proxy destination reaches one of ADP's own OTLP listeners, so ADP would proxy OTLP requests to itself.
     Loop {
@@ -422,6 +445,11 @@ impl fmt::Display for OtlpBlock {
                 set {} to false",
                 receiver_keys.join(" and "),
                 proxy_keys.join(" and ")
+            ),
+            Self::NoEndpoints => write!(
+                f,
+                "The OTLP gRPC and HTTP receiver endpoints are both empty, so no OTLP server can start: set \
+                `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`"
             ),
             Self::Loop {
                 destination_key,
@@ -550,6 +578,7 @@ mod tests {
         let otlp_enabled = |metrics, logs, traces| {
             let mut config = SalukiConfiguration::default();
             config.control.otlp = true;
+            config.domains.otlp.receiver.grpc.endpoint = "localhost:4317".to_string();
             config.domains.otlp.receiver.metrics_enabled = metrics;
             config.domains.otlp.receiver.logs_enabled = logs;
             config.control.logs_enabled = logs;
@@ -674,6 +703,8 @@ mod tests {
         config.control.checks = checks_enabled;
         config.control.dogstatsd = dogstatsd_enabled;
         config.control.otlp = otlp_enabled;
+        // OTLP needs a receiver endpoint. The configuration defaults it, but `SalukiConfiguration::default` doesn't.
+        config.domains.otlp.receiver.grpc.endpoint = "localhost:4317".to_string();
         // Accept every OTLP signal. Logs need both OTLP logs and the logs agent.
         config.domains.otlp.receiver.metrics_enabled = true;
         config.domains.otlp.receiver.logs_enabled = true;
@@ -1124,6 +1155,63 @@ mod tests {
 
         assert!(otlp.blocked().is_some());
         assert!(!dp.otlp_enabled_without_signals());
+    }
+
+    #[test]
+    fn two_empty_receiver_endpoints_block_otlp_ingest() {
+        // Like the Agent with no OTLP receiver protocol, ADP runs without OTLP ingest, and DogStatsD keeps running.
+        let mut config = pipeline_configuration(false, true, true, Proxy::default());
+        config.domains.otlp.receiver.grpc.endpoint = String::new();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::without_loop_check(&dp);
+
+        assert_eq!(otlp.blocked(), Some(&OtlpBlock::NoEndpoints));
+        assert_eq!(
+            otlp.blocked().map(ToString::to_string).as_deref(),
+            Some(
+                "The OTLP gRPC and HTTP receiver endpoints are both empty, so no OTLP server can start: set \
+                `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`"
+            )
+        );
+        assert_eq!(otlp.routes(), OtlpRoutes::ALL_DISABLED);
+        assert!(!dp.otlp_enabled_without_signals());
+        assert!(dp.data_pipelines_enabled(&otlp));
+        assert_eq!(dp.active_pipelines(&otlp), HashSet::from([Pipeline::DogStatsD]));
+
+        // One endpoint is enough.
+        config.domains.otlp.receiver.http.endpoint = "localhost:4318".to_string();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::without_loop_check(&dp);
+        assert_eq!(otlp.blocked(), None);
+        assert!(otlp.enabled());
+    }
+
+    #[test]
+    fn two_empty_receiver_endpoints_get_one_error() {
+        // Receiver TLS in proxy mode takes precedence.
+        let mut config = tls_configuration(true, false, false);
+        config.domains.otlp.receiver.grpc.endpoint = String::new();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::without_loop_check(&dp);
+        assert!(matches!(otlp.blocked(), Some(OtlpBlock::Tls { .. })));
+
+        // So does a pipeline without signals, as the Agent rejects it before it reads the receiver.
+        let mut config = pipeline_configuration(false, true, true, Proxy::default());
+        config.domains.otlp.receiver.grpc.endpoint = String::new();
+        config.domains.otlp.receiver.metrics_enabled = false;
+        config.domains.otlp.receiver.logs_enabled = false;
+        config.domains.otlp.traces.enabled = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::without_loop_check(&dp);
+        assert_eq!(otlp.blocked(), None);
+        assert!(dp.otlp_enabled_without_signals());
+
+        // Without OTLP, nothing is reported.
+        let mut config = pipeline_configuration(false, true, false, Proxy::default());
+        config.domains.otlp.receiver.grpc.endpoint = String::new();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::without_loop_check(&dp);
+        assert_eq!(otlp.blocked(), None);
     }
 
     /// Returns a configuration that accepts every OTLP signal, proxies the given signals, and listens on `grpc` and

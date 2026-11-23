@@ -223,6 +223,7 @@ mod tests {
             config.domains.remote_configuration.apm_semantics_enabled = case.semantics;
             config.control.otlp = case.otlp;
             config.control.apm = case.apm;
+            config.domains.otlp.receiver.grpc.endpoint = "localhost:4317".to_string();
             // OTLP needs at least one signal to run, and traces need their own.
             config.domains.otlp.receiver.metrics_enabled = true;
             config.domains.otlp.traces.enabled = true;
