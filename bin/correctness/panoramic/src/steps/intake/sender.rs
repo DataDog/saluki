@@ -74,6 +74,9 @@ const USER_AGENTS: [(&str, Sender); 3] = [
     ("Datadog Trace Agent/", Sender::TraceAgent),
 ];
 
+/// The header that names the sender of a request, in lower case.
+const USER_AGENT: &str = "user-agent";
+
 /// What a failure message calls a request that no sender claims.
 const UNATTRIBUTABLE: &str = "unattributable";
 
@@ -324,7 +327,7 @@ struct Selected {
 
 impl Selected {
     fn user_agent(&self) -> Option<&str> {
-        self.headers.get("user-agent").map(String::as_str)
+        self.headers.get(USER_AGENT).map(String::as_str)
     }
 
     fn sender(&self) -> Option<Sender> {
@@ -335,11 +338,12 @@ impl Selected {
         self.sender().map_or(UNATTRIBUTABLE, Sender::name)
     }
 
-    /// One line for a failure message: the sender, the path, the `User-Agent` and every header.
+    /// One line for a failure message: the sender, the path, the `User-Agent` and every other header.
     fn line(&self) -> String {
         let headers: Vec<String> = self
             .headers
             .iter()
+            .filter(|(name, _)| name.as_str() != USER_AGENT)
             .map(|(name, value)| format!("{}: {}", name, value))
             .collect();
         format!(
@@ -987,6 +991,8 @@ mod tests {
             "{}",
             contents
         );
+        // The `User-Agent` has its own field, so the list of headers leaves it out.
+        assert_eq!(contents.matches(AGENT).count(), 1, "{}", contents);
     }
 
     #[tokio::test(start_paused = true)]
