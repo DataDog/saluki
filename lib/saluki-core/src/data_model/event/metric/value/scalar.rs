@@ -27,12 +27,11 @@ impl ScalarPoints {
         &mut self.0
     }
 
-    pub(super) fn add_point(&mut self, timestamp: Option<NonZeroU64>, value: f64) {
+    pub(super) fn push_untimestamped(&mut self, value: f64) {
         self.0.values.push(TimestampedValue {
-            timestamp,
+            timestamp: None,
             value: OrderedFloat(value),
         });
-        self.0.sort_by_timestamp();
     }
 
     pub(super) fn drain_timestamped(&mut self) -> Self {
