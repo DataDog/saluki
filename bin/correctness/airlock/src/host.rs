@@ -166,15 +166,15 @@ impl HostProcess {
     }
 
     /// Stops the process and its group: SIGTERM, then SIGKILL after `grace`, then up to two seconds for the exit and
-    /// for the group to empty.
+    /// for the group to have no live member. A zombie left in the group does not count.
     ///
     /// Whatever is left in the group is killed even when the program itself exited. Dropping the future before the
     /// SIGKILL drops the process, which sends SIGKILL.
     ///
     /// # Errors
     ///
-    /// Returns an error if the process has not exited, or its group is not empty, after the SIGKILL. A process on a
-    /// target with no process groups is not signalled, and stopping it does nothing.
+    /// Returns an error if the process has not exited, or its group still has a live member, after the SIGKILL. A
+    /// process on a target with no process groups is not signalled, and stopping it does nothing.
     #[cfg_attr(not(unix), allow(unused_mut, unused_variables))]
     pub async fn stop(mut self, grace: Duration) -> Result<(), GenericError> {
         #[cfg(unix)]
@@ -190,7 +190,7 @@ impl HostProcess {
             let gone = async {
                 let _ = self.exit.wait_for(Option::is_some).await;
                 if let Some(group) = group {
-                    while group_exists(group) {
+                    while group_has_live_member(group) {
                         tokio::time::sleep(GROUP_POLL).await;
                     }
                 }
@@ -258,9 +258,32 @@ where
         .boxed()
 }
 
-/// Whether any process is left in group `group`.
+/// Whether group `group` has a member that is not a zombie.
+///
+/// A zombie stays in its group until its parent reaps it, which may never happen when an orphan is adopted by a
+/// PID 1 that does not reap. A zombie is no longer running, so it is not a straggler.
 #[cfg(unix)]
-fn group_exists(group: i32) -> bool {
+fn group_has_live_member(group: i32) -> bool {
+    // `killpg` cannot tell a zombie from a live process, so read the states from `/proc`.
+    #[cfg(target_os = "linux")]
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        return entries.flatten().any(|entry| {
+            // The process may exit, or be unreadable, during the scan. Such a process is not counted.
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                return false;
+            };
+            // The command name is in parentheses and may contain spaces or parentheses, so skip to the last `)`.
+            let Some((_, rest)) = stat.rsplit_once(')') else {
+                return false;
+            };
+            let mut fields = rest.split_whitespace();
+            let state = fields.next();
+            let pgrp = fields.nth(1).and_then(|pgrp| pgrp.parse::<i32>().ok());
+            pgrp == Some(group) && !matches!(state, Some("Z" | "X"))
+        });
+    }
+
+    // Other targets (macOS) hand orphans to an init that reaps them promptly, so no zombie lingers.
     // SAFETY: `killpg` takes no pointers and touches no memory of this process. Signal 0 only checks.
     let sent = unsafe { libc::killpg(group, 0) };
     // A group that the process may not signal still exists.
