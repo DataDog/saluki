@@ -631,6 +631,29 @@ mod tests {
         // An empty variable is unset, as in the Agent, so it keeps the default endpoint. An empty file value
         // disables the receiver. The Agent keeps the empty file value too, but its receiver then listens on a port
         // that the system picks, which ADP doesn't copy.
+        //
+        // Where the Agent does this, at datadog-agent dfa0c764394a6331eb2e26140c62c1ac398562db and the OpenTelemetry
+        // Collector versions it uses:
+        //
+        // - An empty file value counts as configured, because only a nil value doesn't:
+        //   https://github.com/DataDog/datadog-agent/blob/dfa0c764394a6331eb2e26140c62c1ac398562db/pkg/config/nodetreemodel/config.go#L981-L982
+        // - It is copied into the receiver section, which keeps only the keys that are configured:
+        //   https://github.com/DataDog/datadog-agent/blob/dfa0c764394a6331eb2e26140c62c1ac398562db/comp/otelcol/otlp/configcheck/configcheck_common.go#L50-L55
+        // - The section reaches the OTLP receiver as it is:
+        //   https://github.com/DataDog/datadog-agent/blob/dfa0c764394a6331eb2e26140c62c1ac398562db/comp/otelcol/otlp/map_provider.go#L106-L110
+        // - The gRPC server then listens on its address (the HTTP server does the same through `ToListener`), which
+        //   runs `net.Listen("tcp", "")` for an empty endpoint:
+        //   https://github.com/open-telemetry/opentelemetry-collector/blob/receiver/otlpreceiver/v0.165.0/receiver/otlpreceiver/otlp.go#L138-L139
+        //   https://github.com/open-telemetry/opentelemetry-collector/blob/config/confignet/v1.71.0/config/confignet/confignet.go#L67-L73
+        // - Go reads an empty address as all interfaces and port 0, so the system picks the port:
+        //   https://github.com/golang/go/blob/go1.26.11/src/net/ipsock.go#L256-L264
+        //   https://github.com/golang/go/blob/go1.26.11/src/net/ipsock.go#L284-L286
+        //
+        // The same copying is why the Agent starts only the protocols that have a key under
+        // `otlp_config.receiver.protocols.<protocol>`: a protocol with no configured key isn't in the receiver
+        // section, and the receiver starts no server for a protocol that has no section:
+        //   https://github.com/open-telemetry/opentelemetry-collector/blob/receiver/otlpreceiver/v0.165.0/receiver/otlpreceiver/otlp.go#L110-L114
+        //   https://github.com/open-telemetry/opentelemetry-collector/blob/receiver/otlpreceiver/v0.165.0/receiver/otlpreceiver/otlp.go#L152-L156
         let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_otlp_empty_endpoint_{}.yaml", std::process::id()));
         std::fs::write(
