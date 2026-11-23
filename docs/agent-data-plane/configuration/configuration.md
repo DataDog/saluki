@@ -1732,8 +1732,9 @@ When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`
 
 ### `hostname`
 
-ADP uses this only in standalone mode, where the fixed host provider requires a configured
-hostname. In connected mode the hostname comes from the Datadog Agent.
+ADP uses this only in standalone mode, where the fixed host provider reports it as-is. When
+it's unset or empty, ADP sends data without a host, as the Agent does in sidecar deployments
+such as ECS Fargate. In connected mode the hostname comes from the Datadog Agent.
 
 ### Payload debug logging (`log_payloads`)
 
