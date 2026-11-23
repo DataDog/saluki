@@ -2479,7 +2479,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c91d8cffac8849493a82233811bd02b2b183b8cf39bf704de0fa0841b737595"
 dependencies = [
  "bstr",
- "hashbrown 0.17.1",
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
@@ -3882,7 +3882,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 [[package]]
 name = "libdd-capabilities"
 version = "4.0.1"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3894,53 +3894,88 @@ dependencies = [
 
 [[package]]
 name = "libdd-common"
-version = "8.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "10.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
 dependencies = [
  "anyhow",
  "arc-swap",
- "bytes",
- "cc",
  "const_format",
- "futures",
- "futures-util",
  "hex",
  "http",
- "libc",
- "nix 0.29.0",
- "pin-project",
- "regex",
  "serde",
  "static_assertions",
- "thiserror 2.0.18",
+]
+
+[[package]]
+name = "libdd-env"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
+
+[[package]]
+name = "libdd-host-identity"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
+dependencies = [
+ "libc",
+ "libdd-env",
+ "libdd-regex",
  "windows-sys 0.52.0",
 ]
 
 [[package]]
-name = "libdd-tinybytes"
-version = "1.1.5"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+name = "libdd-networking"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
 dependencies = [
+ "anyhow",
+ "hex",
+ "http",
+ "libdd-common",
+ "libdd-host-identity",
+]
+
+[[package]]
+name = "libdd-regex"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
+dependencies = [
+ "regex",
+]
+
+[[package]]
+name = "libdd-tinybytes"
+version = "1.2.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
+dependencies = [
+ "libdd-trace-model",
  "serde",
 ]
 
 [[package]]
+name = "libdd-trace-model"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
+
+[[package]]
 name = "libdd-trace-normalization"
-version = "4.2.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "4.3.1"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
 dependencies = [
  "anyhow",
+ "libdd-trace-model",
  "libdd-trace-protobuf",
 ]
 
 [[package]]
 name = "libdd-trace-obfuscation"
-version = "10.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "12.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
 dependencies = [
  "anyhow",
  "fluent-uri",
- "libdd-common",
+ "libdd-env",
+ "libdd-regex",
+ "libdd-trace-model",
  "libdd-trace-protobuf",
  "libdd-trace-utils",
  "log",
@@ -3952,9 +3987,10 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-protobuf"
-version = "5.1.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "5.1.1"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
 dependencies = [
+ "libdd-trace-model",
  "prost",
  "serde",
  "serde_bytes",
@@ -3962,15 +3998,17 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-utils"
-version = "14.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "16.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e47926a3420527f8cd5e7eac835d3c0d38c91e26#e47926a3420527f8cd5e7eac835d3c0d38c91e26"
 dependencies = [
+ "allocator-api2",
  "anyhow",
  "base64 0.22.1",
  "bytes",
  "crossbeam-channel",
  "futures",
  "getrandom 0.2.17",
+ "hashbrown 0.17.1",
  "hex",
  "http",
  "http-body",
@@ -3979,7 +4017,11 @@ dependencies = [
  "itoa",
  "libdd-capabilities",
  "libdd-common",
+ "libdd-host-identity",
+ "libdd-networking",
+ "libdd-regex",
  "libdd-tinybytes",
+ "libdd-trace-model",
  "libdd-trace-normalization",
  "libdd-trace-protobuf",
  "prost",
@@ -4316,18 +4358,6 @@ name = "nested"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca2b420f638f07fe83056b55ea190bb815f609ec5a35e7017884a10f78839c9e"
-
-[[package]]
-name = "nix"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
-dependencies = [
- "bitflags 2.11.1",
- "cfg-if",
- "cfg_aliases",
- "libc",
-]
 
 [[package]]
 name = "nix"
@@ -5046,7 +5076,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7582,7 +7612,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b7d4dba01e366e2ffbdf0700b1876f747c548db72dced534de41c54945c0148"
 dependencies = [
  "libc",
- "nix 0.31.3",
+ "nix",
 ]
 
 [[package]]
