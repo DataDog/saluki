@@ -22,14 +22,17 @@ FORWARDED_STREAM_TWO_PATH = "/tmp/dsd-forwarded-stream-two"
 FORWARDED_UDS_PATH = "/tmp/dsd-forwarded-uds-packet"
 FORWARDED_UDS_STREAM_PATH = "/tmp/dsd-forwarded-uds-stream-packet"
 PARSED_METRIC_PATH = "/tmp/dsd-metric-parsed"
-FORWARD_ADDR = ("127.0.0.1", 9125)
-# Matches the framework-level shifted default in panoramic::unix_runner::test_port_isolation_env.
-# When the framework provides DD_DOGSTATSD_PORT=48125, ADP binds DSD on 48125.
-DOGSTATSD_ADDR = ("127.0.0.1", 48125)
-DOGSTATSD_STREAM_ADDR = ("127.0.0.1", 9126)
-DOGSTATSD_UDS_PATH = "/tmp/dsd-forwarding.sock"
-DOGSTATSD_UDS_STREAM_PATH = "/tmp/dsd-forwarding-stream.sock"
-TELEMETRY_URL = "http://127.0.0.1:45100/metrics"
+# The harness gives the script every address it uses, in the environment.
+FORWARD_ADDR = ("127.0.0.1", int(os.environ["DD_STATSD_FORWARD_PORT"]))
+DOGSTATSD_ADDR = ("127.0.0.1", int(os.environ["DD_DOGSTATSD_PORT"]))
+DOGSTATSD_STREAM_ADDR = ("127.0.0.1", int(os.environ["DD_DOGSTATSD_TCP_PORT"]))
+DOGSTATSD_UDS_PATH = os.environ["DD_DOGSTATSD_SOCKET"]
+DOGSTATSD_UDS_STREAM_PATH = os.environ["DD_DOGSTATSD_STREAM_SOCKET"]
+TELEMETRY_URL = (
+    "http://127.0.0.1:"
+    + os.environ["DD_DATA_PLANE_API_LISTEN_ADDRESS"].rsplit(":", 1)[1]
+    + "/metrics"
+)
 PROBE_TIMEOUT_SECS = 60
 PROBE_INTERVAL_SECS = 0.25
 SOCKET_TIMEOUT_SECS = 0.2

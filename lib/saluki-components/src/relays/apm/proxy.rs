@@ -11,17 +11,17 @@ use std::sync::{
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _, path::PathBuf};
 
 use axum::extract::Request as AxumRequest;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use http::header::{self, HeaderMap};
-use http::uri::{PathAndQuery, Uri};
-use http::{HeaderValue, StatusCode, Version};
+use http::uri::Uri;
+use http::{HeaderValue, Version};
 use rustls::RootCertStore;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::{HttpClient, HttpProtocol};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use super::forwarding::{strip_hop_by_hop_headers, UpstreamClient};
+use crate::common::proxy::{strip_hop_by_hop_headers, upstream_uri, Destination, ForwardError, UpstreamClient};
 
 /// Name the relay adds itself to the `Via` header under, so that a request proxied back to the relay is recognized.
 /// See RFC 9110, section 7.6.3.
@@ -54,40 +54,6 @@ pub(super) struct TraceAgentProxy {
     loop_detected: Arc<AtomicBool>,
 }
 
-/// Where the proxy forwards requests to.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Destination {
-    /// A TCP host and port.
-    Tcp { host: String, port: u16 },
-
-    /// A Unix domain socket path.
-    #[cfg(unix)]
-    Unix(PathBuf),
-}
-
-/// Error from forwarding a request to the trace-agent.
-#[derive(Debug)]
-pub(super) enum ForwardError {
-    /// The request's path couldn't be carried over to the trace-agent.
-    InvalidUri,
-
-    /// The trace-agent couldn't be reached, or didn't answer.
-    Unreachable,
-
-    /// The request was already forwarded by the relay, so the destination leads back to the relay.
-    Loop,
-}
-
-impl IntoResponse for ForwardError {
-    fn into_response(self) -> Response {
-        match self {
-            Self::InvalidUri => StatusCode::BAD_REQUEST.into_response(),
-            Self::Unreachable => StatusCode::BAD_GATEWAY.into_response(),
-            Self::Loop => StatusCode::LOOP_DETECTED.into_response(),
-        }
-    }
-}
-
 impl TraceAgentProxy {
     /// Creates a proxy forwarding to `destination`, an `http://host:port` or `unix:///path` URL.
     ///
@@ -114,7 +80,7 @@ impl TraceAgentProxy {
             // proxy must not impose a shorter one of its own.
             .without_request_timeout();
 
-        let (builder, base_uri, destination) = match url.scheme() {
+        let upstream = match url.scheme() {
             "http" => {
                 if url.path() != "/" {
                     return Err(generic_error!(
@@ -128,16 +94,9 @@ impl TraceAgentProxy {
                 let port = url
                     .port_or_known_default()
                     .ok_or_else(|| generic_error!("APM proxy destination `{destination}` has no port."))?;
-                // An IPv6 host comes back already bracketed.
-                let base_uri = Uri::builder()
-                    .scheme("http")
-                    .authority(format!("{host}:{port}"))
-                    .path_and_query("/")
-                    .build()
-                    .with_error_context(|| format!("Invalid APM proxy destination `{destination}`."))?;
                 // The URL keeps an IPv6 host bracketed, which address lookups don't accept.
                 let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
-                (builder, base_uri, Destination::Tcp { host, port })
+                Destination::Tcp { host, port }
             }
             #[cfg(unix)]
             "unix" => {
@@ -151,11 +110,7 @@ impl TraceAgentProxy {
                         "APM proxy destination `{destination}` must name an absolute socket path."
                     ));
                 }
-                (
-                    builder.with_unix_socket_path(path.clone()),
-                    Uri::from_static("http://localhost/"),
-                    Destination::Unix(path),
-                )
+                Destination::Unix(path)
             }
             scheme => {
                 return Err(generic_error!(
@@ -164,10 +119,15 @@ impl TraceAgentProxy {
             }
         };
 
+        let base_uri = upstream
+            .base_uri()
+            .with_error_context(|| format!("Invalid APM proxy destination `{destination}`."))?;
+        let builder = upstream.configure_client(builder);
+
         Ok(Self {
             client: UpstreamClient::new(builder.build()?),
             base_uri,
-            destination,
+            destination: upstream,
             unreachable: Arc::new(AtomicBool::new(false)),
             loop_detected: Arc::new(AtomicBool::new(false)),
         })
@@ -202,7 +162,7 @@ impl TraceAgentProxy {
             return Err(ForwardError::Loop);
         }
 
-        parts.uri = match self.upstream_uri(parts.uri.path_and_query()) {
+        parts.uri = match upstream_uri(&self.base_uri, parts.uri.path_and_query()) {
             Ok(uri) => uri,
             Err(e) => {
                 debug!(error = %e, "Failed to build the upstream URI for a proxied APM request.");
@@ -234,16 +194,6 @@ impl TraceAgentProxy {
             }
         }
     }
-
-    fn upstream_uri(&self, path_and_query: Option<&PathAndQuery>) -> Result<Uri, http::Error> {
-        let mut parts = self.base_uri.clone().into_parts();
-        parts.path_and_query = Some(
-            path_and_query
-                .cloned()
-                .unwrap_or_else(|| PathAndQuery::from_static("/")),
-        );
-        Ok(Uri::from_parts(parts)?)
-    }
 }
 
 /// Returns whether the relay is listed in the `Via` header of a request.
@@ -260,8 +210,10 @@ fn was_forwarded_by_relay(headers: &HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use axum::body::{to_bytes, Body};
+    use axum::response::IntoResponse;
     use axum::routing::any;
     use axum::Router;
+    use http::StatusCode;
     use tokio::net::TcpListener;
     use tokio::sync::Mutex as AsyncMutex;
 

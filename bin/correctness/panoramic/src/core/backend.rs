@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::handle::HandleError;
 use super::ledger::ResourceLedger;
-use super::observe::Sink;
+use super::observe::{ProcessExit, Sink};
 use super::participant::Enclosure;
 use super::plan::PlannedParticipant;
 use super::reference::Values;
@@ -36,8 +36,12 @@ pub(crate) const EXIT_DIR_ENV: &str = "PANORAMIC_EXIT_DIR";
 /// The environment variable that names the participant's [`Facts::log_dir`].
 pub(crate) const LOG_DIR_ENV: &str = "PANORAMIC_LOG_DIR";
 
-/// The realization option that puts a Linux container in the host's PID namespace.
+/// The realization option that puts a Linux container or a pod in the host's PID namespace.
 pub(crate) const HOST_PID: &str = "host_pid";
+/// The realization option that puts a Linux container in the host's cgroup namespace.
+pub(crate) const HOST_CGROUP_NAMESPACE: &str = "host_cgroup_namespace";
+/// The realization option that mounts the container runtime's socket of the kind node in a pod.
+pub(crate) const CRI_SOCKET: &str = "cri_socket";
 
 /// What planning knows of one realization backend.
 pub(crate) struct Facts {
@@ -45,10 +49,16 @@ pub(crate) struct Facts {
     pub(crate) per_case: &'static str,
     /// The directory under which each participant gets its own directories, or `None` where it is not fixed at plan.
     pub(crate) root: Option<&'static str>,
+    /// Whether the backend gives each participant a supervisor's exit and log directories. Without them, processes are
+    /// observed through the realization alone.
+    pub(crate) supervised: bool,
     /// The separator of file paths in the participant.
     pub(crate) separator: char,
     /// Where the backend places the courier in the participant.
     pub(crate) courier: Option<&'static str>,
+    /// Where the backend places files that only exist once the participant has started, or `None` where it writes
+    /// every file before the participant starts.
+    pub(crate) late: Option<&'static str>,
     /// The protocols a participant can listen on.
     pub(crate) listens: &'static [Protocol],
     /// Whether HTTP and gRPC endpoints are published on the runner's loopback address, at a host port the backend
@@ -57,8 +67,6 @@ pub(crate) struct Facts {
     /// Whether a participant may mount host paths.
     pub(crate) mounts: bool,
     /// The realization options a case may set.
-    // TODO: add each option with the case that first needs it: `host_cgroup_namespace` on a Linux container, and
-    // `host_pid` and `cri_socket` on a pod.
     pub(crate) options: &'static [&'static str],
 }
 
@@ -70,21 +78,29 @@ impl Facts {
 
     /// The directory a supervisor in the participant writes exit records to, as [`EXIT_DIR_ENV`].
     pub(crate) fn exit_dir(&self, participant: &str) -> Option<String> {
-        self.root.map(|root| self.under(root, participant, "exit"))
+        self.supervised_dir(participant, "exit")
     }
 
     /// The directory a supervisor in the participant writes log files to, as [`LOG_DIR_ENV`].
     pub(crate) fn log_dir(&self, participant: &str) -> Option<String> {
-        self.root.map(|root| self.under(root, participant, "log"))
+        self.supervised_dir(participant, "log")
     }
 
-    /// Paths the harness reserves in the participant: the courier, and the participant's exit and log directories.
+    /// Paths the harness reserves in the participant: the courier, the directory of late files, and the participant's
+    /// exit and log directories.
     pub(crate) fn reserved_paths(&self, participant: &str) -> Vec<String> {
         let courier = self.courier.map(str::to_string);
-        [courier, self.exit_dir(participant), self.log_dir(participant)]
+        let late = self.late.map(str::to_string);
+        [courier, late, self.exit_dir(participant), self.log_dir(participant)]
             .into_iter()
             .flatten()
             .collect()
+    }
+
+    fn supervised_dir(&self, participant: &str, dir: &str) -> Option<String> {
+        self.root
+            .filter(|_| self.supervised)
+            .map(|root| self.under(root, participant, dir))
     }
 
     fn under(&self, root: &str, participant: &str, dir: &str) -> String {
@@ -105,20 +121,25 @@ const ALL_BUT_PIPES: &[Protocol] = &[
 const LINUX_CONTAINER: Facts = Facts {
     per_case: "one bridge network and one volume",
     root: Some("/airlock"),
+    supervised: true,
     separator: '/',
     courier: Some("/panoramic/courier"),
+    late: None,
     listens: ALL_BUT_PIPES,
     publishes: true,
     mounts: true,
-    // `host_pid`: the container shares the host's PID namespace.
-    options: &[HOST_PID],
+    // `host_pid`: the container shares the host's PID namespace. `host_cgroup_namespace`: it shares the host's cgroup
+    // namespace.
+    options: &[HOST_PID, HOST_CGROUP_NAMESPACE],
 };
 
 const WINDOWS_CONTAINER: Facts = Facts {
     per_case: "one nat network",
     root: Some("C:\\airlock"),
+    supervised: true,
     separator: '\\',
     courier: Some("C:\\panoramic\\courier.exe"),
+    late: None,
     listens: &[
         Protocol::Tcp,
         Protocol::Udp,
@@ -134,20 +155,26 @@ const WINDOWS_CONTAINER: Facts = Facts {
 const KUBERNETES_POD: Facts = Facts {
     per_case: "one namespace and one directory on the kind node",
     root: Some("/airlock"),
+    supervised: true,
     separator: '/',
     courier: Some("/panoramic/courier"),
+    late: Some("/panoramic/late"),
     listens: ALL_BUT_PIPES,
     publishes: false,
     mounts: true,
-    options: &[],
+    // `host_pid`: the pod shares the node's PID namespace. `cri_socket`: the pod mounts the node's containerd socket.
+    options: &[HOST_PID, CRI_SOCKET],
 };
 
-// TODO: fix the state directory at plan with the host process backend, so `{{ self.dir }}` has a value.
+// One path for every case and runner host, so it is short enough for a macOS socket address, which the system's
+// temporary directory is not. Host process cases run one at a time, and their ports are fixed anyway.
 const HOST_PROCESS_GROUP: Facts = Facts {
-    per_case: "one state directory under /tmp",
-    root: None,
+    per_case: "the state directory /tmp/panoramic",
+    root: Some("/tmp/panoramic"),
+    supervised: false,
     separator: '/',
     courier: None,
+    late: None,
     listens: ALL_BUT_PIPES,
     publishes: false,
     mounts: false,
@@ -203,6 +230,13 @@ pub(crate) trait Realized: fmt::Debug + Send + Sync {
     /// Returns a harness error if the file cannot be read, or `deadline` passes first.
     async fn read_file(&self, path: &str, deadline: Instant) -> Result<Option<Vec<u8>>, HandleError>;
 
+    /// The exit of `process` as the realization reports it apart from the participant's own, as each program of a host
+    /// process group has. `None` where the realization reports one exit, the participant's, which is its only
+    /// process's.
+    fn reported_exit(&self, _process: &str) -> Option<ProcessExit> {
+        None
+    }
+
     /// The runner host's port for the participant's published `endpoint`, or `None` if it has none. A participant that
     /// exited before its ports were read back has none.
     fn host_port(&self, endpoint: &str) -> Option<u16>;
@@ -213,8 +247,6 @@ pub(crate) trait Realized: fmt::Debug + Send + Sync {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Identities {
     pub(crate) container_id: Option<String>,
-    // TODO: remove the dead_code allowance once `Values` records a pod's UID.
-    #[allow(dead_code)]
     pub(crate) pod_uid: Option<String>,
     /// The participant's address on the case's network.
     pub(crate) ip: Option<String>,
@@ -225,8 +257,6 @@ pub(crate) struct Preparing<'a> {
     /// Takes every resource of the scope before it is made.
     pub(crate) ledger: &'a ResourceLedger,
     /// Where background work of the case runs. The runner stops it before reclaim.
-    // TODO: remove the dead_code allowance once a backend runs background work for a case.
-    #[allow(dead_code)]
     pub(crate) tasks: &'a CaseTasks,
     /// Fires when the runner stops the case.
     pub(crate) cancel: &'a CancellationToken,

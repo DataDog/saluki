@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use tokio::time::Instant;
 
 use crate::core::handle::{Handle, HandleError};
-use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
+use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
 use crate::core::spec::{Address, EndpointSpec, Evidence, ParticipantSpec, Protocol, DEFAULT_PROCESS};
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
@@ -37,7 +37,7 @@ impl ParticipantType for DatadogIntake {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        &[(Os::Linux, Enclosure::LinuxContainer)]
+        LINUX_CONTAINER_OR_POD
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
@@ -126,7 +126,7 @@ impl Operation for Dump {
         let mut dump = Map::new();
         for (key, path) in DUMP_PATHS.into_iter().filter(|(key, _)| asked(key)) {
             let limit = deadline.saturating_duration_since(Instant::now());
-            let response = on.http_get("api", path, limit).await?;
+            let response = on.http_get("api", path, false, true, limit).await?;
             if response.status != 200 {
                 let body = String::from_utf8_lossy(&response.body);
                 let shown = &body[..body.floor_char_boundary(MAX_ERROR_BODY_BYTES)];

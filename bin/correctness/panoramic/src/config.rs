@@ -164,6 +164,9 @@ pub const LINUX_RUNTIME: &str = "linux";
 /// Runtime identifier for integration tests that run inside a Windows container.
 pub const WINDOWS_RUNTIME: &str = "windows";
 
+/// Runtime identifier for cases that run participants in pods, which need a kind cluster.
+pub const KIND_RUNTIME: &str = "kubernetes_in_docker";
+
 /// The runtime name of the subject OS `os`.
 pub(crate) fn runtime_of(os: Os) -> &'static str {
     match os {
@@ -721,12 +724,12 @@ where
 /// overrides apply across this entire scope, before the caller selects tests by name.
 ///
 /// Every participant case is included, for `subject_os`: a case that does not declare it is skipped when it runs. `set`
-/// holds the run's replacements of the images participant cases name.
+/// holds the run's replacements of the images and host programs participant cases name.
 ///
 /// # Errors
 ///
 /// Returns an error if a test directory cannot be read, an image override is duplicate or unmatched, a participant
-/// case does not load or plan, or `set` replaces an image no participant case uses.
+/// case does not load or plan, or `set` replaces an image or host program no participant case uses.
 pub fn discover_tests(
     dirs: &[PathBuf], integration_runtime: &str, image_overrides: &[crate::image_override::ImageOverride],
     subject_os: Os, set: &BTreeMap<String, String>,
@@ -756,13 +759,20 @@ pub fn discover_tests(
                     match ParticipantCase::load(&path, subject_os, set, &registry) {
                         // Loaded and planned all the same, so a disabled case cannot rot.
                         Ok((case, _)) if case.disabled => {}
-                        Ok((case, images)) => {
-                            replaced.extend(images.into_iter().filter(|image| set.contains_key(image)));
+                        Ok((case, references)) => {
+                            replaced.extend(references.into_iter().filter(|reference| set.contains_key(reference)));
                             tests.push(Box::new(case));
                         }
                         Err(errors) => case_errors.extend(errors.iter().map(ToString::to_string)),
                     }
                 } else if config_path.exists() {
+                    if is_comparison_case(&config_path)? {
+                        case_errors.push(format!(
+                            "{}: legacy comparison cases no longer run; write it as a participant case",
+                            config_path.display()
+                        ));
+                        continue;
+                    }
                     match try_load_test(&config_path, &path, integration_runtime, &settings, &overrides) {
                         Ok(loaded) => tests.extend(loaded),
                         Err(e) => {
@@ -778,17 +788,16 @@ pub fn discover_tests(
     }
 
     // The loop does not return on a participant case that fails to load or plan: it collects the errors in
-    // `case_errors`, so a run reports every bad case at once. `replaced` holds each `--set` image some discovered
+    // `case_errors`, so a run reports every bad case at once. `replaced` holds each `--set` name some discovered
     // participant case uses, so every `--set` name left out of it is one no case uses, and is an error too. Only when
     // every case loaded: a case that failed may be the one that uses the name, so `replaced` is incomplete then. All
     // the errors are returned together.
     if case_errors.is_empty() {
-        case_errors.extend(set.keys().filter(|name| !replaced.contains(*name)).map(|name| {
-            format!(
-                "--set names image '{}', which no discovered participant case uses.",
-                name
-            )
-        }));
+        case_errors.extend(
+            set.keys()
+                .filter(|name| !replaced.contains(*name))
+                .map(|name| format!("--set names '{}', which no discovered participant case uses.", name)),
+        );
     }
     if !case_errors.is_empty() {
         return Err(generic_error!("{}", case_errors.join("\n")));
@@ -801,15 +810,29 @@ pub fn discover_tests(
     Ok(tests)
 }
 
-/// Whether the case file at `config_path` is a legacy case: one with a top-level `type`.
-pub(crate) fn is_legacy_case(config_path: &Path) -> Result<bool, GenericError> {
+/// The top-level `type` of the case file at `config_path`, or `None` for a participant case, which has none.
+fn legacy_type(config_path: &Path) -> Result<Option<Value>, GenericError> {
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
     let shape: Value = serde_saphyr::from_str(&content).error_context(format!(
         "Failed to parse config file as YAML: {}",
         config_path.display()
     ))?;
-    Ok(shape.get("type").is_some())
+    Ok(shape.get("type").cloned())
+}
+
+/// Whether the case file at `config_path` is a legacy case: one with a top-level `type`.
+pub(crate) fn is_legacy_case(config_path: &Path) -> Result<bool, GenericError> {
+    legacy_type(config_path).map(|legacy| legacy.is_some())
+}
+
+/// Whether the case file at `config_path` is a legacy comparison case, which no longer runs.
+fn is_comparison_case(config_path: &Path) -> Result<bool, GenericError> {
+    let legacy = legacy_type(config_path)?;
+    Ok(matches!(
+        legacy.as_ref().and_then(Value::as_str),
+        Some("correctness" | "correctness_matrix")
+    ))
 }
 
 /// Load one or more test cases from a config file, dispatching on the top-level `type` field.
@@ -1172,115 +1195,6 @@ procedure: []
     }
 
     #[test]
-    fn matrix_variants_report_the_case_directory_they_expanded_from() {
-        let base_dir = create_test_case_dir(
-            "dsd-matrix",
-            r#"
-type: correctness_matrix
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-variants:
-  - name: first
-    env:
-      DD_EXAMPLE: "1"
-  - name: second
-    env:
-      DD_EXAMPLE: "2"
-"#,
-        );
-
-        let tests = discover_tests(
-            &[base_dir.path().to_path_buf()],
-            "linux",
-            &[],
-            Os::Linux,
-            &BTreeMap::new(),
-        )
-        .unwrap();
-
-        assert_eq!(tests.len(), 2);
-        // Canonicalized, because the loader canonicalizes the config path it derives this from.
-        let case_dir = base_dir.path().join("dsd-matrix").canonicalize().unwrap();
-        for test in &tests {
-            assert_eq!(test.case_path(), case_dir, "case path for '{}'", test.name());
-        }
-    }
-
-    #[test]
-    fn correctness_target_env_becomes_key_value_assignments_ordered_by_name() {
-        let base_dir = create_test_case_dir(
-            "dsd-env",
-            r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-  env:
-    DD_TAGS: "a=1,b=2"
-    DD_API_KEY: correctness-test
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-  env:
-    DD_API_KEY: correctness-test
-    DD_DATA_PLANE_ENABLED: "true"
-"#,
-        );
-        let config_path = base_dir.path().join("dsd-env").join("config.yaml");
-
-        let config: CorrectnessConfig = load_case(&config_path).expect("case should parse");
-
-        // What the Docker adapter hands to Airlock: one assignment per variable, ordered by name,
-        // with a value containing '=' left intact.
-        assert_eq!(
-            crate::correctness::case::env_assignments(&config.baseline.env),
-            vec!["DD_API_KEY=correctness-test".to_string(), "DD_TAGS=a=1,b=2".to_string()]
-        );
-
-        // Each target owns its own environment: the comparison-only variable does not leak into the
-        // baseline.
-        assert_eq!(
-            crate::correctness::case::env_assignments(&config.comparison.env),
-            vec![
-                "DD_API_KEY=correctness-test".to_string(),
-                "DD_DATA_PLANE_ENABLED=true".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn correctness_target_env_rejects_an_unquoted_boolean_value() {
-        // An unquoted `true` is a YAML boolean, not the string the process would receive, so the
-        // case must fail to load rather than guess at a value.
-        let base_dir = create_test_case_dir(
-            "dsd-bare-bool",
-            r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-  env:
-    DD_DATA_PLANE_ENABLED: true
-"#,
-        );
-        let config_path = base_dir.path().join("dsd-bare-bool").join("config.yaml");
-
-        let error = match load_case::<CorrectnessConfig, _>(&config_path) {
-            Ok(_) => panic!("an unquoted boolean env value should be rejected"),
-            Err(e) => format!("{e:?}"),
-        };
-
-        assert!(error.contains("DD_DATA_PLANE_ENABLED"), "unexpected error: {error}");
-    }
-
-    #[test]
     fn integration_case_env_rejects_an_unquoted_boolean_value() {
         // Both suites load through one loader, so an integration case is held to the same rule as a
         // correctness case: the value a process receives is whatever the YAML string says.
@@ -1301,111 +1215,6 @@ procedure:
         };
 
         assert!(error.contains("DD_DATA_PLANE_ENABLED"), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn a_case_relative_path_anchors_at_the_case_directory() {
-        let base_dir = create_test_case_dir(
-            "dsd-paths",
-            r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-millstone:
-  config_path: millstone.yaml
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-"#,
-        );
-        let config_path = base_dir.path().join("dsd-paths").join("config.yaml");
-
-        let config: CorrectnessConfig = load_case(&config_path).expect("case should parse");
-
-        // Canonicalized, because the loader canonicalizes the config path it derives the case
-        // directory from. On macOS that turns the temp directory's `/tmp` into `/private/tmp`.
-        let case_dir = base_dir.path().join("dsd-paths").canonicalize().unwrap();
-        assert_eq!(
-            CorrectnessTestCase::new("paths".to_string(), config.clone())
-                .millstone_config()
-                .config_path,
-            case_dir.join("millstone.yaml")
-        );
-
-        // An absolute path is the case's own choice and passes through untouched. Pick one that is
-        // absolute on the platform running the test: a Unix-style root is not absolute on Windows.
-        let absolute_path = if cfg!(windows) {
-            PathBuf::from(r"C:\etc\datadog-agent\datadog.yaml")
-        } else {
-            PathBuf::from("/etc/datadog-agent/datadog.yaml")
-        };
-        assert_eq!(
-            crate::test::resolve_case_path(&config.loaded_from, &absolute_path),
-            absolute_path
-        );
-    }
-
-    #[test]
-    fn matrix_variant_env_overlays_both_targets_and_wins_on_a_shared_variable() {
-        let base_dir = create_test_case_dir(
-            "dsd-matrix",
-            r#"
-type: correctness_matrix
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-  env:
-    DD_API_KEY: correctness-test
-    DD_DOGSTATSD_TAG_CARDINALITY: low
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-  env:
-    DD_API_KEY: correctness-test
-    DD_DOGSTATSD_TAG_CARDINALITY: low
-    DD_DATA_PLANE_ENABLED: "true"
-variants:
-  - name: high-cardinality
-    env:
-      DD_DOGSTATSD_TAG_CARDINALITY: high
-      DD_ORIGIN_DETECTION_UNIFIED: "true"
-"#,
-        );
-        let config_path = base_dir.path().join("dsd-matrix").join("config.yaml");
-
-        let base: CorrectnessConfig = load_case(&config_path).unwrap();
-        let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        let expanded = matrix.expand(&base, "dsd-matrix");
-
-        assert_eq!(expanded.len(), 1);
-        let variant = &expanded[0].1;
-        for (side, target) in [("baseline", &variant.baseline), ("comparison", &variant.comparison)] {
-            // The variant wins on the shared variable, adds its own, and leaves the rest of the base
-            // environment alone.
-            assert_eq!(
-                target.env.get("DD_DOGSTATSD_TAG_CARDINALITY").map(String::as_str),
-                Some("high"),
-                "{side} should take the variant's cardinality"
-            );
-            assert_eq!(
-                target.env.get("DD_ORIGIN_DETECTION_UNIFIED").map(String::as_str),
-                Some("true"),
-                "{side} should gain the variant's own variable"
-            );
-            assert_eq!(
-                target.env.get("DD_API_KEY").map(String::as_str),
-                Some("correctness-test"),
-                "{side} should keep base variables the variant does not name"
-            );
-        }
-
-        // The variant overlay does not merge the two targets: comparison-only settings stay there.
-        assert_eq!(
-            variant.comparison.env.get("DD_DATA_PLANE_ENABLED").map(String::as_str),
-            Some("true")
-        );
-        assert!(!variant.baseline.env.contains_key("DD_DATA_PLANE_ENABLED"));
     }
 
     fn dynamic_vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -1655,259 +1464,7 @@ procedure:
     }
 
     #[test]
-    fn matrix_expansion_preserves_file_data_and_keeps_variants_independent() {
-        // Matrix expansion used to reconstruct fields and resolve paths itself. Both forms now
-        // retain file data and use the same case preparation and path resolution.
-        let dir = create_test_case_dir(
-            "matrix",
-            r#"
-type: correctness_matrix
-runtime: kubernetes_in_docker
-analysis_mode: traces
-millstone:
-  image: tools:custom
-  binary_path: /custom/millstone
-  config_path: nested/millstone.yaml
-datadog_intake:
-  image: intake:custom
-  binary_path: /custom/intake
-baseline:
-  image: baseline:custom
-  entrypoint: [baseline]
-  command: [run]
-  files: ["nested/agent.yaml:/etc/agent.yaml"]
-  env: {SHARED: base, BASELINE_ONLY: baseline}
-comparison:
-  image: comparison:custom
-  entrypoint: [comparison]
-  command: [start]
-  files: ["nested/comparison.yaml:/etc/agent.yaml"]
-  env: {SHARED: base, COMPARISON_ONLY: comparison}
-otlp_direct_analysis_mode: true
-additional_span_ignore_fields: [metrics.example]
-require_dogstatsd_forwarded_packets: true
-variants:
-  - name: first
-    env: {SHARED: first, FIRST_ONLY: first}
-  - name: second
-    env: {SHARED: second}
-"#,
-        );
-        let path = dir.path().join("matrix/config.yaml");
-        let ordinary: CorrectnessConfig = load_case(&path).unwrap();
-        let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let expanded = matrix.expand(&ordinary, "matrix");
-        assert_eq!(
-            expanded.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
-            ["matrix/first", "matrix/second"]
-        );
-        let ordinary_case = CorrectnessTestCase::new("ordinary".to_string(), ordinary.clone());
-        for (name, config) in expanded {
-            assert_eq!(config.loaded_from, path.canonicalize().unwrap());
-            assert_eq!(config.millstone.config_path, PathBuf::from("nested/millstone.yaml"));
-            assert_eq!(config.baseline.files, ordinary.baseline.files);
-            assert_eq!(config.comparison.files, ordinary.comparison.files);
-            assert_eq!(config.baseline.entrypoint, ordinary.baseline.entrypoint);
-            assert_eq!(config.comparison.command, ordinary.comparison.command);
-            assert!(config.otlp_direct_analysis_mode);
-            assert_eq!(config.additional_span_ignore_fields, ["metrics.example"]);
-            assert!(config.require_dogstatsd_forwarded_packets);
-            let variant = name.strip_prefix("matrix/").unwrap();
-            for target in [&config.baseline, &config.comparison] {
-                assert_eq!(target.env["SHARED"], variant);
-                assert_eq!(target.env.contains_key("FIRST_ONLY"), variant == "first");
-            }
-            assert_eq!(config.baseline.env["BASELINE_ONLY"], "baseline");
-            assert!(!config.baseline.env.contains_key("COMPARISON_ONLY"));
-            assert_eq!(config.comparison.env["COMPARISON_ONLY"], "comparison");
-            assert!(!config.comparison.env.contains_key("BASELINE_ONLY"));
-            let case = CorrectnessTestCase::new(name.clone(), config);
-            assert_eq!(case.name(), name);
-            assert_eq!(case.case_path(), path.parent().unwrap().canonicalize().unwrap());
-            assert_eq!(case.runtime(), "kubernetes_in_docker");
-            assert_eq!(case.images(), ordinary_case.images());
-            assert_eq!(
-                case.millstone_config().config_path,
-                ordinary_case.millstone_config().config_path
-            );
-            assert_eq!(
-                case.millstone_config().binary_path.as_deref(),
-                Some("/custom/millstone")
-            );
-            assert_eq!(
-                case.datadog_intake_config().binary_path.as_deref(),
-                Some("/custom/intake")
-            );
-        }
-        assert_eq!(ordinary.baseline.env["SHARED"], "base");
-        assert!(!ordinary.comparison.env.contains_key("FIRST_ONLY"));
-    }
-
-    #[tokio::test]
-    async fn ordinary_and_matrix_targets_prepare_overridden_images_env_and_relative_mounts() {
-        let container_root = if cfg!(windows) { "C:/etc" } else { "/etc" };
-        let dir = create_test_case_dir(
-            "prepared",
-            &format!(
-                r#"
-type: correctness_matrix
-runtime: docker
-analysis_mode: metrics
-millstone:
-  config_path: nested/millstone.yaml
-baseline:
-  image: baseline:file
-  entrypoint: [baseline, --init]
-  command: [sleep, 10]
-  env: {{BASELINE_ONLY: baseline, SHARED: base, DD_TAGS: "a=1,b=2"}}
-  files: ["nested/baseline.yaml:{container_root}/baseline.yaml", "nested/common.yaml:{container_root}/common.yaml"]
-comparison:
-  image: comparison:file
-  entrypoint: [comparison, --init]
-  command: [wait, 20]
-  env: {{COMPARISON_ONLY: comparison, SHARED: base, DD_TAGS: "a=1,b=2"}}
-  files: ["nested/comparison.yaml:{container_root}/comparison.yaml", "nested/common.yaml:{container_root}/common.yaml"]
-variants:
-  - name: first
-    env: {{SHARED: first, FIRST_ONLY: "true"}}
-  - name: second
-    env: {{SHARED: second}}
-"#,
-            ),
-        );
-        let path = dir.path().join("prepared/config.yaml");
-        let base: CorrectnessConfig = load_case(&path).unwrap();
-        let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let mut configs = vec![("prepared/base".to_string(), base.clone())];
-        configs.extend(matrix.expand(&base, "prepared"));
-        let entries = [
-            "baseline=baseline:custom",
-            "comparison=comparison:custom",
-            "datadog-intake=intake:custom",
-            "millstone=millstone:custom",
-        ]
-        .map(|entry| entry.parse().unwrap());
-        let overrides = ImageOverrides::new(&entries);
-        let case_dir = path.parent().unwrap().canonicalize().unwrap();
-        for (name, mut config) in configs {
-            let variant = name.strip_prefix("prepared/").unwrap().to_string();
-            overrides.apply_correctness(&mut config);
-            let case = CorrectnessTestCase::new(name, config);
-            for entry in &entries {
-                assert_eq!(case.images()[entry.name.as_str()], entry.image);
-            }
-            assert_eq!(case.datadog_intake_config().image, "intake:custom");
-            assert_eq!(case.millstone_config().image, "millstone:custom");
-            assert_eq!(
-                case.millstone_config().config_path,
-                case_dir.join("nested/millstone.yaml")
-            );
-            for (side, target, command) in [
-                ("baseline", &case.config.baseline, ["sleep", "10"]),
-                ("comparison", &case.config.comparison, ["wait", "20"]),
-            ] {
-                let (prepared, mounts) = case.target_config(target).unwrap();
-                assert_eq!(prepared.image, format!("{side}:custom"));
-                assert_eq!(prepared.entrypoint, [side, "--init"]);
-                assert_eq!(prepared.command, command);
-                assert_eq!(prepared.container_os, airlock::driver::ContainerOs::Linux);
-                assert!(!prepared.host_cgroup_namespace);
-                let mut expected_env = vec![
-                    format!("{}_ONLY={side}", side.to_uppercase()),
-                    "DD_TAGS=a=1,b=2".to_string(),
-                ];
-                if variant == "first" {
-                    expected_env.push("FIRST_ONLY=true".to_string());
-                }
-                expected_env.push(format!("SHARED={variant}"));
-                assert_eq!(prepared.additional_env_vars, expected_env);
-                assert_eq!(
-                    mounts,
-                    vec![
-                        (
-                            case_dir.join(format!("nested/{side}.yaml")),
-                            PathBuf::from(format!("{container_root}/{side}.yaml"))
-                        ),
-                        (
-                            case_dir.join("nested/common.yaml"),
-                            PathBuf::from(format!("{container_root}/common.yaml"))
-                        ),
-                    ]
-                );
-                // DriverConfig is opaque; assert its prepared inputs above and exercise construction here.
-                case.target_driver_config(target).await.expect("valid target driver");
-                assert_eq!(
-                    target.files[0],
-                    format!("nested/{side}.yaml:{container_root}/{side}.yaml")
-                );
-            }
-        }
-        assert_eq!(base.baseline.image, "baseline:file");
-        assert_eq!(base.comparison.env["SHARED"], "base");
-        assert!(!base.baseline.env.contains_key("FIRST_ONLY"));
-    }
-
-    #[test]
-    fn ordinary_and_matrix_targets_preserve_yaml_scalar_spellings() {
-        // Flattening the matrix base buffers YAML scalars as Serde Content, rejecting numeric
-        // commands. Parse the original YAML directly so String fields also retain spellings like 1e3.
-        let dir = create_test_case_dir(
-            "scalars",
-            r#"
-type: correctness_matrix
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: base
-  command: [sleep, 10, 01, 1e3, true, 1.50]
-  entrypoint: [env, 20, 02, 2e3, false, 2.50]
-  env: {BOOL: "true", NUMBER: "8125", SCIENTIFIC: "1e3", LEADING_ZERO: "01"}
-comparison:
-  image: comp
-  command: [wait, 30, 03, 3e3, false, 3.50]
-  entrypoint: [exec, 40, 04, 4e3, true, 4.50]
-  env: {BOOL: "false", NUMBER: "8126", SCIENTIFIC: "2e3", LEADING_ZERO: "02"}
-variants: [{name: one, env: {QUOTED: "true"}}]
-"#,
-        );
-        let path = dir.path().join("scalars/config.yaml");
-        let ordinary: CorrectnessConfig = load_case(&path).unwrap();
-        let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let expanded = matrix.expand(&ordinary, "scalars");
-        let cases = discover_tests(
-            &[dir.path().to_path_buf()],
-            LINUX_RUNTIME,
-            &[],
-            Os::Linux,
-            &BTreeMap::new(),
-        )
-        .unwrap();
-        assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].name(), "scalars/one");
-        for config in [&ordinary, &expanded[0].1] {
-            assert_eq!(config.baseline.command, ["sleep", "10", "01", "1e3", "true", "1.50"]);
-            assert_eq!(config.baseline.entrypoint, ["env", "20", "02", "2e3", "false", "2.50"]);
-            assert_eq!(config.comparison.command, ["wait", "30", "03", "3e3", "false", "3.50"]);
-            assert_eq!(
-                config.comparison.entrypoint,
-                ["exec", "40", "04", "4e3", "true", "4.50"]
-            );
-            assert_eq!(config.baseline.env["BOOL"], "true");
-            assert_eq!(config.baseline.env["NUMBER"], "8125");
-            assert_eq!(config.baseline.env["SCIENTIFIC"], "1e3");
-            assert_eq!(config.baseline.env["LEADING_ZERO"], "01");
-            assert_eq!(config.comparison.env["BOOL"], "false");
-            assert_eq!(config.comparison.env["NUMBER"], "8126");
-            assert_eq!(config.comparison.env["SCIENTIFIC"], "2e3");
-            assert_eq!(config.comparison.env["LEADING_ZERO"], "02");
-        }
-        assert!(!ordinary.baseline.env.contains_key("QUOTED"));
-        assert_eq!(expanded[0].1.baseline.env["QUOTED"], "true");
-        assert_eq!(expanded[0].1.comparison.env["QUOTED"], "true");
-    }
-
-    #[test]
-    fn all_environment_maps_reject_non_string_yaml_values() {
+    fn integration_environment_rejects_non_string_yaml_values() {
         for value in [
             "true",
             "false",
@@ -1924,99 +1481,60 @@ variants: [{name: one, env: {QUOTED: "true"}}]
             assert!(error
                 .to_string()
                 .contains("environment variable 'INVALID' must be a YAML string"));
-            for (kind, section) in [
-                ("correctness", "baseline"),
-                ("correctness", "comparison"),
-                ("correctness_matrix", "baseline"),
-                ("correctness_matrix", "comparison"),
-                ("correctness_matrix", "variant"),
-            ] {
-                let env = format!("env: {{INVALID: {value}}}");
-                let baseline_env = if section == "baseline" { &env } else { "" };
-                let comparison_env = if section == "comparison" { &env } else { "" };
-                let variant_env = if section == "variant" { &env } else { "" };
-                let yaml = format!(
-                    r#"
-type: {kind}
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: base
-  {baseline_env}
-comparison:
-  image: comp
-  {comparison_env}
-variants:
-  - name: one
-    {variant_env}
-"#
-                );
-                let dir = create_test_case_dir("strict", &yaml);
-                let case_dir = dir.path().join("strict");
-                let overrides = ImageOverrides::new(&[]);
-                let settings = IntegrationSettings::new(LINUX_RUNTIME, &overrides);
-                let error = try_load_test(
-                    &case_dir.join("config.yaml"),
-                    &case_dir,
-                    LINUX_RUNTIME,
-                    &settings,
-                    &overrides,
-                )
-                .err()
-                .expect("non-string env value must fail");
-                let error = format!("{error:?}");
-                assert!(
-                    error.contains("environment variable 'INVALID' must be a YAML string"),
-                    "{kind} {section} {value}: {error}"
-                );
-            }
         }
     }
 
     #[test]
-    fn discovery_scopes_integration_images_to_runtime_and_leaves_correctness_eligible() {
+    fn discovery_scopes_integration_images_to_runtime() {
         let integration = create_test_case_dir(
             "portable",
             "type: integration\nname: portable\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
         );
-        let correctness = create_test_case_dir(
-            "correctness",
-            r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-baseline: {image: base}
-comparison: {image: comp}
-"#,
-        );
-        let dirs = [integration.path().to_path_buf(), correctness.path().to_path_buf()];
+        let dirs = [integration.path().to_path_buf()];
         for (runtime, target) in [
             (LINUX_RUNTIME, Some(DEFAULT_LINUX_TARGET_IMAGE)),
             (WINDOWS_RUNTIME, Some(DEFAULT_WINDOWS_TARGET_IMAGE)),
             (MAC_RUNTIME, None),
-            ("unknown", None),
         ] {
             let cases = discover_tests(&dirs, runtime, &[], Os::Linux, &BTreeMap::new()).unwrap();
-            assert_eq!(cases[0].name(), "correctness");
-            assert_eq!(cases[0].runtime(), "docker");
-            assert_eq!(cases.len(), if runtime == "unknown" { 1 } else { 2 });
-            if runtime != "unknown" {
-                assert_eq!(cases[1].runtime(), runtime);
-                let expected: BTreeMap<&str, String> = target
-                    .into_iter()
-                    .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
-                    .collect();
-                assert_eq!(cases[1].images(), expected);
-            }
+            assert_eq!(cases.len(), 1);
+            assert_eq!(cases[0].runtime(), runtime);
+            let expected: BTreeMap<&str, String> = target
+                .into_iter()
+                .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
+                .collect();
+            assert_eq!(cases[0].images(), expected);
         }
         let override_entry = ["container=target:override".parse().unwrap()];
-        for runtime in [MAC_RUNTIME, "unknown"] {
-            let error = discover_tests(&dirs, runtime, &override_entry, Os::Linux, &BTreeMap::new())
-                .err()
-                .expect("no eligible target image");
-            assert!(error
-                .to_string()
-                .contains("No test in this run uses a container named 'container'"));
+        let error = discover_tests(&dirs, MAC_RUNTIME, &override_entry, Os::Linux, &BTreeMap::new())
+            .err()
+            .expect("no eligible target image");
+        assert!(error
+            .to_string()
+            .contains("No test in this run uses a container named 'container'"));
+    }
+
+    #[test]
+    fn a_legacy_comparison_case_fails_discovery() {
+        for kind in ["correctness", "correctness_matrix"] {
+            let dir = create_test_case_dir(
+                "comparison",
+                &format!("type: {kind}\nruntime: docker\nanalysis_mode: metrics\nbaseline: {{image: base}}\ncomparison: {{image: comp}}\n"),
+            );
+            let error = discover_tests(
+                &[dir.path().to_path_buf()],
+                LINUX_RUNTIME,
+                &[],
+                Os::Linux,
+                &BTreeMap::new(),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("a {kind} case should fail discovery"));
+            let error = error.to_string();
+            assert!(
+                error.contains("legacy comparison cases no longer run; write it as a participant case"),
+                "{error}"
+            );
         }
     }
 
@@ -2042,117 +1560,6 @@ comparison: {image: comp}
             .expect("invalid declared runtime");
             assert!(error.to_string().contains(expected), "{error}");
         }
-    }
-
-    #[test]
-    fn correctness_cases_are_discovered_unless_disabled() {
-        for (kind, variants, enabled_count) in [
-            ("correctness", "", 1),
-            ("correctness_matrix", "variants: [{name: first}, {name: second}]", 2),
-        ] {
-            for (setting, disabled) in [("", false), ("disabled: false", false), ("disabled: true", true)] {
-                let dir = create_test_case_dir(
-                    "case",
-                    &format!(
-                        r#"
-type: {kind}
-{setting}
-runtime: docker
-analysis_mode: metrics
-baseline: {{image: base}}
-comparison: {{image: comp}}
-{variants}
-"#
-                    ),
-                );
-                let config: CorrectnessConfig = load_case(dir.path().join("case/config.yaml")).unwrap();
-                assert_eq!(config.disabled, disabled, "{kind} with {setting}");
-
-                let cases = discover_tests(
-                    &[dir.path().to_path_buf()],
-                    LINUX_RUNTIME,
-                    &[],
-                    Os::Linux,
-                    &BTreeMap::new(),
-                )
-                .unwrap();
-                assert_eq!(
-                    cases.len(),
-                    if disabled { 0 } else { enabled_count },
-                    "{kind} with {setting}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn discovery_applies_correctness_overrides_to_ordinary_and_matrix_cases() {
-        let entries = [
-            "baseline=base:override",
-            "comparison=comp:override",
-            "millstone=tools:override",
-            "datadog-intake=intake:override",
-        ]
-        .map(|entry| entry.parse().unwrap());
-        for (kind, variants, count) in [
-            ("correctness", "", 1),
-            ("correctness_matrix", "variants: [{name: first}, {name: second}]", 2),
-        ] {
-            let dir = create_test_case_dir(
-                "case",
-                &format!(
-                    r#"
-type: {kind}
-runtime: docker
-analysis_mode: metrics
-baseline: {{image: base}}
-comparison: {{image: comp}}
-{variants}
-"#
-                ),
-            );
-            let cases = discover_tests(
-                &[dir.path().to_path_buf()],
-                LINUX_RUNTIME,
-                &entries,
-                Os::Linux,
-                &BTreeMap::new(),
-            )
-            .unwrap();
-            assert_eq!(cases.len(), count);
-            for case in cases {
-                let images = case.images();
-                for entry in &entries {
-                    assert_eq!(images[entry.name.as_str()], entry.image);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn loader_records_the_canonical_file_without_resolving_declared_paths() {
-        let dir = tempfile::tempdir_in(".").unwrap();
-        let path = dir.path().join("config.yaml");
-        std::fs::write(
-            &path,
-            r#"
-runtime: docker
-analysis_mode: metrics
-loaded_from: ignored
-baseline: {image: base}
-comparison: {image: comp}
-"#,
-        )
-        .unwrap();
-        let config: CorrectnessConfig = load_case(&path).unwrap();
-        assert_eq!(config.loaded_from, path.canonicalize().unwrap());
-        assert_eq!(config.millstone.config_path, PathBuf::from("millstone.yaml"));
-        let case = CorrectnessTestCase::new("relative".to_string(), config);
-        assert_eq!(case.case_path(), dir.path().canonicalize().unwrap());
-        assert_eq!(
-            case.millstone_config().config_path,
-            case.case_path().join("millstone.yaml")
-        );
     }
 
     struct TestCaseDir {

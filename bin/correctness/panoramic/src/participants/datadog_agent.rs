@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::participant::{Os, SpecContext};
+use crate::core::participant::{Enclosure, Os, SpecContext};
 use crate::core::spec::{
     Address, Consumed, EndpointSpec, ExitChannel, FileSource, FileSpec, HostMount, OutputChannel, ParticipantSpec,
     ProcessSpec, Protocol, Wiring,
@@ -102,13 +102,11 @@ const SECONDARY_NAMES: &[(&str, &str)] = &[
     ("DD_PROCESS_CONFIG_CMD_PORT", "DD_PROCESS_AGENT_CMD_PORT"),
 ];
 
-/// The host view: the host's `/proc`, cgroup tree and Docker socket, mounted read-only, and the environment that points
-/// the software at them.
-const HOST_VIEW_MOUNTS: [(&str, &str); 3] = [
-    ("/proc", "/host/proc"),
-    ("/sys/fs/cgroup", "/host/sys/fs/cgroup"),
-    ("/var/run/docker.sock", "/var/run/docker.sock"),
-];
+/// The host view: the host's `/proc` and cgroup tree, mounted read-only, and the environment that points the software
+/// at them. A container also gets the Docker socket, which a kind node has none of: a pod gets the runtime's socket
+/// with the realization option `cri_socket`.
+const HOST_VIEW_MOUNTS: [(&str, &str); 2] = [("/proc", "/host/proc"), ("/sys/fs/cgroup", "/host/sys/fs/cgroup")];
+const DOCKER_SOCKET_MOUNT: (&str, &str) = ("/var/run/docker.sock", "/var/run/docker.sock");
 const HOST_VIEW_ENV: &[DefaultEnv] = &[
     env("DD_CONTAINER_PROC_ROOT", "container_proc_root", "/host/proc"),
     env(
@@ -216,9 +214,10 @@ pub(super) const DOGSTATSD_FORWARD: Consumed = Consumed {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct With {
-    /// Mounts the host's `/proc`, cgroup tree and Docker socket, and points the software at them.
+    /// Mounts the host's `/proc` and cgroup tree, and the Docker socket where there is one, and points the software at
+    /// them.
     #[serde(default)]
-    host_view: bool,
+    pub(super) host_view: bool,
 }
 
 /// The files of the s6 services under `/etc/services.d/<service>/`, for each of `services`.
@@ -293,9 +292,11 @@ pub(super) fn set_defaults(cx: &SpecContext<'_>, data_plane: bool, spec: &mut Pa
         .collect();
     if with.host_view {
         defaults.extend(HOST_VIEW_ENV);
+        let docker_socket = (cx.realization.enclosure != Enclosure::KubernetesPod).then_some(DOCKER_SOCKET_MOUNT);
         spec.mounts = Some(
             HOST_VIEW_MOUNTS
                 .iter()
+                .chain(&docker_socket)
                 .map(|(host, path)| HostMount {
                     host: host.to_string(),
                     path: path.to_string(),
@@ -310,12 +311,7 @@ pub(super) fn set_defaults(cx: &SpecContext<'_>, data_plane: bool, spec: &mut Pa
 /// Sets the default environment from `defaults`, withdrawing each entry the case sets itself, and records how a case
 /// wires each endpoint a withdrawn entry wired.
 fn withdraw_defaults(cx: &SpecContext<'_>, defaults: &[&DefaultEnv], spec: &mut ParticipantSpec) -> Result<(), String> {
-    // The file is parsed as the case wrote it, so a reference in it sits inside a quoted scalar.
-    let file: Value = match cx.file_text(DATADOG_YAML)? {
-        Some(text) => saluki_config::yaml::from_str(text)
-            .map_err(|e| format!("{} does not parse as YAML: {}", DATADOG_YAML, e))?,
-        None => Value::Null,
-    };
+    let file = case_datadog_yaml(cx)?;
     for entry in defaults {
         let value = Template::parse(entry.value)?;
         let mut env_names = std::iter::once(format!("ADP_{}", entry.key)).chain(
@@ -354,6 +350,28 @@ fn withdraw_defaults(cx: &SpecContext<'_>, defaults: &[&DefaultEnv], spec: &mut 
         }
     }
     Ok(())
+}
+
+/// The case's `datadog.yaml`, or null if it supplies none. The file is parsed as the case wrote it, so a reference in
+/// it sits inside a quoted scalar.
+fn case_datadog_yaml(cx: &SpecContext<'_>) -> Result<Value, String> {
+    match cx.file_text(DATADOG_YAML)? {
+        Some(text) => {
+            saluki_config::yaml::from_str(text).map_err(|e| format!("{} does not parse as YAML: {}", DATADOG_YAML, e))
+        }
+        None => Ok(Value::Null),
+    }
+}
+
+/// Whether the case sets a setting: its `env` holds `env_key` or the `ADP_` form of it, or its `datadog.yaml` sets
+/// `file_key` as [`sets`] reads it.
+pub(super) fn case_sets(cx: &SpecContext<'_>, env_key: &str, file_key: &str) -> Result<bool, String> {
+    let in_env = cx.case.env.contains_key(env_key) || cx.case.env.contains_key(&format!("ADP_{}", env_key));
+    if in_env {
+        return Ok(true);
+    }
+    let path: Vec<&str> = file_key.split('.').collect();
+    Ok(sets(&case_datadog_yaml(cx)?, &path))
 }
 
 /// Whether the YAML mapping `node` sets the setting at `path`, read as the Agent and ADP read `datadog.yaml`: each key

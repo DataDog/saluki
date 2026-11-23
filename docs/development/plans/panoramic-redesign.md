@@ -186,7 +186,7 @@ without running anything.
 A case or a participant type names each image and host program by reference, and a run can replace
 any of them, which is how CI points cases at the images a pipeline built. Before any case starts,
 panoramic checks that each one exists and pulls an image the Docker daemon lacks. A selected case
-whose realization the host cannot provide, such as pods without a kind cluster (Kubernetes in
+whose realization the host cannot provide, such as pods without `kind` (Kubernetes in
 Docker), is a harness error that names the case, and the run stops with exit code 2 before any case
 starts.
 
@@ -275,8 +275,9 @@ realization: {enclosure: kubernetes-pod, options: {host_pid: true, cri_socket: t
 # enclosures: linux-container, windows-container, kubernetes-pod, host-process-group
 # options: host_pid and host_cgroup_namespace on a Linux container; host_pid and cri_socket on a pod
 
-with: {host_view: true}       # agent-adp, agent: mount the host's /proc, cgroup tree and container
-                              # runtime socket, and point the Agent at them. This is the host view.
+with: {host_view: true}       # agent-adp, agent: mount the host's /proc and cgroup tree, and point the
+                              # Agent at them. This is the host view. A container also gets the Docker
+                              # socket. A pod gets the container runtime's socket from the cri_socket option.
 with: {own_ip: {env: [DD_BIND_HOST], hosts: [foo.local]}}
                               # agent-adp: set these variables to the container's address on the case's network, and
                               # map these host names to it, before the software starts
@@ -670,7 +671,7 @@ to every use. A step field may reference any participant's endpoint.
 | A socket path in `endpoints` | at plan; it may refer only to `self.dir`, because the address is built from it |
 | `command`, `args`, `programs`, `env`, a pattern in `ready` | when the participant is created |
 | A template file in a container or as host processes | when the participant is created |
-| A template file in a pod | when the pod is created, or after it starts if the file holds a value that exists only then |
+| A template file in a pod | when the pod is created, or after it starts if the file holds a value of the pod itself that exists only then |
 | `commands`, and the template fields of a step | when the step runs |
 | `image`, a program's `path`, a `files` key, `with`, `mounts`, `collect`, `processes` | never hold references |
 
@@ -681,15 +682,19 @@ fixed. Anything else is a plan error. Three consequences:
   at create and the address exists after start. Where software needs it, the participant type
   provides it from inside the container.
 - A pod's template file that holds an after-start value is written by the pod backend once the
-  values exist, and the pod's command waits for it. Only such a pod waits.
+  values exist, and the pod's command waits for it. Only such a pod waits, and it must set
+  `command`, which runs behind the wait. Only the pod's own values (`self.ip`, `self.container_id`
+  and `self.pod_uid`) are accepted in such a file. An after-start value anywhere else, or of another
+  participant, is a plan error.
 - A value substituted into a `regex: true` pattern is escaped, so a path or an address matches
   itself.
 
 **References decide order.** A participant is created after every participant whose `container_id`
 it references in a place fixed at create. A participant starts after every participant it connects
-to, once the endpoint's evidence holds. The two orders are separate on purpose:
-`liveness-container-tags` needs a helper created after the subject and started before it. A cycle in
-either is a plan error that names the chain.
+to, once the endpoint's evidence holds. The two orders are separate on purpose: a helper that
+reads the subject's `container_id` must be created after the subject and started before it. No case
+in the tree needs that yet, since `liveness-container-tags` runs its script as the subject's
+command. A cycle in either is a plan error that names the chain.
 
 Core has one function that visits every piece of text in a spec that may hold a reference, with the
 place it is in, and one resolver. Resolution runs with the same code at plan compile, when a
@@ -998,10 +1003,12 @@ runner. The way depends on what is done as well as on the protocol and the serve
 
 Two limits are plan errors: a send to a pod, and a request through the courier to an endpoint with
 `tls`. For `agent-adp`'s `otlp_http`, the participant type sets `tls` when the case sets the
-receiver's certificate and key. Until a case needs them, two more are plan errors: a request to a
-`grpc` endpoint, because the only request is an HTTP `GET`, and a request to an endpoint with `tls`,
-which `linuxrest` builds for `otlp-tls`. A send to an `http` or `grpc` endpoint writes its bytes over
-TCP.
+receiver's certificate file, in its environment, the `ADP_` form of that name or `datadog.yaml`. It
+does not consult the key file. A request to an endpoint with `tls` is built for a published or
+forwarded port: the runner's client makes it over HTTPS and checks the server's certificate unless
+the step sets `insecure_skip_verify`. Until a case needs it, one more is a plan error: a request to
+a `grpc` endpoint, because the only request is an HTTP `GET`. A send to an `http` or `grpc` endpoint
+writes its bytes over TCP.
 
 **Runner-host ports.** Every http and grpc endpoint of a Linux container is published on the
 runner's loopback address. Docker chooses each published port and the harness reads it back after
@@ -1225,15 +1232,15 @@ realizations, because one container backend covers Linux and Windows containers.
 
 |  | Linux container | Windows container | Kubernetes pod | Host process group |
 | --- | --- | --- | --- | --- |
-| Per case | one bridge network, one volume | one `nat` network | one namespace, one directory on the kind node | one state directory under `/tmp` |
+| Per case | one bridge network, one volume | one `nat` network | one namespace, one directory on the kind node | the state directory `/tmp/panoramic`, the same path for every case |
 | Launch | image, with the spec's command and args or the image's own | the same | one pod with one container, and a headless Service | each program started so that it and its children can be signalled together, in the participant's directory, with a cleared environment plus `PATH`, `HOME`, `TMPDIR` |
-| Files | one archive placed between create and start | the same, under `C:\` | written on the node before the pod exists, each mounted at its destination | written under the participant's directory |
-| `{{ self.dir }}` | `/airlock/<p>/shared` on the case's volume, mounted in every container of the case | `C:\airlock\<p>\shared`, inside the container only | `/airlock/<p>/shared` on the node directory every pod of the case mounts | `<state directory>/<p>/shared` |
-| Reserved paths | `/panoramic/courier`, `/airlock/<p>/exit`, `/airlock/<p>/log` | `C:\panoramic\courier.exe`, `C:\airlock\<p>\exit`, `C:\airlock\<p>\log` | as a Linux container | none |
+| Files | one archive placed between create and start | the same, under `C:\` | written on the node before the pod exists, each mounted at its destination, except a file that holds a value only the started pod has, which the pod's command copies into place from `/panoramic/late` | written under the participant's directory |
+| `{{ self.dir }}` | `/airlock/<p>/shared` on the case's volume, mounted in every container of the case | `C:\airlock\<p>\shared`, inside the container only | `/airlock/<p>/shared` on the node directory every pod of the case mounts | `/tmp/panoramic/<p>/shared` |
+| Reserved paths | `/panoramic/courier`, `/airlock/<p>/exit`, `/airlock/<p>/log` | `C:\panoramic\courier.exe`, `C:\airlock\<p>\exit`, `C:\airlock\<p>\log` | as a Linux container, and `/panoramic/late` | none |
 | Courier | copied in with the files | copied in with the files | mounted read-only from the node | the library, inside the harness |
 | Exit of a process | the container's exit, or a record file | the same | the container's terminated state, or a record file read through the node | the wait result of the child |
 | Output of a process | the container log, or a log file followed by the courier | the same | the container log, or a log file read through the node | the child's pipes |
-| Stop and remove | stop with a grace, force-remove; then containers by label, volume, network | the same, no volume | delete pod and Service; then the namespace and the node directory | SIGTERM each program and its children, SIGKILL after the grace; remove the state directory |
+| Stop and remove | stop with a grace, force-remove; then containers by label, volume, network | the same, no volume | delete pod and Service; then the namespace and the node directory | SIGTERM each program and its children, SIGKILL after 2 s; remove the state directory |
 
 The table leaves out five points.
 
@@ -1244,16 +1251,29 @@ The table leaves out five points.
 - **The courier follows log files in containers.** A supervised process writes its output to a file.
   Following it with `sh` and `tail` from the image would make both a hidden requirement on any image
   a case names, so Linux containers use the courier's `follow`, as Windows containers do. A pod's
-  log file is read through the node.
+  log file is followed by the courier on the node. A pod's files are read through the node, and
+  only under `/airlock`, so `millstone` collects nothing in a pod: its capture directory is outside
+  it.
 - **A pod is submitted in the start phase.** Create writes its files and its Service; start submits
   the pod and waits for it to run. A pod's command is wrapped in a shell loop that waits for late
   files only when the participant has a template file holding a value known after start. Among
-  today's cases that is `millstone` in the kind cases. Such a pod's image needs a shell, and that is a
-  stated requirement of the pod realization for a participant with a late-written template file.
-  Every other pod runs its image unwrapped and needs no shell.
+  today's cases that is `millstone` in the kind cases. The loop copies each such file from
+  `/panoramic/late`, a path pods reserve, into place, because a mounted file must exist when the pod
+  is submitted. Such a pod's image needs a shell, and that is a stated requirement of the pod
+  realization for a participant with a late-written template file. Every other pod runs its image
+  unwrapped and needs no shell.
+- **The state directory is one fixed path.** `/tmp/panoramic` is the same for every case and every
+  runner host, so a socket path under it is short enough for macOS, which the system's temporary
+  directory is not. Preparing refuses a directory that exists, so it never removes the directory of
+  a run that is still using it. A run killed with SIGKILL leaves it behind, and the next run says so.
+  A host process group has no supervisor, so it has no exit or log directory, and its processes get
+  no `PANORAMIC_EXIT_DIR` or `PANORAMIC_LOG_DIR`.
 - **Host-process cases run one at a time.** The scheduler holds one extra permit that a case takes
-  when its layout has a host process group. Two invocations on one host can still collide, which
-  stays a host rule.
+  when its layout has a host process group. A legacy case on the `mac` runtime takes it too, so the
+  two paths never overlap in one job. Two invocations on one host can still collide, which stays a
+  host rule.
+- **The environment is cleared.** A host program gets `PATH`, `HOME` and `TMPDIR` of the runner when
+  it has them, then the participant's `env`, then the program's.
 - **Not built:** pods with more than one container, and routes between different realizations.
 
 ### Observation and results
@@ -1276,13 +1296,21 @@ Every process a participant declares has one exit channel and one output channel
   can grow. A line counts once its newline is written. The first line is final, so a restart never
   returns a process to running. A case can declare supervised processes of its own, so this format
   is a contract and the user guide documents it.
+- **Per-process exits.** The realization may report the exit of each process apart from the
+  participant's (`Realized::reported_exit`), and `Handle::exit` asks it first. A host process group
+  does, for each program. Its own exit is "every program has exited", with the first program's code,
+  and is read only for messages. Containers and pods report one exit, the participant's.
 - **Signals.** A container reports death by signal as code 128 + n, while a record and a waited
-  child carry the signal separately. `exits_with` asserts a code, and no case asserts on death by
+  child carry the signal separately. A host program killed by signal n is code 256 with the signal,
+  as a record reports it. `exits_with` asserts a code, and no case asserts on death by
   signal today. Matching a signal the same way on every realization is added with the first case
   that needs it.
 - **Output.** Output is written under `<log dir>/<participant>/` as it arrives, and each line keeps
   the name of its process. A participant whose processes are all supervised also gets its container
-  log, which holds what the supervisor writes, as `_container.log`, a name no process log takes.
+  log, which holds what the supervisor writes, as `_container.log`, a name no process log takes. It
+  is observed under the name `_container`, which no process can take, so `log_contains` and
+  `log_not_contains` with no `process` search it along with every process. A step that names a
+  process does not.
 - **Reports.** `run.json` and `result.json` keep today's shape and gain fields: the subject OS, the
   skipped outcome with its reason, each participant's realization, per-process exits and output
   paths, reclaim entries and collected files. Exit codes are 0 passed, 1 failed, 2 harness error,
@@ -1370,9 +1398,14 @@ endpoints it uses exist, which the plan checks.
 | Operation | Offered by | Uses | Called by |
 | --- | --- | --- | --- |
 | `dump` | `datadog-intake` | a request to `api` | `compare`, `intake_has_metric` |
-| `config_dump` | `agent-adp` | command `adp` | `config_key_equals` |
+| `config_dump` | `agent-adp` | command `adp` | `config_key_equals`, with `{view: source \| runtime}` |
 | `config_set` | `agent-adp` | command `agent` | `config_set` |
 | `dogstatsd_capture`, `dogstatsd_replay`, `dogstatsd_stats` | `agent-adp` | command `adp` | `dogstatsd_replay` |
+
+`config_dump` runs `agent-data-plane config --json`, with `--runtime` for the runtime view, and parses
+the output as JSON. It does not use the secure API, which stays a literal default of `agent-adp`
+and not an endpoint. When the command fails it reports only the exit code, because the
+configuration holds the API key. `agent-adp` names the command `adp` and, for now, no other.
 
 The rule for choosing: a plain command line needs no Rust, so it is a `commands` entry run with
 `exec`. An operation exists where the answer must be decoded or the arguments are the software's
@@ -1401,11 +1434,16 @@ exits 0 and, if `output_contains` is set, its output holds that text.
 `command` is a list, or the name of one of the participant's `commands`. `args` is appended. `env`
 is added for this command. All three may hold references.
 
+As built, `exec` takes `on`, `command` as a non-empty list, `env` and `timeout`. Naming a command,
+`args` and `output_contains` arrive with the first cases that need them, which replace the legacy
+CLI actions. A command that outlives `timeout` fails the step, as `target_exec` did, rather than
+making it `errored`. On failure the step quotes the last 4 KiB of the command's output.
+
 **The steps.** Every step may carry an `os` overlay.
 
 | Step | Purpose | Fields | Needs |
 | --- | --- | --- | --- |
-| `exec` | action | `on`, `command`, `args`, `env`, `output_contains`, `timeout` | the participant; the command, when named |
+| `exec` | action | `on`, `command`, `env`, `timeout`; later `args` and `output_contains` | the participant; the command, when named |
 | `exits_with` | assertion | `on`, `process`, `code`, `timeout` | the process |
 | `process_stable_for` | assertion | `on`, `process` (optional), `duration` | the participant or the process |
 | `log_contains` | assertion | `on`, `process` (optional), `pattern`, `regex`, `timeout` | the participant or the process |
@@ -1413,18 +1451,21 @@ is added for this command. All three may hold references.
 | `file_contains` | assertion | `on`, `path`, `pattern`, `timeout` | the participant |
 | `port_listening` | assertion | `on`, `endpoint`, `timeout` | the endpoint, to probe |
 | `send` | action | `on`, `endpoint`, `payload`, `repeat`, `timeout` | the endpoint, to send |
-| `http_check` | assertion | `on`, `endpoint`, `path`, `status: {equal \| not_equal}`, `body: {equal}` (optional), `insecure_skip_verify` (optional, default false), `timeout` | the endpoint, to request |
+| `http_check` | assertion | `on`, `endpoint`, `path`, `status: {equal \| not_equal}`, `body: {equal \| contains}` (optional), `insecure_skip_verify` (optional, default false), `timeout` | the endpoint, to request |
 | `wait` | action | `duration` | nothing |
-| `config_key_equals` | assertion | `on`, `key`, `value`, `view`, `timeout` | operation `config_dump` |
+| `config_key_equals` | assertion | `on`, `key`, `value`, `view: source \| runtime` (required), `timeout` | operation `config_dump` |
 | `config_set` | action | `on`, `key`, `value`, `timeout` | operation `config_set` |
 | `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `capture_duration`, `stats_duration`, `expected_metrics`, `timeout` | three operations; the endpoint, to send |
 | `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
 | `compare` | assertion | `telemetry`, `comparison`, `baseline`, and the options of each telemetry | operation `dump` on both participants |
 
+`exits_with` matches the code only. A death by signal is code 256, so it fails any other `code`, and
+the message names the signal.
+
 `timeout` is required wherever it is listed and has no default. `compare` has none: its budget is
 what remains of the case's timeout. Where `process` is optional, leaving
 it out means every process of the participant. `http_check` passes when the status matches and, if
-`body` is set, the body equals that text exactly. References are allowed in `exec`'s `command`,
+`body` is set, the body equals or contains that text. References are allowed in `exec`'s `command`,
 `args` and `env`, in `file_contains`'s `path`, and in the `pattern` of `log_contains` and
 `log_not_contains`. This table and the legacy step each one replaces are the contract for each
 field.
@@ -1463,10 +1504,14 @@ covers it; the courier binary is built by `make build-courier`.
    once, outside any case's timeout. An image that cannot be pulled is a harness error that names
    the image and the cases that use it.
 3. Every host program exists and can be executed, and the courier binary for each participant OS in
-   use exists.
-4. For pod cases, the kind cluster exists and holds the images. Images are loaded with
-   `kind load docker-image`, which needs a single-platform image. The host requirement for pod cases
-   is a single-node kind cluster.
+   use exists. A program written `./x` is the participant's own file, so it is found when the
+   participant is created. A bare name is found on the runner's `PATH`, and any other path is
+   relative to the directory panoramic runs in.
+4. For pod cases, the kind cluster exists and holds the images. The harness creates a missing
+   cluster, as the legacy runner does, so `kind` on the `PATH` is the host requirement, and the
+   cluster must have a single node. Setup blocks the run here, outside every case's timeout, where
+   the legacy runner set the cluster up in the background. Images are loaded with
+   `kind load docker-image`, which needs a single-platform image.
 
 Pulling a missing image keeps "run a new container" a one-line change in a case, in CI as well as
 locally. It is also what the harness does today, and the comparison jobs depend on it.
@@ -1483,7 +1528,7 @@ The cases are the main test. A test of the harness alone covers what a passing c
 | Cleanup, containers | A failed start and a cancelled case leave no container, network or volume | Ignored tests beside the container backend and in `airlock` | By hand, `make test-container-daemon` |
 | Cleanup, host processes | The same, for a process group and its directory | Unit tests beside the backend | Unit test jobs on Linux and macOS |
 | Cleanup, Windows containers | The same | Ignored tests | By hand, on a Windows host with Docker |
-| Cleanup, pods | A failed start leaves no namespace or node directory | One ignored test | By hand, `make test-container-daemon` |
+| Cleanup, pods | A failed start leaves no namespace or node directory | One ignored test | By hand, `make test-kind` |
 | Real cases compile | Every case compiles for every OS it declares | One test over every case directory | Unit test jobs |
 | The boundary | `core` names neither `participants` nor `steps`, and those two do not name each other | One rule in `test/architecture` | Unit test jobs |
 
@@ -1500,7 +1545,7 @@ The PRs add about 6k lines of harness tests, beside the tests on `main` that sta
 
 ## Proposed PR Plan
 
-The work lands as 16 PRs in six stages. The first two are independent and touch nothing a case uses.
+The work lands as 17 PRs in six stages, `hostproc` being two of them. The first two are independent and touch nothing a case uses.
 The next six are one stack that ends with real cases running on the new path, among them the intake
 cases, which exercise harness-owned addresses end to end. After that stack, every PR is justified by
 the cases it turns over.
@@ -1592,14 +1637,16 @@ apart. The last column names what the migration rule sends to each PR.
 | 9 | `compare` | compare, agent and millstone; first DogStatsD cases | 8 | 1.0k / 0.3k, and moves | DogStatsD comparison cases that send metrics over a datagram socket |
 | 10 | `cmprest` | Migrate the remaining comparison cases | 9 | 0.9k / 0.25k | The other DogStatsD comparison cases, OTLP metrics, traces and logs; disabled cases with their family |
 | 11 | `pod` | Pod backend; migrate the origin detection matrix | 9 | 1.6k / 0.3k | Cases that run in pods: the origin detection matrix |
-| 12 | `linuxrest` | Probe, exec and config steps; finish the Linux-only cases | 8 | 1.6k / 0.6k | Linux-only cases that probe, request, exec or check configuration |
-| 13 | `hostproc` | Host process backend; migrate macOS and Unix cases | 12 | 1.1k / 0.5k | Cases on macOS, alone or with Linux |
-| 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13 | 1.0k / 0.4k | Cases on Windows, alone or with Linux; cases on all three OSes |
+| 12 | `linuxrest` | Probe, exec and config steps; finish the Linux-only cases | 8 | 0.7k / 0.1k | Linux-only cases that probe, request, exec or check configuration |
+| 13 | `hostproc` | Host process backend; migrate the macOS and Unix cases that need nothing more | 12 | 1.35k / 0.22k as built | Cases on macOS, alone or with Linux, that need no step beyond the backend's |
+| 13b | `replay` | `dogstatsd_replay`; migrate `dogstatsd-replay-unix` | 13 | 0.35k / 0.05k | Cases on macOS that replay DogStatsD |
+| 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13, 13b | 1.0k / 0.4k | Cases on Windows, alone or with Linux; cases on all three OSes |
 | 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above | deletions, docs | none |
 | 16 | `followups` | The os overlay, the intake on macOS and Windows, a case-supplied helper | 15 | 0.55k / 0.1k | Cases that differ only by OS merge; the intake cases gain macOS and Windows; one new case |
 
 The stages are foundations (1–2), the Linux slice (3–8), comparison cases (9–11), Linux-only cases
-(12), other platforms and the deletion (13–15), and after the migration (16). The comparison stage
+(12), other platforms and the deletion (13–15, 13b being the second half of 13), and after the migration
+(16). The comparison stage
 needs only the slice, and so does `linuxrest`, so two people can work them side by side. The Windows
 job is the slowest CI loop, so `windows` should start early as a draft.
 
@@ -1855,9 +1902,11 @@ Why this order:
   options, and files written after start for values a pod only has then. Migrates the cases that
   run in pods: the origin detection matrix, which becomes one directory per variant, sharing files.
   Job names do not change.
-- **Watch out:** once `cmprest` has merged, this PR migrates the last legacy comparison case, so it
-  removes `PANORAMIC_IMAGE_OVERRIDES` from the mixins and adds the check that a legacy file in
-  `test/correctness/cases` fails at load. If this PR merges first, `cmprest` does both.
+- **Watch out:** this PR stacks on `cmprest` and migrates the last legacy comparison case. That
+  PR leaves `PANORAMIC_IMAGE_OVERRIDES` in the mixins and adds no check, so this PR removes the
+  override and adds the check that a legacy comparison file, one whose `type` is `correctness` or
+  `correctness_matrix`, fails at load. The check keys on the `type`, not on the directory, because
+  every legacy comparison file lives in `test/correctness/cases`.
   - The comparison runner stays in the tree until `rmlegacy`, with no case to run. The check keeps a
     legacy comparison file that a teammate adds after this PR from running without its image inputs.
   - Every legacy kind case migrates here, so kind setup moves from the `Test` trait to plans in one
@@ -1865,10 +1914,12 @@ Why this order:
   - `kind load` needs a single-platform image. No symlinks: Windows checkouts break them.
   - The pod is submitted in the start phase, and the start gate applies only to a pod with a file
     written after start.
-  - In a pod the load generator's senders exit when they finish and never print the line the
-    container cases wait on. Wait on `millstone stopped.`, or bring `exits_with` forward from
-    `hostproc`.
+  - `compare` gave `millstone` `--completion-file`, so its senders stay alive after they finish and
+    print "Millstone finished sending". Pods wait on that line as containers do, and then on
+    `process_stable_for`.
   - The shared `millstone.yaml` has comments that contain `{{`, which a template file must reword.
+  - The variants share their files through a directory under `cases/` that has no `config.yaml`.
+    Discovery skips it, and so does the test that every real case compiles.
   - Adds the one pod cleanup test.
 
 ### Linux-only cases
@@ -1876,45 +1927,89 @@ Why this order:
 **12. `linuxrest`: probes, exec, configuration checks and case-supplied scripts**
 
 - **Builds:** what the remaining Linux-only cases need, in two parts.
-  - `port_listening`, `http_check`, `exec` of a command the case writes with `args` and `env`, and
-    `config_key_equals` with the operation it needs. Migrates the Linux-only cases that need them,
-    such as `adp-rc-core-disabled`, `otlp-tls`, `dogstatsd-top` and `dogstatsd-remote-commands`.
-  - What `liveness-container-tags` and `dogstatsd-forwarding` need, and the host cgroup namespace as
-    a Linux container option. In both cases the container runs a Python script the case supplies,
-    which then starts the Agent itself.
-- **Watch out:** the first part makes named changes, and the second part has a choice that decides
-  its size.
-  - The UDP probes in `dogstatsd-top` and `dogstatsd-remote-commands` become log lines, as every UDP
-    probe does in the PR that migrates its case.
-  - `otlp-tls` serves TLS on its endpoint. The cases here that set ADP's OTLP receivers to literal
-    ports today write references instead.
-  - There are two ways to port each script case. The first is as today: the script stays the
-    command of the `agent-adp` participant. It needs only that a case may replace a participant
-    type's command, with the guard that it restates its processes: the s6 records if the script
-    still starts s6, or the one container process if it does not. Coverage is the script's,
-    unchanged.
-  - The second is as a helper beside `agent-adp`, a participant with no participant type. That is
-    the first real case to run one, and it needs create order beside start order, a reference to
-    another participant's container ID, and an image that has Python. The tools image on `main` has
-    none.
-  - The scripts hold ports and socket paths as literals. Keep the addresses they expect, or pass
-    them in by reference.
-  - Build only what the chosen port uses. Neither port gets a participant type or a step of its own.
-    `dogstatsd-forwarding` loses a UDP probe.
+  - `port_listening`, `http_check` with TLS requests, `exec` of a command the case writes with
+    `env`, and `config_key_equals` with `agent-adp`'s `config_dump` and its command `adp`. Migrates
+    `adp-rc-core-disabled`, `adp-rc-no-products`, `otlp-tls`, `dogstatsd-top` and
+    `dogstatsd-remote-commands`.
+  - The host cgroup namespace as a Linux container option, and the two cases whose Python script
+    replaces the image's entrypoint and starts the Agent itself: `dogstatsd-forwarding` and
+    `liveness-container-tags`.
+- **What was taken:**
+  - Each script case is ported as today. The script is the `agent-adp` participant's `command`, and
+    the case restates `processes`: the s6 records and logs, because the script still starts s6.
+    The case needs the guard's `processes` and, for `liveness-container-tags`, the option.
+    Coverage is the script's, unchanged.
+  - The helper port is not built. A helper beside `agent-adp` needs create order beside start
+    order, a reference to another participant's `container_id` from a helper, and an image that has
+    Python, which the tools image lacks. No case in the tree needs them, so they wait for one.
+  - The scripts take harness-owned addresses from their environment: the two `exec` scripts read
+    `DOGSTATSD_PORT` from the step's `env`, and the forwarding script reads the `DD_*` variables the
+    participant already has. An address that is not an endpoint stays a literal: the secure API,
+    liveness's own fakes and the forwarding script's client socket.
+  - Each new step carries the contract of the legacy step it replaces and nothing more. `http_check`
+    takes the legacy step's matchers: `status` is `equal` or `not_equal`, and `body` is `equal` or `contains`.
+  - The UDP probes in `dogstatsd-top`, `dogstatsd-remote-commands` and `dogstatsd-forwarding`
+    become ADP's listener log line, as every UDP probe does in the PR that migrates its case.
+  - The OTLP receivers write references. `otlp-tls` serves TLS on `otlp_http`, which `agent-adp`
+    marks when the case sets the receiver's certificate file.
+- **Watch out:**
+  - A script case with no `processes` is a plan error from the supervision guard.
+  - With the script as the command, `_container.log` is not written. The script's output is the
+    process `script`'s log.
+  - The two sockets of `dogstatsd-forwarding` move from `/tmp` to the participant's shared
+    directory, because they are references now.
+  - A realization option is written in a case only when it is under test, as
+    `liveness-container-tags` does for the cgroup namespace. If CI shows that case needs the host
+    view or the host PID namespace as well, add them one at a time and name what was needed.
 
 ### Other platforms
 
 **13. `hostproc`: the host process backend**
 
 - **Builds:** the host process backend, `agent-adp` as two programs on macOS, host programs as
-  references that `--set` replaces, `exits_with` and `dogstatsd_replay`, and the rule that
-  host-process cases run one at a time. Migrates the cases that run on macOS, alone or with Linux.
+  references that `--set` replaces, `exits_with`, and the rule that host-process cases run one at a
+  time. Migrates the cases that run on macOS, alone or with Linux, and need nothing more:
+  `adp-logging-mac-ignores-core-agent-log-file`, `adp-logging-respects-data-plane-log-file` and the
+  three `dogstatsd-*listener*` cases. `dogstatsd_replay` and `dogstatsd-replay-unix` are the next PR,
+  `replay` (13b). The cases that run on all three OSes stay legacy, because a case file is legacy or
+  new for every OS it runs on. They migrate in `windows`, and the legacy macOS runner keeps running
+  them in the same job until then.
+- **What was taken:**
+  - The state directory is the one path `/tmp/panoramic`, for every case and runner host. `prepare`
+    refuses a directory that exists, and the macOS job's sweep removes it. A host process group has no
+    exit or log directory.
+  - A host participant's processes are its programs, observed through their pipes and exits. A
+    process with a record or an output file, or one that names no program, is a plan error, and so is a
+    program with no process, whose output nothing would read. A command's
+    `program` names one of the participant's programs, and only host processes have programs. A
+    program at `./x` must be a file the participant places with an execute bit.
+  - The realization reports each program's exit apart, behind `Handle::exit`. A host process group's
+    own exit is "every program has exited", with the first program's code. A program killed by
+    signal n is code 256 with the signal.
+  - Requests to host processes go from the runner to the endpoint's own port, so TLS requests work.
+    Probes and sends call the courier's library in the harness. A command and an `exec` of a host
+    participant run with the participant's environment and directory, and a signal death reads as
+    code 128 + n, as in a container.
+  - The process group primitive is a new `airlock::host`, beside the legacy `airlock::unix`, which
+    `rmlegacy` deletes. Stop is SIGTERM to the group and SIGKILL after 2 s.
+  - Host programs run with a cleared environment plus `PATH`, `HOME` and `TMPDIR` of the runner. The
+    legacy runner passed everything.
+  - `agent-adp` on macOS runs the Agent (`run -c <dir>`) and ADP (`-c <dir>/datadog.yaml run`) with
+    absolute paths. It places an empty `./datadog.yaml`, declares no `datadog.yaml` name, and has no
+    `consumes`. It rejects `host_view` and `ADP_DD_` keys, and has no OTLP rule, because the image's
+    init script does that. ADP does not wait for the Agent's IPC credentials.
+  - `agent` is not moved off its ports for host processes: no case runs it there yet.
+  - `exits_with` takes `{on, process, code, timeout}` and matches the code only.
+  - The legacy macOS cases take the host permit with the participant cases, through
+    `Test::runs_host_processes`.
+  - The logging cases write their log files under `{{ self.dir }}` on both OSes, not `/tmp`.
 - **Watch out:** addresses are fixed, so two host cases cannot overlap. The harness enforces it and
   does not rely on `-p 1`. Legacy waits for the Agent's token and certificate before it starts
   ADP. Here both programs start together and ADP's IPC client retries, which must
   be verified on the macOS runners. Those runners persist between jobs, so the job's sweep of stale
-  processes stays. Cleanup tests here are unit tests and must not bind the fixed ports.
-  `dogstatsd-skip-failed-listener` loses a UDP probe.
+  processes stays and gains `/tmp/panoramic`. Cleanup tests here are unit tests and must not bind the
+  fixed ports or use `/tmp/panoramic`. `dogstatsd-skip-failed-listener` loses a UDP probe.
+  `process_stable_for` watches ADP in these cases.
 
 **14. `windows`: Windows containers and the three-OS cases**
 
@@ -1927,7 +2022,7 @@ Why this order:
     that use endpoints and commands need `config_set` and `exec` of a command the participant type
     names, which replaces the legacy CLI actions.
 - **Watch out:** this job is the slowest CI loop. Start the first part early as a draft; it does not
-  need `hostproc`. The three-OS cases are their own commits and wait for `hostproc`.
+  need `hostproc`. The three-OS cases are their own commits and wait for `hostproc` and `replay`.
   - The cases shared with Linux bind to the container's own address, some through a custom
     hostname, and both mechanisms are needed on Linux too.
   - The CI image bakes in the legacy entrypoint script; a spec's own command must override it, and
@@ -1947,8 +2042,8 @@ Why this order:
 **15. `rmlegacy`: delete the legacy runners and rewrite the testing guide**
 
 - **Builds:** no new code.
-  - Deletes the comparison runner under `bin/correctness/panoramic/src/correctness/`, the
-    comparison schemas, the generator's legacy branch and the baseline mixin.
+  - Deletes the comparison runner under `bin/correctness/panoramic/src/correctness/` and the
+    comparison schemas. The baseline mixin and the generator's baseline branch go in `pod`.
   - Deletes the integration runners, the legacy schema, actions and assertions, `traffic.rs`, the
     routing, `--runtime` and the other legacy flags, `image_override.rs`, airlock's legacy behaviour
     and the temporary guard rule.
@@ -2020,6 +2115,9 @@ host-process subject with containerized helpers.
 - `panoramic`'s mounts directory, whose init script resolves the legacy dynamic variables, is not
   mounted into participant containers. A value known only at run time is a reference.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.
+- Host programs on macOS run with a cleared environment, and ADP no longer waits for the Agent's IPC
+  credentials. The second is unverified until the macOS jobs run.
+- A case's log files move from `/tmp` into the participant's directory, as `{{ self.dir }}`.
 - A load error exits 2 with no `run.json`, and a run where every case is skipped exits 3.
 - The merged traffic manifest goes. A participant case writes none: its collected files, with their
   retention, are listed in `result.json`.

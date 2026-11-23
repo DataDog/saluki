@@ -30,6 +30,12 @@ Unit tests that create containers are ignored by default, so `make test` doesn't
 containers. Their image comes from the internal registry. CI doesn't run them, so run them by hand when you change the
 container mechanisms, the container backend or the lifecycle.
 
+### Tests that need a kind cluster
+
+Unit tests that create pods are ignored too. Run them with `make test-kind`, which needs `kind` and `kubectl` on your
+`PATH` and a single-node kind cluster named `saluki-correctness`, or the one `KIND_CLUSTER_NAME` names, and builds the
+courier the tests place on its node. CI doesn't run them, so run them by hand when you change the pod backend.
+
 ### Architecture tests
 
 The `architecture-tests` crate in `test/architecture/` protects architectural invariants as part of the unit-test
@@ -164,12 +170,14 @@ honored on any of them is an error on any host. The rejected case files under
 
 `panoramic list` and `panoramic run` read participant cases beside legacy ones, telling them apart by the top-level
 `type:` key. A run selects one subject OS with `--subject-os`, or `--runtime`, which names the same OS (`mac` is
-`macos`); both default to the host's, and a `--runtime` that names no OS is an error. A participant case that doesn't declare that OS is reported as `skipped`, with
-its reason. `--set <name>=<image>`, or `PANORAMIC_SET` as a comma-separated list, runs `<image>` wherever a case
-names `<name>`; `plan` takes it too and shows both. Before the first case, the run checks once that the selected
-participant cases can run: a Docker daemon for their Linux containers, every image they run, which it pulls if the
-daemon lacks it, and the courier, which `make build-courier` builds. A participant case that doesn't pass writes its
-plan as `plan.json` in its log directory.
+`macos`); both default to the host's, and a `--runtime` that names no OS is an error. A participant case that doesn't
+declare that OS is reported as `skipped`, with its reason. `--set <name>=<reference>`, or `PANORAMIC_SET` as a
+comma-separated list, runs `<reference>` wherever a case names the image or host program `<name>`; `plan` takes it too
+and shows both. Before the first case, the run checks once that the selected participant cases can run: a Docker daemon
+for their Linux containers, every image they run, which it pulls if the daemon lacks it, and the courier, which `make
+build-courier` builds. For host processes, it checks that the runner host runs the OS the case declares and finds each
+program that is not the participant's own file. A participant case that doesn't pass writes its plan as `plan.json` in
+its log directory.
 
 The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
 
