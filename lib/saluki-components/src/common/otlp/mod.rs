@@ -3,12 +3,14 @@
 //! Provides shared server setup code for both OTLP receiver (proxy mode) and OTLP source (translation mode).
 
 pub mod attributes;
+pub mod client_spans;
 pub mod origin;
 pub mod receiver;
 pub mod semantics;
 pub mod source;
 pub mod traces;
 pub mod util;
+pub mod value;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -47,6 +49,8 @@ use tonic::{Request as TonicRequest, Response, Status};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::error;
 
+use self::client_spans::ClientSpanCounters;
+
 pub const OTLP_METRICS_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.metrics.v1.MetricsService/Export");
 pub const OTLP_LOGS_GRPC_SERVICE_PATH: MetaString =
@@ -66,7 +70,7 @@ pub struct Metrics {
     logs_received: Counter,
     logs_dropped_render_failure: Counter,
     bytes_received: Counter,
-    spans_received: Counter,
+    spans_received: ClientSpanCounters,
     traces_dropped_span_id_zero: Counter,
     spans_dropped_span_id_zero: Counter,
     metrics_errors_decode: Counter,
@@ -94,7 +98,8 @@ impl Metrics {
         &self.logs_dropped_render_failure
     }
 
-    pub fn spans_received(&self) -> &Counter {
+    /// Counters for spans received, resolved by the sending client's SDK language and version.
+    pub fn spans_received(&self) -> &ClientSpanCounters {
         &self.spans_received
     }
 
@@ -160,7 +165,7 @@ impl Metrics {
             logs_received: Counter::noop(),
             logs_dropped_render_failure: Counter::noop(),
             bytes_received: Counter::noop(),
-            spans_received: Counter::noop(),
+            spans_received: ClientSpanCounters::new(MetricsBuilder::default()),
             traces_dropped_span_id_zero: Counter::noop(),
             spans_dropped_span_id_zero: Counter::noop(),
             metrics_errors_decode: Counter::noop(),
@@ -194,8 +199,7 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
             ],
         ),
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
-        spans_received: builder
-            .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
+        spans_received: ClientSpanCounters::new(builder.clone()),
         traces_dropped_span_id_zero: builder.register_counter_with_tags(
             "component_events_dropped_total",
             ["intentional:true", "drop_reason:span_id_zero"],

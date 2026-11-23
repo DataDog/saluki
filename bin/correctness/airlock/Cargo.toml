@@ -28,7 +28,7 @@ tokio = { workspace = true, features = [
   "sync",
   "time",
 ] }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
 tracing = { workspace = true }
 
 # Unix process-group signaling via killpg.

@@ -36,8 +36,14 @@
     --push
     .
 
+# Shared settings for the SMP baseline and comparison image builds. They build on the same prepped build image as the
+# shipped artifacts, with the same shared compiler cache (see `.build-adp-definition`). `.build-amd64-variables` gives
+# DinD the larger loopback volume: with the default 20G volume, the final LTO link fails with "No space left on device".
+.smp-adp-image-build:
+  extends: [.build-common-variables, .build-amd64-variables, .buildcache-variables]
+
 build-adp-baseline-image:
-  extends: .build-common-variables
+  extends: .smp-adp-image-build
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
@@ -72,12 +78,18 @@ build-adp-baseline-image:
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx create --name adp-builder --driver docker-container --use
+    # Temporary credentials (from the runner's own IAM role, not the SMP profile) for the shared build cache.
+    - ci/tooling/get-temporary-aws-credentials.sh
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
       --build-arg BUILD_PROFILE=${SMP_BUILD_PROFILE}
-      --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
-      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
+      --build-arg BUILD_TARGET=${BUILD_TARGET}
+      --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
+      --build-arg BUILD_BASE=build-prepped
+      --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
+      --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
+      --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
@@ -102,7 +114,7 @@ build-adp-baseline-image:
       dotenv: smp-vars.env
 
 build-adp-comparison-image:
-  extends: .build-common-variables
+  extends: .smp-adp-image-build
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
@@ -133,12 +145,18 @@ build-adp-comparison-image:
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx create --name adp-builder --driver docker-container --use
+    # Temporary credentials (from the runner's own IAM role, not the SMP profile) for the shared build cache.
+    - ci/tooling/get-temporary-aws-credentials.sh
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
       --build-arg BUILD_PROFILE=${SMP_BUILD_PROFILE}
-      --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
-      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
+      --build-arg BUILD_TARGET=${BUILD_TARGET}
+      --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
+      --build-arg BUILD_BASE=build-prepped
+      --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
+      --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
+      --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
