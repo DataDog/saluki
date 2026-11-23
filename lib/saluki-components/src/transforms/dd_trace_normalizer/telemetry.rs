@@ -230,8 +230,8 @@ impl NormalizerWindow {
         self.counts.entry(tags).or_default().merge(counts);
     }
 
-    /// Reports every non-zero count as a rate over the window, as DogStatsD flushes the reference's counts, then resets
-    /// the window.
+    /// Reports every non-zero count as a rate over the window, as DogStatsD flushes the trace-agent's counts, then
+    /// resets the window.
     pub(super) fn take_window_events(&mut self) -> Vec<Event> {
         let interval = telemetry_window_interval(self.started);
         self.started = Instant::now();

@@ -157,7 +157,7 @@ impl DatadogTraceNormalizer {
             return Err(DropReason::TraceIdZero);
         }
 
-        // As the reference's `ts.Lang`, the `Datadog-Meta-Lang` header names the fallback service, not the body.
+        // As in the trace-agent, the `Datadog-Meta-Lang` header names the fallback service, not the body.
         let lang = trace.payload.receiver().lang.clone();
         self.seen_span_ids.clear();
         for span in trace.spans_mut() {

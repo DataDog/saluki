@@ -254,13 +254,13 @@ impl TraceIntake {
         rate_by_service(StatusCode::OK)
     }
 
-    /// Counts a payload that couldn't be read or decoded, as `handleTracesV1` does.
+    /// Counts a payload that couldn't be read or decoded, as the trace-agent does.
     fn record_rejection(
         &self, version: EndpointVersion, headers: &HeaderMap, connection: Option<&ConnectInfo<ConnectionAddress>>,
         start: Instant, reason: DropReason,
     ) {
         self.telemetry.record_error(version.as_str(), reason);
-        // As `traceCount`, a missing or unparseable `X-Datadog-Trace-Count` counts no trace.
+        // As in the trace-agent, a missing or unparseable `X-Datadog-Trace-Count` counts no trace.
         let dropped = header_count(headers, &TRACE_COUNT_HEADER).unwrap_or(0);
         self.telemetry
             .record(header_tags(version, headers, connection), |stats| {
@@ -270,8 +270,7 @@ impl TraceIntake {
     }
 }
 
-/// Returns the receiver telemetry tags that come from the request alone, as the trace-agent's `tagStats` with no
-/// service.
+/// Returns the receiver telemetry tags that come from the request alone, as the trace-agent tags them, with no service.
 fn header_tags(
     version: EndpointVersion, headers: &HeaderMap, connection: Option<&ConnectInfo<ConnectionAddress>>,
 ) -> ReceiverTags {
@@ -288,7 +287,7 @@ fn header_tags(
     }
 }
 
-/// Returns the service of the payload's first span, truncated as the trace-agent's `tagStats` truncates it.
+/// Returns the service of the payload's first span, truncated as the trace-agent truncates it.
 fn first_service(traces: &[Trace]) -> MetaString {
     let service = first_span(traces).map(|span| span.service()).unwrap_or_default();
     shared_meta(truncate_utf8_str(service, MAX_SERVICE_LEN))
@@ -302,7 +301,7 @@ fn shared_meta(value: &str) -> MetaString {
     MetaString::try_inline(value).unwrap_or_else(|| MetaString::from(Arc::<str>::from(value)))
 }
 
-/// Returns a header's value parsed as a count, as `strconv.ParseInt`, if it parses.
+/// Returns a header's value parsed as a signed 64-bit count, if it parses.
 fn header_count(headers: &HeaderMap, name: &HeaderName) -> Option<i64> {
     header_str(headers, name).and_then(|value| value.parse::<i64>().ok())
 }
