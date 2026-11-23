@@ -37,4 +37,21 @@ procedure:
   # Both sides flush what they aggregated. Waiting slightly longer than an aggregation bucket, with the load running,
   # lets the Agent and ADP resolve the senders while they flush.
   - {step: process_stable_for, on: load, duration: 32s}
+  - step: exec
+    on: adp
+    command:
+      - /opt/datadog-agent/embedded/bin/python3
+      - -c
+      - |
+        import urllib.request
+
+        with urllib.request.urlopen("http://127.0.0.1:{{ adp.endpoints.api.port }}/metrics", timeout=5) as response:
+            lines = response.read().decode().splitlines()
+        received = [line for line in lines if "component_events_received_total" in line
+                    and 'component_id="dsd_in"' in line
+                    and 'message_type="metrics"' in line
+                    and 'listener_type="unixgram"' in line]
+        assert any(float(line.rsplit(maxsplit=1)[1]) > 0 for line in received), received
+        print("ADP received DogStatsD metrics over the UDS:", received)
+    timeout: 10s
   - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
