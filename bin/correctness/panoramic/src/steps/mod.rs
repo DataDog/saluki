@@ -15,6 +15,7 @@ pub(crate) mod analysis;
 mod compare;
 mod config_key_equals;
 mod exec;
+mod exits_with;
 mod file_contains;
 mod http_check;
 pub(crate) mod intake;
@@ -39,6 +40,7 @@ pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(compare::CompareFactory));
     registry.add_step(Box::new(config_key_equals::ConfigKeyEqualsFactory));
     registry.add_step(Box::new(exec::ExecFactory));
+    registry.add_step(Box::new(exits_with::ExitsWithFactory));
     registry.add_step(Box::new(file_contains::FileContainsFactory));
     registry.add_step(Box::new(http_check::HttpCheckFactory));
     registry.add_step(Box::new(intake_has_metric::IntakeHasMetricFactory));

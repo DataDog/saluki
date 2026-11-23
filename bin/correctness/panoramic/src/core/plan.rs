@@ -34,7 +34,7 @@ use super::reference::Later;
 use super::registry::Registry;
 use super::spec::{
     is_file_name, CollectFile, CommandSpec, Consumed, Contents, Evidence, ExitChannel, FileSource, HostMount,
-    OutputChannel, ParticipantSpec, ProcessSpec, Program, DEFAULT_PROCESS,
+    OutputChannel, ParticipantSpec, ProcessSpec, DEFAULT_PROCESS,
 };
 use super::step::{EndpointOperation, Need, Operation, ProcedureNode, Step, StepFields, StepPurpose, Uses};
 use super::template::Template;
@@ -97,7 +97,16 @@ pub(crate) enum Launch {
         args: Option<Vec<Template>>,
     },
     /// Host programs, in start order.
-    Programs(Vec<Program>),
+    Programs(Vec<PlannedProgram>),
+}
+
+/// A host program of the plan. A run may replace its path, as it may an image.
+#[derive(Debug, Serialize)]
+pub(crate) struct PlannedProgram {
+    pub(crate) name: String,
+    pub(crate) path: Replaceable,
+    pub(crate) args: Vec<Template>,
+    pub(crate) env: BTreeMap<String, Template>,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,7 +122,8 @@ pub(crate) struct PlannedFile {
     pub(crate) contents: Contents,
 }
 
-/// A reference to an image as written, and the reference the run uses in its place when it replaces it.
+/// A reference to an image or a host program as written, and the reference the run uses in its place when it replaces
+/// it.
 ///
 /// Serializes as the reference as written, or, when the run replaces it, as `{"written": ..., "replaced": ...}`.
 #[derive(Clone, Debug)]
@@ -901,7 +911,17 @@ impl Planner<'_, '_, '_> {
                     .push(format!("a {} needs 'programs', and nothing sets any", enclosure));
                 return None;
             }
-            Launch::Programs(programs)
+            Launch::Programs(
+                programs
+                    .into_iter()
+                    .map(|program| PlannedProgram {
+                        name: program.name,
+                        path: Replaceable::new(program.path, self.set),
+                        args: program.args,
+                        env: program.env,
+                    })
+                    .collect(),
+            )
         };
 
         let program_names: Vec<&str> = match &launch {
@@ -968,6 +988,7 @@ impl Planner<'_, '_, '_> {
         }
         let files = self.place_files(files, &names, type_name);
         let processes = self.processes(processes, &program_names, &launch);
+        self.check_programs(&launch, &files, &commands);
         let mut by_name = BTreeMap::new();
         for &operation in operations {
             if by_name.insert(operation.name(), operation).is_some() {
@@ -1178,7 +1199,30 @@ impl Planner<'_, '_, '_> {
                 self.at.push(format!("two processes are named '{}'", process.name()));
             }
         }
-        if self.realization.enclosure.runs_an_image() {
+        if !self.realization.enclosure.runs_an_image() {
+            for process in &processes {
+                let observed =
+                    *process.exit() == ExitChannel::Container && *process.output() == OutputChannel::Container;
+                if !observed || !program_names.contains(&process.name()) {
+                    self.at.push(format!(
+                        "on host processes, process '{}' is a program's, observed through its pipes and its exit: \
+                         name one of the programs {} and set exit and output to container",
+                        process.name(),
+                        super::case::join(program_names)
+                    ));
+                }
+            }
+            // A program nobody reads from blocks once its pipes fill.
+            for program in program_names {
+                if !seen.contains(program) {
+                    self.at.push(format!(
+                        "on host processes, program '{}' has no process: its output is read through one, and unread \
+                         output can block the program",
+                        program
+                    ));
+                }
+            }
+        } else {
             let through: Vec<&str> = processes
                 .iter()
                 .filter(|process| {
@@ -1195,6 +1239,47 @@ impl Planner<'_, '_, '_> {
             }
         }
         processes
+    }
+
+    /// Checks that a command names a program only on host processes, and one the participant has, and that a program
+    /// at `./x` is a file the participant places with an execute bit.
+    fn check_programs(&mut self, launch: &Launch, files: &[PlannedFile], commands: &BTreeMap<String, CommandSpec>) {
+        let programs: &[PlannedProgram] = match launch {
+            Launch::Programs(programs) => programs,
+            Launch::Image { .. } => &[],
+        };
+        for (name, command) in commands {
+            let Some(program) = &command.program else {
+                continue;
+            };
+            if matches!(launch, Launch::Image { .. }) {
+                self.at.push(format!(
+                    "command '{}' runs program '{}', and only host processes have programs; this participant is a {}",
+                    name, program, self.realization.enclosure
+                ));
+            } else if !programs.iter().any(|candidate| candidate.name == *program) {
+                self.at.push(format!(
+                    "command '{}' runs program '{}', which the participant does not have",
+                    name, program
+                ));
+            }
+        }
+        for program in programs {
+            let path = &program.path.written;
+            if !path.starts_with("./") {
+                continue;
+            }
+            let problem = match files.iter().find(|file| file.destination == *path) {
+                None => "which the participant does not place; place it with mode \"0755\"",
+                // A Windows file has no mode.
+                Some(file) if file.mode.is_some_and(|mode| mode & 0o111 == 0) => {
+                    "which is not executable: give it mode \"0755\""
+                }
+                Some(_) => continue,
+            };
+            self.at
+                .push(format!("program '{}' runs '{}', {}", program.name, path, problem));
+        }
     }
 
     /// Normalizes a destination for the realization, or says why it is not one.

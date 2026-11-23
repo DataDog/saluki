@@ -1,9 +1,10 @@
 //! Observation: how each process of a started participant exited, what it wrote, and the files copied out of it.
 //!
 //! Every process a participant declares has one exit channel and one output channel. The only process of a container
-//! is observed through the container: its exit and its log. A supervised process is observed through files a
-//! supervisor inside the participant writes: an exit record in the participant's exit directory, and a log file in its
-//! log directory, which the courier follows.
+//! is observed through the container: its exit and its log. A host program is observed through what it is: the wait
+//! result of its process, and its output pipes. A supervised process is observed through files a supervisor inside the
+//! participant writes: an exit record in the participant's exit directory, and a log file in its log directory, which
+//! the courier follows.
 //!
 //! An exit is running, exited with a status, or undetermined. Undetermined is an observation error: a step that needs
 //! the status errors. It never passes, and no code is invented.
@@ -71,10 +72,11 @@ const DRAIN_TIME: Duration = Duration::from_secs(2);
 /// How a process exited.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct ExitStatus {
-    /// The exit code. A container reports death by signal `n` as 128 + `n`, and an exit record as 256.
+    /// The exit code. A container reports death by signal `n` as 128 + `n`. An exit record and a host program report
+    /// it as 256, with the signal.
     pub(crate) code: i64,
-    /// The signal that killed the process, where its exit channel reports one: an exit record does, a container does
-    /// not.
+    /// The signal that killed the process, where its exit channel reports one: an exit record and a host program do,
+    /// a container does not.
     pub(crate) signal: Option<u32>,
 }
 

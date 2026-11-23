@@ -14,6 +14,7 @@ pub(crate) mod container;
 pub(crate) mod courier;
 pub(crate) mod deadline;
 pub(crate) mod handle;
+pub(crate) mod host;
 pub(crate) mod ledger;
 pub(crate) mod lifecycle;
 pub(crate) mod observe;
