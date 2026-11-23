@@ -1,4 +1,11 @@
-//! Exercises certificate distrust on direct connections, HTTPS proxies, and CONNECT destinations.
+//! Checks that direct connections, HTTPS proxies, and CONNECT destinations all verify server certificates through the
+//! `saluki-tls` client configuration, which rejects distrusted certificate authorities (RUSTSEC-2026-0382).
+//!
+//! A server that presents the intermediates from `dv-g3b-emudhra.pem` must fail the handshake with `CertDistrusted`. The
+//! server leaves out the leaf, so the distrusted `EM DV TLS CA - G3B` intermediate is the first certificate. The client
+//! checks the distrust list on that certificate before it checks validity dates or the server name, so the result
+//! doesn't depend on the current date. The server signs with an unrelated key, but the client checks the certificate
+//! chain first, so the chain decides the result.
 
 use std::{env, sync::Arc, time::Duration};
 
@@ -7,7 +14,9 @@ use http::{Request, Uri};
 use http_body_util::Empty;
 use hyper_http_proxy::{Intercept, Proxy};
 use rustls::{
+    crypto::CryptoProvider,
     pki_types::{pem::PemObject as _, CertificateDer},
+    sign::{CertifiedKey, SingleCertAndKey},
     ServerConfig,
 };
 use saluki_io::net::client::http::{HttpClient, HttpProtocol};
@@ -21,19 +30,32 @@ use tokio::{
 use tokio_rustls::TlsAcceptor;
 
 const AFFECTED_CHAIN: &[u8] = include_bytes!("../../saluki-tls/tests/data/distrusted/dv-g3b-emudhra.pem");
+const AFFECTED_ROOTS: &str = include_str!("../../saluki-tls/tests/data/distrusted/roots.pem");
 const DEADLINE: Duration = Duration::from_secs(5);
 
-fn server_config(cert: &SelfSignedCert, blocked_extra: bool) -> Arc<ServerConfig> {
-    let mut certificates = cert.cert_chain();
-    if blocked_extra {
-        let intermediate = CertificateDer::pem_slice_iter(AFFECTED_CHAIN).nth(1).unwrap().unwrap();
-        certificates.push(intermediate);
-    }
+/// Builds a server configuration that presents either the self-signed certificate or the affected chain. Both sign
+/// with the private key of the self-signed certificate.
+fn server_config(cert: &SelfSignedCert, affected: bool) -> Arc<ServerConfig> {
+    let certificates = if affected {
+        // Skip the leaf, which expires on 2027-05-03. See the module documentation.
+        CertificateDer::pem_slice_iter(AFFECTED_CHAIN)
+            .skip(1)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    } else {
+        cert.cert_chain()
+    };
+    // `with_single_cert` rejects a key that doesn't match the leaf, so build the certified key directly.
+    let signing_key = CryptoProvider::get_default()
+        .expect("crypto provider is installed")
+        .key_provider
+        .load_private_key(cert.private_key())
+        .unwrap();
+    let certified_key = CertifiedKey::new(certificates, signing_key);
     Arc::new(
         ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(certificates, cert.private_key())
-            .unwrap(),
+            .with_cert_resolver(Arc::new(SingleCertAndKey::from(certified_key))),
     )
 }
 
@@ -96,7 +118,8 @@ fn all_http_tls_paths_enforce_distrust() {
     let cert = SelfSignedCert::localhost();
     let directory = tempfile::tempdir().unwrap();
     let root_path = directory.path().join("roots.pem");
-    cert.write_cert_pem(&root_path);
+    // Trust the self-signed certificate for the control cases, and the root that issues the affected chain.
+    std::fs::write(&root_path, format!("{}\n{AFFECTED_ROOTS}", cert.cert_pem())).unwrap();
     env::set_var("SSL_CERT_FILE", root_path);
     env::remove_var("SSL_CERT_DIR");
     load_platform_root_certificates().unwrap();
@@ -106,8 +129,7 @@ fn all_http_tls_paths_enforce_distrust() {
         .build()
         .unwrap()
         .block_on(async {
-            // A blocked extra certificate makes otherwise valid handshakes fail without needing a compromised key.
-            for (proxy_scheme, blocked_origin, blocked_proxy) in [
+            for (proxy_scheme, affected_origin, affected_proxy) in [
                 (None, false, false),
                 (None, true, false),
                 (Some("http"), false, false),
@@ -116,11 +138,11 @@ fn all_http_tls_paths_enforce_distrust() {
                 (Some("https"), true, false),
                 (Some("https"), false, true),
             ] {
-                let (origin, origin_task) = serve_origin(server_config(&cert, blocked_origin)).await;
+                let (origin, origin_task) = serve_origin(server_config(&cert, affected_origin)).await;
                 let mut builder = HttpClient::builder().with_http_protocol(HttpProtocol::Http1);
                 let mut proxy_task = None;
                 if let Some(scheme) = proxy_scheme {
-                    let config = (scheme == "https").then(|| server_config(&cert, blocked_proxy));
+                    let config = (scheme == "https").then(|| server_config(&cert, affected_proxy));
                     let (proxy, task) = serve_proxy(origin.port_u16().unwrap(), config).await;
                     builder = builder.with_proxies(vec![Proxy::new(Intercept::All, proxy)]);
                     proxy_task = Some(task);
@@ -130,10 +152,10 @@ fn all_http_tls_paths_enforce_distrust() {
                 let result = timeout(DEADLINE, client.send(request))
                     .await
                     .expect("request completed");
-                if blocked_origin || blocked_proxy {
-                    let error = result.expect_err("blocked certificate must fail TLS");
+                if affected_origin || affected_proxy {
+                    let error = result.expect_err("distrusted certificate must fail TLS");
                     assert!(
-                        format!("{error:#}").contains("ApplicationVerificationFailure"),
+                        format!("{error:#}").contains("CertDistrusted"),
                         "expected explicit certificate distrust through {proxy_scheme:?}, got {error:#}"
                     );
                 } else {
