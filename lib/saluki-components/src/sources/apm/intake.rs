@@ -261,7 +261,7 @@ impl TraceIntake {
             (EndpointVersion::V01, _) => decode_v01_json(&body),
             // As in the trace-agent, a v0.5 payload is decoded whatever the media type.
             (EndpointVersion::V05, _) => decode_v05_payload(&body),
-            // As `decodeConvertedTracerPayload`'s `V07` case, which decodes a `TracerPayload` whatever the media type.
+            // As in the trace-agent, a v0.7 `TracerPayload` is decoded whatever the media type.
             (EndpointVersion::V07, _) => decode_v07_payload(&body),
             // `/v0.2/traces` never gets here with MessagePack: it is rejected above.
             (_, PayloadFormat::MessagePack) => decode_v04_payload(&body),
@@ -1218,8 +1218,8 @@ mod tests {
         buf
     }
 
-    // `decodeConvertedTracerPayload`'s `V07` case, which reads no media type, keeps the payload's own tracer fields
-    // and container ID, and doesn't look up the request's container; and `replyOK`, which answers with the rates.
+    // As in the trace-agent, a v0.7 payload is decoded whatever its media type, keeps its own tracer fields and
+    // container ID, doesn't look up the request's container, and is answered with the rates.
     #[tokio::test]
     async fn a_v07_payload_is_decoded_whatever_its_media_type_and_keeps_its_own_fields() {
         let container_tags = ContainerTagsHasher::new(None, Some(Arc::new(TaggingProvider)));

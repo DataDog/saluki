@@ -728,8 +728,7 @@ pub fn repair_utf8(mut bytes: &[u8]) -> String {
     }
 }
 
-/// Element-count limit of the reference's generated `msgp` decoders for the classic tracer payload model
-/// (`za0d4ccedlimitArrays`, `za0d4ccedlimitMaps`).
+/// Element-count limit of the trace-agent's generated `msgp` decoders for the classic tracer payload model.
 pub const MSGP_MAX_COLLECTION_SIZE: u32 = 500_000;
 
 /// Reads an array header as a generated `msgp` decoder does: `msgp.ReadArrayHeaderBytes`, then `ErrLimitExceeded`
