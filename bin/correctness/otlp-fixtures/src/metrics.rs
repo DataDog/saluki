@@ -11,7 +11,7 @@ use otlp_protos::opentelemetry::proto::{
 };
 use prost::Message as _;
 
-use crate::common::{kv, string};
+use crate::common::{int, kv, string};
 
 /// One second after the Unix epoch, in nanoseconds.
 const ONE_SECOND_NANOS: u64 = 1_000_000_000;
@@ -107,9 +107,10 @@ fn host_name(name: &str) -> Option<Resource> {
 }
 
 /// Host fallbacks: no resource, an empty `host.name`, the Agent's own hostname, and a custom one, then Azure VM-ID
-/// precedence over `host.name` and the `host.name` fallback without a VM ID.
+/// precedence over `host.name` and the `host.name` fallback without a VM ID. Then one `otlpsource.<case>` gauge per
+/// source case.
 pub fn host_fixture() -> Vec<u8> {
-    request(vec![
+    let mut resources = vec![
         host_gauge(None, 1.0),
         host_gauge(host_name(""), 2.0),
         host_gauge(host_name("correctness-testing"), 3.0),
@@ -129,7 +130,34 @@ pub fn host_fixture() -> Vec<u8> {
             ]),
             6.0,
         ),
-    ])
+    ];
+    resources.extend(source_cases().into_iter().map(|(name, attributes)| {
+        resource_metrics(
+            resource(attributes),
+            None,
+            vec![gauge(
+                &format!("otlpsource.{name}"),
+                vec![point(ONE_SECOND_NANOS, 1.0, vec![])],
+            )],
+        )
+    }));
+    request(resources)
+}
+
+/// Source cases for `host_fixture`, each named for its gauge.
+fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
+    let with_host = |mut attributes: Vec<KeyValue>| {
+        attributes.push(kv("host.name", string("source-host")));
+        attributes
+    };
+
+    vec![
+        ("host_name", with_host(vec![])),
+        (
+            "non_string_datadog_host_name",
+            with_host(vec![kv("datadog.host.name", int(1))]),
+        ),
+    ]
 }
 
 /// Four gauge points that differ only by resource host, starting with an empty resource.
