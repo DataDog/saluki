@@ -9,6 +9,7 @@ pub mod semantics;
 pub mod source;
 pub mod traces;
 pub mod util;
+pub mod value;
 
 use std::path::PathBuf;
 use std::str::FromStr;

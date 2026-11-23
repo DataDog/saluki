@@ -20,12 +20,13 @@ use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::resolve_source_from_attributes;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
-    otel_span_to_dd_span, otel_span_to_dd_span_v1, otlp_value_to_string, SpanConversion, SpanNaming,
+    otel_span_to_dd_span, otel_span_to_dd_span_v1, SpanConversion, SpanNaming,
 };
 use crate::common::otlp::util::{
     get_string_attribute, is_datadog_container_tag_attribute, resolve_otlp_trace_container_tags,
     set_resource_attributes, write_infra_tag_attributes, SourceKind,
 };
+use crate::common::otlp::value::otlp_value_to_string;
 use crate::common::otlp::Metrics;
 
 const DATADOG_HOSTNAME_ATTR: &str = "datadog.host.name";
