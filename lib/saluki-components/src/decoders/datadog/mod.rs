@@ -1,8 +1,8 @@
 //! Decoders for the Datadog APM trace wire formats.
 //!
-//! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format into the same output as the v1.0 decoder;
-//! see its module for how it mirrors the reference. The rest of this page covers the v1.0 format (also called the
-//! `idx`/`etp` format).
+//! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format into the same
+//! output as the v1.0 decoder; see its module for how it matches the trace-agent. The rest of this page covers the
+//! v1.0 format (also called the `idx`/`etp` format).
 //!
 //! The v1.0 trace API (`Content-Type: application/msgpack`, endpoint `v1.0`) sends a tracer payload
 //! in a custom MessagePack layout rather than protobuf-over-msgpack. Its defining traits:

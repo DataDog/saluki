@@ -584,7 +584,7 @@ fn oversize_array_header_rejected() {
 
 #[test]
 fn array_count_beyond_remaining_bytes_is_short_input() {
-    // Under MAX_SIZE, but more elements than bytes remain: the reference returns `msgp.ErrShortBytes`.
+    // Under MAX_SIZE, but more elements than bytes remain: the trace-agent reports short input.
     let mut buf = Vec::new();
     encode::write_array_len(&mut buf, 1000).unwrap();
     encode::write_uint(&mut buf, 0).unwrap();
