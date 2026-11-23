@@ -1142,8 +1142,8 @@ mod tests {
             port,
         };
         config.proxy_destinations = Some(OtlpProxyDestinations {
-            grpc: destination(4319),
-            http: destination(4320),
+            grpc: Some(destination(4319)),
+            http: Some(destination(4320)),
         });
 
         let (control, mut outputs) = TestComponentDriver::source(config).await.expect("source should build");
@@ -1181,8 +1181,8 @@ mod tests {
             port,
         };
         config.proxy_destinations = Some(OtlpProxyDestinations {
-            grpc: destination(4319),
-            http: destination(4320),
+            grpc: Some(destination(4319)),
+            http: Some(destination(4320)),
         });
 
         let (control, _outputs) = TestComponentDriver::source(config).await.expect("source should build");
@@ -1245,8 +1245,8 @@ mod tests {
             port,
         };
         config.proxy_destinations = Some(OtlpProxyDestinations {
-            grpc: destination(4319),
-            http: destination(4320),
+            grpc: Some(destination(4319)),
+            http: Some(destination(4320)),
         });
         if let Err(e) = config.build(BuildContext::test_source("otlp_proxy_destinations")).await {
             panic!("build should succeed with proxy destinations: {e}");

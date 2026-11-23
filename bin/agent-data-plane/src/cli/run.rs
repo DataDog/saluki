@@ -60,8 +60,7 @@ use crate::{
     component_inputs::{
         apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
         metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
-        otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_proxy_destinations, otlp_receiver,
-        otlp_traces_settings,
+        otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
         ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration,
         trace_sampler_configuration, trace_tag_replacer_configuration,
     },
@@ -272,7 +271,7 @@ async fn create_topology(
             config_system,
             env_provider,
             semantic_registry.clone(),
-            otlp.routes(),
+            otlp,
         )
         .await?;
     }
@@ -1036,12 +1035,12 @@ async fn add_apm_pipeline_to_blueprint(
 
 async fn add_otlp_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
-    env_provider: &RemoteAgentEnvironmentProvider, semantic_registry: SemanticRegistryProvider, routes: OtlpRoutes,
+    env_provider: &RemoteAgentEnvironmentProvider, semantic_registry: SemanticRegistryProvider, otlp_plan: &OtlpPlan,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let otlp = &config.domains.otlp;
+    let routes = otlp_plan.routes();
     let proxy_destinations = if routes.any_proxied() {
-        let destinations = otlp_proxy_destinations(otlp)?;
         info!(
             metrics = ?routes.metrics,
             logs = ?routes.logs,
@@ -1050,7 +1049,7 @@ async fn add_otlp_pipeline_to_blueprint(
             agent_receiver_http_endpoint = %otlp.proxy.http_endpoint,
             "Starting OTLP ingest. Proxied signals go to the Agent's OTLP receiver for the protocol they arrive on."
         );
-        Some(destinations)
+        otlp_plan.proxy_destinations().cloned()
     } else {
         info!(metrics = ?routes.metrics, logs = ?routes.logs, traces = ?routes.traces, "Starting OTLP ingest.");
         None
@@ -1307,6 +1306,7 @@ mod tests {
                 config.control.otlp = true;
                 config.control.standalone_mode = standalone_mode;
                 config.domains.otlp.receiver.grpc.endpoint = "localhost:4317".to_string();
+                config.domains.otlp.proxy.grpc_endpoint = "127.0.0.1:4319".to_string();
                 config.domains.otlp.receiver.metrics_enabled = metrics != Disabled;
                 config.domains.otlp.receiver.logs_enabled = logs != Disabled;
                 config.control.logs_enabled = logs != Disabled;

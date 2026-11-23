@@ -178,8 +178,8 @@ pub(super) fn http_ok(_: &SeenRequest) -> Response {
 /// Returns a proxy to `grpc` and `http`, with counters that no recorder sees.
 pub(super) fn proxy_to(grpc: &FakeUpstream, http: &FakeUpstream) -> OtlpProxy {
     let destinations = OtlpProxyDestinations {
-        grpc: grpc.destination.clone(),
-        http: http.destination.clone(),
+        grpc: Some(grpc.destination.clone()),
+        http: Some(http.destination.clone()),
     };
     OtlpProxy::new(&destinations, MetricsBuilder::default()).expect("proxy should build")
 }

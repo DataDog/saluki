@@ -6,7 +6,7 @@ use agent_data_plane_config::{domains::otlp, ConfigValue, SalukiConfiguration};
 use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
 use datadog_agent_config::classifier::Pipeline;
 use datadog_agent_runtime::env::{HostSettings, WorkloadSettings};
-use saluki_components::sources::{listener_reached_by, OtlpRoute, OtlpRoutes};
+use saluki_components::sources::{listener_reached_by, OtlpProxyDestinations, OtlpRoute, OtlpRoutes};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 
@@ -294,13 +294,14 @@ impl<'a> DataPlaneConfiguration<'a> {
     }
 }
 
-/// How ADP runs OTLP ingest: the route of each OTLP signal, and why ingest is blocked, if it is.
+/// How ADP runs OTLP ingest: the route of each OTLP signal, where it proxies them, and why ingest is blocked, if it is.
 ///
-/// Plans come from [`resolve`](Self::resolve), so every plan has passed the proxy loop check. The pipeline
+/// Plans come from [`resolve`](Self::resolve), so every plan has passed the proxy destination checks. The pipeline
 /// predicates of [`DataPlaneConfiguration`], the topology, and the Remote Configuration products all follow it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OtlpPlan {
     routes: OtlpRoutes,
+    proxy_destinations: Option<OtlpProxyDestinations>,
     blocked: Option<OtlpBlock>,
 }
 
@@ -315,16 +316,23 @@ impl OtlpPlan {
             return plan;
         }
 
-        match find_otlp_proxy_loop(&dp.config.domains.otlp).await {
-            Some(block) => Self {
+        match check_otlp_proxy_destinations(&dp.config.domains.otlp).await {
+            Ok(destinations) => Self {
+                proxy_destinations: Some(destinations),
+                ..plan
+            },
+            Err(block) => Self {
                 routes: OtlpRoutes::ALL_DISABLED,
+                proxy_destinations: None,
                 blocked: Some(block),
             },
-            None => plan,
         }
     }
 
-    /// Plans OTLP ingest without checking whether a proxy destination reaches one of ADP's own OTLP listeners.
+    /// Plans OTLP ingest without checking the proxy destinations: that they are valid, and that none reaches one of
+    /// ADP's own OTLP listeners.
+    ///
+    /// The plan has no proxy destinations.
     fn without_loop_check(dp: &DataPlaneConfiguration<'_>) -> Self {
         const fn route(accepted: bool, proxied: bool) -> OtlpRoute {
             match (accepted, proxied) {
@@ -351,6 +359,7 @@ impl OtlpPlan {
                 logs: route(enabled && signals.logs, proxy.logs_enabled),
                 traces: route(enabled && signals.traces, proxy.traces_enabled),
             },
+            proxy_destinations: None,
             blocked,
         }
     }
@@ -362,6 +371,13 @@ impl OtlpPlan {
     /// signals are internal.
     pub const fn routes(&self) -> OtlpRoutes {
         self.routes
+    }
+
+    /// Returns where ADP proxies the signals that it proxies to the Agent, or `None` if it proxies none.
+    ///
+    /// A protocol whose receiver has no endpoint has no destination.
+    pub const fn proxy_destinations(&self) -> Option<&OtlpProxyDestinations> {
+        self.proxy_destinations.as_ref()
     }
 
     /// Returns why ADP doesn't start OTLP ingest, or `None` if it isn't blocked.
@@ -410,6 +426,12 @@ pub enum OtlpBlock {
 
         /// Address of the listener.
         listener: ListenAddress,
+    },
+
+    /// A proxy destination of a protocol with a listener isn't valid, so ADP can't proxy to the Agent.
+    InvalidDestination {
+        /// Why the destination isn't valid.
+        error: String,
     },
 }
 
@@ -462,15 +484,28 @@ impl fmt::Display for OtlpBlock {
                 `{listener_key}` ({listener}), so ADP would proxy OTLP requests to itself: set `{destination_key}` to \
                 the Agent's relocated OTLP receiver, or change `{listener_key}`"
             ),
+            Self::InvalidDestination { error } => write!(f, "{error}"),
         }
+    }
+}
+
+/// Returns the OTLP proxy destinations, or the block if one of a served protocol isn't valid or reaches one of ADP's own
+/// OTLP listeners.
+async fn check_otlp_proxy_destinations(otlp: &otlp::Domain) -> Result<OtlpProxyDestinations, OtlpBlock> {
+    let destinations = otlp_proxy_destinations(otlp).map_err(|error| OtlpBlock::InvalidDestination {
+        error: format!("{error:#}"),
+    })?;
+
+    match find_otlp_proxy_loop(otlp, &destinations).await {
+        Some(block) => Err(block),
+        None => Ok(destinations),
     }
 }
 
 /// Returns the block if a proxy destination of a served protocol reaches one of ADP's own OTLP listeners.
 ///
-/// The OTLP source reports invalid listen addresses and destinations when it's built, so they don't count here.
-async fn find_otlp_proxy_loop(otlp: &otlp::Domain) -> Option<OtlpBlock> {
-    let destinations = otlp_proxy_destinations(otlp).ok()?;
+/// The OTLP source reports invalid listen addresses when it's built, so they don't count here.
+async fn find_otlp_proxy_loop(otlp: &otlp::Domain, destinations: &OtlpProxyDestinations) -> Option<OtlpBlock> {
     let receiver = otlp_receiver(&otlp.receiver);
     let grpc_listener = receiver.grpc.listen_address().ok().flatten();
     let http_listener = receiver.http.listen_address().ok().flatten();
@@ -482,22 +517,22 @@ async fn find_otlp_proxy_loop(otlp: &otlp::Domain) -> Option<OtlpBlock> {
         (
             "data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint",
             &otlp.proxy.grpc_endpoint,
-            &destinations.grpc,
+            destinations.grpc.as_ref(),
             grpc_listener.is_some(),
         ),
         (
             "data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint",
             &otlp.proxy.http_endpoint,
-            &destinations.http,
+            destinations.http.as_ref(),
             http_listener.is_some(),
         ),
     ];
 
     for (destination_key, address, destination, served) in proxied {
         // A protocol without a listener proxies nothing.
-        if !served {
+        let (true, Some(destination)) = (served, destination) else {
             continue;
-        }
+        };
 
         let Some(listener) = listener_reached_by(destination, listeners.iter().filter_map(|(_, l)| *l)).await else {
             continue;
@@ -520,6 +555,7 @@ async fn find_otlp_proxy_loop(otlp: &otlp::Domain) -> Option<OtlpBlock> {
 mod tests {
     use agent_data_plane_config::domains::otlp::Proxy;
     use datadog_agent_commons::platform::PlatformSettings;
+    use saluki_components::sources::ProxyDestination;
 
     use super::*;
 
@@ -1317,6 +1353,85 @@ mod tests {
         // A protocol without a listener proxies nothing.
         let config = listener_configuration(true, false, "", "127.0.0.1:4319");
         assert_eq!(otlp_proxy_loop(&config).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_otlp_proxy_destination_blocks_otlp_ingest() {
+        // The destination of a protocol with a listener must be valid.
+        let mut config = listener_configuration(true, false, "127.0.0.1:4317", "127.0.0.1:4318");
+        config.domains.otlp.proxy.http_endpoint = "4320".to_string();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::resolve(&dp).await;
+
+        assert!(matches!(otlp.blocked(), Some(OtlpBlock::InvalidDestination { .. })));
+        assert_eq!(
+            otlp.blocked().map(ToString::to_string).as_deref(),
+            Some(
+                "Invalid OTLP proxy destination \
+                `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`: Invalid address `4320`: expected a \
+                host and a port."
+            )
+        );
+        assert_eq!(otlp.routes(), OtlpRoutes::ALL_DISABLED);
+        assert_eq!(otlp.proxy_destinations(), None);
+        assert!(!otlp.enabled());
+        assert!(!dp.otlp_enabled_without_signals());
+        assert!(!dp.active_pipelines(&otlp).contains(&Pipeline::Otlp));
+
+        // The destination of a protocol without a listener proxies nothing, so it isn't checked.
+        config.domains.otlp.receiver.http.endpoint = String::new();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::resolve(&dp).await;
+        assert_eq!(otlp.blocked(), None);
+        assert!(otlp
+            .proxy_destinations()
+            .is_some_and(|d| d.http.is_none() && d.grpc.is_some()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_unix_grpc_receiver_without_an_endpoint_needs_no_grpc_destination() {
+        // The default gRPC destination is a relative path for a Unix receiver, but nothing is proxied over gRPC.
+        let mut config = listener_configuration(true, false, "", "127.0.0.1:4318");
+        config.domains.otlp.receiver.grpc.transport = otlp::GrpcTransport::Unix;
+        config.domains.otlp.proxy.grpc_endpoint = "127.0.0.1:4319".to_string();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::resolve(&dp).await;
+
+        assert_eq!(otlp.blocked(), None);
+        assert_eq!(otlp.routes().metrics, OtlpRoute::Proxied);
+        assert_eq!(
+            otlp.proxy_destinations(),
+            Some(&OtlpProxyDestinations {
+                grpc: None,
+                http: Some(ProxyDestination::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 4320,
+                }),
+            })
+        );
+
+        // With a gRPC listener, the same destination isn't valid.
+        config.domains.otlp.receiver.grpc.endpoint = "/run/adp/otlp.sock".to_string();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::resolve(&dp).await;
+        let message = otlp.blocked().map(ToString::to_string).expect("an invalid destination");
+        assert!(
+            message.contains("`data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`"),
+            "{message}"
+        );
+        assert!(message.contains("absolute path"), "{message}");
+        assert!(!otlp.enabled());
+    }
+
+    #[tokio::test]
+    async fn an_otlp_plan_without_a_proxied_signal_has_no_proxy_destinations() {
+        let config = listener_configuration(false, false, "127.0.0.1:4317", "127.0.0.1:4318");
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let otlp = OtlpPlan::resolve(&dp).await;
+
+        assert!(otlp.enabled());
+        assert_eq!(otlp.proxy_destinations(), None);
     }
 
     #[test]

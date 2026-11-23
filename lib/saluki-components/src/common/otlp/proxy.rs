@@ -18,7 +18,7 @@ use http::uri::Uri;
 use http::Version;
 use metrics::Counter;
 use rustls::RootCertStore;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::{HttpClient, HttpProtocol};
 use saluki_metrics::MetricsBuilder;
 use tonic::Status;
@@ -34,16 +34,20 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OtlpProxyDestinations {
     /// Upstream OTLP/gRPC receiver. The proxy speaks HTTP/2 to it with prior knowledge.
-    pub grpc: Destination,
+    ///
+    /// `None` if no gRPC server proxies requests.
+    pub grpc: Option<Destination>,
 
     /// Upstream OTLP/HTTP receiver. The proxy speaks HTTP/1.1 to it.
-    pub http: Destination,
+    ///
+    /// `None` if no HTTP server proxies requests.
+    pub http: Option<Destination>,
 }
 
 /// Streams OTLP requests to the upstream receivers.
 pub(crate) struct OtlpProxy {
-    grpc: Arc<Upstream>,
-    http: Arc<Upstream>,
+    grpc: Option<Arc<Upstream>>,
+    http: Option<Arc<Upstream>>,
     metrics_builder: MetricsBuilder,
 }
 
@@ -62,21 +66,41 @@ impl OtlpProxy {
     fn with_connect_timeout(
         destinations: &OtlpProxyDestinations, metrics_builder: MetricsBuilder, connect_timeout: Duration,
     ) -> Result<Self, GenericError> {
+        let upstream = |protocol, destination: &Option<Destination>| {
+            destination
+                .as_ref()
+                .map(|destination| Upstream::new(protocol, destination, connect_timeout).map(Arc::new))
+                .transpose()
+        };
         Ok(Self {
-            grpc: Arc::new(Upstream::new(Protocol::Grpc, &destinations.grpc, connect_timeout)?),
-            http: Arc::new(Upstream::new(Protocol::Http, &destinations.http, connect_timeout)?),
+            grpc: upstream(Protocol::Grpc, &destinations.grpc)?,
+            http: upstream(Protocol::Http, &destinations.http)?,
             metrics_builder,
         })
     }
 
     /// Returns the service that proxies the gRPC requests of `signal`.
-    pub(crate) fn grpc_service(&self, signal: Signal) -> MethodRouter {
-        SignalProxy::new(Arc::clone(&self.grpc), signal, &self.metrics_builder).into_service()
+    ///
+    /// # Errors
+    ///
+    /// If the proxy has no gRPC destination, an error is returned.
+    pub(crate) fn grpc_service(&self, signal: Signal) -> Result<MethodRouter, GenericError> {
+        let upstream = self.grpc.as_ref().ok_or_else(|| {
+            generic_error!("An OTLP signal is proxied over gRPC, but the OTLP proxy has no gRPC destination.")
+        })?;
+        Ok(SignalProxy::new(Arc::clone(upstream), signal, &self.metrics_builder).into_service())
     }
 
     /// Returns the service that proxies the HTTP requests of `signal`.
-    pub(crate) fn http_service(&self, signal: Signal) -> MethodRouter {
-        SignalProxy::new(Arc::clone(&self.http), signal, &self.metrics_builder).into_service()
+    ///
+    /// # Errors
+    ///
+    /// If the proxy has no HTTP destination, an error is returned.
+    pub(crate) fn http_service(&self, signal: Signal) -> Result<MethodRouter, GenericError> {
+        let upstream = self.http.as_ref().ok_or_else(|| {
+            generic_error!("An OTLP signal is proxied over HTTP, but the OTLP proxy has no HTTP destination.")
+        })?;
+        Ok(SignalProxy::new(Arc::clone(upstream), signal, &self.metrics_builder).into_service())
     }
 }
 
