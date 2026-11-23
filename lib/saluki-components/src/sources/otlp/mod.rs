@@ -594,6 +594,7 @@ mod tests {
     use saluki_core::data_model::event::Event;
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
+    use saluki_core::runtime::NodeSnapshot;
     use saluki_io::net::BoundListenAddress;
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -953,6 +954,22 @@ mod tests {
             .dataspace()
             .current_values::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-grpc"));
         assert!(grpc.is_empty(), "the gRPC server should not bind, got {grpc:?}");
+
+        // A gRPC server that was spawned but hasn't bound yet would pass the check above, so also look at the
+        // servers that are running. The source spawns gRPC before HTTP, so it has started by the time HTTP binds.
+        // The servers are children of the source, not dynamic children of the test supervisor, so
+        // `active_children` can't count them.
+        fn http_servers(node: &NodeSnapshot, names: &mut Vec<String>) {
+            for child in &node.children {
+                if child.name.starts_with("http_server_") {
+                    names.push(child.name.to_string());
+                }
+                http_servers(child, names);
+            }
+        }
+        let mut servers = Vec::new();
+        http_servers(&control.supervisor().tree_handle().snapshot().root, &mut servers);
+        assert_eq!(servers, ["http_server_otlp-http"]);
 
         control.shutdown().await.expect("source should stop cleanly");
     }
