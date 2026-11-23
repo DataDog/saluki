@@ -1,8 +1,7 @@
 //! Sampling rates by service, as the priority sampler publishes them to tracers.
 //!
-//! Mirrors the trace-agent's `RateByService` (`pkg/trace/sampler/dynamic_config.go`): the priority sampler sets every
-//! rate each time its sliding window moves, and the receiver answers trace payloads with them (`httpRateByService` in
-//! `pkg/trace/api/responses.go`). [`ServiceRates`] is the handle both share: the sampler writes through a
+//! As in the trace-agent, the priority sampler sets every rate each time its sliding window moves, and the receiver
+//! answers trace payloads with them. [`ServiceRates`] is the handle both share: the sampler writes through a
 //! [`RateByService`], and the intake reads the current [`RatesSnapshot`].
 //!
 //! Rates change at most once per sampler bucket (five seconds), while every accepted payload reads them. So the writer
@@ -20,7 +19,7 @@ use bytes::Bytes;
 use http::HeaderValue;
 use saluki_common::collections::FastHashMap;
 
-/// Body of a response with no rates, as Go's `json.Encoder` writes `traceResponse`, with a trailing newline.
+/// Body of a response with no rates, as the trace-agent writes it, with a trailing newline.
 const EMPTY_RATES_BODY: &str = "{\"rate_by_service\":{}}\n";
 
 /// The rates current at one point, ready to be sent.
@@ -29,7 +28,7 @@ pub(crate) struct RatesSnapshot {
     /// Version of the rates, empty until the sampler first sets them.
     pub version: HeaderValue,
 
-    /// The `traceResponse` JSON body holding every rate.
+    /// The JSON response body holding every rate.
     pub body: Bytes,
 }
 
@@ -60,13 +59,13 @@ struct Rate {
     color: bool,
 }
 
-/// Writer of the rates, the trace-agent's `RateByService.SetAll`.
+/// Writer of the rates.
 pub(crate) struct RateByService {
     handle: ServiceRates,
     rates: FastHashMap<String, Rate>,
     /// Flips on every `set_all`; a key not painted with the current color is no longer set.
     color: bool,
-    /// Counts versions, as the trace-agent's `localVersion`.
+    /// Counts versions, as the trace-agent does.
     versions: u64,
 }
 
@@ -86,7 +85,7 @@ impl RateByService {
         self.color = !self.color;
         let mut changed = false;
         for (key, rate) in rates {
-            // Unlike Go's `math.Min(math.Max(r, 0), 1)`, NaN reads as 0 rather than failing the response encoding.
+            // Unlike in the trace-agent, NaN reads as 0 rather than failing the response encoding.
             let rate = if rate > 0.0 { rate.min(1.0) } else { 0.0 };
             let entry = self.rates.entry(key).or_insert_with(|| {
                 changed = true;
@@ -113,14 +112,14 @@ impl RateByService {
     }
 }
 
-/// Builds a version as the trace-agent's `newVersion`: the Unix time in seconds and a counter, both in hexadecimal.
+/// Builds a version as the trace-agent does: the Unix time in seconds and a counter, both in hexadecimal.
 fn new_version(now: SystemTime, counter: u64) -> HeaderValue {
     let secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     HeaderValue::from_str(&format!("{secs:x}-{counter:x}")).expect("hexadecimal digits and a dash are a valid header")
 }
 
-/// Encodes the rates as Go's `json.Encoder` encodes `traceResponse`: keys sorted, floats and strings formatted as
-/// `encoding/json` formats them, and a trailing newline.
+/// Encodes the rates as the trace-agent does: keys sorted, floats and strings formatted as its JSON encoder formats
+/// them, and a trailing newline.
 fn encode_rates(rates: &FastHashMap<String, Rate>) -> Bytes {
     let sorted: BTreeMap<&str, f64> = rates.iter().map(|(key, rate)| (key.as_str(), rate.rate)).collect();
     let mut body = String::from("{\"rate_by_service\":{");
@@ -136,7 +135,7 @@ fn encode_rates(rates: &FastHashMap<String, Rate>) -> Bytes {
     Bytes::from(body)
 }
 
-/// Writes a string as `encoding/json` does with HTML escaping on, the `json.Encoder` default.
+/// Writes a string as the trace-agent's JSON encoder does, with HTML escaping on.
 fn write_go_json_string(out: &mut String, value: &str) {
     out.push('"');
     for c in value.chars() {
@@ -164,8 +163,8 @@ fn write_go_json_string(out: &mut String, value: &str) {
 fn write_go_json_float(out: &mut String, value: f64) {
     let abs = value.abs();
     if abs != 0.0 && !(1e-6..1e21).contains(&abs) {
-        // Rust's `LowerExp` already writes the exponent without padding, as Go's cleanup leaves it, but Go writes a
-        // positive exponent with its sign.
+        // Rust's `LowerExp` already writes the exponent without padding, as the trace-agent does, but the trace-agent
+        // writes a positive exponent with its sign.
         let formatted = format!("{value:e}");
         match formatted.split_once('e') {
             Some((mantissa, exponent)) if !exponent.starts_with('-') => {
@@ -199,7 +198,6 @@ mod tests {
         assert_eq!(body(&handle), EMPTY_RATES_BODY);
     }
 
-    // `TestRateByServiceGetSet` in `dynamic_config_test.go`.
     #[test]
     fn set_all_replaces_every_rate() {
         let handle = ServiceRates::default();
@@ -230,7 +228,6 @@ mod tests {
         }
     }
 
-    // `TestRateByServiceLimits` in `dynamic_config_test.go`.
     #[test]
     fn rates_are_clamped() {
         let handle = ServiceRates::default();
@@ -242,7 +239,6 @@ mod tests {
         );
     }
 
-    // `TestVersionChanges` in `dynamic_config_test.go`.
     #[test]
     fn the_version_changes_only_with_the_rates() {
         let handle = ServiceRates::default();
@@ -284,7 +280,7 @@ mod tests {
 
     #[test]
     fn floats_are_formatted_as_go_encoding_json_formats_them() {
-        // Expected strings are Go's `json.Marshal(float64)` output.
+        // Expected strings are the trace-agent's JSON encoding of each float.
         let cases = [
             (0.0, "0"),
             (1.0, "1"),
@@ -310,7 +306,7 @@ mod tests {
 
     #[test]
     fn strings_are_escaped_as_go_encoding_json_escapes_them() {
-        // Expected strings are Go's `json.NewEncoder(w).Encode(string)` output, without the trailing newline.
+        // Expected strings are the trace-agent's JSON encoding of each string, without the trailing newline.
         let cases = [
             ("service:web,env:prod", r#""service:web,env:prod""#),
             ("a\"b\\c", r#""a\"b\\c""#),

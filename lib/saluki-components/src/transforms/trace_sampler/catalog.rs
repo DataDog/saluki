@@ -93,7 +93,7 @@ impl ServiceKeyCatalog {
         hash
     }
 
-    /// Returns the rate of every cataloged service, as the trace-agent's `ratesByService`.
+    /// Returns the rate of every cataloged service, as the trace-agent does.
     ///
     /// A service whose signature has no rate left in `rates` is dropped from the catalog. A service in the agent's
     /// environment is also given under an empty environment, and the default rate under the empty service and
@@ -200,7 +200,6 @@ mod tests {
         catalog_contains(&catalog, &expected);
     }
 
-    // `TestCatalogEnvMatchAgent` and `TestServiceKeyCatalogRatesByService` in `catalog_test.go`.
     #[test]
     fn test_service_key_catalog_rates_by_service() {
         let mut catalog = ServiceKeyCatalog::with_max_entries(0);

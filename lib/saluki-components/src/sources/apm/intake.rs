@@ -263,7 +263,7 @@ impl TraceIntake {
         response
     }
 
-    /// Answers with the sampling rates by service, as `httpRateByService`, and returns the body's length.
+    /// Answers with the sampling rates by service, as the trace-agent does, and returns the body's length.
     ///
     /// A client that sends the version of the rates it has gets the current version back, if `send_version`, and `{}`
     /// rather than the rates when it already has them.
@@ -490,7 +490,7 @@ async fn read_body(
         .unwrap_or(Err(BodyError::Timeout))
 }
 
-/// Answers with an error, as Go's `http.Error` does.
+/// Answers with an error, as the trace-agent does.
 fn http_error(status: StatusCode, message: &str) -> Response {
     (
         status,
@@ -661,7 +661,6 @@ mod tests {
         }
     }
 
-    // `TestHTTPRateByService` in `responses_test.go`.
     #[tokio::test]
     async fn a_client_version_gets_the_empty_version_before_the_first_rates() {
         let (intake, _traces) = intake(config());

@@ -612,7 +612,7 @@ impl TraceSampler {
             // The receiver's decision is the chunk's priority, so the priority sampler counts the trace, and publishes
             // a rate for its service, as the trace-agent's does for an OTLP chunk.
             // The receiver marks only a keep with the probabilistic decision maker, so a drop records under the
-            // priority sampler, as `traceChunkContainsProbabilitySamplingV1` reads it in the trace-agent.
+            // priority sampler, as in the trace-agent.
             sampler_name = if priority == PRIORITY_AUTO_KEEP || Self::trace_chunk_contains_probability_sampling(trace) {
                 telemetry::SamplerName::Probabilistic
             } else {
@@ -1311,8 +1311,8 @@ mod tests {
         }
     }
 
-    // In the trace-agent, the OTLP receiver's decision is the chunk's priority, which `runSamplersV1` hands to the
-    // priority sampler, so OTLP services take part in the rates it publishes.
+    // In the trace-agent, the OTLP receiver's decision is the chunk's priority, which it hands to the priority sampler,
+    // so OTLP services take part in the rates it publishes.
     #[test]
     fn otlp_receiver_decisions_feed_the_priority_sampler() {
         for trace_id in [OTLP_RECEIVER_KEPT_TRACE_ID, OTLP_RECEIVER_DROPPED_TRACE_ID] {
@@ -1328,8 +1328,7 @@ mod tests {
 
             let kept = trace_id == OTLP_RECEIVER_KEPT_TRACE_ID;
             assert_eq!(outcome.keep, kept);
-            // `_dd.p.dm:-9` marks only a kept chunk, so a drop records under the priority sampler (`otlp.go`
-            // `createChunks`, `agent.go` `runSamplersV1`).
+            // `_dd.p.dm:-9` marks only a kept chunk, so a drop records under the priority sampler.
             let expected = if kept {
                 telemetry::SamplerName::Probabilistic
             } else {
