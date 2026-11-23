@@ -633,6 +633,50 @@ mod tests {
     }
 
     #[test]
+    fn invalid_boolean_environment_input_boots_and_keeps_the_raw_source() {
+        let system = standalone_system_with_env(json!({ "logs_enabled": true }), &[("DD_LOGS_ENABLED", "yes")])
+            .expect("invalid Datadog boolean environment input boots");
+        assert!(!system.config().control.logs_enabled);
+        assert_eq!(system.sources().to_value().get("logs_enabled"), Some(&json!("yes")));
+    }
+
+    #[tokio::test]
+    async fn invalid_boolean_stream_values_boot_and_replace_a_previously_true_value() {
+        let (agent_tx, agent_rx) = mpsc::channel(10);
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("api_key", json!(TEST_API_KEY)),
+                ConfigSetting::explicit("logs_enabled", json!("yes")),
+            ]))
+            .await
+            .unwrap();
+        let (system, updates) = ConfigurationSystem::connected(agent_rx, SourceTree::empty())
+            .await
+            .expect("an invalid boolean string in the initial snapshot boots");
+        assert!(!system.config().control.logs_enabled);
+        assert_eq!(system.sources().to_value().get("logs_enabled"), Some(&json!("yes")));
+        let task = tokio::spawn(updates.run());
+
+        for (value, expected) in [(json!(true), true), (json!("on"), false)] {
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "logs_enabled",
+                    value.clone(),
+                )))
+                .await
+                .unwrap();
+            await_config(&system, "the boolean update to take effect", |config| {
+                config.control.logs_enabled == expected
+            })
+            .await;
+            assert_eq!(system.config().control.logs_enabled, expected);
+            assert_eq!(system.sources().to_value().get("logs_enabled"), Some(&value));
+        }
+        drop(agent_tx);
+        assert!(matches!(task.await.unwrap(), Err(Error::UpdateStreamClosed)));
+    }
+
+    #[test]
     fn boolean_use_v3_api_series_enabled_is_normalized() {
         let sources = SourceTree::all_explicit(json!({
             "use_v3_api": {

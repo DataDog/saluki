@@ -3,6 +3,7 @@
 //! [`DATADOG_ENV_KEYS`] maps the Agent's declared variable names to nested configuration paths;
 //! paths are not inferred by splitting names. [`apply_datadog_env_vars`] decodes each key's first
 //! non-empty environment value using [`crate::env_decode`]. Callers choose precedence with `overwrite`.
+//! An invalid boolean stays a string, so the typed deserializer warns and reads it as `false`.
 
 use std::collections::HashMap;
 
@@ -55,6 +56,7 @@ pub fn apply_datadog_env(base: &mut Value, overwrite: bool) -> Result<(), String
 /// Also applies `HTTP_PROXY`/`HTTPS_PROXY` as fallbacks for their `DD_` forms. When `overwrite` is
 /// true, environment values replace existing values; otherwise, only absent paths are filled. A
 /// variable that supplied a key is returned either way.
+/// Invalid boolean strings stay as strings for the typed deserializer's `false` fallback.
 ///
 /// # Errors
 ///
@@ -72,7 +74,17 @@ fn apply_env_snapshot(base: &mut Value, env: EnvSnapshot, overwrite: bool) -> Re
     };
     let mut read = Vec::new();
     for key in DATADOG_ENV_KEYS {
-        read.extend(apply_one(root, &env, key.env_vars, key.path, key.decode, overwrite)?);
+        read.extend(apply_one(
+            root,
+            &env,
+            key.env_vars,
+            key.path,
+            |raw| match decode(raw, key.decode) {
+                Err(_) if key.decode == EnvDecode::Bool => Ok(Value::String(raw.to_owned())),
+                result => result,
+            },
+            overwrite,
+        )?);
     }
     apply_proxy_env(root, &env, overwrite);
     Ok(read)
@@ -111,7 +123,7 @@ pub fn apply_env_at_path(
         return Ok(());
     };
     let env = EnvSnapshot::capture();
-    apply_one(root, &env, env_vars, path, decode, overwrite).map(drop)
+    apply_one(root, &env, env_vars, path, |raw| self::decode(raw, decode), overwrite).map(drop)
 }
 
 /// Decodes one key from supplied environment variables into `base` at the supplied path.
@@ -131,7 +143,7 @@ pub fn apply_env_at_path_vars(
         return Ok(());
     };
     let env = EnvSnapshot::from_vars(vars);
-    apply_one(root, &env, env_vars, path, decode, overwrite).map(drop)
+    apply_one(root, &env, env_vars, path, |raw| self::decode(raw, decode), overwrite).map(drop)
 }
 
 /// The canonical proxy variables that carry no `DD_` prefix.
@@ -163,12 +175,13 @@ fn apply_proxy_env(root: &mut Map<String, Value>, env: &EnvSnapshot, overwrite: 
 
 /// Reads, decodes, and writes one key, and returns the name of the variable read.
 fn apply_one(
-    root: &mut Map<String, Value>, env: &EnvSnapshot, env_vars: &[&str], path: &[&str], how: EnvDecode, overwrite: bool,
+    root: &mut Map<String, Value>, env: &EnvSnapshot, env_vars: &[&str], path: &[&str],
+    decode: impl FnOnce(&str) -> Result<Value, String>, overwrite: bool,
 ) -> Result<Option<String>, String> {
     let Some((name, raw)) = env.lookup(env_vars) else {
         return Ok(None);
     };
-    let value = decode(raw, how).map_err(|msg| format!("environment variable `{name}` ({}): {msg}", path.join(".")))?;
+    let value = decode(raw).map_err(|msg| format!("environment variable `{name}` ({}): {msg}", path.join(".")))?;
     write_at_path(root, path, value, overwrite);
     Ok(Some(name.to_owned()))
 }
@@ -308,6 +321,24 @@ mod tests {
         assert_eq!(at(&base, &["dogstatsd_port"]), Some(&json!(9125)));
         assert_eq!(at(&base, &["api_key"]), Some(&json!("00000")));
         assert_eq!(at(&base, &["dogstatsd_tags"]), Some(&json!(["env:prod", "team:core"])));
+    }
+
+    #[test]
+    fn invalid_datadog_booleans_keep_the_raw_string_and_environment_precedence() {
+        for raw in ["yes", "on", " true "] {
+            for overwrite in [false, true] {
+                let mut base = json!({ "logs_enabled": true });
+                let read = apply_datadog_env_vars(&mut base, vars(&[("DD_LOGS_ENABLED", raw)]), overwrite).unwrap();
+                assert_eq!(read, ["DD_LOGS_ENABLED"]);
+                assert_eq!(base["logs_enabled"], if overwrite { json!(raw) } else { json!(true) });
+                let config: crate::DatadogConfiguration = serde_json::from_value(base).unwrap();
+                assert_eq!(config.logs_enabled, !overwrite);
+            }
+        }
+
+        let mut base = json!({});
+        apply_datadog_env_vars(&mut base, vars(&[("DD_LOGS_ENABLED", "T")]), true).unwrap();
+        assert_eq!(base["logs_enabled"], json!(true));
     }
 
     #[test]

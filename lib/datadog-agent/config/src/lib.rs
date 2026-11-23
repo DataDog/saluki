@@ -30,6 +30,7 @@ mod translate_error;
 
 pub use cast_de::cast_to_f64;
 pub use cast_de::cast_to_string;
+pub use cast_de::invalid_boolean_keys;
 pub use env_decode::EnvDecode;
 pub use env_reader::{
     apply_datadog_env, apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, datadog_renamed_keys, EnvKey,
@@ -231,11 +232,21 @@ mod scalar_shape_tests {
     }
 
     #[test]
+    fn invalid_boolean_strings_read_as_false_instead_of_the_schema_default() {
+        assert!(DatadogConfiguration::default().log_to_console);
+        let config: DatadogConfiguration = serde_json::from_value(json!({
+            "logs_enabled": "yes",
+            "log_to_console": "on",
+        }))
+        .expect("invalid boolean strings read as false");
+        assert!(!config.logs_enabled);
+        assert!(!config.log_to_console);
+    }
+
+    #[test]
     fn a_malformed_scalar_is_still_rejected() {
-        // Permissive is not unconditional: a value the Agent's cast cannot convert must fail here
-        // rather than silently reading as the type's zero value, which is what the Agent does.
         for malformed in [
-            json!({ "dogstatsd_non_local_traffic": "yes" }),
+            json!({ "dogstatsd_non_local_traffic": [true] }),
             json!({ "dogstatsd_port": "8125ms" }),
             json!({ "dogstatsd_log_file_max_size": ["10MB"] }),
         ] {

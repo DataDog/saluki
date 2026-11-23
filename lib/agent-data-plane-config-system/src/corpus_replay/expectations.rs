@@ -1640,7 +1640,7 @@ mod tests {
     fn a_rejected_update_fails_its_own_deserialize_check_and_nothing_after() {
         let mut replay = Replay::new(Commit::Translated);
         replay.apply(&snapshot_of(&[("api_key", json!("k"))]));
-        let (step, _) = replay.apply(&set("allow_arbitrary_tags", json!("on")));
+        let (step, _) = replay.apply(&set("allow_arbitrary_tags", json!([])));
         let checks = checks_of(&step, false, &["allow_arbitrary_tags"], &mut no_isolation);
         assert_eq!(checks.len(), 1, "{checks:?}");
         assert_eq!(checks[0].0, Tier::Deserialize);
@@ -1648,7 +1648,7 @@ mod tests {
         assert_eq!(
             checks[0].2,
             Some(Adp::error(
-                "invalid value: string \"on\", expected a boolean, a boolean string, or a number"
+                "invalid type: sequence, expected a boolean, a boolean string, or a number"
             ))
         );
 
@@ -1684,9 +1684,9 @@ mod tests {
     #[test]
     fn a_snapshot_deserialize_error_no_setting_explains_gets_its_own_check() {
         let step = Replay::new(Commit::Translated)
-            .apply(&snapshot_of(&[("allow_arbitrary_tags", json!("on"))]))
+            .apply(&snapshot_of(&[("allow_arbitrary_tags", json!([]))]))
             .0;
-        let whole = "invalid value: string \"on\", expected a boolean, a boolean string, or a number";
+        let whole = "invalid type: sequence, expected a boolean, a boolean string, or a number";
         let explained = checks_of(&step, true, &["allow_arbitrary_tags"], &mut |_| Some(Adp::error(whole)));
         assert_eq!(
             explained,

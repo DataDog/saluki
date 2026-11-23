@@ -104,6 +104,7 @@ dependencies = [
  "snafu",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1404,6 +1405,7 @@ dependencies = [
  "serde_json",
  "syn 3.0.10",
  "tracing",
+ "tracing-subscriber",
  "typify",
 ]
 

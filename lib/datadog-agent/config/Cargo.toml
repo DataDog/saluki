@@ -11,6 +11,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+tracing-subscriber = { workspace = true, features = ["registry"] }
+
 [build-dependencies]
 datadog-agent-config-overlay-model = { workspace = true }
 go-duration = { workspace = true }

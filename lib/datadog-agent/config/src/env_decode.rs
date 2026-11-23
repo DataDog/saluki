@@ -9,7 +9,8 @@
 //! Supported splitting and delimiter behavior matches the Agent bug-for-bug (see the per-function
 //! notes, which cite the Agent source). Error handling deliberately diverges: the Agent logs a malformed
 //! value and substitutes an empty result, while this module propagates a hard error so the caller
-//! can reject the value instead of silently losing it. [`crate::cast_de`] notes the one exception.
+//! can reject the value instead of silently losing it. [`crate::cast_de`] describes the scalar exceptions.
+//! The Datadog environment reader keeps invalid boolean strings for the leaf deserializer's `false` fallback.
 //!
 //! The scalar type fallbacks are the string half of [`crate::cast_de`], which every configuration
 //! source shares, so an environment variable and a file accept the same spellings for a leaf.
