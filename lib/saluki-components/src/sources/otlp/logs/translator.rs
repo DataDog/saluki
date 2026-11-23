@@ -15,7 +15,8 @@ use stringtheory::MetaString;
 use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
-use crate::common::otlp::util::{get_string_attribute, resource_to_source, SourceKind};
+use crate::common::otlp::source::resolve_source_from_attributes;
+use crate::common::otlp::util::{get_string_attribute, SourceKind};
 use crate::common::otlp::Metrics;
 use crate::sources::otlp::logs::render::OtlpLogsRenderer;
 use crate::sources::otlp::logs::transform::transform_log_record;
@@ -66,9 +67,12 @@ pub(super) struct ResourceLogsIter {
 impl ResourceLogsIter {
     pub(super) fn new(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
-        let source = resource_to_source(&resource);
+        let source = resolve_source_from_attributes(&resource.attributes);
+        // An empty host counts as missing, so the record fallback still applies.
         let host = match &source {
-            Some(src) if matches!(src.kind, SourceKind::Hostname) => Some(MetaString::from(src.identifier.as_str())),
+            Some(src) if matches!(src.kind, SourceKind::Hostname) && !src.identifier.is_empty() => {
+                Some(MetaString::from(src.identifier.as_str()))
+            }
             _ => None,
         };
 
@@ -351,6 +355,58 @@ mod tests {
         };
         let log = translate_log(lr, resource, None);
         assert!(log.tags().has_tag("kube_node:node-1"));
+    }
+
+    #[test]
+    fn resource_host_uses_the_full_source_resolution() {
+        let resource = |attributes: Vec<(&str, &str)>| otlp_resource_v1::Resource {
+            attributes: attributes
+                .into_iter()
+                .map(|(key, value)| key_value_string_to_otlp_common_key_value(key, value))
+                .collect(),
+            dropped_attributes_count: 0,
+            entity_refs: vec![],
+        };
+        let hostname = |attributes| {
+            translate_log(otlp_logs_v1::LogRecord::default(), resource(attributes), None)
+                .hostname()
+                .to_string()
+        };
+
+        assert_eq!(
+            hostname(vec![("host.name", "name"), ("datadog.host.name", "custom")]),
+            "custom"
+        );
+        assert_eq!(
+            hostname(vec![("k8s.node.name", "node"), ("k8s.cluster.name", "cluster")]),
+            "node-cluster"
+        );
+        assert_eq!(hostname(vec![("host.name", "localhost")]), "");
+        assert_eq!(
+            hostname(vec![("cloud.platform", "gcp_cloud_run"), ("host.name", "name")]),
+            ""
+        );
+    }
+
+    #[test]
+    fn empty_resource_host_falls_back_to_the_record() {
+        let lr = otlp_logs_v1::LogRecord {
+            attributes: vec![key_value_string_to_otlp_common_key_value("host.name", "record-host")],
+            ..Default::default()
+        };
+        let resource = otlp_resource_v1::Resource {
+            attributes: vec![otlp_common::KeyValue {
+                key: "datadog.host.name".to_string(),
+                value: Some(otlp_common::AnyValue {
+                    value: Some(otlp_common::any_value::Value::IntValue(1)),
+                }),
+            }],
+            dropped_attributes_count: 0,
+            entity_refs: vec![],
+        };
+
+        let log = translate_log(lr, resource, None);
+        assert_eq!(log.hostname(), "record-host");
     }
 
     #[test]

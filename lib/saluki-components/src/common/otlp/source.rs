@@ -2,10 +2,11 @@
 //!
 //! A source is the entity that emitted the telemetry: a host, or a serverless resource such as an AWS Lambda function.
 //! Detectors run in a fixed order, and the first one that matches wins. Resources that match none of them fall back to
-//! the hostname cascade shared with metrics.
+//! the hostname cascade in [`super::util`], except a Cloud Run or Cloud Functions resource with an incomplete
+//! identity, which has no source even when it has a hostname.
 //!
-//! Only traces resolve their source here today. Metrics and logs take their serverless identity tags from these
-//! detectors, but still resolve their source with the narrower resolvers in [`super::util`].
+//! Logs, metrics, and the OTLP trace translator resolve their source here. The trace encoder uses the narrower
+//! `attributes_to_source` in [`super::util`].
 
 use std::sync::LazyLock;
 
@@ -804,6 +805,66 @@ mod tests {
         ] {
             let source = resolve(&entries).expect("serverless source should resolve");
             assert_ne!(source.0, SourceKind::Hostname);
+        }
+    }
+
+    /// A named source resolution case: the attributes and the expected kind and identifier.
+    type SourceCase = (
+        &'static str,
+        Vec<(&'static str, &'static str)>,
+        Option<(SourceKind, String)>,
+    );
+
+    #[test]
+    fn incomplete_identities_and_precedence() {
+        let azure = |platform: &'static str| {
+            vec![
+                ("cloud.platform", platform),
+                ("service.name", "app"),
+                ("cloud.account.id", "sub"),
+                ("azure.resource_group.name", "rg"),
+                ("host.name", "name"),
+            ]
+        };
+        let without = |mut entries: Vec<(&'static str, &'static str)>, key: &str| {
+            entries.retain(|(k, _)| *k != key);
+            entries
+        };
+        let host = |identifier: &str| Some((SourceKind::Hostname, identifier.to_string()));
+
+        let cases: Vec<SourceCase> = vec![
+            (
+                "incomplete Azure Functions falls back to the host",
+                without(azure("azure.functions"), "azure.resource_group.name"),
+                host("name"),
+            ),
+            (
+                "Azure App Service with an empty subscription falls back to the host",
+                {
+                    let mut entries = without(azure("azure.app_service"), "cloud.account.id");
+                    entries.push(("cloud.account.id", ""));
+                    entries
+                },
+                host("name"),
+            ),
+            (
+                "Azure Container Apps without a replica falls back to the host",
+                azure("azure.container_apps"),
+                host("name"),
+            ),
+            (
+                "Azure Functions beats ECS Fargate",
+                {
+                    let mut entries = azure("azure.functions");
+                    entries.extend([("aws.ecs.launchtype", "fargate"), ("aws.ecs.task.arn", "arn")]);
+                    entries
+                },
+                Some((SourceKind::AzureFunctions, "app".to_string())),
+            ),
+        ];
+
+        for (name, entries, expected) in cases {
+            assert_eq!(resolve(&entries), expected, "{name}");
         }
     }
 
