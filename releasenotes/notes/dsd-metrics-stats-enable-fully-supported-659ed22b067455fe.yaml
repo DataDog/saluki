@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Agent Data Plane no longer logs a "Partially supported configuration key" warning when
+    ``dogstatsd_metrics_stats_enable`` is set. Agent Data Plane fully supports this setting: it
+    controls the DogStatsD metric debug log, and DogStatsD statistics stay available on demand
+    through ``agent-data-plane dogstatsd stats``.

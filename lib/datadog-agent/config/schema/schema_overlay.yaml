@@ -1035,6 +1035,10 @@ inventory:
       the topology. This feature is for support and troubleshooting. It does not change normal
       metric forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
 
+      The destination records each metric before metric mapping (`dogstatsd_mapper_profiles`) and
+      enrichment. The core agent records each metric after them, so metric names and tags in the
+      file can differ from the core agent's.
+
       Use these settings to control the file:
 
       | Config Key                     | Behavior                                                                                    |
@@ -1176,12 +1180,9 @@ inventory:
     documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_metrics_stats_enable:
-    support: partial
-    warn: true
+    support: full
     pipelines: [dogstatsd]
     description: "Enable per-metric debug stats"
-    documentation: "See `dogstatsd_stats_enable`"
-    issue: "#1352"
 
   dogstatsd_no_aggregation_pipeline:
     support: full
@@ -1350,6 +1351,20 @@ inventory:
       `/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
       window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
       same API and renders the result as either summary or cardinality analysis.
+
+      ADP's per-metric statistics differ from the core agent's in these ways:
+
+      - ADP collects statistics on demand, for a fixed window. The core agent keeps a cumulative map
+        for as long as `dogstatsd_metrics_stats_enable` is `true`. ADP counts only the samples that
+        arrive during the requested window, and keeps nothing between requests.
+      - `dogstatsd_metrics_stats_enable` does not control the ADP statistics API. The API is always
+        available. In ADP, the key only controls the DogStatsD metric debug log.
+      - Use `agent-data-plane dogstatsd stats` to read ADP's statistics. The core agent's
+        `agent dogstatsd-stats` command reads the core agent's own statistics, not ADP's.
+      - ADP does not log the core agent's warning about a burst of metrics.
+      - ADP records each metric before metric mapping (`dogstatsd_mapper_profiles`) and enrichment.
+        The core agent records each metric after them, so metric names and tags can differ between
+        the two outputs.
 
       ADP also exposes aggregate DogStatsD counters through its internal telemetry scrape endpoint. This
       endpoint is separate from `/dogstatsd/stats`: it does not return the per-metric count and last-seen
