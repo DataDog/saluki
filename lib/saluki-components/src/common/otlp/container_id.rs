@@ -144,7 +144,7 @@ impl<'a> OriginInfo<'a> {
     /// As in the Agent, the process ID and the cgroup inode count only as integers, and the init container flag only as
     /// a boolean. An integer converts with two's-complement truncation, as Go's `uint32(...)` and `uint64(...)` do. The
     /// pod UID and the container name accept any type. A string, integer, or boolean value converts to a string as
-    /// pdata's `AsString` does, and any other value converts to an empty string (`gap/value-formatting`).
+    /// `pdata`'s `AsString` does, and any other value converts to an empty string (`gap/value-formatting`).
     pub fn from_attributes(attributes: &'a [KeyValue]) -> Self {
         let mut origin = Self::default();
         if let Some(Value::IntValue(process_id)) = attribute_value(attributes, PROCESS_PID) {
@@ -184,9 +184,9 @@ pub fn inject_container_id(attributes: &mut Vec<KeyValue>, resolver: &ContainerI
     });
 }
 
-/// Returns the value of the first attribute with `key`, as pdata's `Map.Get` does.
+/// Returns the value of the first attribute with `key`, as `pdata`'s `Map.Get` does.
 ///
-/// The value of an attribute without a value is `None`, as pdata's empty value.
+/// The value of an attribute without a value is `None`, as `pdata`'s empty value.
 fn attribute<'a>(attributes: &'a [KeyValue], key: &str) -> Option<Option<&'a Value>> {
     attributes
         .iter()
@@ -198,9 +198,9 @@ fn attribute_value<'a>(attributes: &'a [KeyValue], key: &str) -> Option<&'a Valu
     attribute(attributes, key).flatten()
 }
 
-/// Converts a value to a string, as pdata's `AsString` does for empty, string, integer, and boolean values.
+/// Converts a value to a string, as `pdata`'s `AsString` does for empty, string, integer, and boolean values.
 ///
-/// Other types convert to an empty string, which the lookup treats as absent. pdata formats them, but a pod UID or a
+/// Other types convert to an empty string, which the lookup treats as absent. `pdata` formats them, but a pod UID or a
 /// container name of such a type identifies no container.
 fn as_string(value: Option<&Value>) -> Cow<'_, str> {
     match value {
@@ -526,7 +526,7 @@ mod tests {
                 [vec![pid(IntValue(7)), inode(IntValue(7))], external_data()].concat(),
                 Some("app-container"),
             ),
-            // Only the first attribute with a key counts, as in pdata's `Map.Get`.
+            // Only the first attribute with a key counts, as in `pdata`'s `Map.Get`.
             (
                 "string PID before integer PID",
                 vec![pid(string("42")), pid(IntValue(42))],
@@ -576,8 +576,8 @@ mod tests {
         }
     }
 
-    /// pdata's `AsString` formats doubles, bytes, arrays, and maps. The lookup treats them as absent until the OTLP
-    /// path has a shared `AsString` that matches pdata.
+    /// `pdata`'s `AsString` formats doubles, bytes, arrays, and maps. The lookup treats them as absent until the OTLP
+    /// path has a shared `AsString` that matches `pdata`.
     #[test]
     #[ignore = "target for `gap/value-formatting`"]
     fn target_value_formatting() {
