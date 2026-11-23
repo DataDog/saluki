@@ -1,23 +1,23 @@
 //! Native trace intake.
 //!
-//! Serves the trace endpoints the way the trace-agent's receiver does (`handleWithVersion` and `handleTracesV1` in
-//! `pkg/trace/api/api.go`): it rejects cross-site requests, bounds the body size, decodes at most `decoders` payloads
-//! at once, and answers with the status codes of `responses.go`. Each request's receiver metadata (client flags, the
-//! tracer's container and process tags, the connection) is resolved once and shared by every trace of the payload.
+//! Serves the trace endpoints the way the trace-agent's receiver does: it rejects cross-site requests, bounds the body
+//! size, decodes at most `decoders` payloads at once, and answers with the trace-agent's status codes. Each request's
+//! receiver metadata (client flags, the tracer's container and process tags, the connection) is resolved once and
+//! shared by every trace of the payload.
 //!
 //! Status codes, in the order a request can meet them:
 //!
-//! | Condition | Status | Go |
-//! |---|---|---|
-//! | `Sec-Fetch-Site: cross-site` | 403 | `handleWithVersion` |
-//! | `receiver_timeout` elapses waiting for a decoder | 429, no body | `handleTracesV1`, `req.Context().Done()` |
-//! | `decoder_timeout` elapses waiting for a decoder | 200, or 429 with feature `429` or `Datadog-Send-Real-Http-Status`, after draining the body | `handleTracesV1`, `time.After(DecoderTimeout)` |
-//! | `Content-Length` over `max_request_bytes` | 413 | `reserveBodySize` |
-//! | Body reaches `max_request_bytes` | 413 | `LimitedReader` |
-//! | `receiver_timeout` elapses reading the body | 408 | `ReadTimeout`, `httpDecodingError` |
-//! | The body ends early | 400 `unexpected-eof` | `httpDecodingError` |
-//! | The payload doesn't decode | 400 | `httpDecodingError` |
-//! | Accepted | 200 | `replyOK` |
+//! | Condition | Status |
+//! |---|---|
+//! | `Sec-Fetch-Site: cross-site` | 403 |
+//! | `receiver_timeout` elapses waiting for a decoder | 429, no body |
+//! | `decoder_timeout` elapses waiting for a decoder | 200, or 429 with feature `429` or `Datadog-Send-Real-Http-Status`, after draining the body |
+//! | `Content-Length` over `max_request_bytes` | 413 |
+//! | Body reaches `max_request_bytes` | 413 |
+//! | `receiver_timeout` elapses reading the body | 408 |
+//! | The body ends early | 400 `unexpected-eof` |
+//! | The payload doesn't decode | 400 |
+//! | Accepted | 200 |
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -50,12 +50,12 @@ const COMPUTED_STATS_HEADER: HeaderName = HeaderName::from_static("datadog-clien
 const DROPPED_P0_TRACES_HEADER: HeaderName = HeaderName::from_static("datadog-client-dropped-p0-traces");
 const SEND_REAL_HTTP_STATUS_HEADER: HeaderName = HeaderName::from_static("datadog-send-real-http-status");
 
-/// Longest `Datadog-Meta-*` value kept, in bytes, as the trace-agent's `truncateMetaValue` bounds them.
+/// Longest `Datadog-Meta-*` value kept, in bytes, as the trace-agent bounds them.
 const MAX_META_VALUE_LEN: usize = 200;
 
 /// Body of an accepted payload until the receiver reports sampling rates.
 ///
-/// Encoded as Go's `json.Encoder` writes `traceResponse`, with a trailing newline.
+/// Encoded as the trace-agent writes it, with a trailing newline.
 const RATE_BY_SERVICE_BODY: &str = "{\"rate_by_service\":{}}\n";
 
 /// Settings of the native trace intake.
@@ -114,7 +114,7 @@ impl TraceIntake {
     pub(super) async fn handle(
         &self, version: EndpointVersion, request: AxumRequest, container_tags: &ContainerTagsHasher,
     ) -> Response {
-        // Go's server read timeout runs from the arrival of the request.
+        // As in the trace-agent, the read timeout runs from the arrival of the request.
         let deadline = Instant::now() + self.config.receiver_timeout;
         let (parts, body) = request.into_parts();
         let headers = &parts.headers;
@@ -153,7 +153,7 @@ impl TraceIntake {
             EndpointVersion::V10 => decode_v1_payload(&body),
         };
         // The decoded traces own their data, so the body is released before they wait for the pipeline, as the
-        // trace-agent returns its buffer to the pool before `sendPayload`.
+        // trace-agent releases its buffer before sending the payload on.
         drop(body);
         let decoded = match decoded {
             Ok(decoded) => decoded,
@@ -236,7 +236,7 @@ fn receiver_metadata(
     }
 }
 
-/// Returns the connection type of the trace-agent's `GetConnectionType`.
+/// Returns the connection type the trace-agent reports for a connection.
 fn connection_type(connection: Option<&ConnectInfo<ConnectionAddress>>) -> MetaString {
     MetaString::from_static(match connection {
         Some(ConnectInfo(ConnectionAddress::SocketLike(_))) => "tcp",
@@ -254,9 +254,9 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Option<&'a str> 
         .and_then(|value| simdutf8::basic::from_utf8(value.as_bytes()).ok())
 }
 
-/// Returns whether a header value is set and not false, as the trace-agent's `isHeaderTrue`.
+/// Returns whether a header value is set and not false, as the trace-agent reads boolean headers.
 ///
-/// The false values are those Go's `strconv.ParseBool` reads as false. A value it can't parse is true.
+/// The false values are the ones the trace-agent parses as false. A value it can't parse is true.
 fn is_header_true(value: Option<&str>) -> bool {
     match value {
         None | Some("") => false,
@@ -300,12 +300,12 @@ impl IntoResponse for BodyError {
 
 /// Reads a request body of fewer than `limit` bytes before `deadline`, keeping it only if `keep` is set.
 ///
-/// As the trace-agent's `LimitedReader`, a body is too large once it reaches the limit, so a body of exactly `limit`
+/// As in the trace-agent, a body is too large once it reaches the limit, so a body of exactly `limit`
 /// bytes is rejected too; a `Content-Length` over the limit is rejected before reading.
 async fn read_body(
     headers: &HeaderMap, body: Body, limit: u64, deadline: Instant, keep: bool,
 ) -> Result<Bytes, BodyError> {
-    // As `reserveBodySize`, an unparseable `Content-Length` is ignored.
+    // As in the trace-agent, an unparseable `Content-Length` is ignored.
     let content_length = header_str(headers, &CONTENT_LENGTH).and_then(|value| value.parse::<u64>().ok());
     if content_length.is_some_and(|length| length > limit) {
         return Err(BodyError::TooLarge);
@@ -342,7 +342,7 @@ async fn read_body(
         .unwrap_or(Err(BodyError::Timeout))
 }
 
-/// Answers with the sampling rates by service, as `httpRateByService` does.
+/// Answers with the sampling rates by service, as the trace-agent does.
 ///
 /// shortcut: the rates are always empty; APMSP-4286 reports the sampler's rates.
 fn rate_by_service(status: StatusCode) -> Response {
@@ -354,7 +354,7 @@ fn rate_by_service(status: StatusCode) -> Response {
         .into_response()
 }
 
-/// Answers with an error, as Go's `http.Error` does.
+/// Answers with an error, as the trace-agent does.
 fn http_error(status: StatusCode, message: &str) -> Response {
     (
         status,
@@ -476,7 +476,7 @@ mod tests {
         ));
         let receiver = traces[0].payload.receiver();
         assert_eq!(receiver.endpoint_version, "v1.0");
-        // Resolved from the first span, as `getProcessTagsV1` does.
+        // Resolved from the first span, as in the trace-agent.
         assert_eq!(receiver.process_tags, "entrypoint.name:app");
     }
 
@@ -523,7 +523,7 @@ mod tests {
         let (status, _, _) = send(&intake, request(&[], body)).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 
-        // As Go's `LimitedReader`, a body of exactly the limit is too large.
+        // As in the trace-agent, a body of exactly the limit is too large.
         let (status, _, _) = send(&intake, request(&[], Body::from(vec![0u8; LIMIT as usize]))).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }

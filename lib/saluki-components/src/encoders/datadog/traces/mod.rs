@@ -879,7 +879,7 @@ impl TraceEndpointEncoder {
 
                 // Chunk attributes: the tracer's own, then decision maker, ETS tag, OTLP sampling rate. An OTLP
                 // trace's attributes describe its resource, not its chunk, so they aren't written here. The
-                // encoder's own keys replace a same-named tracer attribute, as `SetStringAttribute` does.
+                // encoder's own keys replace a same-named tracer attribute, as in the trace-agent.
                 {
                     let ets_error = self.error_tracking_standalone
                         && trace.spans().iter().any(|span| {

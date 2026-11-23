@@ -270,8 +270,7 @@ impl ApmStats {
                     })
                 })
                 .unwrap_or_else(payload_env),
-            // Datadog traces use the (normalized) tracer payload env, else the agent env, as `addNowV1` does with
-            // `processedTraceV1`'s `TracerEnv` (agent.go).
+            // Datadog traces use the (normalized) tracer payload env, else the agent env, as the trace-agent does.
             TraceIngestInfo::Datadog => payload_env(),
         };
 
@@ -553,8 +552,8 @@ fn now_nanos() -> u64 {
 
 /// Extracts the process tags of a trace.
 ///
-/// Datadog traces use the process tags the receiver resolved for their payload, as the reference agent's V1 stats use
-/// `PayloadV1.ProcessTags`. OTLP traces check the root span's attributes, then the trace attributes.
+/// Datadog traces use the process tags the receiver resolved for their payload, as the trace-agent's V1 stats do. OTLP
+/// traces check the root span's attributes, then the trace attributes.
 fn extract_process_tags(trace: &Trace) -> MetaString {
     if trace.ingest_info() == TraceIngestInfo::Datadog {
         return trace.payload.receiver().process_tags.clone();
@@ -1471,8 +1470,7 @@ mod tests {
         assert!(extract_process_tags(&Trace::new(vec![span_with_process_tags("")], otlp)).is_empty());
         assert!(extract_process_tags(&Trace::new(vec![], otlp)).is_empty());
 
-        // Datadog traces use the receiver's process tags, not the root span's, as V1 stats use
-        // `PayloadV1.ProcessTags`.
+        // Datadog traces use the receiver's process tags, not the root span's, as the trace-agent's V1 stats do.
         let mut trace = Trace::new(vec![span_with_process_tags("from:span")], TraceIngestInfo::Datadog);
         assert!(extract_process_tags(&trace).is_empty());
         trace.payload.receiver = Some(Arc::new(ReceiverMetadata {

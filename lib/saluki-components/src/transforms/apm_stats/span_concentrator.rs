@@ -346,9 +346,8 @@ fn align_ts(ts: u64, bsize: u64) -> u64 {
 
 /// Returns the kind of a span, of a trace ingested through `ingest_info`.
 ///
-/// Datadog traces use the span's kind field only, as the reference agent's `NewStatSpanFromV1` does through
-/// `InternalSpan.SpanKind`: an unspecified or unrecognized kind is `unknown`, which no kind-based rule selects. OTLP
-/// spans carry their kind as the `span.kind` attribute.
+/// Datadog traces use the span's kind field only, as the trace-agent does: an unspecified or unrecognized kind is
+/// `unknown`, which no kind-based rule selects. OTLP spans carry their kind as the `span.kind` attribute.
 fn span_kind(span: &Span, ingest_info: TraceIngestInfo) -> Option<MetaString> {
     if let TraceIngestInfo::Otlp { .. } = ingest_info {
         return span

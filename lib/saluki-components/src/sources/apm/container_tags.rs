@@ -90,7 +90,7 @@ impl ContainerTagsHasher {
     }
 
     /// Returns the ID and the tags of the container of the tracer that sent a request with `headers`, over
-    /// `connection`, as the trace-agent's `GetContainerID` finds it and its tagger tags it.
+    /// `connection`, as the trace-agent finds and tags it.
     ///
     /// A tracer identified by its cgroup inode gets the container ID that the inode's tags carry, as the tagger resolves
     /// the inode to its container. The tags are empty when the container has none, or ADP runs without the core Agent.

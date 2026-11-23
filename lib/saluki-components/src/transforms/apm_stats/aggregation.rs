@@ -40,7 +40,7 @@ pub enum SpanKind {
     /// Consumer span (receiving message from queue/topic).
     Consumer = 5,
 
-    /// Unrecognized span kind of a Datadog span, as the reference agent's `InternalSpan.SpanKind` names it.
+    /// Unrecognized span kind of a Datadog span, as the trace-agent names it.
     Unknown = 6,
 }
 
