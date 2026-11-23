@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Fails if FIPS builds use an AWS-LC FIPS module that is not FIPS 140-3 certified, or an AWS-LC version that is older
-# than the version that the certificate names.
+# Fails if FIPS builds use an AWS-LC FIPS branch that has no FIPS 140-3 certified release, or an AWS-LC version that is
+# older than the certified release on that branch.
 #
 # `aws-lc-fips-sys` bundles the AWS-LC FIPS module source, so we find the `aws-lc-fips-sys` package used by a FIPS build
 # of `agent-data-plane` and read two values from the bundled headers:
@@ -11,18 +11,21 @@
 #   `AWSLC_VERSION_NUMBER_STRING` is the module number (for example, 4.2.0 -> 4). Other major versions must define it.
 # - The full AWS-LC version, from `AWSLC_VERSION_NUMBER_STRING`.
 #
-# The module number identifies the certificate that applies. A later AWS-LC version on the same FIPS branch keeps the
-# certified status, so we compare the AWS-LC version with the version that the certificate names. See
-# https://github.com/aws/aws-lc-rs/issues/1166. The AWS-LC major version and the module number can diverge in future
+# The module number identifies the FIPS branch, and so the certificate that can apply. Each certificate names one AWS-LC
+# version on that branch. `aws-lc-fips-sys` can bundle a later version from the same branch, which the certificate
+# doesn't list. This check doesn't decide whether such a version is covered: it only makes sure that FIPS builds stay on a
+# branch with a certified release, and never go below that release. An aws-lc-rs maintainer suggests that later versions
+# keep the status (https://github.com/aws/aws-lc-rs/issues/1166), but AWS hasn't confirmed this
+# (https://github.com/aws/aws-lc/issues/3830). The AWS-LC major version and the module number can diverge in future
 # releases, so don't infer one from the other.
 #
-# Add a module to `certified_min_version` only after NIST certifies it. Use the AWS-LC version that the certificate
-# names as the minimum version.
+# Add a module to `certified_min_version` only after NIST certifies a release on its branch. Use the AWS-LC version that
+# the certificate names as the minimum version.
 
 set -euo pipefail
 
-# Prints the minimum certified AWS-LC version for the FIPS module number `$1`. Prints nothing if the module is not
-# certified.
+# Prints the AWS-LC version that the certificate names for the FIPS module number `$1`. Prints nothing if no release on
+# that branch is certified.
 certified_min_version() {
     case "$1" in
         # https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5298
@@ -40,7 +43,7 @@ version_at_least() {
     [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$2" ]]
 }
 
-echo "[*] Checking that FIPS builds use a certified AWS-LC FIPS module..."
+echo "[*] Checking that FIPS builds use an AWS-LC FIPS branch with a certified release..."
 
 # `cargo metadata` resolves the whole workspace and unifies features across every member, so it can't tell us what a
 # single member's build uses: if any other member enabled `aws-lc-rs/fips`, `aws-lc-fips-sys` would look like part of
@@ -100,16 +103,16 @@ while IFS= read -r manifest_path; do
     crate="$(basename "$(dirname "${manifest_path}")")"
     min_version="$(certified_min_version "${module_version}")"
     if [[ -z "${min_version}" ]]; then
-        echo "error: ${crate} bundles AWS-LC ${aws_lc_version} (FIPS module ${module_version}), and FIPS module" \
-            "${module_version} is not certified. See the aws-lc-rs comment in Cargo.toml." >&2
+        echo "error: ${crate} bundles AWS-LC ${aws_lc_version} (FIPS module ${module_version}), and no release of FIPS" \
+            "module ${module_version} is certified. See the aws-lc-rs comment in Cargo.toml." >&2
         status=1
     elif ! version_at_least "${aws_lc_version}" "${min_version}"; then
         echo "error: ${crate} bundles AWS-LC ${aws_lc_version} (FIPS module ${module_version}), which is older than" \
-            "the certified version ${min_version}." >&2
+            "the certified release ${min_version}." >&2
         status=1
     else
-        echo "${crate} bundles AWS-LC ${aws_lc_version} (FIPS module ${module_version}), which is certified" \
-            "(minimum certified version ${min_version})."
+        echo "${crate} bundles AWS-LC ${aws_lc_version} (FIPS module ${module_version}). The certified release on" \
+            "this branch is ${min_version}."
     fi
 done <<< "${manifest_paths}"
 

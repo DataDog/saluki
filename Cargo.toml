@@ -95,12 +95,13 @@ otlp-protos = { path = "lib/protos/otlp" }
 anymap3 = { version = "1", default-features = false, features = ["std"] }
 async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
-# FIPS builds use the AWS-LC-FIPS 4.x module, which aws-lc-rs 1.18 and later bundle through `aws-lc-fips-sys` 0.14.
-# NIST CMVP certifies this module for FIPS 140-3:
+# FIPS builds use the AWS-LC FIPS 4 branch, which aws-lc-rs 1.18 and later bundle through `aws-lc-fips-sys` 0.14.
+# NIST CMVP certifies AWS-LC FIPS 4.0.0 from this branch for FIPS 140-3:
 # https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5595 and
 # https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5596.
-# The AWS-LC-FIPS 5.x module is not certified. The `aws-lc-fips-sys` ban in deny.toml and
-# `ci/tooling/check-fips-module.sh` block that module until NIST certifies it.
+# `aws-lc-fips-sys` 0.14 bundles a later release from the same branch, which the certificates don't list. See
+# https://github.com/aws/aws-lc/issues/3830. No release of the AWS-LC FIPS 5 branch is certified. The
+# `aws-lc-fips-sys` ban in deny.toml and `ci/tooling/check-fips-module.sh` block that branch until NIST certifies it.
 aws-lc-rs = { version = "1.18", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }

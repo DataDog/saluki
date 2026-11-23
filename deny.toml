@@ -35,12 +35,13 @@ features = ["fips"]
 [bans]
 multiple-versions = "allow"
 deny = [
-  # `aws-lc-fips-sys` bundles the AWS-LC FIPS module. 0.14.x bundles AWS-LC-FIPS 4.x, which is FIPS 140-3 certified.
-  # No 0.15 release exists yet. aws-lc-rs plans to move to the AWS-LC-FIPS 5.x branch, which is not certified, and that
-  # move needs a semver-incompatible `aws-lc-fips-sys` release. This ban and `ci/tooling/check-fips-module.sh` keep FIPS
-  # builds on a certified module. Before you lift the ban, check which module the new version bundles and confirm that
-  # NIST certifies it. See the comment next to the `aws-lc-rs` workspace dependency in Cargo.toml.
-  { crate = "aws-lc-fips-sys@>=0.15", reason = "expected to bundle AWS-LC-FIPS 5.x, which is not certified; see aws-lc-rs in Cargo.toml" },
+  # `aws-lc-fips-sys` bundles the AWS-LC FIPS module. 0.14.x bundles a release from the AWS-LC FIPS 4 branch. NIST
+  # certifies the 4.0.0 release of that branch for FIPS 140-3.
+  # No 0.15 release exists yet. aws-lc-rs plans to move to the AWS-LC FIPS 5 branch, which has no certified release, and
+  # that move needs a semver-incompatible `aws-lc-fips-sys` release. This ban and `ci/tooling/check-fips-module.sh` keep
+  # FIPS builds on a branch with a certified release. Before you lift the ban, check which branch the new version
+  # bundles and confirm that NIST certifies a release of it. See the comment next to `aws-lc-rs` in Cargo.toml.
+  { crate = "aws-lc-fips-sys@>=0.15", reason = "expected to bundle the AWS-LC FIPS 5 branch, which has no certified release; see aws-lc-rs in Cargo.toml" },
   { crate = "chrono-tz", reason = "unmaintained (RUSTSEC-2026-0555); use saluki_common::time for time zones" },
   { crate = "chrono", wrappers = ["lading-payload"], reason = "unmaintained (RUSTSEC-2026-0543); use saluki_common::time" },
   # Older jiff versions come in through third-party crates, so the ban only covers 1.x.
