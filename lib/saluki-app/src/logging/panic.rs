@@ -2,6 +2,7 @@
 
 use std::{
     backtrace::{Backtrace, BacktraceStatus},
+    ffi::OsStr,
     fmt::Write as _,
     panic::PanicHookInfo,
 };
@@ -48,10 +49,15 @@ fn log_panic(info: &PanicHookInfo<'_>) {
     // The message names the location, as the first line of the default hook's output does, so the panic reads the
     // same way in the log. The location also stays in its own field for filtering.
     //
-    // `capture` follows `RUST_LIB_BACKTRACE` and `RUST_BACKTRACE`, as the default hook does.
-    let backtrace = Backtrace::capture();
+    // Capture a backtrace exactly when the default hook prints one. `Backtrace::capture` would also follow
+    // `RUST_LIB_BACKTRACE`, which the default hook ignores, so the style comes from `RUST_BACKTRACE` alone.
+    let style = BacktraceStyle::from_env();
+    let backtrace = match style {
+        BacktraceStyle::Off => Backtrace::disabled(),
+        BacktraceStyle::Short | BacktraceStyle::Full => Backtrace::force_capture(),
+    };
     if backtrace.status() == BacktraceStatus::Captured {
-        let full = std::env::var_os("RUST_BACKTRACE").is_some_and(|value| value == "full");
+        let full = style == BacktraceStyle::Full;
         let rendered = if full {
             format!("{backtrace:#}")
         } else {
@@ -75,6 +81,35 @@ fn log_panic(info: &PanicHookInfo<'_>) {
             "Application panicked at {}.",
             location
         );
+    }
+}
+
+/// How the standard library's default panic hook shows a backtrace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BacktraceStyle {
+    /// No backtrace.
+    Off,
+    /// The frames between the panic machinery and the entry point of `main` or the thread.
+    Short,
+    /// Every frame.
+    Full,
+}
+
+impl BacktraceStyle {
+    /// Reads the style from `RUST_BACKTRACE`, as the default panic hook does.
+    fn from_env() -> Self {
+        Self::from_value(std::env::var_os("RUST_BACKTRACE").as_deref())
+    }
+
+    /// Returns the style for a value of `RUST_BACKTRACE`: unset or `0` turns backtraces off, `full` shows every frame,
+    /// and any other value shows a short backtrace.
+    fn from_value(value: Option<&OsStr>) -> Self {
+        match value {
+            None => Self::Off,
+            Some(value) if value == "0" => Self::Off,
+            Some(value) if value == "full" => Self::Full,
+            Some(_) => Self::Short,
+        }
     }
 }
 
@@ -134,7 +169,24 @@ fn frame_symbol(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_backtrace, frame_symbol, SHORT_BACKTRACE_NOTE};
+    use std::ffi::OsStr;
+
+    use super::{format_backtrace, frame_symbol, BacktraceStyle, SHORT_BACKTRACE_NOTE};
+
+    #[test]
+    fn backtrace_style_follows_rust_backtrace_like_the_default_hook() {
+        assert_eq!(BacktraceStyle::from_value(None), BacktraceStyle::Off);
+        assert_eq!(BacktraceStyle::from_value(Some(OsStr::new("0"))), BacktraceStyle::Off);
+        assert_eq!(
+            BacktraceStyle::from_value(Some(OsStr::new("full"))),
+            BacktraceStyle::Full
+        );
+        assert_eq!(BacktraceStyle::from_value(Some(OsStr::new("1"))), BacktraceStyle::Short);
+        assert_eq!(
+            BacktraceStyle::from_value(Some(OsStr::new("yes"))),
+            BacktraceStyle::Short
+        );
+    }
 
     /// A rendered backtrace shaped like one that a panic hook captures: the capture and panic machinery, the frames that
     /// led to the panic, and the entry point.

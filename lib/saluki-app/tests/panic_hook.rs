@@ -15,7 +15,7 @@ const PANIC_MESSAGE: &str = "panic hook test sentinel";
 
 #[test]
 fn panic_is_logged_to_file_and_standard_error() {
-    let (log, stderr) = run_child(None);
+    let (log, stderr) = run_child(None, None);
 
     let panic_line = log
         .lines()
@@ -48,7 +48,7 @@ fn panic_is_logged_to_file_and_standard_error() {
 
 #[test]
 fn panic_backtrace_is_logged_like_standard_error() {
-    let (log, stderr) = run_child(Some("1"));
+    let (log, stderr) = run_child(Some("1"), None);
 
     let location = stderr_panic_location(&stderr);
     assert!(
@@ -69,10 +69,36 @@ fn panic_backtrace_is_logged_like_standard_error() {
     );
 }
 
+#[test]
+fn panic_backtrace_ignores_rust_lib_backtrace() {
+    // `RUST_LIB_BACKTRACE=0` turns off library backtraces but leaves panic backtraces on, as the default hook does.
+    let (log, stderr) = run_child(Some("1"), Some("0"));
+    assert!(
+        stderr.contains("stack backtrace:"),
+        "the default hook should print a backtrace\nstderr:\n{stderr}"
+    );
+    assert!(
+        log.contains("stack backtrace:"),
+        "the log should have the backtrace that standard error has\nlog:\n{log}"
+    );
+
+    // `RUST_LIB_BACKTRACE=1` alone turns on only library backtraces, so neither output has a panic backtrace.
+    let (log, stderr) = run_child(None, Some("1"));
+    assert!(
+        !stderr.contains("stack backtrace:"),
+        "the default hook should not print a backtrace\nstderr:\n{stderr}"
+    );
+    assert!(
+        !log.contains("stack backtrace:"),
+        "the log should not have a backtrace that standard error doesn't\nlog:\n{log}"
+    );
+}
+
 /// Runs [`child_panics_after_bootstrap`] in a child process, and returns its log file and standard error.
 ///
-/// `backtrace` sets `RUST_BACKTRACE` in the child. `None` unsets both backtrace variables.
-fn run_child(backtrace: Option<&str>) -> (String, String) {
+/// `rust_backtrace` and `rust_lib_backtrace` set `RUST_BACKTRACE` and `RUST_LIB_BACKTRACE` in the child. `None` unsets
+/// the variable.
+fn run_child(rust_backtrace: Option<&str>, rust_lib_backtrace: Option<&str>) -> (String, String) {
     let dir = tempfile::tempdir().expect("create temporary directory");
     let log_file = dir.path().join("app.log");
 
@@ -84,12 +110,16 @@ fn run_child(backtrace: Option<&str>) -> (String, String) {
             "--nocapture",
             "--test-threads=1",
         ])
-        .env(CHILD_LOG_FILE_ENV, &log_file)
-        .env_remove("RUST_LIB_BACKTRACE");
-    match backtrace {
-        Some(value) => command.env("RUST_BACKTRACE", value),
-        None => command.env_remove("RUST_BACKTRACE"),
-    };
+        .env(CHILD_LOG_FILE_ENV, &log_file);
+    for (name, value) in [
+        ("RUST_BACKTRACE", rust_backtrace),
+        ("RUST_LIB_BACKTRACE", rust_lib_backtrace),
+    ] {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
     let output = command.output().expect("run child test");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
