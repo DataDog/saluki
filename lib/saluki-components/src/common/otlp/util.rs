@@ -512,7 +512,8 @@ fn aks_cluster_name(resource_group_name: &str) -> Option<&str> {
 
 /// Resolves an EKS cluster name from an EC2 Kubernetes cluster tag key.
 ///
-/// The last matching key wins.
+/// The last matching key wins, as in the Agent's `ClusterNameFromAttributes`:
+/// <https://github.com/DataDog/datadog-agent/blob/49aeaf12783b07c1016319c0197031a6311fd0dc/pkg/opentelemetry-mapping-go/otlp/attributes/ec2/ec2.go#L84-L96>
 fn ec2_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
     attributes
         .iter()
