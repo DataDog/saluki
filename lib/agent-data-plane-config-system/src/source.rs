@@ -201,10 +201,11 @@ impl SourceTree {
 
     /// Returns `true` if an input explicitly set any value at or beneath the dotted `prefix`.
     ///
-    /// The value can be a key no model describes. An absent `prefix`, and a section that holds only
-    /// defaulted values, report `false`.
+    /// The value can be a key no model describes, or an entry inside an explicit object-valued leaf that
+    /// sits above `prefix`. An absent `prefix`, and a section that holds only defaulted values, report
+    /// `false`. So does a `prefix` that is only a null or an object of nulls inside such a leaf.
     pub(crate) fn has_explicit_under(&self, prefix: &str) -> bool {
-        self.root.get(prefix.split('.')).is_some_and(Node::has_explicit)
+        self.root.has_explicit_under(prefix.split('.'))
     }
 }
 
@@ -273,6 +274,29 @@ impl Node {
         }
     }
 
+    /// Returns whether any input explicitly set a value at or beneath `path`, taken from this node.
+    ///
+    /// [`Node::get`] stops at a leaf with segments left, so it cannot see inside an object-valued leaf
+    /// that sits above `path`. This looks the rest of `path` up in that leaf's value instead, the way
+    /// [`SourceTree::flattened_keys`] descends into one.
+    fn has_explicit_under<'a>(&self, mut path: impl Iterator<Item = &'a str>) -> bool {
+        let Some(segment) = path.next() else {
+            return self.has_explicit();
+        };
+        match self {
+            Node::Section(children) => children
+                .get(segment)
+                .is_some_and(|child| child.has_explicit_under(path)),
+            Node::Leaf { value, provenance } => {
+                *provenance == Provenance::Explicit
+                    && std::iter::once(segment)
+                        .chain(path)
+                        .try_fold(value, |value, segment| value.get(segment))
+                        .is_some_and(holds_a_value)
+            }
+        }
+    }
+
     /// Returns the node at `path`, if this node has one.
     fn get<'a>(&self, mut path: impl Iterator<Item = &'a str>) -> Option<&Node> {
         match path.next() {
@@ -314,6 +338,18 @@ impl Node {
                     .collect(),
             ),
         }
+    }
+}
+
+/// Returns whether `value` is, or holds, anything but null.
+///
+/// A null is absent, and so is an object that holds only nulls or empty objects: the same shapes a
+/// section in the tree would not carry.
+fn holds_a_value(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Object(entries) => entries.values().any(holds_a_value),
+        _ => true,
     }
 }
 
@@ -439,6 +475,33 @@ mod tests {
         assert!(!tree.has_explicit_under("otlp_config.receiver.protocols.http.tls"));
         assert!(!tree.has_explicit_under("otlp_config.receiver.protocols.grpc.tls.key_file"));
         assert!(!tree.has_explicit_under("not_a_datadog_key"));
+    }
+
+    #[test]
+    fn has_explicit_under_looks_inside_an_explicit_leaf_above_the_prefix() {
+        // The models describe `grpc.endpoint`, so `all_explicit` makes `grpc` a section. An Agent
+        // setting keyed at `grpc` is still one leaf holding the whole object, and `tls` is inside it.
+        const GRPC: &str = "otlp_config.receiver.protocols.grpc";
+        let tls = |value| agent_layer(&[(GRPC, json!({ "tls": value }), StreamProvenance::Explicit)]);
+
+        let configured = tls(json!({ "cert_file": "/etc/cert.pem" }));
+        assert!(configured.has_explicit_under("otlp_config.receiver.protocols.grpc.tls"));
+        assert!(configured.has_explicit_under("otlp_config.receiver.protocols.grpc.tls.cert_file"));
+        assert!(!configured.has_explicit_under("otlp_config.receiver.protocols.grpc.tls.key_file"));
+        assert!(!configured.has_explicit_under("otlp_config.receiver.protocols.http.tls"));
+
+        // Null, an empty object, and an object of nulls carry no value, as a section would not.
+        assert!(!tls(json!(null)).has_explicit_under("otlp_config.receiver.protocols.grpc.tls"));
+        assert!(!tls(json!({})).has_explicit_under("otlp_config.receiver.protocols.grpc.tls"));
+        assert!(!tls(json!({ "cert_file": null })).has_explicit_under("otlp_config.receiver.protocols.grpc.tls"));
+
+        // A leaf the input only defaulted is not explicit.
+        let defaulted = agent_layer(&[(
+            GRPC,
+            json!({ "tls": { "cert_file": "/etc/cert.pem" } }),
+            StreamProvenance::Default,
+        )]);
+        assert!(!defaulted.has_explicit_under("otlp_config.receiver.protocols.grpc.tls"));
     }
 
     #[test]
