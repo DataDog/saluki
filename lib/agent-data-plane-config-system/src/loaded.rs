@@ -629,7 +629,8 @@ mod tests {
     #[test]
     fn an_empty_otlp_endpoint_disables_its_receiver_only_from_the_file() {
         // An empty variable is unset, as in the Agent, so it keeps the default endpoint. An empty file value
-        // disables the receiver.
+        // disables the receiver. The Agent keeps the empty file value too, but its receiver then listens on a port
+        // that the system picks, which ADP doesn't copy.
         let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_otlp_empty_endpoint_{}.yaml", std::process::id()));
         std::fs::write(
