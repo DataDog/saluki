@@ -40,6 +40,8 @@ use tracing::warn;
 
 use crate::source::SourceTree;
 
+const DEFAULT_SKETCH_SHADOW_SAMPLE_RATE: f64 = 0.001;
+
 /// Translates a [`DatadogConfiguration`] into a [`SalukiConfiguration`].
 ///
 /// Construct with [`DatadogTranslator::new`] and call [`DatadogTranslator::translate`]: it drives
@@ -1891,7 +1893,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(&mut self, value: f64) {
-        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate = value;
+        // Core defaults to disabled; ADP samples validation traffic unless an input sets the rate explicitly.
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate = if self
+            .sources
+            .provenance("serializer_experimental_use_v3_api.sketches.shadow_sample_rate")
+            == Provenance::Explicit
+        {
+            value
+        } else {
+            DEFAULT_SKETCH_SHADOW_SAMPLE_RATE
+        };
     }
 
     fn consume_serializer_experimental_use_v3_api_sketches_shadow_sites(&mut self, value: Vec<String>) {
@@ -2075,7 +2086,7 @@ mod tests {
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use serde_json::{json, Value};
 
-    use super::DatadogTranslator;
+    use super::{DatadogTranslator, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE};
     use crate::saluki_only::SalukiOnly;
     use crate::source::SourceTree;
 
@@ -2099,6 +2110,33 @@ mod tests {
             .collect();
 
         translate_sources(&SourceTree::from_settings(&settings))
+    }
+
+    #[test]
+    fn sketch_shadow_sampling_uses_the_adp_default_unless_explicit() {
+        let key = "serializer_experimental_use_v3_api.sketches.shadow_sample_rate";
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "{errors:?}");
+        assert_eq!(
+            config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate,
+            DEFAULT_SKETCH_SHADOW_SAMPLE_RATE
+        );
+
+        // A streamed Core default must not disable ADP sampling; an explicit zero must still opt out.
+        for (value, provenance, expected) in [
+            (0.0, StreamProvenance::Default, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE),
+            (0.001, StreamProvenance::Default, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE),
+            (0.0, StreamProvenance::Explicit, 0.0),
+            (0.5, StreamProvenance::Explicit, 0.5),
+            (-1.0, StreamProvenance::Explicit, -1.0),
+        ] {
+            let (config, errors) = translate_stream(&[(key, json!(value), provenance)]);
+            assert!(errors.is_none(), "{errors:?}");
+            assert_eq!(
+                config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate,
+                expected
+            );
+        }
     }
 
     /// Asserts that `actual` was set explicitly and holds `expected`.

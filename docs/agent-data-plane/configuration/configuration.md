@@ -1903,7 +1903,7 @@ Defaults to `0`. Zero or negative values use `serializer_max_uncompressed_payloa
 
 ### `serializer_experimental_use_v3_api.sketches.shadow_sample_rate`
 
-Defaults to `0` (disabled). Samples eligible V2 sketch batches independently per destination. Zero or negative values disable shadowing; values at least `1` sample every batch. Authoritative V3 sketches are not shadowed.
+ADP defaults to `0.001` (0.1%) instead of the Core Agent's `0`, including when Core streams its default. Explicit values are honored: zero or negative values disable shadowing; values at least `1` sample every batch. Samples eligible V2 sketch batches independently per destination. Authoritative V3 sketches are not shadowed.
 
 ### `serializer_experimental_use_v3_api.sketches.shadow_sites`
 
