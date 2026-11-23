@@ -20,7 +20,7 @@ pub struct OtlpReceiver {
 impl OtlpReceiver {
     /// Checks that at least one server has an endpoint.
     ///
-    /// ADP doesn't start OTLP ingest without an endpoint, so it never builds an OTLP source that fails this check.
+    /// A caller that checks for an endpoint first never builds a source that fails this check.
     ///
     /// # Errors
     ///
