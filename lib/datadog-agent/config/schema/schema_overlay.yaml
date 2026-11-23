@@ -722,6 +722,9 @@ inventory:
       configuration doesn't list fails: the client gets `502 Bad Gateway` over HTTP, or `UNAVAILABLE` over
       gRPC.
 
+      This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+      key will be removed.
+
   data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint:
     support: full
     pipelines: [otlp]
@@ -739,6 +742,9 @@ inventory:
       ADP serves both protocols when their endpoints are set, so a proxied request on a protocol that the
       configuration doesn't list fails: the client gets `502 Bad Gateway` over HTTP, or `UNAVAILABLE` over
       gRPC.
+
+      This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+      key will be removed.
 
   data_plane.experimental.otlp.proxy.logs:
     support: full
@@ -760,6 +766,9 @@ inventory:
       from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
       to the Agent.
 
+      This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+      key will be removed.
+
   data_plane.experimental.otlp.proxy.metrics:
     support: full
     pipelines: [otlp]
@@ -780,6 +789,9 @@ inventory:
       from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
       to the Agent.
 
+      This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+      key will be removed.
+
   data_plane.experimental.otlp.proxy.traces:
     support: full
     pipelines: [otlp]
@@ -799,6 +811,9 @@ inventory:
       A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
       from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
       to the Agent.
+
+      This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+      key will be removed.
 
   data_plane.log_file:
     support: full

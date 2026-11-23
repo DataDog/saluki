@@ -1604,6 +1604,9 @@ ADP serves both protocols when their endpoints are set, so a proxied request on 
 configuration doesn't list fails: the client gets `502 Bad Gateway` over HTTP, or `UNAVAILABLE` over
 gRPC.
 
+This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+key will be removed.
+
 ### `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`
 
 ADP proxies the OTLP/HTTP requests of each proxied signal, traces included, to the Agent's
@@ -1618,6 +1621,9 @@ The Agent relocates only the receiver protocols configured under `otlp_config.re
 ADP serves both protocols when their endpoints are set, so a proxied request on a protocol that the
 configuration doesn't list fails: the client gets `502 Bad Gateway` over HTTP, or `UNAVAILABLE` over
 gRPC.
+
+This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+key will be removed.
 
 ### `data_plane.experimental.otlp.proxy.logs`
 
@@ -1636,6 +1642,9 @@ A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiv
 from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
 to the Agent.
 
+This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+key will be removed.
+
 ### `data_plane.experimental.otlp.proxy.metrics`
 
 When `true`, ADP doesn't process OTLP metrics itself. It streams each OTLP metrics request to the
@@ -1653,6 +1662,9 @@ A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiv
 from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
 to the Agent.
 
+This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+key will be removed.
+
 ### `data_plane.experimental.otlp.proxy.traces`
 
 When `true`, ADP doesn't process OTLP traces itself. It streams each OTLP traces request to the
@@ -1669,6 +1681,9 @@ Like the Agent, ADP still counts the setting: when any of
 A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
 from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
 to the Agent.
+
+This key is transitional: ADP proxies to the Agent only until its own OTLP support is complete, and the
+key will be removed.
 
 ### `data_plane.log_file`
 
