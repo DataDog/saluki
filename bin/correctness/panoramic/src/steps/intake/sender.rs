@@ -501,6 +501,10 @@ impl IntakeFrom {
     /// The intake answers with every request it recorded so far. A read that fails does not lose a request, so the step
     /// goes on after one. Only the last read must succeed.
     ///
+    /// The intake clones its records before it answers, so a read can miss a request that arrives while the read is in
+    /// flight. The settle therefore ends with a read that starts after the settle ends. A read that starts earlier
+    /// stops at the end of the settle, so the last read still fits in the budget.
+    ///
     /// # Errors
     ///
     /// Returns a harness error if an answer does not decode, and the error of the last read if it failed.
@@ -512,7 +516,14 @@ impl IntakeFrom {
         let give_up = Instant::now() + self.timeout.duration;
         let mut held_since = None;
         let last = loop {
-            let limit = PROBE_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
+            let started = Instant::now();
+            let mut limit = PROBE_TIMEOUT.min(deadline.saturating_duration_since(started));
+            if let Some(since) = held_since {
+                let end = since + self.settle.duration;
+                if started < end {
+                    limit = limit.min(end.saturating_duration_since(started));
+                }
+            }
             let read = match fetch(limit).await {
                 Ok(body) => {
                     let tally = self.target.selected(&body).map_err(|why| {
@@ -537,7 +548,8 @@ impl IntakeFrom {
             };
             let now = Instant::now();
             let end = held_since.map_or(give_up, |since| since + self.settle.duration);
-            if now >= end {
+            // A read that started before the settle ended can have missed a request, so it does not end the settle.
+            if now >= end && (held_since.is_none() || started >= end) {
                 break read;
             }
             sleep_until((now + POLL_INTERVAL).min(end)).await;
@@ -1066,6 +1078,85 @@ mod tests {
         assert_mentions(
             &outcome,
             &["Items by sender: adp 3, trace-agent 1.", "after the result first held"],
+        );
+    }
+
+    /// Watches an intake for the step on metrics, and returns the watch with the start and limit of each read.
+    ///
+    /// The intake holds the three items that the step expects. If `late` is set, one more item arrives then. The read
+    /// that starts 1.5s into the watch, just before the 2s settle ends, takes 0.6s. The answer shows the items that the
+    /// intake held when the read started. If `honors_limit` is set, a read stops at its limit with an error. Otherwise,
+    /// it overruns its limit.
+    async fn watch_slow_read(
+        honors_limit: bool, late: Option<Duration>,
+    ) -> (Result<Watched, HandleError>, Vec<(Duration, Duration)>) {
+        let step = adp_step(Telemetry::Metrics);
+        let begun = Instant::now();
+        let mut reads = Vec::new();
+        let watched = step
+            .watch(begun + step.budget(), |limit| {
+                let offset = begun.elapsed();
+                reads.push((offset, limit));
+                let mut items = vec![request(Telemetry::Metrics, Some(ADP), 3, 0)];
+                if late.is_some_and(|late| offset >= late) {
+                    items.push(request(Telemetry::Metrics, Some(ADP), 1, 0));
+                }
+                let latency = if offset == Duration::from_millis(1500) {
+                    Duration::from_millis(600)
+                } else {
+                    Duration::ZERO
+                };
+                async move {
+                    if honors_limit && latency > limit {
+                        sleep_until(Instant::now() + limit).await;
+                        return Err(HandleError::Software("the read timed out".to_string()));
+                    }
+                    sleep_until(Instant::now() + latency).await;
+                    records(items)
+                }
+            })
+            .await;
+        (watched, reads)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_duplicate_that_a_slow_read_of_the_settle_misses_still_fails() {
+        let late = Some(Duration::from_millis(1800));
+        for honors_limit in [true, false] {
+            let (watched, reads) = watch_slow_read(honors_limit, late).await;
+            let watched = watched.unwrap();
+            assert_eq!(watched.check, Check::Duplicate, "honors_limit: {}", honors_limit);
+            assert!(watched.settling);
+            // The last read starts after the settle ends, so it sees the duplicate.
+            let (offset, _) = *reads.last().unwrap();
+            assert!(offset >= Duration::from_secs(2), "{:?}", reads);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_settle_ends_with_a_read_that_starts_after_it_ends() {
+        for honors_limit in [true, false] {
+            let (watched, reads) = watch_slow_read(honors_limit, None).await;
+            assert_eq!(watched.unwrap().check, Check::Met, "honors_limit: {}", honors_limit);
+            let (offset, limit) = *reads.last().unwrap();
+            assert!(offset >= Duration::from_secs(2), "{:?}", reads);
+            // The last read gets a whole probe. One more read is enough, so the watch does not loop.
+            assert_eq!(limit, PROBE_TIMEOUT);
+            assert!(reads.len() <= 6, "{:?}", reads);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_that_starts_in_the_settle_stops_when_it_ends() {
+        let (_, reads) = watch_slow_read(true, None).await;
+        // The reads start every 0.5s from the first success. The read at 1.5s gets the 0.5s that are left.
+        let limits: Vec<_> = reads
+            .iter()
+            .map(|(offset, limit)| (offset.as_millis(), limit.as_millis()))
+            .collect();
+        assert_eq!(
+            limits,
+            [(0, 10_000), (500, 1500), (1000, 1000), (1500, 500), (2000, 10_000)]
         );
     }
 
