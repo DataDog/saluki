@@ -529,9 +529,10 @@ inventory:
     description: "SQL obfuscator mode"
     documentation: |-
       ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
-      `/info` response. The trace-agent behind the relay applies it to traces received through the
-      relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
-      invalid value logs a warning and falls back to the default obfuscator.
+      `/info` response, and applies it to the traces it processes itself. The `obfuscate_only` mode
+      can differ from the Agent: comments are dropped and the spacing around parentheses can change.
+      The other modes matched the Agent in testing. As in the Agent, an invalid value logs a warning
+      and falls back to the default obfuscator.
 
   apm_config.target_traces_per_second:
     support: full

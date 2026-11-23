@@ -776,9 +776,10 @@ behind the relay applies it to the requests ADP forwards to it.
 ### `apm_config.sql_obfuscation_mode`
 
 ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
-`/info` response. The trace-agent behind the relay applies it to traces received through the
-relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
-invalid value logs a warning and falls back to the default obfuscator.
+`/info` response, and applies it to the traces it processes itself. The `obfuscate_only` mode
+can differ from the Agent: comments are dropped and the spacing around parentheses can change.
+The other modes matched the Agent in testing. As in the Agent, an invalid value logs a warning
+and falls back to the default obfuscator.
 
 ### `apm_config.telemetry.enabled`
 
@@ -1319,6 +1320,14 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 ### `dogstatsd_string_interner_size_bytes`
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
+### `apm_config.obfuscation.sql.dbms`
+
+ADP ignores this key and logs a warning when it is set. The SQL obfuscator reads the DBMS from each span's `db.system` attribute.
+
+### `apm_config.obfuscation.sql.table_names`
+
+ADP ignores this key, and the `table_names` entry of `apm_config.features`, and logs a warning when either is set. The SQL obfuscator can't collect table names yet, so ADP doesn't set the `sql.tables` tag.
 
 ### `dogstatsd_mapper_string_interner_size`
 
