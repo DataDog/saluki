@@ -1,12 +1,16 @@
-name: Check AWS-LC-FIPS 4.x Certification
+name: Check AWS-LC-FIPS 5.x Certification
 
-# `aws-lc-rs` is pinned below 1.18 (and enforced in CI by the `aws-lc-fips-sys` ban in deny.toml and by
-# ci/tooling/check-fips-module.sh) because newer releases switch the `fips` feature to AWS-LC-FIPS 4.x, which has been
-# submitted for FIPS 140-3 validation but is not yet certified. AWS-LC tracks certification status in its FIPS.md,
-# listing submitted modules under "Modules in Process" and certified ones under "Validations". This workflow watches
-# for a 4.x entry to appear under "Validations" and opens an issue so we know when the pin can be lifted.
+# FIPS builds use the AWS-LC-FIPS 4.x module, which is FIPS 140-3 certified. A future `aws-lc-rs` release is expected to
+# move the `fips` feature to the AWS-LC-FIPS 5.x module (`aws-lc-fips-sys` 0.15+), which has been submitted for FIPS
+# 140-3 validation but is not yet certified. The `aws-lc-fips-sys` ban in deny.toml and ci/tooling/check-fips-module.sh
+# keep FIPS builds off 5.x until then.
 #
-# Delete this workflow once the pin has been lifted.
+# AWS-LC tracks certification status in its FIPS.md, listing certified modules under "Validations". This workflow
+# watches for a 5.x entry to appear there and opens an issue so we know when FIPS builds can move to 5.x. FIPS.md can
+# lag behind the NIST CMVP site, so check https://csrc.nist.gov/projects/cryptographic-module-validation-program
+# directly if an upgrade is urgent.
+#
+# Retarget this workflow at the next FIPS module once FIPS builds move to 5.x.
 
 on:
   schedule:
@@ -21,7 +25,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - name: Check AWS-LC FIPS.md for a certified 4.x module
+      - name: Check AWS-LC FIPS.md for a certified 5.x module
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
@@ -40,7 +44,7 @@ jobs:
             const validationsMatch = doc.match(/^## Validations\s*$([\s\S]*?)(?=^## )/m);
 
             // Fail loudly if the document no longer looks the way we expect, rather than silently never finding a
-            // match. The 3.1 static module is the one we currently ship, so it should always be listed.
+            // match. The 3.1 static module has a certificate, so it should always be listed.
             if (!validationsMatch || !/AWS-LC-FIPS v3\.1 \(static/.test(validationsMatch[1])) {
               core.setFailed(
                 `Could not find the expected "Validations" section in ${fipsDocUrl}. ` +
@@ -49,20 +53,27 @@ jobs:
               return;
             }
 
-            // We ship a static FIPS build, so the static library certificate is the one that matters.
+            // We ship a static FIPS build, so the static library certificate is the one that matters. Entries have
+            // the form "<module name>: certificate [#NNNN](...)". Only match the module name, so that certificate
+            // numbers such as #5146 don't count. AWS-LC names modules both as "AWS-LC-FIPS v5.0 (static library)" and
+            // as "AWS-LC 5 Cryptographic Module (static)", so accept either form.
             const certified = validationsMatch[1]
               .split('\n')
-              .filter((line) => /AWS-LC-FIPS v4\.\d+ \(static/.test(line));
+              .filter((line) => line.trim().startsWith('*'))
+              .filter((line) => {
+                const moduleName = line.split(':')[0];
+                return /AWS-LC(-FIPS)?\s+v?5(\.\d+)*\b/.test(moduleName) && /\bstatic\b/i.test(moduleName);
+              });
 
             if (certified.length === 0) {
-              console.log('AWS-LC-FIPS 4.x (static) is not yet listed under "Validations".');
+              console.log('AWS-LC-FIPS 5.x (static) is not yet listed under "Validations".');
               return;
             }
 
-            console.log('AWS-LC-FIPS 4.x (static) appears to be certified:');
+            console.log('AWS-LC-FIPS 5.x (static) appears to be certified:');
             certified.forEach((line) => console.log(`  ${line}`));
 
-            const title = 'AWS-LC-FIPS 4.x is FIPS 140-3 certified: lift the aws-lc-rs pin';
+            const title = 'AWS-LC-FIPS 5.x is FIPS 140-3 certified: allow FIPS builds to use it';
 
             // Don't open a duplicate if we've already filed one (open or closed).
             const { data: existing } = await github.rest.search.issuesAndPullRequests({
@@ -74,22 +85,21 @@ jobs:
             }
 
             const body = [
-              `AWS-LC now lists a 4.x module under "Validations" in [FIPS.md](${fipsDocUrl}):`,
+              `AWS-LC now lists a 5.x module under "Validations" in [FIPS.md](${fipsDocUrl}):`,
               '',
               ...certified,
               '',
-              'Verify the certificate on the NIST CMVP site, then lift the pin to FIPS 4.x:',
+              'Verify the certificate on the NIST CMVP site, and read its security policy to find the AWS-LC version ' +
+                'it covers. Then, once an `aws-lc-rs` release uses the 5.x module:',
               '',
-              '- [ ] Remove the `<1.18` upper bound on `aws-lc-rs` in the workspace `Cargo.toml` and update its comment',
-              '- [ ] Remove the `aws-lc-fips-sys@>=0.14` ban from `deny.toml`',
-              '- [ ] Add `4` to `CERTIFIED_FIPS_MODULE_VERSIONS` in `ci/tooling/check-fips-module.sh`',
-              '- [ ] Remove the `aws-lc-rs` `allowedVersions` rule from `renovate.json5`',
-              '- [ ] Upgrade `rustls` and remove the `RUSTSEC-2026-0285`, `RUSTSEC-2026-0346`, ' +
-                '`RUSTSEC-2026-0348`, and `RUSTSEC-2026-0349` ignores from `deny.toml` once all four advisories are fixed',
-              '- [ ] Delete `.github/workflows/check-aws-lc-fips-certification.yml`',
+              '- [ ] Add module `5` and the minimum certified AWS-LC version to ci/tooling/check-fips-module.sh',
+              '- [ ] Move the `aws-lc-fips-sys` ban in `deny.toml` to the crate version after the one that bundles 5.x',
+              '- [ ] Update the `aws-lc-rs` comment in the workspace `Cargo.toml`',
+              '- [ ] Upgrade `aws-lc-rs` and confirm that FIPS builds compile and pass TLS tests on the 5.x module',
+              '- [ ] Retarget `.github/workflows/check-aws-lc-fips-certification.yml` at the next FIPS module',
               '',
               '_This issue was automatically opened by the ' +
-                `[Check AWS-LC-FIPS 4.x Certification](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
+                `[Check AWS-LC-FIPS 5.x Certification](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
                 '/blob/main/.github/workflows/check-aws-lc-fips-certification.yml) workflow._',
             ].join('\n');
 
