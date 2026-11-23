@@ -1,5 +1,6 @@
 //! `log_contains` and `log_not_contains`: what a participant's processes write.
 //!
+//! Without a process, a step searches every process of the participant and its container log, when that is observed.
 //! Each line of a process's output is matched on its own, as text it must contain, or, with `regex: true`, as a regex.
 //! A value a reference fills into a regex is escaped, so a path or an address matches itself.
 //! The end of a process's output that has no newline yet counts as a line.
@@ -15,6 +16,7 @@ use tokio::time::{sleep_until, Instant};
 use super::{described, stopped, POLL};
 use crate::core::case::Timeout;
 use crate::core::handle::{Handle, HandleError};
+use crate::core::observe::CONTAINER_OUTPUT;
 use crate::core::record::StepStatus;
 use crate::core::step::{Need, Step, StepContext, StepFactory, StepFields, StepReport};
 use crate::core::template::Template;
@@ -40,7 +42,8 @@ impl StepFactory for LogContainsFactory {
     }
 }
 
-/// Passes once a line of the process, or of any process of the participant, matches the pattern within `timeout`.
+/// Passes once a line of the process, or of any process or the container log of the participant, matches the pattern
+/// within `timeout`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogContains {
@@ -79,7 +82,7 @@ impl Step for LogContains {
             let mut output = Output::new(handle, self.process.as_deref())?;
             loop {
                 if let Some((process, line)) = output.find(handle, &pattern) {
-                    let message = format!("Found '{}' in process '{}': {}", filled, process, line);
+                    let message = format!("Found '{}' in {}: {}", filled, source(process), line);
                     return Ok(StepReport {
                         status: StepStatus::Passed,
                         message,
@@ -121,7 +124,8 @@ impl StepFactory for LogNotContainsFactory {
     }
 }
 
-/// Fails as soon as a line of any process of the participant, written before or during `during`, matches the pattern.
+/// Fails as soon as a line of any process or the container log of the participant, written before or during `during`,
+/// matches the pattern.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogNotContains {
@@ -157,7 +161,7 @@ impl Step for LogNotContains {
             let mut output = Output::new(handle, None)?;
             loop {
                 if let Some((process, line)) = output.find(handle, &pattern) {
-                    let message = format!("Found '{}' in process '{}': {}", filled, process, line);
+                    let message = format!("Found '{}' in {}: {}", filled, source(process), line);
                     return Ok(StepReport {
                         status: StepStatus::Failed,
                         message,
@@ -180,6 +184,15 @@ impl Step for LogNotContains {
             }
         };
         looked.await.unwrap_or_else(stopped)
+    }
+}
+
+/// Where a line was found, for a message: a process, or the container log.
+fn source(output: &str) -> String {
+    if output == CONTAINER_OUTPUT {
+        "the container log".to_string()
+    } else {
+        format!("process '{}'", output)
     }
 }
 
@@ -224,10 +237,11 @@ struct Output<'a> {
 }
 
 impl<'a> Output<'a> {
-    /// The output of `process` of `handle`'s participant, or of every process when `process` is `None`.
+    /// The output of `process` of `handle`'s participant, or of every process and its container log when `process` is
+    /// `None`.
     fn new(handle: &Handle<'a>, process: Option<&'a str>) -> Result<Self, HandleError> {
         let processes = handle
-            .watched(process)?
+            .logged(process)?
             .into_iter()
             .map(|name| Ok((name, handle.output(name)?, 0)))
             .collect::<Result<_, HandleError>>()?;

@@ -172,7 +172,7 @@ rustls = { version = "0.23", default-features = false, features = [
   "std",
   "tls12",
 ] }
-rustls-cng-crypto = { version = "0.2.0", git = "https://github.com/DataDog/rustls-cng-crypto", rev = "2498c870c949335cb70dc79ed558917b96e4ff72", default-features = false, features = [
+rustls-cng-crypto = { version = "0.3.1", git = "https://github.com/DataDog/rustls-cng-crypto", rev = "5870f3c319130b681f45607eb280ee7f93c24eb6", default-features = false, features = [
   "tls12",
 ] }
 rustls-webpki = { version = "0.103", default-features = false }
@@ -282,11 +282,11 @@ rmp = { version = "0.8", default-features = false, features = ["std"] }
 rmp-serde = { version = "1.3", default-features = false }
 serde_bytes = { version = "0.11.19", default-features = false }
 num-traits = { version = "0.2", default-features = false }
-chumsky = { version = "0.13", default-features = false }
+chumsky = { version = "0.14.2", default-features = false }
 logos = { version = "0.16", default-features = false }
 lru-slab = { version = "0.1.2", default-features = false }
 antithesis-instrumentation = { version = "0.1" }
-antithesis_sdk = { version = "0.2.9", default-features = false }
+antithesis_sdk = { version = "0.4.0", default-features = false }
 mime = "0.3"
 tokio-stream = "0.1"
 

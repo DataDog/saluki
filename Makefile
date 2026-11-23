@@ -598,7 +598,13 @@ test: ## Runs all unit tests
 test-container-daemon: check-rust-build-tools cargo-install-cargo-nextest build-courier
 test-container-daemon: ## Runs the unit tests that need a Docker daemon
 	@echo "[*] Running unit tests against the Docker daemon..."
-	cargo nextest run -p airlock -p panoramic --run-ignored ignored-only
+	cargo nextest run -p airlock -p panoramic --run-ignored ignored-only -E 'not test(/kind_tests/)'
+
+.PHONY: test-kind
+test-kind: check-rust-build-tools cargo-install-cargo-nextest check-kind-tools build-courier
+test-kind: ## Runs the unit tests that need a kind cluster
+	@echo "[*] Running unit tests against a kind cluster..."
+	cargo nextest run -p panoramic --run-ignored ignored-only -E 'test(/kind_tests/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
@@ -622,7 +628,7 @@ test-miri: ## Runs all Miri-specific unit tests
 test-loom: check-rust-build-tools cargo-install-cargo-nextest
 test-loom: ## Runs all Loom-specific unit tests
 	@echo "[*] Running Loom-specific unit tests..."
-	cargo nextest run --release --features loom -p stringtheory -p saluki-core loom_tests
+	cargo nextest run --release --features loom -p stringtheory -p saluki-core -p saluki-metrics loom_tests
 
 .PHONY: test-all
 test-all: ## Test everything
@@ -712,13 +718,14 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 # linux flow builds and tests build-adp-image with whatever BUILD_PROFILE the pipeline sets.
 # panoramic stays at target/release/ unconditionally because it's the test harness, not the SUT;
 # build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
+# Cases take the two binaries with --set.
 test-integration-macos-run: BUILD_PROFILE ?= release
-test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all macOS integration cases (host processes); narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
 	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
-		--adp-binary-path "$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
-		--core-agent-binary-path "$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
-		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
+		--set "target/release/agent-data-plane=$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
+		--set "/tmp/saluki-dda/datadog-agent/bin/agent/agent=$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
+		$(if $(CASE),-t $(CASE)) --no-tui \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: provision-macos-test-env
@@ -761,7 +768,7 @@ provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
 .PHONY: test-integration-macos-ci
-test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
+test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the macOS integration cases (host processes)
 
 .PHONY: ensure-rust-nightly
 ensure-rust-nightly:

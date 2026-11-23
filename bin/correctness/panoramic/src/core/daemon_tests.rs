@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use airlock::image::{ensure_image, DAEMON_TEST_IMAGE};
@@ -17,12 +18,14 @@ use serde::Deserialize;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::backend::{Backend, Backends, Preparing, Scope};
 use super::case::{self, CASE_FILE};
-use super::container::{CaseContainers, ContainerBackend, LINUX};
+use super::container::{ContainerBackend, LINUX};
 use super::deadline::{Budget, Deadline};
 use super::ledger::ResourceLedger;
 use super::lifecycle::{self, CaseRun};
 use super::observe::{ExitStatus, ProcessExit, CONTAINER_LOG};
+use super::participant::Enclosure;
 use super::participant::Os;
 use super::plan::{plan, CasePlan};
 use super::record::{CaseRecord, StepStatus};
@@ -42,7 +45,7 @@ fn deadline() -> Instant {
 /// A planned case with its scope prepared.
 struct Case {
     plan: CasePlan,
-    containers: CaseContainers,
+    scope: Box<dyn Scope>,
     cancel: CancellationToken,
 }
 
@@ -93,16 +96,15 @@ where
     let ledger = ResourceLedger::default();
     let outcome = AssertUnwindSafe(async {
         let cancel = CancellationToken::new();
-        let containers = backend
-            .prepare(&ledger, &cancel, deadline())
-            .await
-            .expect("the scope should be prepared");
-        body(Case {
-            plan,
-            containers,
-            cancel,
-        })
-        .await;
+        let tasks = CaseTasks::new(&cancel);
+        let cx = Preparing {
+            ledger: &ledger,
+            tasks: &tasks,
+            cancel: &cancel,
+            deadline: deadline(),
+        };
+        let scope = backend.prepare(&cx).await.expect("the scope should be prepared");
+        body(Case { plan, scope, cancel }).await;
     })
     .catch_unwind()
     .await;
@@ -148,12 +150,12 @@ procedure: []
 "#;
     let entries = in_case(config, |case| async move {
         let values = Values::of_plan(&case.plan.participants);
-        let mut app = case
-            .containers
+        let app = case
+            .scope
             .create("app", &case.plan.participants["app"], &values, &case.cancel, deadline())
             .await
             .unwrap();
-        app.start(&case.cancel, deadline())
+        app.start(&values, &case.cancel, deadline())
             .await
             .expect_err("a missing program should fail the start");
     })
@@ -181,16 +183,16 @@ procedure: []
     let entries = in_case(config, |case| async move {
         let values = Values::of_plan(&case.plan.participants);
         let create = |name: &'static str| {
-            case.containers
+            case.scope
                 .create(name, &case.plan.participants[name], &values, &case.cancel, deadline())
         };
-        let mut app = create("app").await.unwrap();
-        app.start(&case.cancel, deadline()).await.unwrap();
+        let app = create("app").await.unwrap();
+        app.start(&values, &case.cancel, deadline()).await.unwrap();
 
         case.cancel.cancel();
-        let error = create("late")
-            .await
-            .expect_err("a cancelled case should create nothing more");
+        let Err(error) = create("late").await else {
+            panic!("a cancelled case should create nothing more");
+        };
         assert!(format!("{error:#}").contains("Cancelled"), "{error:#}");
     })
     .await;
@@ -305,7 +307,9 @@ async fn run_case(config: &str, cancel_in_a_step: bool) -> Lived {
         cancel: cancel_in_a_step.then(|| cancel.clone()),
     }));
     let plan = plan_linux(config, &registry);
-    let (docker, containers) = backend().await;
+    let (docker, container_backend) = backend().await;
+    let mut backends = Backends::default();
+    backends.insert(Enclosure::LinuxContainer, Arc::new(container_backend));
     let logs = tempfile::tempdir().unwrap();
     let (ledger, record, phases) = (
         ResourceLedger::default(),
@@ -314,7 +318,7 @@ async fn run_case(config: &str, cancel_in_a_step: bool) -> Lived {
     );
     let tasks = CaseTasks::new(&cancel);
     let run = CaseRun {
-        containers: &containers,
+        backends: &backends,
         ledger: &ledger,
         tasks: &tasks,
         cancel: &cancel,
