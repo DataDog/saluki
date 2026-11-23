@@ -152,6 +152,11 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns `true` if OTLP is enabled, any proxy flag is `true`, and a receiver sets `tls`.
     ///
     /// A proxy flag counts even for a disabled signal, as in the Agent.
+    ///
+    /// ADP rejects TLS here because the Agent and ADP can't easily use the same customer TLS configuration to set up
+    /// both sides. ADP reads the canonical configuration locations to set up its own listener, which would leave the
+    /// Agent listening for the proxied signals in plaintext. That would violate the customer's intended security
+    /// configuration, so ADP rejects a configuration that asks for TLS.
     pub const fn otlp_blocked(&self) -> bool {
         let receiver = &self.config.domains.otlp.receiver;
         self.config.control.otlp
