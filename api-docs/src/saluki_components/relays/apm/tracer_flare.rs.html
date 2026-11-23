@@ -16,11 +16,11 @@
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>tracing::{debug, warn};
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>url::Url;
 <a href=#18 id=18 data-nosnippet>18</a>
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span><span class="kw">super</span>::forwarding::{strip_hop_by_hop_headers, UpstreamClient};
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::api_key::ApiKeyCell;
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::config::ForwarderConfiguration;
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::endpoints::{add_version_prefix, endpoint_with_default_scheme, is_datadog_site};
-<a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::io::intake_http_client_builder;
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::api_key::ApiKeyCell;
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::config::ForwarderConfiguration;
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::endpoints::{add_version_prefix, endpoint_with_default_scheme, is_datadog_site};
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::io::intake_http_client_builder;
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">crate</span>::common::proxy::{strip_hop_by_hop_headers, UpstreamClient};
 <a href=#24 id=24 data-nosnippet>24</a>
 <a href=#25 id=25 data-nosnippet>25</a><span class="doccomment">/// Path of the Datadog endpoint flares are forwarded to.
 <a href=#26 id=26 data-nosnippet>26</a></span><span class="kw">const </span>FLARE_ENDPOINT_PATH: <span class="kw-2">&amp;</span>str = <span class="string">"/api/ui/support/serverless/flare"</span>;
