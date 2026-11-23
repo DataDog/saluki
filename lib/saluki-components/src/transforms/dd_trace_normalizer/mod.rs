@@ -1,8 +1,7 @@
 //! Datadog trace normalizer transform.
 //!
-//! Normalizes Datadog-origin trace chunks the way the trace-agent does before processing them, porting
-//! `normalizeTraceChunkV1` and `normalizeV1` (`pkg/trace/agent/normalizer.go`). Repairable spans are fixed in place
-//! and counted under `datadog.trace_agent.normalizer.spans_malformed`; chunks that can't be repaired are dropped and
+//! Normalizes Datadog-origin trace chunks the way the trace-agent does before processing them. Repairable spans are
+//! fixed in place and counted under `datadog.trace_agent.normalizer.spans_malformed`; chunks that can't be repaired are dropped and
 //! counted under `datadog.trace_agent.normalizer.traces_dropped`. The counts are reported on the `metrics` output.
 //!
 //! OTLP traces are normalized by the OTLP translator instead, with an OTLP-specific service fallback.
@@ -27,7 +26,7 @@ use tokio::select;
 use tracing::debug;
 
 use self::telemetry::{DropReason, MalformedReason, NormalizerWindow, ReasonCounts, WINDOW};
-use crate::common::datadog::traces::normalize::{
+use crate::common::traces::normalize::{
     is_normalized_tag_value, is_valid_status_code, needs_name_normalization, normalize_name_with_reason,
     normalize_peer_service_into, normalize_service_with_lang_into, normalize_tag_value_into_unchecked,
     truncate_utf8_str, validate_and_fix_duration, validate_and_fix_start_time, NormalizeError, PeerServiceChange,
@@ -87,11 +86,12 @@ impl MemoryBounds for DatadogTraceNormalizerConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
-            .with_single_value::<DatadogTraceNormalizer>("component struct")
-            .with_map::<telemetry::TracerTags, ReasonCounts>(
-                "normalizer telemetry window",
-                telemetry::MAX_TAG_KEYS + 1,
-            );
+            .with_single_value::<DatadogTraceNormalizer>("component struct");
+        // The telemetry window starts empty and grows up to its key cap.
+        builder.firm().with_map::<telemetry::TracerTags, ReasonCounts>(
+            "normalizer telemetry window",
+            telemetry::MAX_TAG_KEYS + 1,
+        );
     }
 }
 
@@ -117,7 +117,7 @@ impl DatadogTraceNormalizer {
     /// Normalizes every trace in the buffer, removing the ones that can't be repaired.
     fn process_buffer(&mut self, events: &mut EventsBuffer) {
         events.retain_events::<Trace, _>(|trace| {
-            // The reference's caller skips empty chunks before normalizing them, without counting them.
+            // The trace-agent skips empty chunks before normalizing them, without counting them.
             if trace.spans().is_empty() {
                 return false;
             }
@@ -129,8 +129,8 @@ impl DatadogTraceNormalizer {
         });
     }
 
-    /// Normalizes the payload env as a tag value, mirroring the reference's `SetEnv(NormalizeTagValue(env))` in
-    /// `ProcessV1`, so samplers and stats downstream key on the normalized env.
+    /// Normalizes the payload env as a tag value, as the trace-agent does, so samplers and stats downstream key on the
+    /// normalized env.
     fn normalize_payload_env(&mut self, trace: &mut Trace) {
         let env = &trace.payload.env;
         if env.is_empty() || is_normalized_tag_value(env) {
@@ -140,18 +140,17 @@ impl DatadogTraceNormalizer {
         trace.payload.env = MetaString::from(self.string_builder.as_str());
     }
 
-    /// Normalizes a trace chunk, mirroring `normalizeTraceChunkV1`.
+    /// Normalizes a trace chunk.
     ///
     /// Returns the drop reason when the chunk is invalid beyond repair. Spans before the offending one have already
-    /// been normalized and counted by then, as in the reference.
+    /// been normalized and counted by then, as in the trace-agent.
     fn normalize_trace(&mut self, trace: &mut Trace, counts: &mut ReasonCounts) -> Result<(), DropReason> {
         if trace.spans().is_empty() {
             counts.drop(DropReason::EmptyTrace);
             return Err(DropReason::EmptyTrace);
         }
 
-        // The trace ID is already a fixed 128-bit value here, so the reference's coercion to 16 bytes has no
-        // equivalent; all 128 bits are checked, as it does.
+        // The trace ID is already a fixed 128-bit value here, so all 128 bits are checked.
         if trace.trace_id_high == 0 && trace.trace_id_low == 0 {
             counts.drop(DropReason::TraceIdZero);
             return Err(DropReason::TraceIdZero);
@@ -170,7 +169,7 @@ impl DatadogTraceNormalizer {
     }
 }
 
-/// Normalizes a span, mirroring `normalizeV1`.
+/// Normalizes a span.
 ///
 /// Returns the drop reason when the span is invalid beyond repair.
 fn normalize_span(
@@ -273,11 +272,10 @@ fn normalize_span(
     Ok(())
 }
 
-/// Normalizes a `peer.service`-style string attribute in place, as the reference's `normalizePeerService` and
-/// `normalizeBaseService` do.
+/// Normalizes a `peer.service`-style string attribute in place, as the trace-agent does.
 ///
-/// Only a non-empty string value is normalized, as the reference's semantic lookup only reads string attributes. A
-/// value that normalizes to nothing is kept as an empty string.
+/// Only a non-empty string value is normalized, as the trace-agent only reads string attributes there. A value that
+/// normalizes to nothing is kept as an empty string.
 fn normalize_peer_service_attribute(
     span: &mut Span, key: &'static str, sb: &mut StringBuilder, counts: &mut ReasonCounts,
     truncate_reason: MalformedReason, invalid_reason: MalformedReason,
@@ -299,14 +297,14 @@ fn normalize_peer_service_attribute(
     }
 }
 
-/// Formats an attribute value as a string, mirroring the reference's `AnyValue.AsString`.
+/// Formats an attribute value as a string, as the trace-agent does.
 fn attribute_as_string(value: &AttributeValue) -> Cow<'_, str> {
     match value {
         AttributeValue::String(s) => Cow::Borrowed(s.as_ref()),
         AttributeValue::Bool(b) => Cow::Borrowed(if *b { "true" } else { "false" }),
         AttributeValue::Int(i) => Cow::Owned(i.to_string()),
         AttributeValue::Float(f) => Cow::Owned(format_float(*f)),
-        // shortcut: invalid UTF-8 is replaced rather than kept byte for byte as Go does; the result only feeds
+        // shortcut: invalid UTF-8 is replaced rather than kept byte for byte as the trace-agent does; the result only feeds
         // validation and name normalization, which discard non-ASCII bytes either way.
         AttributeValue::Bytes(b) => String::from_utf8_lossy(b),
         AttributeValue::Array(values) => {
@@ -323,13 +321,13 @@ fn attribute_as_string(value: &AttributeValue) -> Cow<'_, str> {
     }
 }
 
-/// Formats a float as Go's `strconv.FormatFloat(f, 'f', -1, 64)` does: the shortest representation that round-trips,
-/// never in exponent form.
+/// Formats a float as the trace-agent does: the shortest representation that round-trips, never in exponent form.
 fn format_float(f: f64) -> String {
     if f.is_infinite() {
         return if f > 0.0 { "+Inf" } else { "-Inf" }.to_string();
     }
-    // Rust's `Display` already prints the shortest round-tripping form without an exponent, and `NaN` as Go does.
+    // Rust's `Display` already prints the shortest round-tripping form without an exponent, and `NaN` as the
+    // trace-agent does.
     f.to_string()
 }
 

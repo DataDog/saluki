@@ -4,7 +4,7 @@ use saluki_common::strings::StringBuilder;
 use stringtheory::MetaString;
 use tracing::{debug, warn};
 
-use crate::common::datadog::traces::normalize::normalize_tag_value_into_unchecked;
+use crate::common::traces::normalize::normalize_tag_value_into_unchecked;
 
 /// Environment used when no source supplies a nonempty one.
 const FALLBACK_ENV: &str = "none";

@@ -1,7 +1,8 @@
-//! Trace normalization helpers, ported from the Datadog Agent (`pkg/trace/traceutil/normalize`).
+//! Trace normalization helpers, matching the Datadog Agent's trace normalization.
 
 use std::borrow::Cow;
 use std::char;
+use std::fmt::Write as _;
 
 use saluki_common::strings::StringBuilder;
 use stringtheory::MetaString;
@@ -34,9 +35,9 @@ const ELLIPSIS: &str = "...";
 const STRUCTURED_SUFFIXES: [&str; 3] = [".json", ".msgpack", ".protobuf"];
 
 // default service name we assign a span if it's missing and we have no reasonable fallback
-const DEFAULT_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
-// default service name the reference assigns a Datadog span with no service and no tracer language
-const DD_DEFAULT_SERVICE_NAME: &str = "unnamed-service";
+const DEFAULT_OTLP_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
+// default service name the trace-agent assigns a Datadog span with no service and no tracer language
+const DEFAULT_DD_SERVICE_NAME: &str = "unnamed-service";
 // default span name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_SPAN_NAME: MetaString = MetaString::from_static("unnamed_operation");
 
@@ -78,8 +79,7 @@ static IS_VALID_ASCII_TAG_CHAR_LOOKUP: [bool; 256] = {
     lookup
 };
 
-/// Why a value was modified during normalization, mirroring the reference's `ErrEmpty`, `ErrTooLong` and
-/// `ErrInvalid` (`pkg/trace/traceutil/normalize/normalize.go`).
+/// Why a value was modified during normalization, as the trace-agent reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NormalizeError {
     /// The input was empty and was replaced with a fallback.
@@ -99,7 +99,7 @@ pub fn normalize_name(name: MetaString) -> MetaString {
     normalize_name_with_reason(name).0
 }
 
-/// Normalizes a span name, also returning why it was modified, as the reference's `NormalizeName` does.
+/// Normalizes a span name, also returning why it was modified, as the trace-agent does.
 ///
 /// Character repairs alone are not reported: only an empty name, a truncation, or a name with no alphabetic
 /// character (replaced by the default span name) are.
@@ -125,7 +125,7 @@ pub fn normalize_name_with_reason(mut name: MetaString) -> (MetaString, Option<N
 
     match normalize_name_slow(name) {
         Some(name) => (name, reason),
-        // The reference's `normMetricNameParse` fails, which overrides a truncation.
+        // Nothing valid survives, which overrides a truncation.
         None => (DEFAULT_SPAN_NAME.clone(), Some(NormalizeError::Invalid)),
     }
 }
@@ -201,11 +201,11 @@ fn normalize_name_slow(name: MetaString) -> Option<MetaString> {
 pub(crate) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I>) {
     let _ = normalize_service_value_into(service, out);
     if out.as_str().is_empty() {
-        let _ = out.push_str(DEFAULT_SERVICE_NAME.as_ref());
+        let _ = out.push_str(DEFAULT_OTLP_SERVICE_NAME.as_ref());
     }
 }
 
-/// Normalizes a Datadog span service name into `out`, mirroring the reference's `NormalizeService`.
+/// Normalizes a Datadog span service name into `out`, as the trace-agent does.
 ///
 /// When the service is empty, or nothing valid survives normalization, it's replaced with the language's
 /// fallback: `unnamed-<lang>-service`, or `unnamed-service` when `lang` is empty. Returns why the service was
@@ -216,11 +216,9 @@ pub(crate) fn normalize_service_with_lang_into<I>(
     let reason = normalize_service_value_into(service, out);
     if out.as_str().is_empty() {
         if lang.is_empty() {
-            let _ = out.push_str(DD_DEFAULT_SERVICE_NAME);
+            let _ = out.push_str(DEFAULT_DD_SERVICE_NAME);
         } else {
-            let _ = out.push_str("unnamed-");
-            let _ = out.push_str(lang);
-            let _ = out.push_str("-service");
+            let _ = write!(out, "unnamed-{lang}-service");
         }
     }
     reason
@@ -249,8 +247,7 @@ fn normalize_service_value_into<I>(service: &str, out: &mut StringBuilder<I>) ->
     reason
 }
 
-/// Returns whether `code` is a valid HTTP status code, between 100 and 599, mirroring the reference's
-/// `IsValidStatusCode`.
+/// Returns whether `code` is a valid HTTP status code, between 100 and 599.
 pub(crate) fn is_valid_status_code(code: &str) -> bool {
     code.parse::<u64>().is_ok_and(|code| (100..600).contains(&code))
 }
@@ -748,7 +745,7 @@ mod tests {
         }
 
         normalize_service_into("", &mut sb);
-        assert_eq!(sb.as_str(), DEFAULT_SERVICE_NAME.as_ref());
+        assert_eq!(sb.as_str(), DEFAULT_OTLP_SERVICE_NAME.as_ref());
     }
 
     fn base_service_cases() -> Vec<(MetaString, MetaString)> {

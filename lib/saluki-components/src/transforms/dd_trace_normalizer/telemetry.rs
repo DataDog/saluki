@@ -1,7 +1,6 @@
 //! Normalizer telemetry, emitted as metric events.
 //!
-//! This mirrors the trace-agent's `TracesDropped` and `SpansMalformed` counters (`pkg/trace/info/stats.go`), which it
-//! publishes as `datadog.trace_agent.normalizer.traces_dropped` and `datadog.trace_agent.normalizer.spans_malformed`
+//! This matches the trace-agent's normalizer counters, which it publishes as `datadog.trace_agent.normalizer.traces_dropped` and `datadog.trace_agent.normalizer.spans_malformed`
 //! with a `reason` tag, plus the tracer tags of the payload. As with the trace sampler, counts accumulate for one
 //! window and are reported through the transform's metrics output, so the metrics reach the backend under their
 //! published names.
@@ -31,7 +30,7 @@ pub(super) const MAX_TAG_KEYS: usize = 1_000;
 const METRIC_TRACES_DROPPED: &str = "datadog.trace_agent.normalizer.traces_dropped";
 const METRIC_SPANS_MALFORMED: &str = "datadog.trace_agent.normalizer.spans_malformed";
 
-/// Why a trace chunk was dropped, mirroring the normalizer's `TracesDropped` reasons.
+/// Why a trace chunk was dropped, with the trace-agent's `reason` tag values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DropReason {
     EmptyTrace,
@@ -52,7 +51,7 @@ impl DropReason {
     }
 }
 
-/// Why a span was repaired, mirroring the normalizer's `SpansMalformed` reasons.
+/// Why a span was repaired, with the trace-agent's `reason` tag values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MalformedReason {
     DuplicateSpanId,
@@ -116,7 +115,7 @@ impl MalformedReason {
     }
 }
 
-/// Per-reason counts, the equivalent of the reference's `TracesDropped` and `SpansMalformed` pair.
+/// Per-reason counts of dropped traces and malformed spans.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct ReasonCounts {
     dropped: [u64; DropReason::ALL.len()],
@@ -149,7 +148,7 @@ impl ReasonCounts {
     }
 }
 
-/// The tracer tags a count is reported under, the subset of the reference's `info.Tags` a trace carries.
+/// The tracer tags a count is reported under, the subset of the trace-agent's tracer tags a trace carries.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(super) struct TracerTags {
     lang: MetaString,
@@ -166,7 +165,7 @@ impl TracerTags {
         }
     }
 
-    /// Assembles the tag set with the given reason, omitting empty tags as the reference does.
+    /// Assembles the tag set with the given reason, omitting empty tags as the trace-agent does.
     fn tag_set(&self, reason: &str) -> TagSet {
         let mut tag_set = TagSet::with_capacity(4);
         for (name, value) in [

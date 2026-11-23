@@ -1,7 +1,7 @@
-//! Parity tests ported from the reference's `pkg/trace/agent/normalizer_test.go`.
+//! Parity tests for the trace-agent's trace normalization.
 //!
-//! Each test is named after its Go counterpart. The V1 tests port directly; the V0-only tests whose behavior also
-//! lives in the V1 path (`normalizeTraceChunkV1` and `normalizeV1`) are adapted to the V1 span shape.
+//! Behaviors the trace-agent tests on V0 spans only, but that also apply to V1 spans, are tested on the V1 span
+//! shape.
 
 use saluki_common::collections::FastHashMap;
 use saluki_core::components::test_util::TestComponentDriver;
@@ -13,7 +13,7 @@ use super::*;
 
 const TEST_SPAN_ID: u64 = 0x5eed_5eed;
 
-/// Mirrors `newTestSpanV1`; the span ID is fixed rather than random.
+/// Builds a valid V1 test span with a fixed span ID.
 fn new_test_span_v1() -> Span {
     let attributes: FastHashMap<MetaString, AttributeValue> = [
         ("user", AttributeValue::String("leo".into())),
@@ -49,7 +49,7 @@ fn new_test_trace(spans: Vec<Span>) -> Trace {
     trace
 }
 
-/// Runs `normalizeV1` on one span, returning the result and the counts it recorded.
+/// Normalizes one span, returning the result and the counts it recorded.
 fn normalize_v1(span: &mut Span, lang: &str) -> (Result<(), DropReason>, ReasonCounts) {
     normalize_v1_with(span, lang, false)
 }
@@ -60,14 +60,14 @@ fn normalize_v1_with(span: &mut Span, lang: &str, component2name: bool) -> (Resu
     (result, counts)
 }
 
-/// Runs `normalizeTraceChunkV1`, returning the result and the counts it recorded.
+/// Normalizes a trace chunk, returning the result and the counts it recorded.
 fn normalize_trace_chunk_v1(trace: &mut Trace) -> (Result<(), DropReason>, ReasonCounts) {
     let mut counts = ReasonCounts::default();
     let result = DatadogTraceNormalizer::new(false).normalize_trace(trace, &mut counts);
     (result, counts)
 }
 
-/// The equivalent of `tsMalformed`.
+/// Counts one malformed span per reason.
 fn ts_malformed(reasons: &[MalformedReason]) -> ReasonCounts {
     let mut counts = ReasonCounts::default();
     for reason in reasons {
@@ -76,7 +76,7 @@ fn ts_malformed(reasons: &[MalformedReason]) -> ReasonCounts {
     counts
 }
 
-/// The equivalent of `tsDropped`.
+/// Counts one dropped trace for the reason.
 fn ts_dropped(reason: DropReason) -> ReasonCounts {
     let mut counts = ReasonCounts::default();
     counts.drop(reason);
@@ -363,8 +363,7 @@ fn test_normalize_span_link_name_v1() {
     }
 }
 
-/// Adapts `TestNormalizeTraceChunkV1TraceID`. The trace ID is already a fixed pair of 64-bit halves here, so only
-/// the zero check applies: the coercion of short and over-long IDs to 16 bytes belongs to the decoder.
+/// The trace ID is already a fixed pair of 64-bit halves here, so only the zero check applies: the coercion of short and over-long IDs to 16 bytes belongs to the decoder.
 #[test]
 fn test_normalize_trace_chunk_v1_trace_id() {
     for (name, high, low, want_drop) in [
@@ -388,7 +387,7 @@ fn test_normalize_trace_chunk_v1_trace_id() {
     }
 }
 
-/// Adapts `TestNormalizeComponent2Name`; on V1 spans, `component` is a promoted field.
+/// With `component2name`, the span name is replaced by its `component` when set, a promoted field on V1 spans.
 #[test]
 fn test_normalize_component2name() {
     // On, with a component.
@@ -407,7 +406,8 @@ fn test_normalize_component2name() {
     assert_eq!(s.name(), "django.controller");
 }
 
-/// Adapts `TestSpecialZipkinRootSpan`; the V1 check compares the parent ID with the span ID only.
+/// A Zipkin root span, whose parent ID equals its span ID, gets a zero parent ID; the V1 check compares the parent ID
+/// with the span ID only.
 #[test]
 fn test_special_zipkin_root_span() {
     let mut s = new_test_span_v1().with_span_id(42).with_parent_id(42);
@@ -453,7 +453,7 @@ fn test_normalize_trace() {
 }
 
 /// A span with a zero span ID drops the whole chunk, but the spans before it have already been normalized and
-/// counted, as in the reference's loop.
+/// counted, as in the trace-agent.
 #[test]
 fn normalize_trace_chunk_v1_counts_spans_before_the_invalid_one() {
     let span1 = new_test_span_v1().with_name("");
@@ -466,8 +466,8 @@ fn normalize_trace_chunk_v1_counts_spans_before_the_invalid_one() {
     assert_eq!(counts, expected);
 }
 
-/// `validateAndFixHTTPStatusCode` drops an `http.status_code` outside 100–599, reading any attribute type as a
-/// string the way `GetAttributeAsString` does.
+/// An `http.status_code` outside 100–599 is dropped, with any attribute type read as a string, as the trace-agent
+/// does.
 #[test]
 fn normalize_v1_drops_invalid_http_status_code() {
     for (code, valid) in [
@@ -577,7 +577,7 @@ async fn transform_drops_invalid_chunks_and_reports_telemetry() {
     );
 }
 
-/// The reference's `ProcessV1` skips an empty chunk before normalizing it, so it's dropped without telemetry.
+/// The trace-agent skips an empty chunk before normalizing it, so it's dropped without telemetry.
 #[tokio::test]
 async fn transform_drops_empty_chunks_silently() {
     let (control, mut outputs) = TestComponentDriver::transform(DatadogTraceNormalizerConfiguration::new())
@@ -593,7 +593,7 @@ async fn transform_drops_empty_chunks_silently() {
     assert!(metrics.is_empty(), "{metrics:?}");
 }
 
-/// The payload env is normalized as a tag value, as `ProcessV1` does with `SetEnv(NormalizeTagValue(env))`.
+/// The payload env is normalized as a tag value, as the trace-agent does.
 #[test]
 fn normalize_payload_env() {
     let mut normalizer = DatadogTraceNormalizer::new(false);

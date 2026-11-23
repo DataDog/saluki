@@ -35,9 +35,9 @@ use tokio::{select, time::interval};
 use tracing::{debug, error};
 
 use crate::common::datadog::get_tracer_hostname;
-use crate::common::datadog::traces::normalize::normalized_tag_value;
 use crate::common::datadog::version_data::ContainerVersionData;
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
+use crate::common::traces::normalize::normalized_tag_value;
 use crate::config::AgentEnv;
 
 mod aggregation;
