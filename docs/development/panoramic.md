@@ -471,7 +471,7 @@ An integration case runs `agent-adp` as the subject, and a `datadog-intake` when
 case from `test/integration/cases` that uses the same steps.
 
 - When ADP must stay up, end with a `parallel` block of `process_stable_for` and a `log_not_contains` on
-  `panic|PANIC`, so a crash fails the case. When ADP must exit, use `exits_with`.
+  `panic|PANIC` with `regex: true`, so a crash fails the case. When ADP must exit, use `exits_with`.
 - Give each step a budget that covers the start of the Agent and ADP. The cases give a readiness step 30 to 60
   seconds, and an `intake_has_metric` 120 seconds to cover a flush.
 - Before a `send` to a UDP endpoint, wait for the listener's own startup log with `log_contains`. A probe cannot
