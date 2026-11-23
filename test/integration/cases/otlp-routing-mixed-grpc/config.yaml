@@ -103,6 +103,8 @@ procedure:
         sender: agent
         count: 3
         timeout: 2m
+  # `log_not_contains` reads the logs of the `adp` and `agent` processes, so it covers the Agent's receivers too.
   - parallel:
       - {step: process_stable_for, on: adp, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "(?i)address already in use", regex: true, during: 10s}
       - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}

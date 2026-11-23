@@ -19,8 +19,8 @@ participants:
       # off it.
       DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "true"
-      # The Agent and ADP both read these. Proxied metrics reaching the intake from the Agent shows that ADP uses the
-      # HTTP address, and an Agent that starts without a relocation conflict shows that the gRPC address is valid.
+      # The Agent and ADP both read these. Proxied metrics reaching the intake from the Agent show that ADP uses the
+      # HTTP address. The Agent's relocation log and the check for a bind conflict below cover the gRPC address.
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_AGENT_RECEIVER_GRPC_ENDPOINT: "127.0.0.1:34319"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_AGENT_RECEIVER_HTTP_ENDPOINT: "127.0.0.1:34320"
     files:
@@ -104,6 +104,8 @@ procedure:
         sender: adp
         count: 3
         timeout: 2m
+  # `log_not_contains` reads the logs of the `adp` and `agent` processes, so it covers the Agent's receivers too.
   - parallel:
       - {step: process_stable_for, on: adp, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "(?i)address already in use", regex: true, during: 10s}
       - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}
