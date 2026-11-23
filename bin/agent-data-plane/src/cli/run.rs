@@ -112,24 +112,24 @@ pub async fn handle_run_command(
         return Ok(());
     }
 
-    let otlp = OtlpPlan::resolve(&dp).await;
+    let otlp_plan = OtlpPlan::resolve(&dp).await;
 
     agent
         .config()
         .system()
-        .check_compatibility(&dp.active_pipelines(&otlp))
+        .check_compatibility(&dp.active_pipelines(&otlp_plan))
         .error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let mut agent = agent.initialize().await?;
 
-    let rc_products = remote_config::enabled_products(&dp, &otlp, &config.domains.remote_configuration);
+    let rc_products = remote_config::enabled_products(&dp, &otlp_plan, &config.domains.remote_configuration);
     let rc_subscriptions = RemoteConfigSubscriptions::subscribe(rc_products, &mut agent)
         .await
         .error_context("Failed to set up Remote Configuration.")?;
 
     // Create the blueprint for our primary topology.
-    let (blueprint, dogstatsd_api) = create_topology(&agent, &dp, &otlp, rc_subscriptions).await?;
+    let (blueprint, dogstatsd_api) = create_topology(&agent, &dp, &otlp_plan, rc_subscriptions).await?;
 
     // Create the control plane, and then run: the remote agent builds the rest of the supervisors, and runs memory
     // bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
