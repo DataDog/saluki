@@ -1,0 +1,8 @@
+security:
+  - |
+    FIPS builds now use the AWS-LC-FIPS 4 cryptographic module, which NIST certifies for
+    FIPS 140-3 under CMVP certificates #5595 and #5596.
+  - |
+    Upgrade ``rustls`` and its certificate verification dependencies to fix RUSTSEC-2026-0285,
+    RUSTSEC-2026-0346, RUSTSEC-2026-0348, RUSTSEC-2026-0349, RUSTSEC-2026-0382, and
+    RUSTSEC-2026-0383.

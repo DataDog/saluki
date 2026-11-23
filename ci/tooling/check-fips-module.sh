@@ -1,18 +1,43 @@
 #!/usr/bin/env bash
 #
-# Fails if the AWS-LC FIPS module used by FIPS builds is not a FIPS 140-3 certified module version.
+# Fails if FIPS builds use an AWS-LC FIPS module that is not FIPS 140-3 certified, or an AWS-LC version that is older
+# than the version that the certificate names.
 #
 # `aws-lc-fips-sys` bundles the AWS-LC FIPS module source, so we find the `aws-lc-fips-sys` package used by a FIPS build
-# of `agent-data-plane` and read the FIPS module version from the bundled headers. This mirrors how `aws-lc-fips-sys`
-# identifies the module itself: `AWSLC_FIPS_VERSION_NUMBER` on newer branches, falling back to the major version of
-# `AWSLC_VERSION_NUMBER_STRING` on older ones (e.g. FIPS 3.x -> 3).
+# of `agent-data-plane` and read two values from the bundled headers:
 #
-# Only add a module version to CERTIFIED_FIPS_MODULE_VERSIONS once NIST has certified it; AWS-LC lists certified
-# modules under "Validations" in https://github.com/aws/aws-lc/blob/main/crypto/fipsmodule/FIPS.md.
+# - The FIPS module number. This mirrors how `aws-lc-fips-sys` identifies the module itself: `AWSLC_FIPS_VERSION_NUMBER`
+#   on newer branches, and the major version of `AWSLC_VERSION_NUMBER_STRING` on older ones (for example, 3.4.0 -> 3).
+# - The full AWS-LC version, from `AWSLC_VERSION_NUMBER_STRING`.
+#
+# The module number identifies the certificate that applies. A later AWS-LC version on the same FIPS branch keeps the
+# certified status, so we compare the AWS-LC version with the version that the certificate names. See
+# https://github.com/aws/aws-lc-rs/issues/1166. The AWS-LC major version and the module number can diverge in future
+# releases, so don't infer one from the other.
+#
+# Add a module to `certified_min_version` only after NIST certifies it. Use the AWS-LC version that the certificate
+# names as the minimum version.
 
 set -euo pipefail
 
-CERTIFIED_FIPS_MODULE_VERSIONS=(3)
+# Prints the minimum certified AWS-LC version for the FIPS module number `$1`. Prints nothing if the module is not
+# certified.
+certified_min_version() {
+    case "$1" in
+        # https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5298
+        # https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314
+        3) echo "3.1.0" ;;
+        # https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5595
+        # https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5596
+        4) echo "4.0.0" ;;
+        *) ;;
+    esac
+}
+
+# Returns success if version `$1` is equal to or greater than version `$2`.
+version_at_least() {
+    [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$2" ]]
+}
 
 echo "[*] Checking that FIPS builds use a certified AWS-LC FIPS module..."
 
@@ -51,22 +76,30 @@ while IFS= read -r manifest_path; do
         exit 1
     fi
 
-    module_version="$(sed -nE 's/^#define AWSLC_FIPS_VERSION_NUMBER[[:space:]]+([0-9]+).*/\1/p' "${base_h}")"
-    if [[ -z "${module_version}" ]]; then
-        module_version="$(sed -nE 's/^#define AWSLC_VERSION_NUMBER_STRING[[:space:]]+"([0-9]+)\..*/\1/p' "${base_h}")"
-    fi
-    if [[ -z "${module_version}" ]]; then
-        echo "error: could not determine the FIPS module version from ${base_h}." >&2
+    aws_lc_version="$(sed -nE 's/^#define AWSLC_VERSION_NUMBER_STRING[[:space:]]+"([0-9]+(\.[0-9]+)*)".*/\1/p' "${base_h}")"
+    if [[ -z "${aws_lc_version}" ]]; then
+        echo "error: could not determine the AWS-LC version from ${base_h}." >&2
         exit 1
     fi
 
+    module_version="$(sed -nE 's/^#define AWSLC_FIPS_VERSION_NUMBER[[:space:]]+([0-9]+).*/\1/p' "${base_h}")"
+    if [[ -z "${module_version}" ]]; then
+        module_version="${aws_lc_version%%.*}"
+    fi
+
     crate="$(basename "$(dirname "${manifest_path}")")"
-    if [[ " ${CERTIFIED_FIPS_MODULE_VERSIONS[*]} " == *" ${module_version} "* ]]; then
-        echo "${crate} bundles AWS-LC FIPS module ${module_version}, which is certified."
-    else
-        echo "error: ${crate} bundles AWS-LC FIPS module ${module_version}, which is not in the certified list" \
-            "(${CERTIFIED_FIPS_MODULE_VERSIONS[*]}). See the aws-lc-rs pin in Cargo.toml." >&2
+    min_version="$(certified_min_version "${module_version}")"
+    if [[ -z "${min_version}" ]]; then
+        echo "error: ${crate} bundles AWS-LC ${aws_lc_version} (FIPS module ${module_version}), and FIPS module" \
+            "${module_version} is not certified. See the aws-lc-rs comment in Cargo.toml." >&2
         status=1
+    elif ! version_at_least "${aws_lc_version}" "${min_version}"; then
+        echo "error: ${crate} bundles AWS-LC ${aws_lc_version} (FIPS module ${module_version}), which is older than" \
+            "the certified version ${min_version}." >&2
+        status=1
+    else
+        echo "${crate} bundles AWS-LC ${aws_lc_version} (FIPS module ${module_version}), which is certified" \
+            "(minimum certified version ${min_version})."
     fi
 done <<< "${manifest_paths}"
 

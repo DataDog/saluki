@@ -118,12 +118,13 @@ fn assert_distrusted(result: Result<(), Error>) {
 }
 
 #[test]
-fn rejects_all_twelve_affected_chains_accepted_by_unmodified_webpki() {
+fn rejects_all_twelve_affected_chains() {
     let baseline = unprotected(roots());
     let verifier = protected(roots());
     for &(host, pem) in AFFECTED_CHAINS {
         let chain = chain(pem);
-        verify(baseline.as_ref(), host, &chain).expect(host);
+        // Upstream `rustls-webpki` also distrusts these keys.
+        verify(baseline.as_ref(), host, &chain).expect_err(host);
         assert_distrusted(verify(&verifier, host, &chain));
     }
 }
@@ -161,7 +162,7 @@ fn rejects_blocked_trust_anchor_omitted_by_the_server() {
         AFFECTED_CHAINS[0].0,
         &affected[..1],
     )
-    .expect("unmodified verifier trusts the explicitly configured intermediate");
+    .expect_err("upstream verifier distrusts the explicitly configured intermediate");
     let error = verify(&protected(roots), AFFECTED_CHAINS[0].0, &affected[..1]).expect_err("blocked anchor removed");
     assert_eq!(error, Error::InvalidCertificate(CertificateError::UnknownIssuer));
 }
