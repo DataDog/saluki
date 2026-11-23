@@ -14,6 +14,7 @@ use crate::core::step::StepReport;
 pub(crate) mod analysis;
 mod compare;
 mod config_key_equals;
+mod dogstatsd_replay;
 mod exec;
 mod exits_with;
 mod file_contains;
@@ -39,6 +40,7 @@ const EXEC_SLACK: Duration = Duration::from_secs(5);
 pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(compare::CompareFactory));
     registry.add_step(Box::new(config_key_equals::ConfigKeyEqualsFactory));
+    registry.add_step(Box::new(dogstatsd_replay::DogstatsdReplayFactory));
     registry.add_step(Box::new(exec::ExecFactory));
     registry.add_step(Box::new(exits_with::ExitsWithFactory));
     registry.add_step(Box::new(file_contains::FileContainsFactory));
@@ -75,9 +77,10 @@ fn described(on: &str, process: Option<&str>) -> String {
 }
 
 /// One participant, `app`, for the steps' failing-check tests: a process `main` observed through its container, a
-/// supervised process `job` with an exit record, a UDP endpoint `statsd`, and an operation `dump` that answers with
-/// what [`DUMP_FILE`] holds, and an operation `config_dump` that answers with what [`CONFIG_FILE`] holds. A second
-/// participant, `peer`, offers the same operations, for steps that read two.
+/// supervised process `job` with an exit record, a UDP endpoint `statsd`, and operations that answer with what a file
+/// holds: `dump` with [`DUMP_FILE`], `config_dump` with [`CONFIG_FILE`], and `dogstatsd_capture`, `dogstatsd_replay` and
+/// `dogstatsd_stats` with [`CAPTURE_FILE`], [`REPLAY_FILE`] and [`STATS_FILE`]. A second participant, `peer`, offers
+/// the same operations, for steps that read two.
 #[cfg(test)]
 mod scripted {
     use std::collections::BTreeMap;
@@ -138,34 +141,26 @@ mod scripted {
         }
     }
 
-    /// `app`'s `dump`: the JSON in [`DUMP_FILE`], or the error reading it.
+    /// The file whose contents `app`'s `dogstatsd_capture` answers with.
+    pub(super) const CAPTURE_FILE: &str = "/scripted/capture.json";
+
+    /// The file whose contents `app`'s `dogstatsd_replay` answers with.
+    pub(super) const REPLAY_FILE: &str = "/scripted/replay.json";
+
+    /// The file whose contents `app`'s `dogstatsd_stats` answers with.
+    pub(super) const STATS_FILE: &str = "/scripted/stats.json";
+
+    /// An operation that answers with the JSON in `file`, or the error reading it.
     #[derive(Debug)]
-    struct Dump;
-
-    #[async_trait]
-    impl Operation for Dump {
-        fn name(&self) -> &'static str {
-            "dump"
-        }
-
-        fn uses(&self) -> &'static [Uses] {
-            &[]
-        }
-
-        async fn run(&self, on: &Handle<'_>, _args: Value, limit: Duration) -> Result<Value, HandleError> {
-            let answer = on.read_file(DUMP_FILE, limit).await?.unwrap_or_default();
-            serde_json::from_slice(&answer).map_err(|e| HandleError::Software(e.to_string()))
-        }
+    struct Answers {
+        name: &'static str,
+        file: &'static str,
     }
 
-    /// `app`'s `config_dump`: the JSON in [`CONFIG_FILE`], or the error reading it.
-    #[derive(Debug)]
-    struct ConfigDump;
-
     #[async_trait]
-    impl Operation for ConfigDump {
+    impl Operation for Answers {
         fn name(&self) -> &'static str {
-            "config_dump"
+            self.name
         }
 
         fn uses(&self) -> &'static [Uses] {
@@ -173,7 +168,7 @@ mod scripted {
         }
 
         async fn run(&self, on: &Handle<'_>, _args: Value, limit: Duration) -> Result<Value, HandleError> {
-            let answer = on.read_file(CONFIG_FILE, limit).await?.unwrap_or_default();
+            let answer = on.read_file(self.file, limit).await?.unwrap_or_default();
             serde_json::from_slice(&answer).map_err(|e| HandleError::Software(e.to_string()))
         }
     }
@@ -216,8 +211,30 @@ procedure: []
         let mut plan = plan::plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap();
         // A participant with no participant type offers no operation, so the test gives each its operations.
         for planned in plan.participants.values_mut() {
-            planned.operations.insert("dump", &Dump);
-            planned.operations.insert("config_dump", &ConfigDump);
+            for operation in [
+                &Answers {
+                    name: "dump",
+                    file: DUMP_FILE,
+                },
+                &Answers {
+                    name: "config_dump",
+                    file: CONFIG_FILE,
+                },
+                &Answers {
+                    name: "dogstatsd_capture",
+                    file: CAPTURE_FILE,
+                },
+                &Answers {
+                    name: "dogstatsd_replay",
+                    file: REPLAY_FILE,
+                },
+                &Answers {
+                    name: "dogstatsd_stats",
+                    file: STATS_FILE,
+                },
+            ] {
+                planned.operations.insert(operation.name, operation);
+            }
         }
         let values = Values::of_plan(&plan.participants);
         let handles = BTreeMap::from([
