@@ -465,8 +465,8 @@ pub fn v0_read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, De
     v0_check_header_len(len, V0_MAX_COLLECTION_SIZE, r, context)
 }
 
-/// Reads the v0.5 dictionary's array header as the reference's `safeReadDictionaryHeaderBytes` does: as
-/// [`v0_read_array_len`], but with the string table's larger limit, [`MAX_SIZE`] (`maxStringTableSize`).
+/// Reads the v0.5 dictionary's array header as the trace-agent does: as [`v0_read_array_len`], but with the string
+/// table's larger limit, [`MAX_SIZE`].
 pub fn v0_read_dictionary_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
     v0_check_header_len(len, MAX_SIZE, r, context)

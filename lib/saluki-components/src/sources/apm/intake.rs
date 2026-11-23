@@ -253,7 +253,7 @@ impl TraceIntake {
             (EndpointVersion::V10, _) => decode_v1_payload(&body),
             // As in the trace-agent, a v0.1 body is decoded as JSON whatever the media type.
             (EndpointVersion::V01, _) => decode_v01_json(&body),
-            // As `decodeConvertedTracerPayload`'s `v05` case, which decodes a v0.5 payload whatever the media type.
+            // As in the trace-agent, a v0.5 payload is decoded whatever the media type.
             (EndpointVersion::V05, _) => decode_v05_payload(&body),
             // `/v0.2/traces` never gets here with MessagePack: it is rejected above.
             (_, PayloadFormat::MessagePack) => decode_v04_payload(&body),
