@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["HostCommand","HostExit","HostProcess"],"type":["ExitWatch"]};
