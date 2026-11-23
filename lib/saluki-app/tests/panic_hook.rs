@@ -29,6 +29,11 @@ fn panic_is_logged_to_file_and_standard_error() {
         panic_line.contains("panic_hook.rs"),
         "panic line should include the panic location: {panic_line}"
     );
+    let location = stderr_panic_location(&stderr);
+    assert!(
+        panic_line.ends_with(&format!("Application panicked at {location}.")),
+        "the message should name the location that standard error names: {panic_line}"
+    );
     assert!(
         !log.contains("stack backtrace:"),
         "no backtrace should be logged without RUST_BACKTRACE\nlog:\n{log}"
@@ -45,8 +50,9 @@ fn panic_is_logged_to_file_and_standard_error() {
 fn panic_backtrace_is_logged_like_standard_error() {
     let (log, stderr) = run_child(Some("1"));
 
+    let location = stderr_panic_location(&stderr);
     assert!(
-        log.contains("Application panicked.\nstack backtrace:\n"),
+        log.contains(&format!("Application panicked at {location}.\nstack backtrace:\n")),
         "the backtrace should start on its own line after the message\nlog:\n{log}"
     );
 
@@ -93,6 +99,15 @@ fn run_child(backtrace: Option<&str>) -> (String, String) {
     );
 
     (read_log(&log_file), stderr)
+}
+
+/// Returns the panic location from the default hook's first line, `thread '<name>' (<id>) panicked at <location>:`.
+fn stderr_panic_location(stderr: &str) -> &str {
+    stderr
+        .lines()
+        .find_map(|line| line.split_once(" panicked at "))
+        .and_then(|(_, rest)| rest.strip_suffix(':'))
+        .unwrap_or_else(|| panic!("standard error should name the panic location\nstderr:\n{stderr}"))
 }
 
 /// Returns the frame header lines, such as `0: core::panicking::panic_fmt`, of the first backtrace in `text`.
