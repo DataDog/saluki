@@ -683,8 +683,8 @@ impl TraceSampler {
             }
         }
 
-        // The OTLP translator already marks top-level spans by span kind when this setting is on, as Go does through
-        // `ClientComputedTopLevel` for OTLP payloads. Datadog traces always get their top-level spans computed here.
+        // The OTLP translator already marks top-level spans by span kind when this setting is on, as the trace-agent
+        // does for OTLP payloads. Datadog traces always get their top-level spans computed here.
         let otlp_computed_top_level =
             self.compute_top_level_by_span_kind && matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. });
         if !otlp_computed_top_level {
