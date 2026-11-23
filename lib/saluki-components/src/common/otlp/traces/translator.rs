@@ -190,10 +190,9 @@ fn resolve_hostname(
 /// Resource attribute reporting that APM stats were already computed for the resource's spans.
 const KEY_STATS_COMPUTED: &str = "_dd.stats_computed";
 
-/// Returns whether APM stats were already computed for a resource, mirroring `resolveClientComputedStats` in the
-/// reference OTLP receiver (`pkg/trace/api/otlp.go`).
+/// Returns whether APM stats were already computed for a resource, as the trace-agent's OTLP receiver decides it.
 ///
-/// Any non-empty value other than `false` means computed. The reference falls back to the
+/// Any non-empty value other than `false` means computed. The trace-agent falls back to the
 /// `Datadog-Client-Computed-Stats` header when the attribute is absent; the OTLP source doesn't read that header, so
 /// absence means not computed.
 fn resolve_client_computed_stats(attributes: &[otlp_common::KeyValue]) -> bool {
@@ -504,7 +503,7 @@ impl OtlpTracesTranslator {
             ingest_info: TraceIngestInfo::Otlp {
                 receiver_sampling_rate: self.receiver_sampling_rate,
             },
-            // The reference OTLP receiver reports top-level spans as client-computed exactly when it marks them by
+            // The trace-agent's OTLP receiver reports top-level spans as client-computed exactly when it marks them by
             // span kind.
             receiver: Arc::new(ReceiverMetadata {
                 client_computed_stats: resolve_client_computed_stats(&resource.attributes),

@@ -640,7 +640,7 @@ impl TraceEndpointEncoder {
         };
 
         // OTLP traces derive container tags from their resource, and their hostname is the one the translator resolved.
-        // Datadog traces carry what the receiver resolved, and an empty tracer hostname stays empty, as the reference
+        // Datadog traces carry what the receiver resolved, and an empty tracer hostname stays empty, as the trace-agent
         // writer leaves it: the agent's own hostname is reported once, on the agent payload.
         let otlp_container_tags = is_otlp
             .then(|| {
@@ -734,7 +734,7 @@ impl TraceEndpointEncoder {
                 tp.app_version_ref(self.string_table.intern(app_version))?;
             }
 
-            // Receiver-resolved metadata goes in the payload-level attributes map, as `handleTracesV1` sets it.
+            // Receiver-resolved metadata goes in the payload-level attributes map, as the trace-agent sets it.
             for (key, value) in [
                 (CONTAINER_TAGS_META_KEY, container_tags),
                 (TAG_PROCESS_TAGS, non_empty(&trace.payload.receiver().process_tags)),
@@ -1576,7 +1576,7 @@ mod tests {
         });
         assert_eq!(encoded_hostname(&trace), "");
 
-        // Datadog traces without one stay empty too, as the reference writer leaves them.
+        // Datadog traces without one stay empty too, as the trace-agent writer leaves them.
         let trace = make_trace(TraceIngestInfo::Datadog);
         assert_eq!(encoded_hostname(&trace), "");
     }

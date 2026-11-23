@@ -95,7 +95,7 @@ const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
 /// Payload attribute recording whether the SDK exports its telemetry through OTLP.
 const TAG_SDK_OTLP_EXPORT: &str = "_dd.sdk.otlp_export";
 
-/// Returns the first span of the first non-empty trace, mirroring `getFirstSpan` in the reference receiver.
+/// Returns the first span of the first non-empty trace, as the trace-agent's receiver picks it.
 pub fn first_span(traces: &[Trace]) -> Option<&Span> {
     traces.iter().find_map(|trace| trace.spans().first())
 }
@@ -103,9 +103,8 @@ pub fn first_span(traces: &[Trace]) -> Option<&Span> {
 /// Resolves a payload's process tags for
 /// [`ReceiverMetadata::process_tags`](saluki_core::data_model::event::trace::ReceiverMetadata::process_tags).
 ///
-/// Mirrors `getProcessTags` in the reference receiver (`pkg/trace/api/api.go`): the payload attribute wins, then the
-/// first span's attribute, then the `X-Datadog-Process-Tags` header. An attribute that is present but empty still
-/// wins, as it does there.
+/// As in the trace-agent's receiver, the payload attribute wins, then the first span's attribute, then the
+/// `X-Datadog-Process-Tags` header. An attribute that is present but empty still wins.
 pub fn resolve_process_tags(
     payload_attributes: &FastHashMap<MetaString, AttributeValue>, first_span: Option<&Span>, header: Option<&str>,
 ) -> MetaString {
@@ -119,8 +118,8 @@ pub fn resolve_process_tags(
 /// Resolves a payload's SDK export mode for
 /// [`ReceiverMetadata::sdk_otlp_export`](saluki_core::data_model::event::trace::ReceiverMetadata::sdk_otlp_export).
 ///
-/// Mirrors `getSDKOtlpExport` in the reference receiver: the payload attribute wins, then the first span's
-/// attribute. The span attribute is left in place, as it is there.
+/// As in the trace-agent's receiver, the payload attribute wins, then the first span's attribute. The span attribute
+/// is left in place.
 pub fn resolve_sdk_otlp_export(
     payload_attributes: &FastHashMap<MetaString, AttributeValue>, first_span: Option<&Span>,
 ) -> MetaString {

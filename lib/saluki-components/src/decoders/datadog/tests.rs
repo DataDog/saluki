@@ -761,7 +761,7 @@ fn process_tags_resolve_payload_then_first_span_then_header() {
     assert_eq!(resolve_process_tags(&none, None, Some("from-header")), "from-header");
     assert_eq!(resolve_process_tags(&none, None, None), "");
 
-    // A present but empty attribute still wins over the header, as in the reference.
+    // A present but empty attribute still wins over the header, as in the trace-agent.
     let empty = attrs("_dd.tags.process", "");
     assert_eq!(resolve_process_tags(&empty, Some(&span), Some("from-header")), "");
 }
@@ -778,7 +778,7 @@ fn sdk_otlp_export_resolves_payload_then_first_span() {
     assert_eq!(resolve_sdk_otlp_export(&none, Some(&span)), "false");
     assert_eq!(resolve_sdk_otlp_export(&none, None), "");
 
-    // Non-string attributes render as the reference's `AsString` does.
+    // Non-string attributes render as strings, as in the trace-agent.
     let mut bool_attr = FastHashMap::default();
     bool_attr.insert(ms("_dd.sdk.otlp_export"), AttributeValue::Bool(true));
     assert_eq!(resolve_sdk_otlp_export(&bool_attr, None), "true");

@@ -130,8 +130,8 @@ impl PayloadFields {
 /// Payload metadata that the receiver supplies from request headers, the connection, and the tagger, rather than
 /// decoding it from spans.
 ///
-/// The reference receiver carries these on its `Payload` (`pkg/trace/api/payload.go`) or, for the tags, sets them as
-/// tracer payload attributes in `handleTracesV1` (`pkg/trace/api/api.go`).
+/// The trace-agent's receiver carries these alongside the tracer payload or, for the tags, sets them as tracer payload
+/// attributes.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ReceiverMetadata {
     /// Per-chunk weight from the `Datadog-Client-Dropped-P0-Traces` header. Zero if absent.
