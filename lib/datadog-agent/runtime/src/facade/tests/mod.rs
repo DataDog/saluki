@@ -396,6 +396,8 @@ async fn connected_registers_and_runs_the_agent_workers_until_shutdown() {
     for expected in [
         "internal-sup/env-provider/workload",
         "internal-sup/env-provider/autodiscovery",
+        "internal-sup/remote-agent-session",
+        "internal-sup/config-stream",
         "internal-sup/config-updates",
         "internal-sup/remote-config/remote-config",
         "internal-sup/ctrl-pln/remote-agent/supervision-tree",
