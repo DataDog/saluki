@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_ALPINE_IMAGE"],"enum":["ContainerOs","ExitStatus"],"struct":["Driver","DriverConfig","DriverDetails"]};

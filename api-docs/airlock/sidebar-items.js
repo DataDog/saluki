@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["config","container","docker","driver","exec","files","host","image","scope","unix"]};
+window.SIDEBAR_ITEMS = {"mod":["container","docker","exec","files","host","image","scope"]};

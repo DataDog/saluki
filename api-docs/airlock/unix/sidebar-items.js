@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"struct":["UnixProcess","UnixProcessConfig"],"trait":["LogSink"],"type":["ExitCodeCell"]};
