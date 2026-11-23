@@ -112,6 +112,12 @@ Under `inventory`, support is `full`, `partial`, `none`, or `unknown`. `excluded
 An investigation toward intended support is `planned: true`. A documentation-only issue doesn't mean support is
 planned.
 
+At startup, the compatibility check reports a classified key only when an input sets it explicitly to a value other
+than its schema default. A key set to its default gets the behavior ADP has when nobody sets it, so the check skips it.
+The check reports a value that the default comparison can't match, such as a duration in an unexpected form. The
+check trusts the schema default, so a key whose schema default differs from the Agent's effective default can hide a
+real difference.
+
 Date exclusion notes and name the feature: `YYYY-MM-DD: ADP does not currently support <feature>.` Avoid generic
 reasons such as "Core Agent-only" or claims that support can never be added.
 
