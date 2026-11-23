@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["DataspaceAnchorWorker","RemoteAgentBootstrap","RemoteAgentEventReporter","RemoteAgentServicesWorker","StatusBuilder","StatusSectionWriter"],"trait":["StatusSectionProvider"]};
+window.SIDEBAR_ITEMS = {"struct":["ConfigStreamWorker","DataspaceAnchorWorker","RemoteAgentBootstrap","RemoteAgentEventReporter","RemoteAgentRegistrationWorker","RemoteAgentServicesWorker","StatusBuilder","StatusSectionWriter"],"trait":["StatusSectionProvider"]};
