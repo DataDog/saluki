@@ -7,10 +7,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use airlock::container::Container;
-use airlock::driver::{Driver, DriverDetails};
 use airlock::host::HostProcess;
 use airlock::scope::CaseScope;
-use airlock::unix::UnixProcess;
 use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{Api, DeleteParams};
@@ -58,7 +56,7 @@ pub(crate) fn random_id() -> String {
 
 /// Shares a case's registered resources between its test body and the runner.
 ///
-/// Register isolation groups, case scopes and namespaces before creation requests. The runner calls
+/// Register case scopes and namespaces before creation requests. The runner calls
 /// [`Self::reclaim`] to attempt removal in reverse registration order. Dropping the last ledger handle sends SIGKILL to
 /// registered process groups; directories, Docker resources, and namespaces require explicit reclaim.
 #[derive(Clone, Debug, Default)]
@@ -75,12 +73,8 @@ struct Entry {
 
 /// A resource the runner knows how to remove.
 enum Resource {
-    /// The containers, shared volume, and network labeled with this isolation-group ID.
-    IsolationGroup(String),
     /// The containers, volume and network of one case scope.
     CaseScope(CaseScope),
-    /// A host process and its process group.
-    Process(UnixProcess),
     /// A host program and its process group.
     HostProcess(HostProcess),
     /// A Kubernetes namespace, removed through the client that created it.
@@ -117,9 +111,7 @@ impl Resource {
     /// blocking thread after its future is dropped. A case scope's Docker requests are bounded by `deadline`.
     async fn remove(self, deadline: Instant) -> Result<Option<Terminating>, GenericError> {
         match self {
-            Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
             Self::CaseScope(scope) => scope.reclaim(deadline).await.map(|()| None),
-            Self::Process(process) => process.cleanup().await.map(|()| None),
             Self::HostProcess(process) => process.stop(STOP_GRACE).await.map(|()| None),
             Self::Namespace { name, client } => {
                 let api = Api::<Namespace>::all(client);
@@ -162,9 +154,7 @@ impl fmt::Debug for Resource {
     /// Omits a namespace's client, which isn't `Debug`, and names a case scope by its resource name.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::IsolationGroup(id) => f.debug_tuple("IsolationGroup").field(id).finish(),
             Self::CaseScope(scope) => f.debug_tuple("CaseScope").field(&scope.resource_name()).finish(),
-            Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
             Self::HostProcess(process) => f.debug_tuple("HostProcess").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
@@ -181,9 +171,7 @@ impl fmt::Display for Resource {
     /// Resource label used in cleanup reports.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
             Self::CaseScope(scope) => write!(f, "case_scope:{}", scope.resource_name()),
-            Self::Process(process) => write!(f, "process:{}", process.name()),
             Self::HostProcess(process) => write!(f, "host_process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
             Self::Directory(path) => write!(f, "directory:{}", path.display()),
@@ -241,21 +229,9 @@ impl ResourceLedger {
         });
     }
 
-    /// Registers a new isolation group and returns its ID. Call it before creating anything in the group.
-    pub(crate) fn isolation_group(&self) -> String {
-        let id = random_id();
-        self.register(Resource::IsolationGroup(id.clone()));
-        id
-    }
-
     /// Registers a case scope. Call it before preparing the scope.
     pub(crate) fn case_scope(&self, scope: CaseScope) {
         self.register(Resource::CaseScope(scope));
-    }
-
-    /// Takes ownership of a spawned process.
-    pub(crate) fn process(&self, process: UnixProcess) {
-        self.register(Resource::Process(process));
     }
 
     /// Takes ownership of a started host program. Call it as soon as the program starts.
@@ -283,11 +259,10 @@ impl ResourceLedger {
     fn mark_unsettled(&self, name: &str) {
         for entry in self.lock().iter_mut() {
             let named = match &entry.resource {
-                Resource::IsolationGroup(id) => id == name,
                 Resource::CaseScope(scope) => scope.resource_name() == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
                 Resource::NodeDirectory { path, .. } => path == name,
-                Resource::Process(_) | Resource::HostProcess(_) | Resource::Directory(_) => false,
+                Resource::HostProcess(_) | Resource::Directory(_) => false,
             };
             if named {
                 entry.unsettled = true;
@@ -295,7 +270,7 @@ impl ResourceLedger {
         }
     }
 
-    /// Runs a creation request for the registered isolation group, case scope, namespace or node directory `name`. A
+    /// Runs a creation request for the registered case scope, namespace or node directory `name`. A
     /// case scope's name is its resource name, and a node directory's is its path. A write into a node directory counts
     /// as creating it.
     ///
@@ -324,32 +299,6 @@ impl ResourceLedger {
             self.mark_unsettled(name);
         }
         created
-    }
-
-    /// Creates and starts `driver`'s container in `isolation_group`, returning early when `cancel` fires.
-    ///
-    /// An interrupted creation marks the group unsettled. Starting uses the existing container, so an interrupted start
-    /// preserves the group's current mark.
-    pub(crate) async fn start_container(
-        &self, driver: &Driver, isolation_group: &str, cancel: &CancellationToken,
-    ) -> Result<DriverDetails, GenericError> {
-        self.create(isolation_group, cancel, driver.create())
-            .await
-            .ok_or_else(|| {
-                generic_error!(
-                    "Cancelled while creating a container in isolation group '{}'.",
-                    isolation_group
-                )
-            })??;
-        cancel
-            .run_until_cancelled(driver.start_container())
-            .await
-            .unwrap_or_else(|| {
-                Err(generic_error!(
-                    "Cancelled while starting a container in isolation group '{}'.",
-                    isolation_group
-                ))
-            })
     }
 
     /// Attempts cleanup in reverse registration order under one deadline.

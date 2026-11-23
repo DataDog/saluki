@@ -26,7 +26,6 @@
     KUBERNETES_MEMORY_LIMIT: "48Gi"
     DD_LOG_LEVEL: "panoramic=debug,info"
     PANORAMIC_LOG_DIR: "panoramic-logs"
-    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     # The parent pipeline's images. Cases name their images by reference and
     # take the replacements with --set. Comparison cases name the Agent image on
     # both sides, so one entry replaces the baseline and the comparison.

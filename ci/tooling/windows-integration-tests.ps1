@@ -17,7 +17,6 @@ function Build-WindowsAdpImage {
     New-Item -ItemType Directory -Force $ContextDir | Out-Null
     Copy-Item -Force $AdpBinary (Join-Path $ContextDir "agent-data-plane.exe")
     Assert-NoDynamicVCRuntimeImports -BinaryPath $AdpBinary
-    Copy-Item -Force (Join-Path $RepoRoot "ci\tooling\windows-adp-entrypoint.ps1") (Join-Path $ContextDir "entrypoint.ps1")
     Copy-Item -Force (Join-Path $RepoRoot "test\smp\regression\adp\shared\cert.pem") (Join-Path $ContextDir "ipc_cert.pem")
     [System.IO.File]::WriteAllText((Join-Path $ContextDir "auth_token"), "windows-integration-test-token", [System.Text.Encoding]::ASCII)
 
@@ -27,11 +26,8 @@ FROM ${BaseImage}
 WORKDIR C:\adp
 RUN New-Item -ItemType Directory -Force C:\ProgramData\Datadog
 COPY agent-data-plane.exe C:\adp\agent-data-plane.exe
-COPY entrypoint.ps1 C:\adp\entrypoint.ps1
 COPY auth_token C:\ProgramData\Datadog\auth_token
 COPY ipc_cert.pem C:\ProgramData\Datadog\ipc_cert.pem
-ENTRYPOINT ["pwsh", "-NoProfile", "-NonInteractive", "-File", "C:\\adp\\entrypoint.ps1"]
-CMD ["-c", "C:\\ProgramData\\Datadog\\datadog.yaml", "run"]
 "@
     Set-Content -Path (Join-Path $ContextDir "Dockerfile") -Value $Dockerfile -Encoding ASCII
 
@@ -95,14 +91,14 @@ Write-Host "[*] Running Windows integration tests..."
 # own `nat` network, and creating those (plus attaching each container's endpoint) goes through
 # HNS, which serializes badly: concurrent setups race and the loser gets back
 # `hnsCall failed in Win32: The object already exists. (0x1392)`, erroring the test and failing
-# the whole job. airlock retries that collision (see `with_hns_retry` in airlock's driver), and
+# the whole job. airlock retries that collision (see airlock's `retry` module), and
 # halving the number of simultaneous racers cuts how often the retry is needed at all. The cost is
 # roughly double the test phase -- a few minutes against a job whose wall clock is dominated by
 # the build image pull and the cargo build -- so the trade is worth making here.
 $PanoramicArgs = @(
     "run",
     "-d", $TestDir,
-    "--runtime", "windows",
+    "--subject-os", "windows",
     "--set", "saluki-images/agent-data-plane:testing-windows=$ImageTag",
     "--no-tui",
     "-p", "4",
