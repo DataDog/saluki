@@ -161,7 +161,10 @@ impl RemoteAgentEnvironmentProvider {
         warn!("Running in standalone mode. Origin detection/enrichment and other features dependent upon the Datadog Agent will not be available.");
 
         // An absent hostname and an empty one both mean "hostless". This matches the Datadog Agent in sidecar
-        // deployments, such as ECS Fargate, where the Agent resolves an empty hostname and sends data with no host.
+        // deployments, such as ECS Fargate, where the Agent resolves an empty hostname and sends data with no host. See
+        // `fromFargate` and `IsSidecar` in the Agent:
+        // https://github.com/DataDog/datadog-agent/blob/ecdf6b97d143dc18a922bebdec24f69058942fb4/pkg/util/hostname/common.go#L75-L82
+        // https://github.com/DataDog/datadog-agent/blob/ecdf6b97d143dc18a922bebdec24f69058942fb4/pkg/util/fargate/detection.go#L15-L29
         let hostname = settings.hostname.clone().unwrap_or_default();
 
         Self {
