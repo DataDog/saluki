@@ -205,8 +205,7 @@ impl SourceBuilder for OtlpConfiguration {
         let grpc_http2_config = self.receiver.grpc.http2_config();
         let http_max_request_body_size = self.receiver.http.max_request_body_size;
         let cors = self.receiver.http.cors.clone();
-        let http_tls_config = self.receiver.http.tls.build()?;
-        let grpc_tls_config = self.receiver.grpc.tls.build()?;
+        let (http_tls_config, grpc_tls_config) = self.receiver.tls_configurations()?;
         let metrics = build_metrics(context.component_context());
         let translator_metrics =
             metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
@@ -970,6 +969,32 @@ mod tests {
         let mut servers = Vec::new();
         http_servers(&control.supervisor().tree_handle().snapshot().root, &mut servers);
         assert_eq!(servers, ["http_server_otlp-http"]);
+
+        control.shutdown().await.expect("source should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn an_empty_endpoint_leaves_its_tls_settings_unused() {
+        // The server with no endpoint doesn't start, so these settings are neither valid nor readable and don't matter.
+        let mut config = source_configuration();
+        config.receiver.logs_enabled = true;
+        config.receiver.grpc.endpoint = String::new();
+        config.receiver.grpc.tls.cert_file = "/missing/cert.pem".to_string();
+        config.receiver.grpc.tls.ca_file = "/missing/ca.pem".to_string();
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
+
+        let (control, _outputs) = TestComponentDriver::source(config)
+            .await
+            .expect("source should build when only the unused server has bad TLS settings");
+
+        let mut bound = control
+            .supervisor()
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-http"));
+        match bound.recv().await {
+            Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(_))) => {}
+            update => panic!("expected the HTTP server to bind, got {update:?}"),
+        }
 
         control.shutdown().await.expect("source should stop cleanly");
     }

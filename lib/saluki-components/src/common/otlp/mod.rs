@@ -418,14 +418,15 @@ impl OtlpServerConfiguration {
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
-        // Validate TLS configurations before spawning.
+        // Validate TLS configurations before spawning. A server with no endpoint doesn't start, so its TLS
+        // configuration isn't loaded.
         let http_tls_config = match self.http_tls {
-            Some(tls) => Some(tls.build()?),
-            None => None,
+            Some(tls) if self.http_endpoint.is_some() => Some(tls.build()?),
+            _ => None,
         };
         let grpc_tls_config = match self.grpc_tls {
-            Some(tls) => Some(tls.build()?),
-            None => None,
+            Some(tls) if self.grpc_endpoint.is_some() => Some(tls.build()?),
+            _ => None,
         };
 
         // Create and spawn the gRPC server.
@@ -1173,11 +1174,15 @@ mod tests {
     async fn build_starts_only_the_servers_with_an_endpoint() {
         let supervisor = TestSupervisor::start("otlp-test").await;
 
+        // A server with no endpoint doesn't load its TLS files, which here don't exist.
+        let missing_tls = || OtlpTlsConfiguration::new("/missing/cert.pem".into(), "/missing/key.pem".into());
+
         // The HTTP server alone.
         supervisor
             .scope(
                 OtlpServerConfiguration::new(Some(ListenAddress::tcp_loopback(0)), None, 4 * 1024 * 1024)
                     .with_server_ids("http-only-http", "http-only-grpc")
+                    .with_grpc_tls(missing_tls())
                     .build(
                         NoopHandler,
                         MemoryLimiter::noop(),
@@ -1197,6 +1202,7 @@ mod tests {
             .scope(
                 OtlpServerConfiguration::new(None, Some(ListenAddress::tcp_loopback(0)), 4 * 1024 * 1024)
                     .with_server_ids("grpc-only-http", "grpc-only-grpc")
+                    .with_http_tls(missing_tls())
                     .build(
                         NoopHandler,
                         MemoryLimiter::noop(),

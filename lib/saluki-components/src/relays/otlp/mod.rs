@@ -73,8 +73,7 @@ impl RelayBuilder for OtlpRelayConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
         self.receiver.check_endpoints()?;
 
-        let http_tls_config = self.receiver.http.tls.build()?;
-        let grpc_tls_config = self.receiver.grpc.tls.build()?;
+        let (http_tls_config, grpc_tls_config) = self.receiver.tls_configurations()?;
 
         Ok(Box::new(OtlpRelay {
             http_endpoint: self.http_endpoint(),

@@ -38,6 +38,31 @@ impl OtlpReceiver {
 
         Ok(())
     }
+
+    /// Builds the TLS configurations of the HTTP and gRPC servers, in that order.
+    ///
+    /// A server with an empty endpoint doesn't start, so its TLS settings are not validated and it gets no
+    /// configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a server with an endpoint has TLS settings that [`OtlpReceiverTls::build`] rejects.
+    pub(crate) fn tls_configurations(
+        &self,
+    ) -> Result<(Option<OtlpTlsConfiguration>, Option<OtlpTlsConfiguration>), GenericError> {
+        let http = if self.http.endpoint.is_empty() {
+            None
+        } else {
+            self.http.tls.build()?
+        };
+        let grpc = if self.grpc.endpoint.is_empty() {
+            None
+        } else {
+            self.grpc.tls.build()?
+        };
+
+        Ok((http, grpc))
+    }
 }
 
 /// Settings of the OTLP receiver's gRPC server.
