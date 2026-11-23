@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::common::v1::KeyValue;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>regex::Regex;
 <a href=#13 id=13 data-nosnippet>13</a>
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span><span class="kw">super</span>::util::{gcp_hostname, get_string_attribute, hostname_from_attributes, Source, SourceKind};
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span><span class="kw">super</span>::util::{first_attribute_str, gcp_hostname, hostname_from_attributes, Source, SourceKind};
 <a href=#15 id=15 data-nosnippet>15</a>
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">const </span>ATTRIBUTE_HOST: <span class="kw-2">&amp;</span>str = <span class="string">"host"</span>;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">const </span>ATTRIBUTE_DATADOG_HOSTNAME: <span class="kw-2">&amp;</span>str = <span class="string">"datadog.host.name"</span>;
@@ -112,9 +112,9 @@
 <a href=#112 id=112 data-nosnippet>112</a>    )
 <a href=#113 id=113 data-nosnippet>113</a>}
 <a href=#114 id=114 data-nosnippet>114</a>
-<a href=#115 id=115 data-nosnippet>115</a><span class="doccomment">/// Returns a string attribute, or an empty string if it's missing or not a string.
+<a href=#115 id=115 data-nosnippet>115</a><span class="doccomment">/// Returns the first attribute named `key` as a string, or an empty string if it's missing or not a string.
 <a href=#116 id=116 data-nosnippet>116</a></span><span class="kw">fn </span>attr&lt;<span class="lifetime">'a</span>&gt;(attributes: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[KeyValue], key: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str {
-<a href=#117 id=117 data-nosnippet>117</a>    get_string_attribute(attributes, key).unwrap_or_default()
+<a href=#117 id=117 data-nosnippet>117</a>    first_attribute_str(attributes, key).unwrap_or_default()
 <a href=#118 id=118 data-nosnippet>118</a>}
 <a href=#119 id=119 data-nosnippet>119</a>
 <a href=#120 id=120 data-nosnippet>120</a><span class="kw">fn </span>source(kind: SourceKind, identifier: <span class="kw">impl </span>Into&lt;String&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;Source&gt; {
@@ -284,7 +284,7 @@
 <a href=#284 id=284 data-nosnippet>284</a>    <span class="kw">if </span>!attr(attributes, AWS_ECS_LAUNCHTYPE).eq_ignore_ascii_case(<span class="string">"fargate"</span>) {
 <a href=#285 id=285 data-nosnippet>285</a>        <span class="kw">return </span><span class="prelude-val">None</span>;
 <a href=#286 id=286 data-nosnippet>286</a>    }
-<a href=#287 id=287 data-nosnippet>287</a>    <span class="kw">let </span>task_arn = get_string_attribute(attributes, AWS_ECS_TASK_ARN)<span class="question-mark">?</span>;
+<a href=#287 id=287 data-nosnippet>287</a>    <span class="kw">let </span>task_arn = first_attribute_str(attributes, AWS_ECS_TASK_ARN)<span class="question-mark">?</span>;
 <a href=#288 id=288 data-nosnippet>288</a>    source(SourceKind::AwsEcsFargate, task_arn)
 <a href=#289 id=289 data-nosnippet>289</a>}
 <a href=#290 id=290 data-nosnippet>290</a>
@@ -700,5 +700,27 @@
 <a href=#700 id=700 data-nosnippet>700</a>            <span class="macro">assert_ne!</span>(source.<span class="number">0</span>, SourceKind::Hostname);
 <a href=#701 id=701 data-nosnippet>701</a>        }
 <a href=#702 id=702 data-nosnippet>702</a>    }
-<a href=#703 id=703 data-nosnippet>703</a>}
+<a href=#703 id=703 data-nosnippet>703</a>
+<a href=#704 id=704 data-nosnippet>704</a>    <span class="attr">#[test]
+<a href=#705 id=705 data-nosnippet>705</a>    </span><span class="kw">fn </span>reads_the_first_attribute_even_when_it_is_not_a_string() {
+<a href=#706 id=706 data-nosnippet>706</a>        <span class="kw">let </span><span class="kw-2">mut </span>attributes = <span class="macro">vec!</span>[KeyValue {
+<a href=#707 id=707 data-nosnippet>707</a>            key: <span class="string">"cloud.platform"</span>.to_string(),
+<a href=#708 id=708 data-nosnippet>708</a>            value: <span class="prelude-val">Some</span>(AnyValue {
+<a href=#709 id=709 data-nosnippet>709</a>                value: <span class="prelude-val">Some</span>(Value::IntValue(<span class="number">1</span>)),
+<a href=#710 id=710 data-nosnippet>710</a>            }),
+<a href=#711 id=711 data-nosnippet>711</a>        }];
+<a href=#712 id=712 data-nosnippet>712</a>        attributes.extend(attrs(<span class="kw-2">&amp;</span>[
+<a href=#713 id=713 data-nosnippet>713</a>            (<span class="string">"cloud.platform"</span>, <span class="string">"azure.functions"</span>),
+<a href=#714 id=714 data-nosnippet>714</a>            (<span class="string">"service.name"</span>, <span class="string">"app"</span>),
+<a href=#715 id=715 data-nosnippet>715</a>            (<span class="string">"cloud.account.id"</span>, <span class="string">"sub"</span>),
+<a href=#716 id=716 data-nosnippet>716</a>            (<span class="string">"azure.resource_group.name"</span>, <span class="string">"rg"</span>),
+<a href=#717 id=717 data-nosnippet>717</a>            (<span class="string">"host.name"</span>, <span class="string">"name"</span>),
+<a href=#718 id=718 data-nosnippet>718</a>        ]));
+<a href=#719 id=719 data-nosnippet>719</a>
+<a href=#720 id=720 data-nosnippet>720</a>        <span class="macro">assert_eq!</span>(
+<a href=#721 id=721 data-nosnippet>721</a>            resolve_source_from_attributes(<span class="kw-2">&amp;</span>attributes).map(|source| (source.kind, source.identifier)),
+<a href=#722 id=722 data-nosnippet>722</a>            <span class="prelude-val">Some</span>((SourceKind::Hostname, <span class="string">"name"</span>.to_string()))
+<a href=#723 id=723 data-nosnippet>723</a>        );
+<a href=#724 id=724 data-nosnippet>724</a>    }
+<a href=#725 id=725 data-nosnippet>725</a>}
 </code></pre></div></section></main></body></html>
