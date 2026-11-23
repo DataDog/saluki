@@ -377,7 +377,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     } else {
         info!("Starting test run with parallelism of {}...", cmd.parallelism);
-        info!("Container logs will be written to '{}'.", log_dir.display());
+        info!("Logs will be written to '{}'.", log_dir.display());
         if cmd.fail_fast {
             info!("Fail-fast mode enabled; will stop on first failure.");
         }
@@ -555,11 +555,11 @@ fn plan_case(cmd: cli::PlanCommand) -> ExitCode {
         .and_then(|set| {
             let plans = load_and_plan(&cmd.case_dir, &set)
                 .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>())?;
-            let images = participant_case::images(plans.values());
+            let references = participant_case::references(plans.values());
             let unused: Vec<String> = set
                 .keys()
-                .filter(|name| !images.contains(*name))
-                .map(|name| format!("--set names image '{}', which the case does not use.", name))
+                .filter(|name| !references.contains(*name))
+                .map(|name| format!("--set names '{}', which the case does not use.", name))
                 .collect();
             if unused.is_empty() {
                 Ok(plans)

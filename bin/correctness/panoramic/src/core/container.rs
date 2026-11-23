@@ -297,7 +297,7 @@ impl Scope for CaseContainers {
 }
 
 /// Fills every reference of `template`, held by participant `name`.
-fn fill(values: &Values, name: &str, template: &Template) -> Result<String, GenericError> {
+pub(super) fn fill(values: &Values, name: &str, template: &Template) -> Result<String, GenericError> {
     values
         .fill(name, template)
         .map_err(|e| generic_error!("Participant '{}': {}", name, e))

@@ -6,7 +6,9 @@
 //!
 //! Before the first case, the run checks once what the selected cases need: each realization they use, a Docker daemon
 //! for containers and pods, every image they run, pulled once if the daemon lacks it, the courier they get, and, for
-//! pods, a kind cluster that holds the images.
+//! pods, a kind cluster that holds the images. For host processes it checks that the runner host runs the OS the case
+//! declares and that every host program outside the participant's own directory can be run. Host processes need no
+//! Docker daemon.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -25,6 +27,7 @@ use crate::config::{runtime_of, KIND_RUNTIME};
 use crate::core::backend::Backends;
 use crate::core::case::{self, CaseError};
 use crate::core::container::{ContainerBackend, LINUX};
+use crate::core::host::{locate, HostBackend};
 use crate::core::lifecycle::{self, CaseRun};
 use crate::core::participant::{Enclosure, Os};
 use crate::core::plan::{self, CasePlan, Launch};
@@ -45,42 +48,42 @@ const PULL_TIME: Duration = Duration::from_secs(15 * 60);
 /// them.
 const KIND_SETUP_TIME: Duration = Duration::from_secs(30 * 60);
 
-/// One `--set NAME=IMAGE`: the image a case names as `NAME` runs as `IMAGE`.
+/// One `--set NAME=REFERENCE`: the image or host program a case names as `NAME` runs as `REFERENCE`.
 #[derive(Clone, Debug)]
 pub(crate) struct Replacement {
     pub(crate) name: String,
-    pub(crate) image: String,
+    pub(crate) reference: String,
 }
 
 impl FromStr for Replacement {
     type Err = String;
 
-    /// Parses `name=image`, splitting at the first `=`.
+    /// Parses `name=reference`, splitting at the first `=`.
     ///
     /// # Errors
     ///
     /// Returns an error when there is no `=`, or when either side of it is empty.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.split_once('=') {
-            Some((name, image)) if !name.is_empty() && !image.is_empty() => Ok(Self {
+            Some((name, reference)) if !name.is_empty() && !reference.is_empty() => Ok(Self {
                 name: name.to_string(),
-                image: image.to_string(),
+                reference: reference.to_string(),
             }),
-            _ => Err(format!("expected <name>=<image>, got '{}'", s)),
+            _ => Err(format!("expected <name>=<reference>, got '{}'", s)),
         }
     }
 }
 
-/// The run's replacements, by the image each replaces.
+/// The run's replacements, by the reference each replaces.
 ///
 /// # Errors
 ///
-/// Returns an error if one image is replaced twice.
+/// Returns an error if one reference is replaced twice.
 pub(crate) fn replacements(entries: &[Replacement]) -> Result<BTreeMap<String, String>, String> {
     let mut set = BTreeMap::new();
     for entry in entries {
-        if set.insert(entry.name.clone(), entry.image.clone()).is_some() {
-            return Err(format!("--set names image '{}' twice.", entry.name));
+        if set.insert(entry.name.clone(), entry.reference.clone()).is_some() {
+            return Err(format!("--set names '{}' twice.", entry.name));
         }
     }
     Ok(set)
@@ -102,7 +105,8 @@ pub(crate) struct ParticipantCase {
 
 impl ParticipantCase {
     /// Loads the case in `dir` and plans it for every OS it declares, with the run's replacements `set`, then keeps the
-    /// plan for `subject_os`. Returns the case with every image its plans name, as written.
+    /// plan for `subject_os`. Returns the case with every reference its plans name, as written: images and host program
+    /// paths.
     ///
     /// # Errors
     ///
@@ -112,7 +116,7 @@ impl ParticipantCase {
     ) -> Result<(Self, BTreeSet<String>), Vec<CaseError>> {
         let case = case::load(dir, registry)?;
         let mut plans = plan::plan_all(&case, registry, set)?;
-        let images = images(plans.values());
+        let references = references(plans.values());
         let plan = plans.remove(&subject_os).ok_or_else(|| {
             let declared: Vec<String> = case.subject_os.iter().map(ToString::to_string).collect();
             format!(
@@ -135,18 +139,18 @@ impl ParticipantCase {
             disabled: case.info.disabled,
             plan,
         };
-        Ok((participant_case, images))
+        Ok((participant_case, references))
     }
 }
 
-/// Every image `plans` name, as written.
-pub(crate) fn images<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> BTreeSet<String> {
+/// Every image and host program path `plans` name, as written: what `--set` may replace.
+pub(crate) fn references<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> BTreeSet<String> {
     plans
         .into_iter()
         .flat_map(|plan| plan.participants.values())
-        .filter_map(|participant| match &participant.launch {
-            Launch::Image { image, .. } => Some(image.written.clone()),
-            Launch::Programs(_) => None,
+        .flat_map(|participant| match &participant.launch {
+            Launch::Image { image, .. } => vec![image.written.clone()],
+            Launch::Programs(programs) => programs.iter().map(|program| program.path.written.clone()).collect(),
         })
         .collect()
 }
@@ -190,6 +194,14 @@ impl Test for ParticipantCase {
 
     fn runtime(&self) -> String {
         self.runtime.to_string()
+    }
+
+    fn runs_host_processes(&self) -> bool {
+        self.plan.as_ref().is_ok_and(|plan| {
+            plan.participants
+                .values()
+                .any(|planned| planned.realization.enclosure == Enclosure::HostProcessGroup)
+        })
     }
 
     fn participant_case(&self) -> Option<&ParticipantCase> {
@@ -262,7 +274,9 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 
 /// Checks, once and before the first case, what the selected participant cases need: each realization their
 /// participants use, every image, pulled if the Docker daemon lacks it, the courier, and, for pods, a kind cluster that
-/// holds the images. `plans` holds the plan of each case that runs, by name.
+/// holds the images. For host processes, the runner host must run the OS the participant declares, and every program
+/// that is not under the participant's own directory must be found. `plans` holds the plan of each case that runs, by
+/// name.
 ///
 /// A kind cluster is made if it is missing, and a run with any pod sets it up once here, outside every case's timeout.
 /// `kind_state` records how far setup got: `Ready` holds the cluster once setup succeeds, so the caller can remove it
@@ -274,7 +288,8 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 /// # Errors
 ///
 /// Returns every problem found: a realization the runner host cannot provide, an image that cannot be pulled, with the
-/// cases that use it, a missing courier, or a kind cluster that cannot be set up, with the cases that need it.
+/// cases that use it, a host program that cannot be found, with the cases that use it, a missing courier, or a kind
+/// cluster that cannot be set up, with the cases that need it.
 pub(crate) async fn check_before_the_first_case(
     plans: &[(String, &CasePlan)], kind: KindSetup, kind_state: &mut KindState,
 ) -> Result<Backends, Vec<String>> {
@@ -283,6 +298,8 @@ pub(crate) async fn check_before_the_first_case(
     let mut pod_images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut pod_cases = Vec::new();
     let mut containers = false;
+    let mut hosts = false;
+    let mut host_programs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, plan) in plans {
         for (participant, planned) in &plan.participants {
             let images = match planned.realization.enclosure {
@@ -293,6 +310,31 @@ pub(crate) async fn check_before_the_first_case(
                 Enclosure::KubernetesPod => {
                     pod_cases.push(name.as_str());
                     &mut pod_images
+                }
+                Enclosure::HostProcessGroup => {
+                    hosts = true;
+                    let host = Os::host();
+                    // TODO: stop host processes where there are no process groups, with the Windows backend.
+                    if !cfg!(unix) {
+                        errors.push(format!(
+                            "Case '{}' runs participant '{}' as host processes, and the runner host {} cannot stop them: \
+                             that backend is not built.",
+                            name, participant, host
+                        ));
+                    } else if planned.realization.os != host {
+                        errors.push(format!(
+                            "Case '{}' runs participant '{}' as host processes on {}, and the runner host runs {}.",
+                            name, participant, planned.realization.os, host
+                        ));
+                    } else if let Launch::Programs(programs) = &planned.launch {
+                        for program in programs.iter().filter(|program| !program.path.used().starts_with("./")) {
+                            host_programs
+                                .entry(program.path.used().to_string())
+                                .or_default()
+                                .push(format!("{} (participant '{}')", name, participant));
+                        }
+                    }
+                    continue;
                 }
                 // TODO: check the other realizations with the backends that run them.
                 enclosure => {
@@ -310,12 +352,30 @@ pub(crate) async fn check_before_the_first_case(
     }
     pod_cases.dedup();
     let pods = !pod_cases.is_empty();
-    if !errors.is_empty() || !(containers || pods) {
-        return if errors.is_empty() {
-            Ok(Backends::default())
-        } else {
-            Err(errors)
-        };
+    for (path, cases) in host_programs {
+        if let Err(why) = locate(&path, Path::new("")) {
+            errors.push(format!(
+                "A host program cannot be run, and {} use it: {}",
+                cases.join(", "),
+                why
+            ));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut backends = Backends::default();
+    if hosts {
+        match Enclosure::HostProcessGroup.facts().root {
+            Some(root) => backends.insert(
+                Enclosure::HostProcessGroup,
+                Arc::new(HostBackend::new(PathBuf::from(root))),
+            ),
+            None => return Err(vec!["Host processes have no state directory.".to_string()]),
+        }
+    }
+    if !(containers || pods) {
+        return Ok(backends);
     }
 
     let docker = match airlock::docker::connect() {
@@ -353,7 +413,6 @@ pub(crate) async fn check_before_the_first_case(
         return Err(errors);
     }
 
-    let mut backends = Backends::default();
     if containers {
         let backend = ContainerBackend::new(docker.clone(), &LINUX, courier.clone().into());
         backends.insert(Enclosure::LinuxContainer, Arc::new(backend));
