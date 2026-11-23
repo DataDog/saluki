@@ -7,7 +7,8 @@
 # of `agent-data-plane` and read two values from the bundled headers:
 #
 # - The FIPS module number. This mirrors how `aws-lc-fips-sys` identifies the module itself: `AWSLC_FIPS_VERSION_NUMBER`
-#   on newer branches, and the major version of `AWSLC_VERSION_NUMBER_STRING` on older ones (for example, 3.4.0 -> 3).
+#   on newer branches. The FIPS 3 and FIPS 4 branches don't define it, so there the major version of
+#   `AWSLC_VERSION_NUMBER_STRING` is the module number (for example, 4.2.0 -> 4). Other major versions must define it.
 # - The full AWS-LC version, from `AWSLC_VERSION_NUMBER_STRING`.
 #
 # The module number identifies the certificate that applies. A later AWS-LC version on the same FIPS branch keeps the
@@ -84,7 +85,16 @@ while IFS= read -r manifest_path; do
 
     module_version="$(sed -nE 's/^#define AWSLC_FIPS_VERSION_NUMBER[[:space:]]+([0-9]+).*/\1/p' "${base_h}")"
     if [[ -z "${module_version}" ]]; then
+        # The FIPS 3 and FIPS 4 branches predate `AWSLC_FIPS_VERSION_NUMBER` (aws/aws-lc#3211). On these branches the
+        # major version is the module number. For any other major version, a missing define means that the header
+        # layout changed, so fail instead of guessing the module.
         module_version="${aws_lc_version%%.*}"
+        if [[ "${module_version}" != "3" && "${module_version}" != "4" ]]; then
+            echo "error: ${base_h} doesn't define AWSLC_FIPS_VERSION_NUMBER, and AWS-LC ${aws_lc_version} is not" \
+                "on the FIPS 3 or FIPS 4 branch; update this check to match how aws-lc-fips-sys identifies the" \
+                "module." >&2
+            exit 1
+        fi
     fi
 
     crate="$(basename "$(dirname "${manifest_path}")")"

@@ -220,6 +220,20 @@
       ],
       enabled: false,
     },
+    // aws-lc-rs selects the AWS-LC FIPS module through its `aws-lc-fips-sys` dependency, and it has only moved to a
+    // new FIPS module in a minor release (1.18.0 moved from FIPS 3 to FIPS 4). FIPS builds must stay on a certified
+    // module, and the `aws-lc-fips-sys` ban in deny.toml fails CI for an uncertified one. Without this rule, a minor
+    // release that moves to the uncertified AWS-LC-FIPS 5 module would fail the weekly non-major group PR. Allow patch
+    // releases, and raise this bound by hand after checking which module the next minor release bundles.
+    {
+      matchManagers: [
+        "cargo",
+      ],
+      matchPackageNames: [
+        "aws-lc-rs",
+      ],
+      allowedVersions: "<1.20",
+    },
     // smallvec 1.16 is blocked transitively: serde-saphyr 0.0.29 (via kube-client, used by panoramic)
     // requires `smallvec <1.16`. Renovate cannot generate a Cargo.lock for this bump, and a single failed
     // `cargo update` leaves the entire weekly non-major group PR with an empty diff.
