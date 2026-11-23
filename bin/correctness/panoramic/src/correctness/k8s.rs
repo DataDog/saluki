@@ -48,33 +48,6 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
     // deadline fires, and so their timings survive a test that never returns.
     let phases = tctx.phases.clone();
 
-    // Wait for the kind cluster to be ready. The runner already waited before acquiring a concurrency
-    // slot, so this is a fast-path check: the value should already be Some by the time we get here.
-    let phase = phases.enter("kind_setup");
-    if let Some(ref rx) = tctx.kind_ready {
-        let status: Option<Result<(), String>> = rx.borrow().clone();
-        match status {
-            Some(Ok(())) => {}
-            Some(Err(e)) => {
-                return make_error_result(
-                    name,
-                    started,
-                    phase.finish_and_collect(),
-                    generic_error!("Kind cluster setup failed: {}", e),
-                );
-            }
-            None => {
-                return make_error_result(
-                    name,
-                    started,
-                    phase.finish_and_collect(),
-                    generic_error!("Kind cluster setup did not complete"),
-                );
-            }
-        }
-    }
-    phase.finish();
-
     let cancel = tctx.test_cancel_token();
     let phase = phases.enter("k8s_connect");
     let client = match cancel.run_until_cancelled(Client::try_default()).await {

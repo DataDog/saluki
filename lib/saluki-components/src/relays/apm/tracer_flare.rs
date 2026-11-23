@@ -16,11 +16,11 @@ use saluki_io::net::ConnectionAddress;
 use tracing::{debug, warn};
 use url::Url;
 
-use super::forwarding::{strip_hop_by_hop_headers, UpstreamClient};
 use crate::common::datadog::api_key::ApiKeyCell;
 use crate::common::datadog::config::ForwarderConfiguration;
 use crate::common::datadog::endpoints::{add_version_prefix, endpoint_with_default_scheme, is_datadog_site};
 use crate::common::datadog::io::intake_http_client_builder;
+use crate::common::proxy::{strip_hop_by_hop_headers, UpstreamClient};
 
 /// Path of the Datadog endpoint flares are forwarded to.
 const FLARE_ENDPOINT_PATH: &str = "/api/ui/support/serverless/flare";

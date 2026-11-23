@@ -6,39 +6,47 @@
 # With `cmd_host` set to `::1` (an IPv6-only loopback), the Core Agent listens on `[::1]`, so ADP must read `cmd_host`
 # and connect there. Without the fix, ADP connects to `127.0.0.1`, never becomes ready, and crash-loops.
 
-type: integration
-name: "adp-cmd-host"
 description: "Verifies ADP connects to the IPC server on the host set by cmd_host"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-cmd-host"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-  DD_CMD_HOST: "::1"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-cmd-host"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+      DD_CMD_HOST: "::1"
 
 procedure:
   # The Core Agent should start its CMD API server on IPv6 loopback only.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Started HTTP server 'CMD API Server' on \\[::1\\]:\\d+"
     regex: true
     timeout: 60s
   # ADP should successfully register with the Core Agent there.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Successfully registered with the Datadog Agent."
     timeout: 60s
   # ADP should become healthy and stay up.
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
+        process: adp
         duration: 10s
-      - assertion: log_contains
+      - step: log_contains
+        on: adp
         pattern: "Topology healthy"
         timeout: 60s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

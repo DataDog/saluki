@@ -1,15 +1,17 @@
-//! HTTP forwarding shared by the relay's proxies.
+//! HTTP forwarding shared by the reverse proxies in this crate.
 //!
-//! Both the trace-agent proxy and the tracer flare proxy stream a request to an upstream server and stream its response
-//! back, dropping the hop-by-hop headers on the way in each direction.
+//! A proxy streams a request to an upstream server and streams its response back, dropping the hop-by-hop headers on
+//! the way in each direction.
 
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use http::header::{self, HeaderMap, HeaderName};
+use http::uri::{PathAndQuery, Uri};
+use http::StatusCode;
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use saluki_error::GenericError;
 use saluki_io::net::client::http::HttpClient;
@@ -27,16 +29,39 @@ const HOP_BY_HOP_HEADERS: [HeaderName; 8] = [
     header::UPGRADE,
 ];
 
+/// Error from forwarding a request to an upstream server.
+#[derive(Debug)]
+pub(crate) enum ForwardError {
+    /// The request's path couldn't be carried over to the upstream server.
+    InvalidUri,
+
+    /// The upstream server couldn't be reached, or didn't answer.
+    Unreachable,
+
+    /// The request was already forwarded by this proxy, so the destination leads back to it.
+    Loop,
+}
+
+impl IntoResponse for ForwardError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::InvalidUri => StatusCode::BAD_REQUEST.into_response(),
+            Self::Unreachable => StatusCode::BAD_GATEWAY.into_response(),
+            Self::Loop => StatusCode::LOOP_DETECTED.into_response(),
+        }
+    }
+}
+
 /// An HTTP client shared by every request handler of a proxy.
 #[derive(Clone)]
-pub(super) struct UpstreamClient {
+pub(crate) struct UpstreamClient {
     /// The client is not `Sync`, and the proxy is shared by every request handler, so each request clones a handle
     /// out from behind the lock. Cloning is cheap, and the lock is held only for the clone.
     client: Arc<Mutex<HttpClient>>,
 }
 
 impl UpstreamClient {
-    pub(super) fn new(client: HttpClient) -> Self {
+    pub(crate) fn new(client: HttpClient) -> Self {
         Self {
             client: Arc::new(Mutex::new(client)),
         }
@@ -49,7 +74,7 @@ impl UpstreamClient {
     /// # Errors
     ///
     /// If the upstream server can't be reached, an error is returned.
-    pub(super) async fn send(&self, request: http::Request<Body>) -> Result<Response, GenericError> {
+    pub(crate) async fn send(&self, request: http::Request<Body>) -> Result<Response, GenericError> {
         let mut client = self
             .client
             .lock()
@@ -62,8 +87,23 @@ impl UpstreamClient {
     }
 }
 
+/// Returns `base_uri` with the path and query of a request, or the root path if the request has none.
+///
+/// # Errors
+///
+/// If the result isn't a valid URI, an error is returned.
+pub(crate) fn upstream_uri(base_uri: &Uri, path_and_query: Option<&PathAndQuery>) -> Result<Uri, http::Error> {
+    let mut parts = base_uri.clone().into_parts();
+    parts.path_and_query = Some(
+        path_and_query
+            .cloned()
+            .unwrap_or_else(|| PathAndQuery::from_static("/")),
+    );
+    Ok(Uri::from_parts(parts)?)
+}
+
 /// Removes hop-by-hop headers, including any the `Connection` header names.
-pub(super) fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
+pub(crate) fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
     let named: Vec<HeaderName> = headers
         .get_all(header::CONNECTION)
         .iter()
