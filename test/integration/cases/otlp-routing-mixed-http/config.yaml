@@ -24,21 +24,22 @@ participants:
       datadog.yaml: {from: datadog.yaml, template: true}
     connect: {intake: intake.api}
   intake: {type: datadog-intake}
+  # Each sender waits idle. The procedure runs millstone in it once the Agent's receivers listen.
   send-metrics-http:
     image: saluki-images/correctness-tools:latest
-    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    command: [sleep, infinity]
     files:
       /etc/millstone/sender.yaml: {from: millstone-metrics-http.yaml, template: true}
     connect: {otlp: adp.otlp_http}
   send-traces-http:
     image: saluki-images/correctness-tools:latest
-    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    command: [sleep, infinity]
     files:
       /etc/millstone/sender.yaml: {from: millstone-traces-http.yaml, template: true}
     connect: {otlp: adp.otlp_http}
   send-logs-http:
     image: saluki-images/correctness-tools:latest
-    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    command: [sleep, infinity]
     files:
       /etc/millstone/sender.yaml: {from: millstone-logs-http.yaml, template: true}
     connect: {otlp: adp.otlp_http}
@@ -56,16 +57,22 @@ procedure:
         process: agent
         pattern: 'Relocating Agent OTLP/http receiver from "0.0.0.0:{{ adp.endpoints.otlp_http.port }}" to "127.0.0.1:34320"'
         timeout: 60s
+      # The harness sets the OTLP/grpc endpoint too, so the Agent also relocates that receiver.
       - step: log_contains
         on: adp
         process: agent
-        pattern: 'Relocating Agent OTLP/grpc receiver from "[^"]*" to "127\.0\.0\.1:34319"'
-        regex: true
+        pattern: 'Relocating Agent OTLP/grpc receiver from "0.0.0.0:{{ adp.endpoints.agent_otlp_grpc.port }}" to "127.0.0.1:34319"'
         timeout: 60s
-  - parallel:
-      - {step: log_contains, on: send-metrics-http, pattern: "Millstone finished sending", timeout: 2m}
-      - {step: log_contains, on: send-traces-http, pattern: "Millstone finished sending", timeout: 2m}
-      - {step: log_contains, on: send-logs-http, pattern: "Millstone finished sending", timeout: 2m}
+      # The Agent's OTLP pipeline logs this once its relocated receivers listen. A proxied request fails until then,
+      # so the senders run millstone only after this step.
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: "Everything is ready. Begin running and processing data."
+        timeout: 60s
+  - {step: exec, on: send-metrics-http, command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml], timeout: 2m}
+  - {step: exec, on: send-traces-http, command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml], timeout: 2m}
+  - {step: exec, on: send-logs-http, command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml], timeout: 2m}
   - parallel:
       - step: intake_from
         on: intake
