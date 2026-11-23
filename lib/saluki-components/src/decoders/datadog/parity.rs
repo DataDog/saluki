@@ -136,8 +136,8 @@ fn compare(target: &Target, body: &[u8], oracle: &Value) -> Result<(), String> {
     }
 }
 
-/// Brings the trace-agent's v1.0 trace IDs to 16 bytes, as its `normalizeTraceChunkV1` does before anything reads
-/// them: a shorter one right-aligned, a longer one cut to its last 16 bytes.
+/// Brings the trace-agent's v1.0 trace IDs to 16 bytes, as its normalizer does before anything reads them: a shorter
+/// one right-aligned, a longer one cut to its last 16 bytes.
 ///
 /// The trace-agent decodes a v1.0 trace ID, of a chunk or a span link, as the bytes sent, and the decoders as the
 /// 128-bit value that the trace-agent's normalizer makes of them.
@@ -388,7 +388,8 @@ fn write_v1_string(buf: &mut Vec<u8>, value: &V1String) {
 }
 
 /// v1.0 payloads whose string table holds duplicates, whose literals repeat strings, and whose chunks may have no
-/// priority or `PriorityNone`: the cases where the reference's string table and priority are easy to get wrong.
+/// priority or the no-priority marker: the cases where the trace-agent's string table and priority are easy to get
+/// wrong.
 fn v1_payload_strategy() -> BoxedStrategy<Vec<u8>> {
     let span = (v1_string(), v1_string(), any::<u64>());
     let chunk = (

@@ -65,7 +65,7 @@ struct ExpectedPayload {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ExpectedChunk {
-    /// Zero when the fixture omits it, as the reference's chunk keeps its zero value.
+    /// Zero when the fixture omits it, as the trace-agent's chunk keeps its zero value.
     priority: i32,
     origin: String,
     dropped_trace: bool,
@@ -585,7 +585,7 @@ fn oversize_array_header_rejected() {
 
 #[test]
 fn collections_are_limited_as_the_reference_limits_them() {
-    // Found by the parity fuzzer: the reference checks a count against its limit before the bytes that remain, at
+    // Found by the parity fuzzer: the trace-agent checks a count against its limit before the bytes that remain, at
     // 500,000 for every collection but the string table, which allows 25,000,000 strings. Over the limit is a
     // decoding error, under it but past the bytes that remain is short input.
     let over = read::MAX_COLLECTION_SIZE + 1;
@@ -677,7 +677,7 @@ fn implausibly_small_spans_rejected() {
 
 #[test]
 fn map_counts_are_checked_against_the_remaining_bytes_only() {
-    // As the reference's `readBoundedHeaderBytes`, more entries than bytes remain is short input, and fewer is left
+    // As in the trace-agent, more entries than bytes remain is short input, and fewer is left
     // to the entries themselves to fail.
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 1000).unwrap();
@@ -693,8 +693,8 @@ fn map_counts_are_checked_against_the_remaining_bytes_only() {
 
 #[test]
 fn a_payload_cut_short_after_a_field_is_short_input() {
-    // Found by the parity fuzzer: four fields declared, the container ID given, then nothing. The reference reads the
-    // fields until the bytes run out, and reports `msgp.ErrShortBytes`.
+    // Found by the parity fuzzer: four fields declared, the container ID given, then nothing. The trace-agent reads
+    // the fields until the bytes run out, and reports short input.
     let err = decode_v1_payload(&[0x84, 0x03, 0xa2, b'g', b'o']).unwrap_err();
     assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
 }
@@ -767,7 +767,7 @@ fn overlong_trace_id_in_span_link_uses_final_16_bytes() {
 
 #[test]
 fn bytes_after_the_payload_are_ignored() {
-    // Found by the parity fuzzer: the reference decodes the tracer payload and ignores what follows it.
+    // Found by the parity fuzzer: the trace-agent decodes the tracer payload and ignores what follows it.
     for trailing in [&[0xc1][..], &[0x2a], &[0x91, 0x01]] {
         let mut buf = Vec::new();
         encode::write_map_len(&mut buf, 1).unwrap();
@@ -1046,7 +1046,7 @@ fn every_reference_to_a_string_shares_it() {
 
 #[test]
 fn a_chunk_without_a_priority_has_priority_zero() {
-    // Found by the parity fuzzer: the reference's chunk keeps its zero value when the payload omits the field.
+    // Found by the parity fuzzer: the trace-agent's chunk keeps its zero value when the payload omits the field.
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
     encode::write_uint(&mut buf, 11).unwrap(); // chunks
@@ -1063,7 +1063,7 @@ fn a_chunk_without_a_priority_has_priority_zero() {
 
 #[test]
 fn invalid_utf8_strings_are_repaired_rather_than_rejected() {
-    // Found by the parity fuzzer: the reference reads strings without validating them, so it accepts the payload
+    // Found by the parity fuzzer: the trace-agent reads strings without validating them, so it accepts the payload
     // and keeps the bytes. Each invalid byte becomes U+FFFD, as for the v0.7 format's strings.
     for (field, value) in [(1u64, &b"\xe3heckout"[..]), (2, &b"op\xff\xfe"[..])] {
         let mut buf = Vec::new();
@@ -1093,9 +1093,9 @@ fn invalid_utf8_strings_are_repaired_rather_than_rejected() {
 
 #[test]
 fn a_payload_that_ends_where_a_string_is_expected_is_a_decoding_error() {
-    // Found by the parity fuzzer: the reference's `UnmarshalStreamingString` reports its own error, not
-    // `msgp.ErrShortBytes`, when no byte is left, so the payload is dropped as `decoding_error`. A string cut short is
-    // still short input.
+    // Found by the parity fuzzer: the trace-agent reports its own error, not short input, when no byte is left where
+    // a string is expected, so the payload is dropped as `decoding_error`. A string cut short is still short
+    // input.
     let err = decode_v1_payload(&[0x81, 0x07]).unwrap_err();
     assert!(matches!(err, DecodeError::Msgpack { context: "env", .. }), "{err:?}");
 
@@ -1123,7 +1123,7 @@ fn attribute_doubles_are_read_as_the_reference_reads_them() {
 
 #[test]
 fn repeated_literals_take_no_new_index() {
-    // Found by the parity fuzzer: the reference's string table adds a literal it already holds, the empty string
+    // Found by the parity fuzzer: the trace-agent's string table adds a literal it already holds, the empty string
     // included, at its existing index, so a repeated literal doesn't shift the indexes after it.
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
@@ -1190,7 +1190,7 @@ fn table_payload(table: &[&str], priority: i64, service: u32, name: u32) -> Vec<
 
 #[test]
 fn string_table_entries_each_take_an_index() {
-    // As the reference's `unmarshalStringTable`, which adds with `addUnchecked`: a duplicate entry takes its own index,
+    // As in the trace-agent, a duplicate string table entry takes its own index,
     // and the empty string none.
     let decoded = decode_v1_payload(&table_payload(&["a", "", "a", "b"], 1, 3, 2)).unwrap();
     let span = &decoded.traces[0].spans()[0];
@@ -1207,7 +1207,7 @@ fn string_table_entries_each_take_an_index() {
 
 #[test]
 fn repaired_literals_are_told_apart_by_their_bytes() {
-    // As the reference's table, which holds the bytes sent: two literals that repair to the same text are distinct.
+    // As the trace-agent's table, which holds the bytes sent: two literals that repair to the same text are distinct.
     let mut strings = StringTable::new(0);
     assert_eq!(strings.add(b"a\xff"), 1);
     assert_eq!(strings.add(b"a\xfe"), 2);
@@ -1218,7 +1218,7 @@ fn repaired_literals_are_told_apart_by_their_bytes() {
 
 #[test]
 fn a_chunk_of_priority_none_has_no_priority() {
-    // As the reference's `GetSamplingPriorityV1`, which reads -128 as no priority.
+    // As in the trace-agent, -128 reads as no priority.
     let decoded = decode_v1_payload(&table_payload(&["svc"], -128, 1, 1)).unwrap();
     assert_eq!(decoded.traces[0].priority, None);
     let decoded = decode_v1_payload(&table_payload(&["svc"], 2, 1, 1)).unwrap();

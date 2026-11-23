@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// Span metric from which the trace-agent reads a v0.4 trace's sampling priority.
 const SAMPLING_PRIORITY_KEY: &str = "_sampling_priority_v1";
 
-/// Chunk priority meaning "no priority set" (`PriorityNone` in the trace-agent's sampler).
+/// Chunk priority meaning "no priority set", as the trace-agent's sampler marks it.
 const PRIORITY_NONE: i32 = -128;
 
 /// Trace intake format to transcode generated v0.4 payloads into.

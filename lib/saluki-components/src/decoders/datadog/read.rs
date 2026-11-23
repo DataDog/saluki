@@ -19,16 +19,15 @@ use rmp::decode::{bytes::BytesReadError, DecodeStringError, NumValueReadError, V
 use super::error::DecodeError;
 
 /// Maximum string count of a string table: the v1.0 tracer payload's, and the v0.5 dictionary's. Matches the
-/// reference decoder's `maxStringTableSize` (25,000,000).
+/// trace-agent's decoder.
 pub const MAX_SIZE: u32 = 25_000_000;
 
-/// Maximum element count of any other array or map header of the v1.0 format. Matches the reference decoder's
-/// `maxCollectionSize` (500,000).
+/// Maximum element count of any other array or map header of the v1.0 format. Matches the trace-agent's decoder.
 ///
 /// Protects the decoder from payloads that declare an enormous collection size to force large allocations. This alone
 /// doesn't stop a tiny payload from claiming a count near this ceiling: [`read_array_len`] additionally rejects counts
 /// that couldn't possibly be backed by the remaining input, via [`check_slab_count`], and [`read_map_len`] counts
-/// larger than the remaining input, as the reference does.
+/// larger than the remaining input, as the trace-agent does.
 pub const MAX_COLLECTION_SIZE: u32 = 500_000;
 
 /// Maximum number of elements pre-allocated from a wire count.
@@ -174,8 +173,8 @@ fn mp<E: ReadError>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
     }
 }
 
-/// The error of the reference's `UnmarshalStreamingString` for a payload that ends where a string is expected:
-/// "Expected streaming string but EOF", a decoding error rather than `msgp.ErrShortBytes`.
+/// The trace-agent's error for a payload that ends where a string is expected: "Expected streaming string but EOF",
+/// a decoding error rather than short input.
 pub fn missing_streaming_string(context: &'static str) -> DecodeError {
     invalid(context, "expected a streaming string but found the end of the payload")
 }
@@ -258,8 +257,8 @@ pub fn read_array_len_with_minimum(
 /// # Errors
 ///
 /// Returns an error if the next value is not a map header, if the declared length exceeds
-/// [`MAX_COLLECTION_SIZE`], or [`DecodeError::ShortBytes`] if it exceeds the number of bytes remaining, as the reference's
-/// `readBoundedHeaderBytes` does.
+/// [`MAX_COLLECTION_SIZE`], or [`DecodeError::ShortBytes`] if it exceeds the number of bytes remaining, as the
+/// trace-agent does.
 pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
     if len > MAX_COLLECTION_SIZE {
@@ -269,8 +268,8 @@ pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeE
             max: MAX_COLLECTION_SIZE,
         });
     }
-    // Unlike arrays, a map's count sizes no allocation, so it takes no tighter bound than the reference's: a map of
-    // fewer entries than bytes remain reads its entries until they fail, with the reference's error.
+    // Unlike arrays, a map's count sizes no allocation, so it takes no tighter bound than the trace-agent's: a map
+    // of fewer entries than bytes remain reads its entries until they fail, with the trace-agent's error.
     if u64::from(len) > r.len() as u64 {
         return Err(DecodeError::ShortBytes { context });
     }
@@ -304,7 +303,7 @@ pub fn read_bool(r: &mut &[u8], context: &'static str) -> Result<bool, DecodeErr
 
 /// Reads a string's bytes, borrowing from the input for the lifetime of the underlying buffer.
 ///
-/// As the reference's `msgp.ReadStringBytes`, the bytes aren't validated as UTF-8: the
+/// As the trace-agent's `msgp.ReadStringBytes`, the bytes aren't validated as UTF-8: the
 /// [string table](super::string_table::StringTable) repairs invalid ones rather than failing the payload.
 pub fn read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
     let len = rmp::decode::read_str_len(r).map_err(mp(context))?;

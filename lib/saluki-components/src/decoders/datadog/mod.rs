@@ -92,7 +92,7 @@ pub struct DecodedV1 {
 /// Returns a [`DecodeError`] if the input is not a well-formed v1.0 tracer payload (truncated,
 /// malformed MessagePack, oversized headers, out-of-range string references, and so on).
 pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
-    // As the reference's `UnmarshalMsg`, whose leftover bytes the receiver ignores, what follows the payload is ignored.
+    // As in the trace-agent, what follows the payload is ignored.
     let payload = decode_tracer_payload(&mut &bytes[..])?;
 
     let payload_fields = PayloadFields {
@@ -115,7 +115,7 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
         trace.origin = chunk.origin;
         trace.payload = payload_fields.clone();
         trace.attributes = Arc::new(chunk.attributes);
-        // As the reference's `GetSamplingPriorityV1`, which reads `PriorityNone` as no priority.
+        // As in the trace-agent, the no-priority marker reads as no priority.
         trace.priority = (chunk.priority != v04::PRIORITY_NONE).then_some(chunk.priority);
         trace.dropped_trace = chunk.dropped_trace;
         trace.sampling_mechanism = chunk.sampling_mechanism;
@@ -193,7 +193,7 @@ struct DecodedPayload {
 
 /// Intermediate representation of a decoded trace chunk.
 struct DecodedChunk {
-    /// Zero when the payload omits it, as the reference's chunk keeps its zero value.
+    /// Zero when the payload omits it, as the trace-agent's chunk keeps its zero value.
     priority: i32,
     origin: MetaString,
     attributes: FastHashMap<MetaString, AttributeValue>,
@@ -310,7 +310,7 @@ pub fn attribute_string_bytes(value: &AttributeValue) -> usize {
 
 /// Decodes the string table array (field 1 of the tracer payload).
 ///
-/// As the reference's `unmarshalStringTable`, each entry takes an index of its own, duplicates included, but the empty
+/// As in the trace-agent, each entry takes an index of its own, duplicates included, but the empty
 /// string, which index 0 already holds.
 fn decode_string_table(r: &mut &[u8], strings: &mut StringTable) -> Result<(), DecodeError> {
     let num_strings = read::v0_read_dictionary_len(r, "string table")?;

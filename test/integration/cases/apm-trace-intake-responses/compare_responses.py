@@ -151,7 +151,7 @@ def error_cases(comparison):
         200,
     )
 
-    # 415: `handleWithVersion` rejects MessagePack below v0.3 (`httpFormatError`).
+    # 415: MessagePack is rejected below v0.3.
     for path in ("/v0.1/spans", "/spans", "/v0.2/traces"):
         comparison.same(f"415 msgpack on {path}", path, {**TRACER, **MSGPACK}, b"\x90", 415)
     comparison.same(
@@ -162,7 +162,7 @@ def error_cases(comparison):
         415,
     )
 
-    # 403: `handleWithVersion` rejects cross-site browser requests.
+    # 403: cross-site browser requests are rejected.
     for path, headers, body in EMPTY_PAYLOADS:
         comparison.same(
             f"403 cross-site on {path}", path, {**TRACER, **headers, "Sec-Fetch-Site": "cross-site"}, body, 403
@@ -171,7 +171,7 @@ def error_cases(comparison):
         "same-site is accepted", "/v0.4/traces", {**TRACER, **MSGPACK, "Sec-Fetch-Site": "same-site"}, b"\x90", 200
     )
 
-    # 413: a `Content-Length` over the limit (`reserveBodySize`), and a body that reaches it (`LimitedReader`).
+    # 413: a `Content-Length` over the limit, and a body that reaches it.
     big_json = b"[" + b",".join([b"[]"] * (MAX_PAYLOAD_SIZE // 2)) + b"]"
     big_msgpack = b"\xdc" + (MAX_PAYLOAD_SIZE * 2).to_bytes(2, "big") + b"\x90" * (MAX_PAYLOAD_SIZE * 2)
     for path, headers, body in [
@@ -193,8 +193,7 @@ def error_cases(comparison):
             chunked=True,
         )
 
-    # 400 with a fixed message: the body ends early (`unexpected-eof`), or a MessagePack value is cut short
-    # (`msgp.ErrShortBytes`).
+    # 400 with a fixed message: the body ends early (`unexpected-eof`), or a MessagePack value is cut short.
     for name, path, headers, body in [
         ("unexpected-eof, truncated JSON", "/v0.4/traces", JSON, b'[[{"service":"a"'),
         ("unexpected-eof, empty JSON", "/v0.4/traces", JSON, b""),

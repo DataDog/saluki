@@ -41,11 +41,10 @@ impl StringTable {
 
     /// Adds a string, sent as `raw`, to the table and returns its index.
     ///
-    /// As the reference's `StringTable.Add`, which a streaming string goes through, a string the table already holds
-    /// keeps its index rather than taking a new one: an encoder sends each string as a literal once, but a payload
-    /// that sends one again, or sends the empty string, mustn't shift the indexes of the strings after it. Strings are
-    /// told apart by their bytes, as the reference holds them, though invalid UTF-8 is repaired (see
-    /// [`repair_utf8`](super::read::repair_utf8)).
+    /// As in the trace-agent, for a streaming string, a string the table already holds keeps its index rather than
+    /// taking a new one: an encoder sends each string as a literal once, but a payload that sends one again, or sends
+    /// the empty string, mustn't shift the indexes of the strings after it. Strings are told apart by their bytes, as
+    /// the trace-agent holds them, though invalid UTF-8 is repaired (see [`repair_utf8`](super::read::repair_utf8)).
     pub fn add(&mut self, raw: &[u8]) -> u32 {
         let text = simdutf8::basic::from_utf8(raw).ok();
         let existing = match text {
@@ -60,8 +59,8 @@ impl StringTable {
 
     /// Appends a string, sent as `raw`, to the table and returns its index, even if the table already holds it.
     ///
-    /// As the reference's `StringTable.addUnchecked`, which the string table field goes through: a duplicate takes an
-    /// index of its own, and a later [`add`](Self::add) of the same string returns the index added last.
+    /// As in the trace-agent, for the string table field: a duplicate takes an index of its own, and a later
+    /// [`add`](Self::add) of the same string returns the index added last.
     pub fn add_unchecked(&mut self, raw: &[u8]) -> u32 {
         self.push(raw, simdutf8::basic::from_utf8(raw).ok())
     }
