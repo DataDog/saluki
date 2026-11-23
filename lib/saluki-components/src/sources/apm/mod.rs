@@ -267,8 +267,9 @@ impl MemoryBounds for ApmConfiguration {
             .with_single_value::<Apm>("component struct")
             .with_single_value::<ApmState>("component struct");
         if self.trace_intake.is_some() {
+            // The receiver telemetry window starts empty and grows up to its key cap.
             builder
-                .minimum()
+                .firm()
                 .with_map::<receiver_telemetry::ReceiverTags, receiver_telemetry::TagStats>(
                     "receiver telemetry window",
                     receiver_telemetry::MAX_TAG_KEYS + 1,
