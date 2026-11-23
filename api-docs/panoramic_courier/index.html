@@ -15,7 +15,7 @@ exists and accepts, or whether a named pipe exists. A probe cannot confirm a UDP
 <code>http://&lt;host&gt;:&lt;port&gt;</code>, <code>grpc://&lt;host&gt;:&lt;port&gt;</code>, <code>unix://&lt;path&gt;</code> for a stream socket, <code>unixgram://&lt;path&gt;</code> for a
 datagram socket, and <code>pipe://&lt;name&gt;</code> for the named pipe <code>\\.\pipe\&lt;name&gt;</code> on Windows.</p>
 <h2 id="command-line"><a class="doc-anchor" href="#command-line">§</a>Command line</h2><div class="example-wrap"><pre class="language-text"><code>courier --deadline &lt;duration&gt; probe &lt;address&gt;
-courier --deadline &lt;duration&gt; send &lt;address&gt;         &lt; payload
+courier --deadline &lt;duration&gt; send &lt;address&gt; [--payload-hex &lt;hex&gt;] &lt; payload
 courier --deadline &lt;duration&gt; http &lt;address&gt; [--path &lt;path&gt;]
 courier --deadline &lt;duration&gt; follow &lt;path&gt;</code></pre></div>
 <p><code>--deadline</code> is required, and is a whole number with a unit: <code>ms</code>, <code>s</code> or <code>m</code>, as in <code>500ms</code>, <code>10s</code> or <code>2m</code>. It
@@ -24,8 +24,8 @@ bounds the whole operation, including name resolution, but not reading the input
 output is being written.</p>
 <ul>
 <li><code>probe</code> writes nothing to standard output.</li>
-<li><code>send</code> reads its payload from standard input until end of file, then writes it. It writes nothing to standard
-output.</li>
+<li><code>send</code> reads its payload from standard input until end of file, then writes it. With <code>--payload-hex</code>, the payload
+is the bytes its digits spell, and standard input is not read. It writes nothing to standard output.</li>
 <li><code>http</code> requests <code>--path</code> (default <code>/</code>) and writes the status code on one line, then the body exactly as
 received.</li>
 <li><code>follow</code> waits for the file to exist, then writes its contents from the start, as they arrive.</li>

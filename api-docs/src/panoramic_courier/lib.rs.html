@@ -22,7 +22,7 @@
 <a href=#22 id=22 data-nosnippet>22</a>//!
 <a href=#23 id=23 data-nosnippet>23</a>//! ```text
 <a href=#24 id=24 data-nosnippet>24</a>//! courier --deadline &lt;duration&gt; probe &lt;address&gt;
-<a href=#25 id=25 data-nosnippet>25</a>//! courier --deadline &lt;duration&gt; send &lt;address&gt;         &lt; payload
+<a href=#25 id=25 data-nosnippet>25</a>//! courier --deadline &lt;duration&gt; send &lt;address&gt; [--payload-hex &lt;hex&gt;] &lt; payload
 <a href=#26 id=26 data-nosnippet>26</a>//! courier --deadline &lt;duration&gt; http &lt;address&gt; [--path &lt;path&gt;]
 <a href=#27 id=27 data-nosnippet>27</a>//! courier --deadline &lt;duration&gt; follow &lt;path&gt;
 <a href=#28 id=28 data-nosnippet>28</a>//! ```
@@ -33,8 +33,8 @@
 <a href=#33 id=33 data-nosnippet>33</a>//! output is being written.
 <a href=#34 id=34 data-nosnippet>34</a>//!
 <a href=#35 id=35 data-nosnippet>35</a>//! - `probe` writes nothing to standard output.
-<a href=#36 id=36 data-nosnippet>36</a>//! - `send` reads its payload from standard input until end of file, then writes it. It writes nothing to standard
-<a href=#37 id=37 data-nosnippet>37</a>//!   output.
+<a href=#36 id=36 data-nosnippet>36</a>//! - `send` reads its payload from standard input until end of file, then writes it. With `--payload-hex`, the payload
+<a href=#37 id=37 data-nosnippet>37</a>//!   is the bytes its digits spell, and standard input is not read. It writes nothing to standard output.
 <a href=#38 id=38 data-nosnippet>38</a>//! - `http` requests `--path` (default `/`) and writes the status code on one line, then the body exactly as
 <a href=#39 id=39 data-nosnippet>39</a>//!   received.
 <a href=#40 id=40 data-nosnippet>40</a>//! - `follow` waits for the file to exist, then writes its contents from the start, as they arrive.
