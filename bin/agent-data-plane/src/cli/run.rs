@@ -1040,11 +1040,19 @@ async fn add_otlp_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let otlp = &config.domains.otlp;
-    info!(metrics = ?routes.metrics, logs = ?routes.logs, traces = ?routes.traces, "Starting OTLP ingest.");
-
     let proxy_destinations = if routes.any_proxied() {
-        Some(otlp_proxy_destinations(otlp)?)
+        let destinations = otlp_proxy_destinations(otlp)?;
+        info!(
+            metrics = ?routes.metrics,
+            logs = ?routes.logs,
+            traces = ?routes.traces,
+            agent_receiver_grpc_endpoint = %otlp.proxy.grpc_endpoint,
+            agent_receiver_http_endpoint = %otlp.proxy.http_endpoint,
+            "Starting OTLP ingest. Proxied signals go to the Agent's OTLP receiver for the protocol they arrive on."
+        );
+        Some(destinations)
     } else {
+        info!(metrics = ?routes.metrics, logs = ?routes.logs, traces = ?routes.traces, "Starting OTLP ingest.");
         None
     };
     let default_hostname = env_provider
