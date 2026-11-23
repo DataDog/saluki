@@ -1576,9 +1576,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             return;
         }
 
+        // An unrecognized value leaves the output off and doesn't stop ADP from starting: this is an optional
+        // diagnostic setting, and a translation error would fail the whole configuration.
         match value.parse::<DebugVerbosity>() {
             Ok(verbosity) => self.config.domains.otlp.debug.verbosity = verbosity,
-            Err(error) => self.record_error(TranslateError::new("otlp_config.debug.verbosity", error)),
+            Err(error) => warn!(%error, "Invalid `otlp_config.debug.verbosity`; OTLP debug output stays off."),
         }
     }
 
@@ -4379,14 +4381,12 @@ mod tests {
     }
 
     #[test]
-    fn otlp_debug_verbosity_unknown_value_records_error_and_stays_off() {
+    fn otlp_debug_verbosity_unknown_value_stays_off_without_failing_translation() {
         let (config, errors) = translate_explicit(json!({
             "otlp_config": { "debug": { "verbosity": "loud" } }
         }));
 
         assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::None);
-        let errors = errors.expect("an unknown verbosity should record a translation error");
-        assert!(errors.to_string().contains("otlp_config.debug.verbosity"));
-        assert!(errors.to_string().contains("unknown debug verbosity `loud`"));
+        assert!(errors.is_none(), "an unknown verbosity must not fail the configuration");
     }
 }
