@@ -30,7 +30,7 @@ abstraction would have one caller.
 
 - [x] **1. Test move:** split the `mod.rs` tests into `dogstatsd/tests/{mod,config,decoder,readers,origin_capture,supervision}.rs`,
   with shared fixtures in `tests/mod.rs`. Pure move.
-- [ ] **2. Tier 1 test cleanups:** tables, counter-key helper, fixtures, `tempfile`, deleting duplicate coverage. Three
+- [x] **2. Tier 1 test cleanups:** tables, counter-key helper, fixtures, `tempfile`, deleting duplicate coverage. Three
   pull requests: source tests, replay/forwarder tests, codec tests.
 - [ ] **3. Tier 1 production cleanups:** `worker_with_shutdown`, `EventBufferManager`, `DecoderContext` embed,
   `EnablePayloads` fold, `origin_from_*` collapse, `listener_type()` reuse, dead code, replay `WriterState`,
