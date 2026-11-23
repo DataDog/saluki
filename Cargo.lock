@@ -41,6 +41,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "libc",
+ "libdd-trace-obfuscation",
  "metrics",
  "ottl",
  "prost",

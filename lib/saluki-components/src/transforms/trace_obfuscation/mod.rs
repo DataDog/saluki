@@ -1,41 +1,46 @@
 //! Trace obfuscation transform.
-
-mod credit_cards;
-mod http;
-mod json;
-mod memcached;
-mod obfuscator;
-mod redis;
-mod sql;
-mod sql_filters;
-mod sql_tokenizer;
+//!
+//! Obfuscates the span data that can carry sensitive values: SQL queries, Redis, Valkey and Memcached commands, HTTP
+//! URLs, JSON query bodies, and credit card numbers. The obfuscation itself comes from a shared crate that works on
+//! Saluki's trace types through their trait implementations, so this transform only applies it to each trace.
+//!
+//! Tag replacement isn't applied here. It runs in the `trace_tag_replacer` transform, so that other steps can run
+//! between the two.
 
 use async_trait::async_trait;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::data_model::event::trace::AttributeValueExt;
+use libdd_trace_obfuscation::{
+    obfuscate::{obfuscate_chunk_attributes, obfuscate_span},
+    obfuscation_config::ObfuscationConfig,
+};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},
-    data_model::event::trace::{AttributeValue, Span, Trace},
+    data_model::event::trace::Trace,
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
-use stringtheory::MetaString;
-
-pub use self::obfuscator::{tags, ObfuscationConfig, Obfuscator};
-
-const TEXT_NON_PARSABLE_SQL: &str = "Non-parsable SQL query";
 
 /// Trace obfuscation configuration.
 pub struct TraceObfuscationConfiguration {
-    /// Obfuscator configuration.
-    pub config: ObfuscationConfig,
+    config: ObfuscationConfig,
+}
+
+impl TraceObfuscationConfiguration {
+    /// Creates a new `TraceObfuscationConfiguration` from the obfuscation settings.
+    ///
+    /// This transform never applies tag replacement rules: `TraceTagReplacerConfiguration` owns them, so any rules in
+    /// `config` are ignored.
+    pub fn new(mut config: ObfuscationConfig) -> Self {
+        config.tag_replace_rules.clear();
+        Self { config }
+    }
 }
 
 #[async_trait]
 impl SynchronousTransformBuilder for TraceObfuscationConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(TraceObfuscation {
-            obfuscator: Obfuscator::new(self.config.clone()),
+            config: self.config.clone(),
         }))
     }
 }
@@ -50,267 +55,166 @@ impl MemoryBounds for TraceObfuscationConfiguration {
 
 /// The obfuscation transform that processes traces.
 pub struct TraceObfuscation {
-    obfuscator: Obfuscator,
+    config: ObfuscationConfig,
 }
 
 impl TraceObfuscation {
-    fn obfuscate_span(&mut self, span: &mut Span) {
-        if self.obfuscator.config.credit_cards.enabled {
-            self.obfuscate_credit_cards_in_span(span);
+    fn obfuscate_trace(&self, trace: &mut Trace) {
+        for span in trace.spans_mut() {
+            obfuscate_span(span, &self.config);
         }
 
-        match span.span_type() {
-            "http" | "web" => self.obfuscate_http_span(span),
-            "sql" | "cassandra" => self.obfuscate_sql_span(span),
-            "redis" | "valkey" => self.obfuscate_redis_span(span),
-            "memcached" => self.obfuscate_memcached_span(span),
-            "mongodb" => self.obfuscate_mongodb_span(span),
-            "elasticsearch" | "opensearch" => self.obfuscate_elasticsearch_span(span),
-            _ => {}
-        }
-    }
-
-    fn obfuscate_credit_cards_in_span(&mut self, span: &mut Span) {
-        for (key, value) in span.attributes.iter_mut() {
-            if let AttributeValue::String(str_val) = value {
-                if let Some(replacement) = self
-                    .obfuscator
-                    .obfuscate_credit_card_number(key.as_ref(), str_val.as_ref())
-                {
-                    *str_val = replacement;
-                }
-            }
-        }
-    }
-
-    fn obfuscate_http_span(&mut self, span: &mut Span) {
-        // Every URL goes through the algorithm. Screening with a cheap byte scan first would save the work on URLs
-        // with nothing to redact, but no scan we have says whether the algorithm changes a URL, and the one upstream
-        // offers misses the URLs it redacts wholesale. See `http::obfuscate_url`.
-        let obfuscated = match span.attributes.get(tags::HTTP_URL).and_then(AttributeValue::as_string) {
-            Some(url) if !url.is_empty() => self.obfuscator.obfuscate_url(url),
-            _ => return,
-        };
-
-        if let Some(obfuscated) = obfuscated {
-            span.attributes
-                .insert(tags::HTTP_URL.into(), AttributeValue::String(obfuscated));
-        }
-    }
-
-    fn obfuscate_sql_span(&mut self, span: &mut Span) {
-        let sql_query_owned: Option<String> = span
-            .attributes
-            .get(tags::DB_STATEMENT)
-            .and_then(AttributeValue::as_string)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.as_ref().to_owned());
-        let sql_query: &str = match &sql_query_owned {
-            Some(s) => s.as_str(),
-            None => span.resource(),
-        };
-
-        if sql_query.is_empty() {
-            return;
-        }
-
-        let dbms_owned: Option<String> = span
-            .attributes
-            .get(tags::DBMS)
-            .and_then(AttributeValue::as_string)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.as_ref().to_owned());
-
-        let config = match &dbms_owned {
-            Some(d) => self.obfuscator.config.sql.with_dbms(d.clone()),
-            None => self.obfuscator.config.sql.clone(),
-        };
-
-        match sql::obfuscate_sql_string(sql_query, &config) {
-            Ok(obfuscated) => {
-                let query: MetaString = obfuscated.query.into();
-
-                span.set_resource(query.clone());
-                span.attributes
-                    .insert(tags::SQL_QUERY.into(), AttributeValue::String(query.clone()));
-
-                if span.attributes.contains_key(tags::DB_STATEMENT) {
-                    span.attributes
-                        .insert(tags::DB_STATEMENT.into(), AttributeValue::String(query));
-                }
-
-                if !obfuscated.table_names.is_empty() {
-                    span.attributes.insert(
-                        "sql.tables".into(),
-                        AttributeValue::String(obfuscated.table_names.into()),
-                    );
-                }
-            }
-            Err(_) => {
-                let non_parsable: MetaString = TEXT_NON_PARSABLE_SQL.into();
-                span.set_resource(non_parsable.clone());
-                span.attributes
-                    .insert(tags::SQL_QUERY.into(), AttributeValue::String(non_parsable));
-            }
-        }
-    }
-
-    fn obfuscate_redis_span(&mut self, span: &mut Span) {
-        let resource = span.resource();
-        if resource.is_empty() {
-            return;
-        }
-
-        if let Some(quantized) = self.obfuscator.quantize_redis_string(resource) {
-            span.set_resource(quantized.to_string());
-        }
-
-        if span.span_type() == "redis" && self.obfuscator.config.redis.enabled {
-            if let Some(cmd_value) = span
-                .attributes
-                .get(tags::REDIS_RAW_COMMAND)
-                .and_then(AttributeValue::as_string)
-                .map(|s| s.as_ref().to_owned())
-            {
-                if let Some(obfuscated) = self.obfuscator.obfuscate_redis_string(&cmd_value) {
-                    span.attributes
-                        .insert(tags::REDIS_RAW_COMMAND.into(), AttributeValue::String(obfuscated));
-                }
-            }
-        }
-
-        if span.span_type() == "valkey" && self.obfuscator.config.valkey.enabled {
-            if let Some(cmd_value) = span
-                .attributes
-                .get(tags::VALKEY_RAW_COMMAND)
-                .and_then(AttributeValue::as_string)
-                .map(|s| s.as_ref().to_owned())
-            {
-                if let Some(obfuscated) = self.obfuscator.obfuscate_valkey_string(&cmd_value) {
-                    span.attributes
-                        .insert(tags::VALKEY_RAW_COMMAND.into(), AttributeValue::String(obfuscated));
-                }
-            }
-        }
-    }
-
-    fn obfuscate_memcached_span(&mut self, span: &mut Span) {
-        if !self.obfuscator.config.memcached.enabled {
-            return;
-        }
-
-        let cmd_value = match span
-            .attributes
-            .get(tags::MEMCACHED_COMMAND)
-            .and_then(AttributeValue::as_string)
-        {
-            Some(v) if !v.is_empty() => v.as_ref().to_owned(),
-            _ => return,
-        };
-
-        if let Some(obfuscated) = self.obfuscator.obfuscate_memcached_command(&cmd_value) {
-            if obfuscated.is_empty() {
-                span.attributes.remove(tags::MEMCACHED_COMMAND);
-            } else {
-                span.attributes
-                    .insert(tags::MEMCACHED_COMMAND.into(), AttributeValue::String(obfuscated));
-            }
-        }
-    }
-
-    fn obfuscate_mongodb_span(&mut self, span: &mut Span) {
-        let query_value = match span
-            .attributes
-            .get(tags::MONGODB_QUERY)
-            .and_then(AttributeValue::as_string)
-        {
-            Some(v) => v.as_ref().to_owned(),
-            None => return,
-        };
-
-        if let Some(obfuscated) = self.obfuscator.obfuscate_mongodb_string(&query_value) {
-            span.attributes
-                .insert(tags::MONGODB_QUERY.into(), AttributeValue::String(obfuscated));
-        }
-    }
-
-    fn obfuscate_elasticsearch_span(&mut self, span: &mut Span) {
-        if let Some(body_value) = span
-            .attributes
-            .get(tags::ELASTIC_BODY)
-            .and_then(AttributeValue::as_string)
-            .map(|s| s.as_ref().to_owned())
-        {
-            if let Some(obfuscated) = self.obfuscator.obfuscate_elasticsearch_string(&body_value) {
-                span.attributes
-                    .insert(tags::ELASTIC_BODY.into(), AttributeValue::String(obfuscated));
-            }
-        }
-
-        if let Some(body_value) = span
-            .attributes
-            .get(tags::OPENSEARCH_BODY)
-            .and_then(AttributeValue::as_string)
-            .map(|s| s.as_ref().to_owned())
-        {
-            if let Some(obfuscated) = self.obfuscator.obfuscate_opensearch_string(&body_value) {
-                span.attributes
-                    .insert(tags::OPENSEARCH_BODY.into(), AttributeValue::String(obfuscated));
-            }
-        }
+        // Attributes shared by every span of the trace are scrubbed too, since they are merged into each span when the
+        // trace is encoded.
+        obfuscate_chunk_attributes(trace, &self.config);
     }
 }
 
 impl SynchronousTransform for TraceObfuscation {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
         for trace in buffer.events_mut::<Trace>() {
-            for span in trace.spans_mut() {
-                self.obfuscate_span(span);
-            }
+            self.obfuscate_trace(trace);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use libdd_trace_obfuscation::{
+        json::JsonObfuscator,
+        obfuscation_config::{HttpConfig, JsonObfuscatorConfig},
+        replacer::parse_rules_from_string,
+    };
+    use saluki_common::collections::FastHashMap;
+    use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt, Span, SpanEvent, TraceIngestInfo};
+
     use super::*;
 
-    fn http_span(url: &str) -> Span {
-        let mut span = Span::new("svc", "http.request", "GET /x", "http", 1, 0, 0, 0, 0);
-        span.attributes
-            .insert(tags::HTTP_URL.into(), AttributeValue::String(url.into()));
-        span
+    fn transform(config: ObfuscationConfig) -> TraceObfuscation {
+        TraceObfuscationConfiguration::new(config).into_transform()
     }
 
-    fn transform(remove_query_string: bool, remove_paths_with_digits: bool) -> TraceObfuscation {
-        let mut config = ObfuscationConfig::default();
-        config.http.remove_query_string = remove_query_string;
-        config.http.remove_paths_with_digits = remove_paths_with_digits;
-
-        TraceObfuscation {
-            obfuscator: Obfuscator::new(config),
+    impl TraceObfuscationConfiguration {
+        fn into_transform(self) -> TraceObfuscation {
+            TraceObfuscation { config: self.config }
         }
     }
 
-    fn obfuscated_url(url: &str, remove_query_string: bool, remove_paths_with_digits: bool) -> String {
-        let mut span = http_span(url);
-        transform(remove_query_string, remove_paths_with_digits).obfuscate_span(&mut span);
-
-        span.attributes
-            .get(tags::HTTP_URL)
-            .and_then(AttributeValue::as_string)
-            .map(|s| s.as_ref().to_owned())
-            .expect("http.url was removed from the span")
+    fn attributes(pairs: &[(&str, &str)]) -> FastHashMap<stringtheory::MetaString, AttributeValue> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).into(), AttributeValue::String((*v).into())))
+            .collect()
     }
 
-    // The reference implementation redacts a URL it cannot parse wholesale as soon as either option is on, so the span
-    // path has to reach the algorithm for these URLs rather than screening them out first.
+    /// Runs `span` through the transform as the only span of a trace.
+    fn obfuscate(config: ObfuscationConfig, span: Span) -> Span {
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        transform(config).obfuscate_trace(&mut trace);
+        trace
+            .spans()
+            .first()
+            .cloned()
+            .expect("the span was removed from the trace")
+    }
+
+    fn attribute<'a>(span: &'a Span, key: &str) -> Option<&'a str> {
+        span.attributes
+            .get(key)
+            .and_then(AttributeValue::as_string)
+            .map(|s| &**s)
+    }
+
     #[test]
-    fn unparseable_url_is_redacted_on_the_span() {
+    fn sql_resource_is_obfuscated() {
+        let span = Span::new(
+            "svc",
+            "db.query",
+            "SELECT * FROM users WHERE id = 42",
+            "sql",
+            1,
+            0,
+            0,
+            0,
+            0,
+        );
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert_eq!(span.resource(), "SELECT * FROM users WHERE id = ?");
+    }
+
+    #[test]
+    fn unparseable_sql_is_replaced_instead_of_forwarded() {
+        let span = Span::new("svc", "db.query", "#", "sql", 1, 0, 0, 0, 0);
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert_eq!(span.resource(), "Non-parsable SQL query");
+    }
+
+    #[test]
+    fn redis_resource_keeps_the_first_three_commands() {
+        // At most three commands are kept, and a cut is marked with ` ...`.
+        let span = Span::new("svc", "redis.command", "SET k v\nGET k\nDEL k", "redis", 1, 0, 0, 0, 0);
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert_eq!(span.resource(), "SET GET DEL ...");
+    }
+
+    #[test]
+    fn redis_raw_command_arguments_are_obfuscated() {
+        let span = Span::new("svc", "redis.command", "SET", "redis", 1, 0, 0, 0, 0)
+            .with_attributes(attributes(&[("redis.raw_command", "SET mykey secret-value")]));
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert_eq!(attribute(&span, "redis.raw_command"), Some("SET mykey ?"));
+    }
+
+    #[test]
+    fn memcached_command_keeps_only_the_command_when_configured() {
+        let mut config = ObfuscationConfig::default();
+        config.memcached.keep_command = true;
+        let span = Span::new("svc", "memcached.cmd", "set", "memcached", 1, 0, 0, 0, 0)
+            .with_attributes(attributes(&[("memcached.command", "set mykey 0 60 5\r\nvalue")]));
+        let span = obfuscate(config, span);
+
+        assert_eq!(attribute(&span, "memcached.command"), Some("set mykey 0 60 5"));
+    }
+
+    fn http_span(url: &str) -> Span {
+        Span::new("svc", "http.request", "GET /x", "http", 1, 0, 0, 0, 0)
+            .with_attributes(attributes(&[("http.url", url)]))
+    }
+
+    fn obfuscated_url(url: &str, remove_query_string: bool, remove_path_digits: bool) -> String {
+        let config = ObfuscationConfig {
+            http: HttpConfig {
+                remove_query_string,
+                remove_path_digits,
+            },
+            ..Default::default()
+        };
+        let span = obfuscate(config, http_span(url));
+        attribute(&span, "http.url")
+            .expect("http.url was removed from the span")
+            .to_owned()
+    }
+
+    // A removed query string leaves a trailing `?`.
+    #[test]
+    fn http_url_query_string_and_path_digits_are_removed_when_configured() {
+        assert_eq!(
+            obfuscated_url("https://example.com/users/123/profile?token=abc", true, true),
+            "https://example.com/users/?/profile?"
+        );
+    }
+
+    // A URL that can't be parsed is redacted wholesale as soon as either option is on.
+    #[test]
+    fn unparseable_url_is_redacted_when_either_option_is_on() {
         for url in ["https://example.com:port/x", "http://foo:bar.com/x", ":"] {
-            for (remove_query_string, remove_paths_with_digits) in [(true, false), (false, true), (true, true)] {
+            for (remove_query_string, remove_path_digits) in [(true, false), (false, true), (true, true)] {
                 assert_eq!(
-                    obfuscated_url(url, remove_query_string, remove_paths_with_digits),
+                    obfuscated_url(url, remove_query_string, remove_path_digits),
                     "?",
                     "expected wholesale redaction for {url:?}"
                 );
@@ -324,6 +228,146 @@ mod tests {
         assert_eq!(
             obfuscated_url("https://example.com:port/x", false, false),
             "https://example.com:port/x"
+        );
+    }
+
+    #[test]
+    fn credit_card_numbers_are_scrubbed_from_span_and_span_event_attributes() {
+        let event = SpanEvent::new(1, "exception").with_attributes(attributes(&[("card", "4111 1111 1111 1111")]));
+        let span = Span::new("svc", "op", "res", "custom", 1, 0, 0, 0, 0)
+            .with_attributes(attributes(&[
+                ("card", "4111 1111 1111 1111"),
+                ("note", "hello"),
+                // Known not to hold card numbers, although the value looks like one.
+                ("databricks_job_id", "4111111111111111"),
+            ]))
+            .with_span_events(vec![event]);
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert_eq!(attribute(&span, "card"), Some("?"));
+        assert_eq!(attribute(&span, "note"), Some("hello"));
+        assert_eq!(attribute(&span, "databricks_job_id"), Some("4111111111111111"));
+        let event_card = span.span_events()[0]
+            .attributes()
+            .get("card")
+            .and_then(AttributeValue::as_string);
+        assert_eq!(event_card.map(|s| &**s), Some("?"));
+    }
+
+    #[test]
+    fn credit_card_numbers_are_scrubbed_from_trace_attributes() {
+        let mut trace = Trace::new(vec![Span::default()], TraceIngestInfo::Datadog);
+        std::sync::Arc::make_mut(&mut trace.attributes)
+            .insert("card".into(), AttributeValue::String("4111111111111111".into()));
+        transform(ObfuscationConfig::default()).obfuscate_trace(&mut trace);
+
+        let card = trace.attributes.get("card").and_then(AttributeValue::as_string);
+        assert_eq!(card.map(|s| &**s), Some("?"));
+    }
+
+    #[test]
+    fn credit_card_keep_values_are_not_scrubbed() {
+        let mut config = ObfuscationConfig::default();
+        config.credit_cards.keep_values.insert("order_ref".to_owned());
+        let span = Span::new("svc", "op", "res", "custom", 1, 0, 0, 0, 0)
+            .with_attributes(attributes(&[("order_ref", "4111111111111111")]));
+        let span = obfuscate(config, span);
+
+        assert_eq!(attribute(&span, "order_ref"), Some("4111111111111111"));
+    }
+
+    #[test]
+    fn elasticsearch_body_values_are_obfuscated() {
+        let span = Span::new("svc", "es.query", "search", "elasticsearch", 1, 0, 0, 0, 0).with_attributes(attributes(
+            &[("elasticsearch.body", r#"{"query":{"match":{"user":"alice"}}}"#)],
+        ));
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert_eq!(
+            attribute(&span, "elasticsearch.body"),
+            Some(r#"{"query":{"match":{"user":"?"}}}"#)
+        );
+    }
+
+    // Replacement rules are applied by `trace_tag_replacer`, so this transform must leave them alone.
+    #[test]
+    fn tag_replacement_rules_are_not_applied_by_this_transform() {
+        let rules = parse_rules_from_string(r#"[{"name":"secret","pattern":".*","repl":"?"}]"#).unwrap();
+        let config = ObfuscationConfig {
+            tag_replace_rules: rules,
+            ..Default::default()
+        };
+        let span = Span::new("svc", "op", "res", "custom", 1, 0, 0, 0, 0)
+            .with_attributes(attributes(&[("secret", "hunter2")]));
+        let span = obfuscate(config, span);
+
+        assert_eq!(attribute(&span, "secret"), Some("hunter2"));
+    }
+
+    // The following tests record expected behavior that isn't implemented yet. They assert that behavior, so they fail
+    // today and are ignored. Remove the `ignore` once they pass.
+
+    // The raw query attributes are obfuscated along with the resource.
+    #[test]
+    #[ignore = "not implemented yet: db.statement and db.query.text are left unobfuscated (DataDog/libdatadog#2923)"]
+    fn sql_query_attributes_are_obfuscated_with_the_resource() {
+        let query = "SELECT * FROM users WHERE id = 42";
+        let span = Span::new("svc", "db.query", query, "sql", 1, 0, 0, 0, 0)
+            .with_attributes(attributes(&[("db.statement", query), ("db.query.text", query)]));
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert_eq!(
+            attribute(&span, "db.statement"),
+            Some("SELECT * FROM users WHERE id = ?")
+        );
+        assert_eq!(
+            attribute(&span, "db.query.text"),
+            Some("SELECT * FROM users WHERE id = ?")
+        );
+        assert_eq!(attribute(&span, "sql.query"), None, "sql.query is not added");
+    }
+
+    // The tables a query uses are reported in `sql.tables`.
+    #[test]
+    #[ignore = "not implemented yet: table names aren't extracted (DataDog/libdatadog#2922)"]
+    fn sql_table_names_are_reported() {
+        let span = Span::new(
+            "svc",
+            "db.query",
+            "SELECT * FROM users JOIN orders ON users.id = 1",
+            "sql",
+            1,
+            0,
+            0,
+            0,
+            0,
+        );
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert_eq!(attribute(&span, "sql.tables"), Some("users,orders"));
+    }
+
+    // Values under `obfuscate_sql_values` keys are obfuscated as SQL. The span-level obfuscation replaces the whole value
+    // with `?` instead.
+    #[test]
+    #[ignore = "not implemented yet: JSON values under transform keys aren't obfuscated as SQL"]
+    fn json_values_under_transform_keys_are_obfuscated_as_sql() {
+        let config = ObfuscationConfig {
+            elasticsearch: JsonObfuscator::new(JsonObfuscatorConfig {
+                enabled: true,
+                keep_keys: Default::default(),
+                transform_keys: ["query".to_owned()].into_iter().collect(),
+            }),
+            ..Default::default()
+        };
+        let span = Span::new("svc", "es.query", "search", "elasticsearch", 1, 0, 0, 0, 0).with_attributes(attributes(
+            &[("elasticsearch.body", r#"{"query":"SELECT * FROM t WHERE id = 7"}"#)],
+        ));
+        let span = obfuscate(config, span);
+
+        assert_eq!(
+            attribute(&span, "elasticsearch.body"),
+            Some(r#"{"query":"SELECT * FROM t WHERE id = ?"}"#)
         );
     }
 }
