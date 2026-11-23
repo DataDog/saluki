@@ -13,6 +13,9 @@ pub enum Destination {
     /// A TCP host and port.
     Tcp {
         /// Host name or IP address, without brackets for IPv6.
+        ///
+        /// Valid hosts include `localhost`, `agent.internal`, `127.0.0.1`, and `::1`. `[::1]` isn't valid, because the
+        /// proxy adds the brackets to the request URI itself.
         host: String,
 
         /// Port.
