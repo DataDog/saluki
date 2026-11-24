@@ -5853,6 +5853,7 @@ dependencies = [
  "anymap3",
  "async-trait",
  "bitmask-enum",
+ "bytes",
  "bytesize",
  "criterion",
  "crossbeam-queue",
