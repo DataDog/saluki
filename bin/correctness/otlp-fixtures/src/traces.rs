@@ -72,6 +72,103 @@ pub fn trace_fixture(seed: u32, service: &str, span_count: u32) -> Vec<u8> {
     .encode_to_vec()
 }
 
+/// The seed of the traces of `defaults_fixture`: trace `n`, counted from 1, has the seed `DEFAULTS_SEED + n`.
+const DEFAULTS_SEED: u32 = 0x0900;
+
+/// A span of `defaults_fixture`: its service, OTLP name, kind, and the number of its parent in the same trace.
+struct DefaultsSpan {
+    service: &'static str,
+    name: &'static str,
+    kind: SpanKind,
+    parent: Option<u32>,
+}
+
+/// The traces of `defaults_fixture`, each a list of spans numbered from 1.
+///
+/// - Trace 1 crosses services: a `SERVER` root and its `CLIENT` child in `probe-tl-a`, and an `INTERNAL` grandchild in
+///   `probe-tl-b`.
+/// - Trace 2 is an `INTERNAL` span in `probe-tl-a` whose parent, span 9, is never sent.
+/// - Trace 3 is a `SERVER` root in `probe-ssi`.
+const DEFAULTS_TRACES: &[&[DefaultsSpan]] = &[
+    &[
+        DefaultsSpan {
+            service: "probe-tl-a",
+            name: "tl.root",
+            kind: SpanKind::Server,
+            parent: None,
+        },
+        DefaultsSpan {
+            service: "probe-tl-a",
+            name: "tl.client",
+            kind: SpanKind::Client,
+            parent: Some(1),
+        },
+        DefaultsSpan {
+            service: "probe-tl-b",
+            name: "tl.b.internal",
+            kind: SpanKind::Internal,
+            parent: Some(2),
+        },
+    ],
+    &[DefaultsSpan {
+        service: "probe-tl-a",
+        name: "tl.orphan",
+        kind: SpanKind::Internal,
+        parent: Some(9),
+    }],
+    &[DefaultsSpan {
+        service: "probe-ssi",
+        name: "ssi.root",
+        kind: SpanKind::Server,
+        parent: None,
+    }],
+];
+
+/// Spans that leave top-level marking to the defaults: a root, a client, a span below a service boundary, an orphan,
+/// and a root in another service.
+///
+/// Each service has its own `ResourceSpans`, so a trace that crosses services spans more than one of them.
+pub fn defaults_fixture() -> Vec<u8> {
+    let mut by_service: Vec<(&str, Vec<Span>)> = Vec::new();
+    for (seed, trace) in (DEFAULTS_SEED + 1..).zip(DEFAULTS_TRACES) {
+        for (number, spec) in (1..).zip(trace.iter()) {
+            let start = BASE_TIME_NANOS + u64::from(number - 1) * SPAN_STEP_NANOS;
+            let span = Span {
+                trace_id: trace_id(seed),
+                span_id: span_id(seed, number),
+                parent_span_id: spec.parent.map(|parent| span_id(seed, parent)).unwrap_or_default(),
+                name: spec.name.to_string(),
+                kind: spec.kind as i32,
+                start_time_unix_nano: start,
+                end_time_unix_nano: start + SPAN_DURATION_NANOS,
+                ..Default::default()
+            };
+            match by_service.iter_mut().find(|(service, _)| *service == spec.service) {
+                Some((_, spans)) => spans.push(span),
+                None => by_service.push((spec.service, vec![span])),
+            }
+        }
+    }
+
+    ExportTraceServiceRequest {
+        resource_spans: by_service
+            .into_iter()
+            .map(|(service, spans)| ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![kv("service.name", string(service))],
+                    ..Default::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    spans,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .collect(),
+    }
+    .encode_to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
@@ -155,6 +252,77 @@ mod tests {
     #[should_panic(expected = "must not be zero")]
     fn trace_fixture_refuses_a_zero_seed() {
         trace_fixture(0, "fixture-service", 3);
+    }
+
+    /// Returns each span of `defaults_fixture` as its service, name, span ID and parent span ID.
+    fn defaults_spans() -> Vec<(String, String, Vec<u8>, Vec<u8>)> {
+        let request = ExportTraceServiceRequest::decode(defaults_fixture().as_slice()).unwrap();
+        request
+            .resource_spans
+            .iter()
+            .flat_map(|resource_spans| {
+                let service = match &resource_spans.resource.as_ref().unwrap().attributes[0].value {
+                    Some(value) => match &value.value {
+                        Some(Value::StringValue(service)) => service.clone(),
+                        other => panic!("unexpected service {:?}", other),
+                    },
+                    None => panic!("no service"),
+                };
+                resource_spans.scope_spans[0].spans.iter().map(move |span| {
+                    (
+                        service.clone(),
+                        span.name.clone(),
+                        span.span_id.clone(),
+                        span.parent_span_id.clone(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn defaults_fixture_groups_spans_by_service() {
+        let spans = defaults_spans();
+        let names = spans
+            .iter()
+            .map(|(service, name, _, _)| (service.as_str(), name.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                ("probe-tl-a", "tl.root"),
+                ("probe-tl-a", "tl.client"),
+                ("probe-tl-a", "tl.orphan"),
+                ("probe-tl-b", "tl.b.internal"),
+                ("probe-ssi", "ssi.root"),
+            ]
+        );
+    }
+
+    #[test]
+    fn defaults_fixture_links_spans_across_services_and_leaves_one_orphan() {
+        let spans = defaults_spans();
+        let id_of = |name: &str| spans.iter().find(|span| span.1 == name).unwrap().2.clone();
+        let parent_of = |name: &str| spans.iter().find(|span| span.1 == name).unwrap().3.clone();
+
+        assert!(parent_of("tl.root").is_empty());
+        assert!(parent_of("ssi.root").is_empty());
+        assert_eq!(parent_of("tl.client"), id_of("tl.root"));
+        assert_eq!(parent_of("tl.b.internal"), id_of("tl.client"));
+
+        let orphan_parent = parent_of("tl.orphan");
+        assert!(!orphan_parent.is_empty());
+        assert!(spans.iter().all(|span| span.2 != orphan_parent));
+    }
+
+    #[test]
+    fn defaults_fixture_span_ids_are_unique() {
+        let spans = defaults_spans();
+        let ids = spans
+            .iter()
+            .map(|span| span.2.clone())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), spans.len());
     }
 
     #[test]

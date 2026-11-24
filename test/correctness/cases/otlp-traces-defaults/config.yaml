@@ -1,0 +1,78 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive the same fixed OTLP traces over gRPC, with top-level marking left at
+  its defaults on both sides. The intakes must hold the same spans and APM stats, apart from the known differences.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  # ADP marks top-level spans by span kind unless the case turns it off. The Agent does so only with the
+  # `enable_otlp_compute_top_level_by_span_kind` feature, which the case leaves out.
+  - step: config_key_equals
+    on: adp
+    view: runtime
+    key: domains.otlp.traces.enable_compute_top_level_by_span_kind
+    value: true
+    timeout: 60s
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up.
+  - {step: process_stable_for, on: load, duration: 32s}
+  # ADP sends the spans and their statistics itself, and does not proxy the traces to the Agent.
+  - parallel:
+      - step: compare
+        telemetry: traces
+        comparison: intake-adp
+        baseline: intake-agent
+        # The fixture holds 3 traces and 5 spans. Both rules mark `tl.root` and `ssi.root` top-level, and both sides
+        # compute stats for the `tl.client` span by its kind.
+        traces:
+          min_traces: 3
+          min_spans: 5
+          spans:
+            - {service: probe-tl-a, resource: tl.root}
+            - {service: probe-tl-a, resource: tl.client}
+            - {service: probe-tl-a, resource: tl.orphan}
+            - {service: probe-tl-b, resource: tl.b.internal}
+            - {service: probe-ssi, resource: ssi.root}
+          min_stats_groups: 3
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: probe-tl-a}
+        sender: adp
+        count: 3
+        timeout: 1m
+      - step: intake_from
+        on: intake-adp
+        telemetry: trace_stats
+        select: {service: probe-tl-a}
+        sender: adp
+        timeout: 1m
