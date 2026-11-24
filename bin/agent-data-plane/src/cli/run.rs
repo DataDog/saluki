@@ -6,7 +6,7 @@ use std::{
 
 use agent_data_plane_config::{
     defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT,
-    domains::multi_region_failover,
+    domains::{logs, multi_region_failover},
     shared::{Secrets, SharedConfiguration},
     SalukiConfiguration,
 };
@@ -43,7 +43,8 @@ use saluki_components::{
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
         ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
-        HistogramConfiguration, HostEnrichmentConfiguration, TraceObfuscationConfiguration,
+        HistogramConfiguration, HostEnrichmentConfiguration, LogsProcessingRulesConfiguration,
+        TraceObfuscationConfiguration,
     },
 };
 use saluki_core::{
@@ -59,10 +60,11 @@ use tracing::{debug, error, info, warn};
 use crate::{
     component_inputs::{
         apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
-        metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
-        otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
-        ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration,
-        trace_sampler_configuration, trace_tag_replacer_configuration, traces_forwarder_configuration,
+        logs_processing_rules, metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration,
+        origin_tag_cardinality, otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver,
+        otlp_traces_settings, ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist,
+        trace_configuration, trace_sampler_configuration, trace_tag_replacer_configuration,
+        traces_forwarder_configuration,
     },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -80,6 +82,9 @@ use crate::{
     },
     remote_config::{self, RemoteConfigSubscriptions},
 };
+
+/// The component that applies the logs processing rules.
+const LOGS_PROCESS: &str = "logs_process";
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
@@ -233,7 +238,7 @@ async fn create_topology(
     }
 
     if dp.logs_pipeline_required(otlp) {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared, env_provider).await?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared, &config.domains.logs, env_provider).await?;
     }
 
     if dp.events_pipeline_required() {
@@ -264,7 +269,13 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp.checks_enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, &config.domains.checks.ipc_endpoint, env_provider).await?;
+        add_checks_pipeline_to_blueprint(
+            &mut blueprint,
+            &config.domains.checks.ipc_endpoint,
+            logs_pipeline_input(&config.domains.logs),
+            env_provider,
+        )
+        .await?;
     }
 
     let dogstatsd_api = if dp.dogstatsd_enabled() {
@@ -314,7 +325,8 @@ async fn add_liveness_source_to_blueprint(
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, env_provider: &RemoteAgentEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, logs_input: &str,
+    env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
     let grpc_endpoint = ListenAddress::try_from(checks_ipc_endpoint)
         .map_err(|error| generic_error!("Invalid checks IPC endpoint `{checks_ipc_endpoint}`: {error}"))?;
@@ -328,7 +340,7 @@ async fn add_checks_pipeline_to_blueprint(
     blueprint
         .add_source("checks_ipc_in", checks_config)?
         .connect_components("checks_ipc_in.metrics", "metrics_enrich")?
-        .connect_components("checks_ipc_in.logs", "dd_logs_encode")?
+        .connect_components("checks_ipc_in.logs", logs_input)?
         .connect_components("checks_ipc_in.events", "dd_events_encode")?
         .connect_components("checks_ipc_in.service_checks", "dd_service_checks_encode")?;
 
@@ -506,9 +518,30 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
+/// Returns the component that check and OTLP logs enter the logs pipeline through.
+///
+/// Logs go through `logs_process` only when there are processing rules that apply to them, so that they don't pay for
+/// an extra component otherwise. Invalid rules select `logs_process` too, though building the logs pipeline fails on
+/// them first.
+fn logs_pipeline_input(logs: &logs::Domain) -> &'static str {
+    match logs.validate_processing_rules() {
+        Ok(rules) if logs_processing_rules(&rules).is_empty() => "dd_logs_encode",
+        _ => LOGS_PROCESS,
+    }
+}
+
 async fn add_baseline_logs_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, env_provider: &RemoteAgentEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, logs: &logs::Domain,
+    env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
+    // Like the Agent's logs agent, fail to start on invalid processing rules. Only the logs pipeline uses them, so the
+    // other pipelines don't depend on them being valid.
+    let processing_rules = logs_processing_rules(
+        &logs
+            .validate_processing_rules()
+            .error_context("Invalid processing rules.")?,
+    );
+
     // Create the back half of the logs processing pipeline.
     //
     // Like the Agent's logs processor, the encoder sends a log without a hostname with the Agent's hostname.
@@ -530,6 +563,16 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         .add_encoder("dd_logs_encode", dd_logs_config)?
         // Logs.
         .connect_components("dd_logs_encode", "dd_out")?;
+
+    if !processing_rules.is_empty() {
+        let processing_rules = LogsProcessingRulesConfiguration::new(processing_rules);
+        blueprint
+            .add_transform(
+                LOGS_PROCESS,
+                ChainedConfiguration::default().with_transform_builder("processing_rules", processing_rules),
+            )?
+            .connect_components(LOGS_PROCESS, "dd_logs_encode")?;
+    }
 
     Ok(())
 }
@@ -1090,7 +1133,7 @@ async fn add_otlp_pipeline_to_blueprint(
 
     blueprint.add_source("otlp_in", otlp_config)?;
 
-    let edges = otlp_source_edges(routes);
+    let edges = otlp_source_edges(routes, logs_pipeline_input(&config.domains.logs));
     if edges.iter().any(|(_, to)| *to == OTLP_BLACKHOLE) {
         blueprint.add_destination(OTLP_BLACKHOLE, BlackholeConfiguration)?;
     }
@@ -1107,12 +1150,12 @@ const OTLP_BLACKHOLE: &str = "otlp_out_blackhole";
 ///
 /// Each internal signal goes to its pipeline, which the pipeline predicates build for the same routes. OTLP metrics go
 /// directly to the enrichment stage of the metrics pipeline, skipping aggregation, to avoid transforming counters into
-/// rates. When no signal is internal, the source has no output path of its own, but a topology can't hold a component
+/// rates. OTLP logs go to `logs_input`, the component that logs enter the logs pipeline through. When no signal is internal, the source has no output path of its own, but a topology can't hold a component
 /// with no connections, so it connects to [`OTLP_BLACKHOLE`].
-fn otlp_source_edges(routes: OtlpRoutes) -> Vec<(&'static str, &'static str)> {
+fn otlp_source_edges(routes: OtlpRoutes, logs_input: &'static str) -> Vec<(&'static str, &'static str)> {
     let edges = [
         (routes.metrics, "otlp_in.metrics", "metrics_enrich"),
-        (routes.logs, "otlp_in.logs", "dd_logs_encode"),
+        (routes.logs, "otlp_in.logs", logs_input),
         (routes.traces, "otlp_in.traces", "traces_enrich"),
     ]
     .into_iter()
@@ -1297,7 +1340,7 @@ mod tests {
         ];
 
         for (name, routes, expected) in cases {
-            assert_eq!(otlp_source_edges(routes), expected, "{name}");
+            assert_eq!(otlp_source_edges(routes, "dd_logs_encode"), expected, "{name}");
         }
     }
 
@@ -1334,10 +1377,10 @@ mod tests {
                     continue;
                 }
 
-                for (_, component) in otlp_source_edges(routes) {
+                for (_, component) in otlp_source_edges(routes, logs_pipeline_input(&config.domains.logs)) {
                     let built = match component {
                         "metrics_enrich" => dp.metrics_pipeline_required(&otlp),
-                        "dd_logs_encode" => dp.logs_pipeline_required(&otlp),
+                        "dd_logs_encode" | LOGS_PROCESS => dp.logs_pipeline_required(&otlp),
                         "traces_enrich" => dp.traces_pipeline_required(&otlp),
                         // The OTLP pipeline adds the blackhole itself.
                         OTLP_BLACKHOLE => true,

@@ -202,6 +202,7 @@ pub trait DatadogConfigWitness {
     fn consume_log_payloads(&mut self, value: bool);
     fn consume_log_to_console(&mut self, value: bool);
     fn consume_log_to_syslog(&mut self, value: bool);
+    fn consume_logs_config_processing_rules(&mut self, value: ::serde_json::Value);
     fn consume_logs_enabled(&mut self, value: bool);
     fn consume_metric_filterlist(&mut self, value: Vec<String>);
     fn consume_metric_filterlist_match_prefix(&mut self, value: bool);
@@ -589,6 +590,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_log_payloads(config.log_payloads.clone());
     consumer.consume_log_to_console(config.log_to_console.clone());
     consumer.consume_log_to_syslog(config.log_to_syslog.clone());
+    consumer.consume_logs_config_processing_rules(config.logs_config.processing_rules.clone());
     consumer.consume_logs_enabled(config.logs_enabled.clone());
     consumer.consume_metric_filterlist(config.metric_filterlist.clone());
     consumer.consume_metric_filterlist_match_prefix(config.metric_filterlist_match_prefix.clone());

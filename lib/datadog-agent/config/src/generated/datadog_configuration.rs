@@ -452,6 +452,9 @@ pub struct DatadogConfiguration {
     pub log_to_syslog: bool,
 
     #[serde(default)]
+    pub logs_config: LogsConfig,
+
+    #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub logs_enabled: bool,
 
@@ -726,6 +729,7 @@ impl Default for DatadogConfiguration {
             log_payloads: Default::default(),
             log_to_console: defaults::default_bool::<true>(),
             log_to_syslog: Default::default(),
+            logs_config: Default::default(),
             logs_enabled: Default::default(),
             metric_filterlist: Default::default(),
             metric_filterlist_match_prefix: Default::default(),
@@ -1641,6 +1645,20 @@ impl Default for ExperimentalMetricsEndpointRouting {
         Self {
             metric_allowlist: Default::default(),
             metric_prefix_allowlist: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct LogsConfig {
+    #[serde(default, skip_serializing_if = "::serde_json::Value::is_null")]
+    pub processing_rules: ::serde_json::Value,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            processing_rules: Default::default(),
         }
     }
 }

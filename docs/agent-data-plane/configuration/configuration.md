@@ -68,7 +68,6 @@ tracking.
 | `logs_config.http_timeout`                                      | HTTP request timeout in seconds                   | [#2973] |
 | `logs_config.logs_dd_url`                                       | Logs intake URL override (proxy or custom intake) | [#2973] |
 | `logs_config.logs_no_ssl`                                       | Disable TLS for logs intake                       | [#2973] |
-| `logs_config.processing_rules`                                  | Global log processing rules                       | [#2975] |
 | `logs_config.sender_backoff_base`                               | Retry backoff base (seconds)                      | [#2974] |
 | `logs_config.sender_backoff_factor`                             | Retry backoff growth factor                       | [#2974] |
 | `logs_config.sender_backoff_max`                                | Retry backoff cap (seconds)                       | [#2974] |
@@ -656,6 +655,7 @@ default values.
 | `forwarder_stop_timeout`                                        | Timeout (s) for forwarder graceful stop         |
 | `log_enabled`                                                   | Deprecated name for `logs_enabled`              |
 | `log_level`                                                     | Log verbosity directives                        |
+| `logs_config.processing_rules`                                  | Global logs processing rules                    |
 | `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
@@ -1072,6 +1072,33 @@ under it. ADP applies those directive strings as configured:
 ```yaml
 log_level: warn,agent_data_plane=debug,hyper=warn
 ```
+
+### `logs_config.processing_rules`
+
+The core Agent applies these rules to every log it sends, in order: `exclude_at_match` drops
+logs that match a pattern, `include_at_match` drops logs that don't, and `mask_sequences`
+replaces matches with a placeholder. ADP applies them to check logs and to OTLP logs it
+handles natively, matching against the same content as the Agent. `exclude_truncated`,
+`remap_source`, and `multi_line` don't affect these logs in either, so ADP accepts them and
+does nothing with them.
+
+Like the Agent, ADP only reads the rules when `logs_enabled` (or its deprecated spelling
+`log_enabled`) is `true`. Like the Agent's logs agent, ADP validates them when it starts its
+logs pipeline, which it runs when it handles check logs or OTLP logs natively. Invalid rules
+then stop ADP from starting, and they don't affect ADP when it runs no logs pipeline. The
+rules can also be a string that holds a JSON array of rules. Like the Agent, ADP decodes
+such a string only when it validates the rules, and reads an empty string as no rules.
+ADP differs in these ways:
+
+- Patterns use the Rust `regex` crate rather than Go's `regexp` package. Their dialects
+  differ: for example, `\w`, `\d`, `\s`, and `\b` match Unicode characters in ADP, and only
+  ASCII characters in the Agent. A pattern that only Go accepts stops ADP from starting.
+- ADP doesn't check the patterns of `multi_line` rules, since it doesn't apply them. The Agent
+  doesn't start when one of them is invalid.
+- Placeholders follow the `regex` crate's expansion rules, which differ from Go's for
+  unusual group references: `$01` and `${01}` refer to group 1 rather than expanding to
+  nothing, `${}` and `${ 1}` expand to nothing rather than being kept as they are, and `$é` is
+  kept as it is rather than expanding to nothing.
 
 ### `logs_enabled`
 

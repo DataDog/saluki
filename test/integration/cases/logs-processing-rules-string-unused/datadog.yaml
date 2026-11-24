@@ -1,0 +1,5 @@
+# The rules are YAML inside a string, which isn't a JSON array. The Agent decodes the string only when its logs agent
+# starts, so with the logs agent disabled it runs, and streams the string to ADP as it is.
+logs_enabled: false
+logs_config:
+  processing_rules: "- type: exclude_at_match\n  name: drop_app_debug_info\n  pattern: \"(?i)\\\\bDEBUG\\\\b|\\\\bINFO\\\\b\""

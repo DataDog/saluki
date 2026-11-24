@@ -18,6 +18,39 @@ logs_config:
   logs_dd_url: "{{ self.connections.intake.host }}:{{ self.connections.intake.port }}"
   logs_no_ssl: true
   force_use_http: true
+  # The rules apply to the rendered content of each log, in order. The last three masks match differently in the
+  # Agent and ADP, and their differences are listed in the case's known differences.
+  processing_rules:
+    - type: exclude_at_match
+      name: exclude_healthchecks
+      pattern: "healthcheck"
+    - type: include_at_match
+      name: include_kept
+      pattern: "keep"
+    - type: mask_sequences
+      name: mask_cards
+      pattern: "card=[0-9]{4}-[0-9]{4}"
+      replace_placeholder: "card=[masked]"
+    - type: mask_sequences
+      name: mask_users
+      pattern: "(user=)[a-z]+"
+      replace_placeholder: "${1}[masked]"
+    - type: mask_sequences
+      name: mask_tokens
+      pattern: '"token":"[a-z0-9-]+"'
+      replace_placeholder: '"token":"[masked]"'
+    - type: mask_sequences
+      name: mask_words
+      pattern: 'word=\w+'
+      replace_placeholder: "word=[masked]"
+    - type: mask_sequences
+      name: mask_refs
+      pattern: "(ref=)[a-z]+"
+      replace_placeholder: "$01[masked]"
+    - type: mask_sequences
+      name: mask_bold_tags
+      pattern: '\\u003cb\\u003e'
+      replace_placeholder: "[tag]"
 
 otlp_config:
   receiver:

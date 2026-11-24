@@ -955,6 +955,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_LOGS_CONFIG_PROCESSING_RULES"],
+        path: &["logs_config", "processing_rules"],
+        decode: EnvDecode::JsonOrRawString,
+    },
+    EnvKey {
         env_vars: &["DD_LOGS_ENABLED"],
         path: &["logs_enabled"],
         decode: EnvDecode::Bool,

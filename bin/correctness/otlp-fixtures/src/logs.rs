@@ -360,7 +360,7 @@ pub fn attributes_fixture() -> Vec<u8> {
     .encode_to_vec()
 }
 
-/// Severity, timestamps, and bodies.
+/// Severity, timestamps, bodies, and processing rules.
 pub fn severity_body_fixture() -> Vec<u8> {
     let mut records = Vec::new();
     let mut index = 0;
@@ -442,6 +442,13 @@ pub fn severity_body_fixture() -> Vec<u8> {
     let mut no_body = next("body-missing".to_string(), vec![]);
     no_body.body = None;
     records.push(no_body);
+
+    // Keep all severity, timestamp, and body cases through the include rule. The additional records exercise both
+    // filtering and masking without adding another correctness case and its container startup cost.
+    for record in &mut records {
+        record.attributes.push(kv("marker", string("keep")));
+    }
+    records.extend(processing_rule_records(index));
 
     request(
         vec![
@@ -890,4 +897,43 @@ pub fn resource_host_fixture() -> Vec<u8> {
         resource_logs: resources,
     }
     .encode_to_vec()
+}
+
+/// Logs for the processing rules in the case's `datadog.yaml`.
+///
+/// The rules match the rendered content of each log, so they see its properties as well as its message. Every log
+/// whose `fixture_id` starts with `keep` matches the include rule through that property, unless the exclude rule
+/// drops it first. The `attr-include` record matches through a separate property. Only string values are used, so
+/// that no other gap changes the content.
+///
+/// The last records are masked differently by the Agent and ADP, through gaps of the processing rules themselves.
+fn processing_rule_records(start_index: u64) -> Vec<LogRecord> {
+    let record = |index: u64, id: &str, attributes: Vec<KeyValue>| record(start_index + index, id, attributes);
+    let with_body = |index: u64, id: &str, body: &str, attributes: Vec<KeyValue>| LogRecord {
+        body: Some(string(body)),
+        ..record(index, id, attributes)
+    };
+    vec![
+        // Kept by every rule, and left as it is.
+        record(0, "keep-plain", vec![]),
+        // Masked in the message, with and without a capture group in the placeholder.
+        with_body(1, "keep-card", "paid with card=1234-5678 today", vec![]),
+        with_body(2, "keep-user", "login by user=alice from the web", vec![]),
+        // Masked in a property, across its key and value.
+        record(3, "keep-token", vec![kv("token", string("secret-abc123"))]),
+        // Matched by the include rule only through a property, so kept.
+        record(4, "attr-include", vec![kv("marker", string("keep"))]),
+        // Dropped by the exclude rule, through the message and through a property.
+        with_body(5, "keep-healthcheck", "healthcheck ok", vec![]),
+        record(6, "keep-attr-exclude", vec![kv("probe", string("healthcheck"))]),
+        // Dropped by the include rule.
+        record(7, "drop-no-marker", vec![]),
+        // gap/regex-dialect: `\w` matches only ASCII letters in Go, so the Agent leaves the `é` unmasked.
+        with_body(8, "keep-regex-dialect", "ordered word=café today", vec![]),
+        // gap/placeholder-expansion: Go expands `$01` to nothing, where ADP expands it to the first group.
+        with_body(9, "keep-placeholder-expansion", "linked ref=abc today", vec![]),
+        // gap/json-encoding: the Agent's content escapes `<` and `>` as `\u003c` and `\u003e`, which the pattern
+        // matches, while ADP's content holds them as they are.
+        with_body(10, "keep-json-encoding", "rendered <b> today", vec![]),
+    ]
 }
