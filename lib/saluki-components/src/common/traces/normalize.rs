@@ -388,7 +388,7 @@ fn normalize_unchecked<I>(value: &str, remove_digit_start_char: bool, out: &mut 
                     break;
                 }
                 continue;
-            } else if curr_char.is_ascii_digit() || matches!(curr_char, '.' | '/' | '-') {
+            } else if is_decimal_digit(curr_char) || matches!(curr_char, '.' | '/' | '-') {
                 if pending_underscore {
                     let _ = out.push('_');
                     pending_underscore = false;
@@ -408,6 +408,94 @@ fn normalize_unchecked<I>(value: &str, remove_digit_start_char: bool, out: &mut 
         }
     }
     // Trailing illegal chars (pending_underscore=true) are intentionally dropped.
+}
+
+/// Non-ASCII ranges of the Unicode decimal digit category (`Nd`), as of Unicode 15.0.0.
+///
+/// The trace-agent keeps any `Nd` character in a tag value, through Go's `unicode.IsDigit`. These ranges were
+/// generated from that function in Go 1.26, so they follow the Unicode version the trace-agent is built with.
+const NON_ASCII_DECIMAL_DIGITS: &[(char, char)] = &[
+    ('\u{0660}', '\u{0669}'),
+    ('\u{06F0}', '\u{06F9}'),
+    ('\u{07C0}', '\u{07C9}'),
+    ('\u{0966}', '\u{096F}'),
+    ('\u{09E6}', '\u{09EF}'),
+    ('\u{0A66}', '\u{0A6F}'),
+    ('\u{0AE6}', '\u{0AEF}'),
+    ('\u{0B66}', '\u{0B6F}'),
+    ('\u{0BE6}', '\u{0BEF}'),
+    ('\u{0C66}', '\u{0C6F}'),
+    ('\u{0CE6}', '\u{0CEF}'),
+    ('\u{0D66}', '\u{0D6F}'),
+    ('\u{0DE6}', '\u{0DEF}'),
+    ('\u{0E50}', '\u{0E59}'),
+    ('\u{0ED0}', '\u{0ED9}'),
+    ('\u{0F20}', '\u{0F29}'),
+    ('\u{1040}', '\u{1049}'),
+    ('\u{1090}', '\u{1099}'),
+    ('\u{17E0}', '\u{17E9}'),
+    ('\u{1810}', '\u{1819}'),
+    ('\u{1946}', '\u{194F}'),
+    ('\u{19D0}', '\u{19D9}'),
+    ('\u{1A80}', '\u{1A89}'),
+    ('\u{1A90}', '\u{1A99}'),
+    ('\u{1B50}', '\u{1B59}'),
+    ('\u{1BB0}', '\u{1BB9}'),
+    ('\u{1C40}', '\u{1C49}'),
+    ('\u{1C50}', '\u{1C59}'),
+    ('\u{A620}', '\u{A629}'),
+    ('\u{A8D0}', '\u{A8D9}'),
+    ('\u{A900}', '\u{A909}'),
+    ('\u{A9D0}', '\u{A9D9}'),
+    ('\u{A9F0}', '\u{A9F9}'),
+    ('\u{AA50}', '\u{AA59}'),
+    ('\u{ABF0}', '\u{ABF9}'),
+    ('\u{FF10}', '\u{FF19}'),
+    ('\u{104A0}', '\u{104A9}'),
+    ('\u{10D30}', '\u{10D39}'),
+    ('\u{11066}', '\u{1106F}'),
+    ('\u{110F0}', '\u{110F9}'),
+    ('\u{11136}', '\u{1113F}'),
+    ('\u{111D0}', '\u{111D9}'),
+    ('\u{112F0}', '\u{112F9}'),
+    ('\u{11450}', '\u{11459}'),
+    ('\u{114D0}', '\u{114D9}'),
+    ('\u{11650}', '\u{11659}'),
+    ('\u{116C0}', '\u{116C9}'),
+    ('\u{11730}', '\u{11739}'),
+    ('\u{118E0}', '\u{118E9}'),
+    ('\u{11950}', '\u{11959}'),
+    ('\u{11C50}', '\u{11C59}'),
+    ('\u{11D50}', '\u{11D59}'),
+    ('\u{11DA0}', '\u{11DA9}'),
+    ('\u{11F50}', '\u{11F59}'),
+    ('\u{16A60}', '\u{16A69}'),
+    ('\u{16AC0}', '\u{16AC9}'),
+    ('\u{16B50}', '\u{16B59}'),
+    ('\u{1D7CE}', '\u{1D7FF}'),
+    ('\u{1E140}', '\u{1E149}'),
+    ('\u{1E2F0}', '\u{1E2F9}'),
+    ('\u{1E4F0}', '\u{1E4F9}'),
+    ('\u{1E950}', '\u{1E959}'),
+    ('\u{1FBF0}', '\u{1FBF9}'),
+];
+
+/// Returns whether `c` is a Unicode decimal digit, as Go's `unicode.IsDigit` does.
+fn is_decimal_digit(c: char) -> bool {
+    if c.is_ascii() {
+        return c.is_ascii_digit();
+    }
+    NON_ASCII_DECIMAL_DIGITS
+        .binary_search_by(|&(start, end)| {
+            if end < c {
+                std::cmp::Ordering::Less
+            } else if start > c {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 fn is_valid_metric_name(name: &str) -> bool {
@@ -621,6 +709,14 @@ mod tests {
             (MetaString::from("$#weird_starting"), MetaString::from("weird_starting")),
             (MetaString::from("allowed:c0l0ns"), MetaString::from("allowed:c0l0ns")),
             (MetaString::from("1love"), MetaString::from("love")),
+            // Non-ASCII decimal digits are kept, other numeric characters are not, as in Go's `unicode.IsDigit`.
+            (MetaString::from("api\u{0662}"), MetaString::from("api\u{0662}")),
+            (MetaString::from("a\u{FF11}b"), MetaString::from("a\u{FF11}b")),
+            (
+                MetaString::from("x\u{1D7CE}\u{1D7FF}"),
+                MetaString::from("x\u{1D7CE}\u{1D7FF}"),
+            ),
+            (MetaString::from("api\u{00B2}"), MetaString::from("api")),
             (MetaString::from("ünicöde"), MetaString::from("ünicöde")),
             (MetaString::from("ünicöde:metäl"), MetaString::from("ünicöde:metäl")),
             (
