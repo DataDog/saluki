@@ -99,9 +99,16 @@ impl TelemetryProcessor {
                         help_text.entry(remapped.name).or_insert(text);
                     }
                     let series = groups.entry(remapped.name).or_default();
+                    let sum_gauges = rule.sums_gauges();
                     series
                         .entry(remapped.tags)
-                        .and_modify(|existing| existing.merge(value))
+                        .and_modify(|existing| {
+                            if sum_gauges {
+                                existing.merge_summing_gauges(value);
+                            } else {
+                                existing.merge(value);
+                            }
+                        })
                         .or_insert_with(|| value.clone());
 
                     if !continue_matching {
@@ -264,5 +271,82 @@ mod tests {
         assert!(output.contains("# TYPE dst__latency_seconds histogram"));
         assert!(output.contains("dst__latency_seconds_bucket{op=\"read\","));
         assert!(output.contains("dst__latency_seconds_count{op=\"read\"} 2"));
+    }
+
+    fn queue_gauges_from_two_components() -> AggregatedMetricsState {
+        aggregate_upserts(vec![
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("src.queue_size", &["component_id:a", "domain:d"]),
+                4.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("src.queue_size", &["component_id:b", "domain:d"]),
+                6.0,
+            )),
+        ])
+    }
+
+    #[test]
+    fn gauges_that_remap_to_one_series_keep_the_latest_by_default() {
+        let state = queue_gauges_from_two_components();
+        let rules = vec![RemapperRule::by_name("src.queue_size", "dst.queue_size").with_original_tags(["domain"])];
+
+        let output = TelemetryProcessor::new().with_remapper_rules(rules).process(&state);
+
+        // One series stays, holding one of the two values, never their total.
+        assert!(
+            output.contains("dst__queue_size{domain=\"d\"} 4") || output.contains("dst__queue_size{domain=\"d\"} 6"),
+            "{output}"
+        );
+        assert!(!output.contains("} 10"), "{output}");
+    }
+
+    #[test]
+    fn gauges_that_remap_to_one_series_are_summed_when_the_rule_says_so() {
+        let state = queue_gauges_from_two_components();
+        let rules = vec![RemapperRule::by_name("src.queue_size", "dst.queue_size")
+            .with_original_tags(["domain"])
+            .with_summed_gauges()];
+
+        let output = TelemetryProcessor::new().with_remapper_rules(rules).process(&state);
+
+        assert!(output.contains("dst__queue_size{domain=\"d\"} 10"), "{output}");
+    }
+
+    #[test]
+    fn summing_gauges_leaves_distinct_series_and_counters_alone() {
+        let state = aggregate_upserts(vec![
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("src.queue_size", &["component_id:a", "domain:one"]),
+                4.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("src.queue_size", &["component_id:b", "domain:two"]),
+                6.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("src.requests", &["component_id:a", "domain:one"]),
+                2.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("src.requests", &["component_id:b", "domain:one"]),
+                3.0,
+            )),
+        ]);
+        let rules = vec![
+            RemapperRule::by_name("src.queue_size", "dst.queue_size")
+                .with_original_tags(["domain"])
+                .with_summed_gauges(),
+            RemapperRule::by_name("src.requests", "dst.requests")
+                .with_original_tags(["domain"])
+                .with_summed_gauges(),
+        ];
+
+        let output = TelemetryProcessor::new().with_remapper_rules(rules).process(&state);
+
+        assert!(output.contains("dst__queue_size{domain=\"one\"} 4"), "{output}");
+        assert!(output.contains("dst__queue_size{domain=\"two\"} 6"), "{output}");
+        // Counters sum whether or not the rule asks for summed gauges.
+        assert!(output.contains("dst__requests{domain=\"one\"} 5"), "{output}");
     }
 }

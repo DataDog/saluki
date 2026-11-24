@@ -61,6 +61,14 @@ impl AggregatedMetricValue {
             (existing, incoming) => *existing = incoming.clone(),
         }
     }
+
+    /// Merges `incoming` into this value like [`merge`][Self::merge], except that gauges are summed.
+    pub fn merge_summing_gauges(&mut self, incoming: &AggregatedMetricValue) {
+        match (&mut *self, incoming) {
+            (Self::Gauge(a), Self::Gauge(b)) => *a += *b,
+            _ => self.merge(incoming),
+        }
+    }
 }
 
 #[derive(Clone)]
