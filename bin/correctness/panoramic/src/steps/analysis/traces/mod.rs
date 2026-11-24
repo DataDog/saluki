@@ -70,8 +70,14 @@ where
     }
 }
 
-/// The prefix of the paths that a traces known difference covers: the trace statistics.
+/// The prefix of the paths of a traces known difference that cover the trace statistics.
 const STATS_PREFIX: &str = "stats.";
+
+/// The prefix of the paths of a traces known difference that cover the fields of a span on both sides.
+const SPAN_PREFIX: &str = "span.";
+
+/// The fields of a span that the view of a span holds, and that name it in a failure.
+const SPAN_VIEW_FIELDS: &[&str] = &["service", "name", "resource"];
 
 /// Options for traces analysis, set in the `traces` section of a `compare` step.
 ///
@@ -81,7 +87,8 @@ const STATS_PREFIX: &str = "stats.";
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesOptions {
-    /// Trace statistics differences that are expected, each tagged with the gap and the issue that explain it.
+    /// Trace statistics and span field differences that are expected, each tagged with the gap and the issue that
+    /// explain it.
     ///
     /// A matching difference doesn't fail the case, but an entry path that matches nothing does, so that fixing a gap
     /// requires removing its entries.
@@ -123,7 +130,8 @@ impl TracesOptions {
     ///
     /// # Errors
     ///
-    /// If an entry names no issue or a path outside the trace statistics, or if `otlp_direct_analysis_mode` skips the
+    /// If an entry names no issue, has a path outside the trace statistics and the span fields, or has a span path
+    /// and doesn't scope itself to spans by service, name or resource, or if `otlp_direct_analysis_mode` skips the
     /// statistics comparison that an option applies to, or if a step that compares stats sets expectations or turns
     /// off `require_ssi` and sets no `min_stats_groups`, an error is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
@@ -164,10 +172,28 @@ impl TracesOptions {
             if entry.issue.is_none() {
                 return Err(format!("known difference '{}' names no 'issue'", entry.gap));
             }
-            if let Some(path) = entry.paths.iter().find(|path| !path.starts_with(STATS_PREFIX)) {
+            if let Some(path) = entry
+                .paths
+                .iter()
+                .find(|path| !path.starts_with(STATS_PREFIX) && !path.starts_with(SPAN_PREFIX))
+            {
                 return Err(format!(
-                    "known difference '{}' has the path '{}': a traces known difference covers only '{}*' paths",
-                    entry.gap, path, STATS_PREFIX
+                    "known difference '{}' has the path '{}': a traces known difference covers only '{}*' and '{}*' \
+                     paths",
+                    entry.gap, path, STATS_PREFIX, SPAN_PREFIX
+                ));
+            }
+            let scoped = !entry.when.is_empty()
+                && entry
+                    .when
+                    .keys()
+                    .all(|field| SPAN_VIEW_FIELDS.contains(&field.as_str()));
+            if entry.paths.iter().any(|path| path.starts_with(SPAN_PREFIX)) && !scoped {
+                return Err(format!(
+                    "known difference '{}' covers span fields, so its `when` must name the spans by {}, and nothing \
+                     else",
+                    entry.gap,
+                    SPAN_VIEW_FIELDS.join(", ")
                 ));
             }
         }
@@ -353,7 +379,8 @@ impl TracesAnalyzer {
 
         // Go through each baseline span, and look for a matching span (by ID) on the comparison target side.
         //
-        // If found, compare the spans.
+        // If found, compare the spans. A field difference that a known difference covers is left out.
+        let mut ratchet = Ratchet::new(&self.options.known_differences);
         for (baseline_span_id, baseline_span) in self.baseline_spans.iter() {
             match self.comparison_spans.get(baseline_span_id) {
                 Some(comparison_span) => {
@@ -364,32 +391,35 @@ impl TracesAnalyzer {
                     diff_recorder.clear();
                     treediff::diff(&baseline_span_json, &comparison_span_json, &mut diff_recorder);
 
-                    if !diff_recorder.is_empty() {
-                        error!("Detected mismatched span ({}):", baseline_span_id);
-                        for span_diff in diff_recorder.diffs() {
-                            error!("- {}", span_diff);
+                    let view = span_view(&baseline_span_json);
+                    let unknown = diff_recorder
+                        .diffs()
+                        .iter()
+                        .filter(|recorded| {
+                            let diff = FieldDiff {
+                                path: format!("{}{}", SPAN_PREFIX, recorded.diff.path),
+                                ..recorded.diff.clone()
+                            };
+                            !ratchet.allows(&diff, &view)
+                        })
+                        .map(|recorded| format!("    {}", recorded))
+                        .collect::<Vec<_>>();
+
+                    if !unknown.is_empty() {
+                        let span = format!("span {} ({})", baseline_span_id, span_name(&view));
+                        error!("Detected mismatched {}:", span);
+                        for span_diff in &unknown {
+                            error!("-{}", span_diff);
                         }
                         error!("");
 
                         error_count += 1;
 
-                        let all_diffs = diff_recorder
-                            .diffs()
-                            .iter()
-                            .map(|d| format!("    {}", d))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        all_span_details.push(format!("  span {}:\n{}", baseline_span_id, all_diffs));
+                        all_span_details.push(format!("  {}:\n{}", span, unknown.join("\n")));
 
                         if span_samples.len() < SAMPLE_MISMATCH_LIMIT {
-                            let sample_diffs = diff_recorder
-                                .diffs()
-                                .iter()
-                                .take(SAMPLE_DIFFS_PER_SPAN)
-                                .map(|d| format!("    {}", d))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            span_samples.push(format!("  span {}:\n{}", baseline_span_id, sample_diffs));
+                            let sample_diffs = unknown.iter().take(SAMPLE_DIFFS_PER_SPAN).cloned().collect::<Vec<_>>();
+                            span_samples.push(format!("  {}:\n{}", span, sample_diffs.join("\n")));
                         }
                     }
                 }
@@ -401,7 +431,6 @@ impl TracesAnalyzer {
         }
 
         // Compare the baseline and comparison trace statistics when not in OTLP-direct mode.
-        let mut ratchet = Ratchet::new(&self.options.known_differences);
         if !self.options.otlp_direct_analysis_mode {
             info!(
                 "Analyzing {} aggregated statistics groups from baseline and {} from comparison target.",
@@ -535,10 +564,6 @@ impl DifferenceRecorder {
     fn clear(&mut self) {
         self.key_stack.clear();
         self.detected_diffs.clear();
-    }
-
-    fn is_empty(&self) -> bool {
-        self.detected_diffs.is_empty()
     }
 
     fn diffs(&self) -> &[RecordedDiff] {
@@ -831,6 +856,23 @@ fn compare_stats(
 fn stats_field_path(path: &str) -> String {
     let field = path.find(['.', '[']).map_or(path, |end| &path[..end]);
     format!("{STATS_PREFIX}{field}")
+}
+
+/// The service, name and resource of a span, as the view that a known difference's `when` matches.
+fn span_view(span: &Value) -> BTreeMap<String, Value> {
+    SPAN_VIEW_FIELDS
+        .iter()
+        .filter_map(|field| Some((field.to_string(), span.get(field)?.clone())))
+        .collect()
+}
+
+/// Names a span by its view, as `service="..." name="..." resource="..."`.
+fn span_name(view: &BTreeMap<String, Value>) -> String {
+    SPAN_VIEW_FIELDS
+        .iter()
+        .filter_map(|field| Some(format!("{}={}", field, view.get(*field)?)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The fields of a statistics group, as the view that a known difference's `when` matches.

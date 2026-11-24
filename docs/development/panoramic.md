@@ -633,3 +633,16 @@ when they encode the log. Panoramic checks that the timestamps are within a minu
 their difference as a defect.
 
 [status-issue]: https://github.com/DataDog/saluki/issues/3433
+
+**Known differences of traces.** A traces `compare` reports every difference in the APM statistics, not only the
+first. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
+`logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
+`paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
+compared, so the step takes no entries. A path is `stats.groups`, for a
+statistics group on one side only, `stats.<field>`, for a field of a group on both sides, or `span.<field>`, such as
+`span.metrics._top_level`, for a field of a span on both sides. `stats.<field>` covers a difference anywhere inside
+the field, such as in a sketch. A kind is `missing` (only in the baseline), `extra` (only in the comparison) or
+`value`. `when` matches the fields of the group, for example `{service: [api-gateway]}`, or the `service`, `name` and
+`resource` of the span. An entry with a `span.` path must name its spans with `when`. A difference that no entry
+covers fails the step, and so does an entry path that
+matches no difference, so that a fix removes its entries.
