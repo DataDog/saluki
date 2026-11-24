@@ -40,4 +40,12 @@ procedure:
   # Both sides flush what they aggregated. Waiting slightly longer than an aggregation bucket, with the load running,
   # lets the Agent and ADP flush.
   - {step: process_stable_for, on: load, duration: 32s}
-  - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+  # ADP sends the fixture's metrics itself, and does not proxy them to the Agent.
+  - parallel:
+      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlp.summary.quantiles"}
+        sender: adp
+        timeout: 1m
