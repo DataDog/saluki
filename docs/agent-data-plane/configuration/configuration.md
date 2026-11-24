@@ -1722,6 +1722,13 @@ This debug log differs from the `dogstatsd_capture_*` settings. The debug log re
 metric summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic
 for packet-level investigation, and they remain tracked separately under [#1381].
 
+### `dogstatsd_metrics_stats_enable`
+
+When `true`, ADP writes the DogStatsD metric debug log, as the core agent does. The DogStatsD
+metric debug log section describes the file. ADP's DogStatsD statistics API is always
+available, whatever the value of this key. The DogStatsD statistics section describes how
+ADP's statistics differ from the core agent's `agent dogstatsd-stats` output.
+
 ### UDS origin detection on macOS
 
 ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
