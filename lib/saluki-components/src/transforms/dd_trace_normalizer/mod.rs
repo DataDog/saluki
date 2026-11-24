@@ -265,6 +265,10 @@ fn normalize_span(
         let Some(value) = link.attributes().get(LINK_NAME_KEY) else {
             continue;
         };
+        // An already-normalized name would be written back unchanged, so it is kept as is.
+        if matches!(value, AttributeValue::String(name) if !needs_name_normalization(name)) {
+            continue;
+        }
         let (name, _) = normalize_name_with_reason(MetaString::from(attribute_as_string(value).as_ref()));
         link.attributes_mut()
             .insert(MetaString::from_static(LINK_NAME_KEY), AttributeValue::String(name));

@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use http::{
     header::AUTHORIZATION,
-    uri::{Authority, Scheme},
+    uri::{Authority, PathAndQuery, Scheme},
     HeaderName, HeaderValue, Request, Uri,
 };
 use saluki_common::buf::FrozenChunkedBytesBuffer;
@@ -21,7 +21,7 @@ use tracing::debug;
 
 use crate::common::datadog::{
     config::ForwarderConfiguration,
-    endpoints::{ResolvedEndpoint, SingleDestination},
+    endpoints::{endpoint_base_path, ResolvedEndpoint, SingleDestination},
     io::{EndpointRequestMapper, EndpointRequestMapperFactory, LiveForwarderConfiguration, TransactionForwarder},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction, TransactionBody},
@@ -190,12 +190,19 @@ fn cluster_agent_request_mapper<B>(
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
+    // Append the series path to the base path of the endpoint, as the Datadog Agent does.
+    let new_uri_path_and_query = PathAndQuery::try_from(format!(
+        "{}{}",
+        endpoint_base_path(endpoint.endpoint()),
+        CLUSTER_AGENT_SERIES_PATH
+    ))
+    .expect("should not fail to construct Cluster Agent path");
 
-    Box::new(move |mut request: Request<TransactionBody<B>>| {
+    std::sync::Arc::new(move |mut request: Request<TransactionBody<B>>| {
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
             .authority(new_uri_authority.clone())
-            .path_and_query(CLUSTER_AGENT_SERIES_PATH)
+            .path_and_query(new_uri_path_and_query.clone())
             .build()
             .expect("should not fail to construct Cluster Agent URI");
         *request.uri_mut() = new_uri;
@@ -229,7 +236,7 @@ mod tests {
         let auth_header_value = bearer_auth_header_value("secret-token").expect("auth header should be valid");
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://cluster-agent.example.com:5005", "secret-token")
             .expect("endpoint should resolve");
-        let mut mapper = cluster_agent_request_mapper::<()>(endpoint, auth_header_value);
+        let mapper = cluster_agent_request_mapper::<()>(endpoint, auth_header_value);
         let request = Request::builder()
             .method(Method::POST)
             .uri("/api/v2/series")
@@ -249,6 +256,40 @@ mod tests {
         );
         assert_eq!(request.headers().get(AUTHORIZATION).unwrap(), "Bearer secret-token");
         assert!(request.headers().get("dd-api-key").is_none());
+    }
+
+    #[test]
+    fn request_mapper_keeps_cluster_agent_base_path() {
+        // A base path on `cluster_agent.url` is kept, as the Datadog Agent does. A trailing slash gives a single `/`.
+        let cases = [
+            (
+                "https://cluster-agent.example.com:5005/",
+                "https://cluster-agent.example.com:5005/series",
+            ),
+            (
+                "https://cluster-agent.example.com:5005/prefix",
+                "https://cluster-agent.example.com:5005/prefix/series",
+            ),
+            (
+                "https://cluster-agent.example.com:5005/prefix/",
+                "https://cluster-agent.example.com:5005/prefix/series",
+            ),
+        ];
+
+        for (raw_endpoint, expected_uri) in cases {
+            let auth_header_value = bearer_auth_header_value("secret-token").expect("auth header should be valid");
+            let endpoint =
+                ResolvedEndpoint::from_raw_endpoint(raw_endpoint, "secret-token").expect("endpoint should resolve");
+            let mapper = cluster_agent_request_mapper::<()>(endpoint, auth_header_value);
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/api/v2/series")
+                .body(TransactionBody::<()>::Rehydrated(None))
+                .expect("request should build");
+
+            let request = mapper(request);
+            assert_eq!(request.uri().to_string(), expected_uri, "{raw_endpoint}");
+        }
     }
 
     #[test]

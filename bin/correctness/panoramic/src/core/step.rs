@@ -15,7 +15,11 @@ use serde_json::Value;
 use tokio::time::Instant;
 
 use super::handle::{Handle, HandleError};
+use super::observe::Kept;
 use super::record::StepStatus;
+use super::reference::Values;
+use super::spec::Keep;
+use super::template::Template;
 
 /// What a step does to the case.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,8 +40,6 @@ pub(crate) trait StepFactory: Send + Sync {
     }
 
     /// The fields that may hold references. A reference in any other field is an error.
-    // TODO: remove the dead_code allowance once references are checked in step fields.
-    #[allow(dead_code)]
     fn template_fields(&self) -> &'static [&'static str] {
         &[]
     }
@@ -56,8 +58,6 @@ pub(crate) trait Step: fmt::Debug + Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Everything of the case the step uses, so the plan can check it before anything starts.
-    // TODO: remove the dead_code allowance once the plan checks what steps need.
-    #[allow(dead_code)]
     fn needs(&self) -> Vec<Need>;
 
     fn budget(&self) -> Duration;
@@ -67,9 +67,8 @@ pub(crate) trait Step: fmt::Debug + Send + Sync {
 }
 
 /// Something of the case a step uses.
-// TODO: remove the dead_code allowance once the plan checks what steps need.
-#[allow(dead_code)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Need {
     Participant(String),
     /// A participant and one of its processes.
@@ -83,9 +82,8 @@ pub(crate) enum Need {
 }
 
 /// What a step does to an endpoint.
-// TODO: remove the dead_code allowance once the plan checks what steps need.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum EndpointOperation {
     Probe,
     Send,
@@ -93,8 +91,6 @@ pub(crate) enum EndpointOperation {
 }
 
 /// A capability a participant offers to steps: a name, what it uses of its participant, and a function.
-// TODO: remove the dead_code allowance once a participant type offers an operation.
-#[allow(dead_code)]
 #[async_trait]
 pub(crate) trait Operation: fmt::Debug + Send + Sync {
     fn name(&self) -> &'static str;
@@ -107,27 +103,50 @@ pub(crate) trait Operation: fmt::Debug + Send + Sync {
 }
 
 /// Something of its own participant an operation uses.
-// TODO: remove the dead_code allowance once a participant type offers an operation.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Uses {
+    /// One of the participant's named commands.
     Command(&'static str),
+    /// A request to one of the participant's endpoints.
     Request(&'static str),
 }
 
-/// What a running step can reach: a handle to each of the case's started participants, and when it must be done.
-// TODO: remove the dead_code allowance once a step is registered.
-#[allow(dead_code)]
+/// What a running step can reach: a handle to each of the case's started participants, the values its template fields
+/// refer to, where it keeps files, and when it must be done.
 pub(crate) struct StepContext<'a> {
     handles: &'a BTreeMap<String, Handle<'a>>,
+    values: &'a Values,
+    kept: &'a Kept,
     /// When the step's own budget, or the case's deadline, runs out.
     pub(crate) deadline: Instant,
 }
 
 impl<'a> StepContext<'a> {
-    pub(crate) fn new(handles: &'a BTreeMap<String, Handle<'a>>, deadline: Instant) -> Self {
-        Self { handles, deadline }
+    pub(crate) fn new(
+        handles: &'a BTreeMap<String, Handle<'a>>, values: &'a Values, kept: &'a Kept, deadline: Instant,
+    ) -> Self {
+        Self {
+            handles,
+            values,
+            kept,
+            deadline,
+        }
+    }
+
+    /// Keeps `contents` as the collected file `name` of participant `on`, by `keep`, with the files collected from it.
+    pub(crate) async fn keep(&self, on: &str, name: &str, contents: &[u8], keep: Keep) {
+        self.kept.write(on, name, contents, keep).await;
+    }
+
+    /// The text of `template`, one of the step's template fields, with every reference filled in. Each value is
+    /// escaped when the text is matched as a regex, so a path or an address matches itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error if a reference has no value.
+    pub(crate) fn fill(&self, template: &Template, regex: bool) -> Result<String, HandleError> {
+        self.values.fill_step(template, regex).map_err(HandleError::Harness)
     }
 
     /// The handle to participant `name`.
@@ -135,8 +154,6 @@ impl<'a> StepContext<'a> {
     /// # Errors
     ///
     /// Returns a harness error if the case has no started participant `name`.
-    // TODO: remove the dead_code allowance once a step is registered.
-    #[allow(dead_code)]
     pub(crate) fn handle(&self, name: &str) -> Result<&Handle<'a>, HandleError> {
         self.handles
             .get(name)
@@ -156,8 +173,6 @@ pub(crate) struct StepReport {
 #[serde(transparent)]
 pub(crate) struct StepFields(pub(crate) BTreeMap<String, Value>);
 
-// TODO: remove the dead_code allowance once a step is registered.
-#[allow(dead_code)]
 impl StepFields {
     /// Decodes the fields into the step's own struct, which should deny unknown fields.
     ///

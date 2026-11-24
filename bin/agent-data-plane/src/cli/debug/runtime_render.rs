@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 
 use bytesize::ByteSize;
-use chrono::{DateTime, SecondsFormat};
+use saluki_common::time::{Timestamp, TimestampFormat};
 use saluki_core::runtime::{NodeKind, NodeSnapshot, NodeState, RestartMode, TreeSnapshot};
 
 pub(super) fn render_tree(snapshot: &TreeSnapshot) -> String {
@@ -226,8 +226,8 @@ fn format_cpu(nanos: u64) -> String {
 /// Formats a Unix-millisecond timestamp as an RFC 3339 instant, falling back to the raw value if it isn't
 /// representable.
 fn format_timestamp(millis: u64) -> String {
-    match i64::try_from(millis).ok().and_then(DateTime::from_timestamp_millis) {
-        Some(timestamp) => timestamp.to_rfc3339_opts(SecondsFormat::Secs, true),
+    match i64::try_from(millis).ok().and_then(Timestamp::from_unix_millis) {
+        Some(timestamp) => timestamp.format(TimestampFormat::Rfc3339UtcSeconds).to_string(),
         None => format!("{}ms since epoch", millis),
     }
 }
@@ -434,5 +434,16 @@ mod tests {
     fn a_timestamp_beyond_representation_falls_back_to_the_raw_value() {
         assert_eq!(format_timestamp(1_700_000_100_000), "2023-11-14T22:15:00Z");
         assert_eq!(format_timestamp(u64::MAX), format!("{}ms since epoch", u64::MAX));
+        // Just past the largest millisecond count that `Timestamp` accepts (9999-12-30T22:00:00Z). chrono, which
+        // earlier versions used, could represent dates up to the year 262142.
+        assert_eq!(format_timestamp(253_402_207_200_001), "253402207200001ms since epoch");
+    }
+
+    #[test]
+    fn timestamps_are_whole_seconds_in_utc() {
+        assert_eq!(format_timestamp(0), "1970-01-01T00:00:00Z");
+        // Milliseconds are truncated, not rounded.
+        assert_eq!(format_timestamp(1_700_000_100_999), "2023-11-14T22:15:00Z");
+        assert_eq!(format_timestamp(253_402_207_200_000), "9999-12-30T22:00:00Z");
     }
 }

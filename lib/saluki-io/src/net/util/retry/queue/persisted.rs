@@ -5,9 +5,9 @@ use std::{
     sync::Arc,
 };
 
-use chrono::{DateTime, NaiveDateTime, Utc};
 use fs4::{available_space, total_space};
 use rand::RngExt as _;
+use saluki_common::time::{parse_compact_utc_nanos, Timestamp, TimestampFormat};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::de::DeserializeOwned;
 use tracing::{debug, error, info, warn};
@@ -187,14 +187,20 @@ where
         let disk_usage_retriever = self.disk_usage_retriever.clone();
         let storage_max_disk_ratio = self.storage_max_disk_ratio;
         let max_on_disk_bytes = self.max_on_disk_bytes;
+        let total_on_disk_bytes = self.total_on_disk_bytes;
 
         let limit = tokio::task::spawn_blocking(move || {
-            on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
+            on_disk_bytes_limit(
+                disk_usage_retriever,
+                storage_max_disk_ratio,
+                max_on_disk_bytes,
+                total_on_disk_bytes,
+            )
         })
         .await
         .error_context("Failed to run disk size limit check to completion.")??;
 
-        Ok(limit.saturating_sub(self.total_on_disk_bytes))
+        Ok(limit.saturating_sub(total_on_disk_bytes))
     }
 
     /// Returns the number of entries that have been permanently dropped due to errors since the last call to this
@@ -224,7 +230,7 @@ where
     /// the new entry, an error is returned.
     pub async fn push(&mut self, entry: T) -> Result<PushResult, GenericError> {
         // Serialize the entry to a temporary file.
-        let (filename, timestamp) = generate_timestamped_filename();
+        let (filename, timestamp) = generate_timestamped_filename()?;
         let entry_path = self.root_path.join(filename);
         let serialized = serde_json::to_vec(&entry)
             .with_error_context(|| format!("Failed to serialize entry for '{}'.", entry_path.display()))?;
@@ -346,6 +352,7 @@ where
         let disk_usage_retriever = self.disk_usage_retriever.clone();
         let storage_max_disk_ratio = self.storage_max_disk_ratio;
         let max_on_disk_bytes = self.max_on_disk_bytes;
+        let total_on_disk_bytes = self.total_on_disk_bytes;
 
         // TODO: Evaluate the possible failures scenarios a little more thoroughly, and see if we can improve
         // how we handle them instead of just bailing out.
@@ -354,7 +361,12 @@ where
         // still write the persistent entries to disk, and if it's worth it to do something like trying to
         // cache the last known good value we get here to use if we fail to get a new value, etc.
         let limit = tokio::task::spawn_blocking(move || {
-            on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
+            on_disk_bytes_limit(
+                disk_usage_retriever,
+                storage_max_disk_ratio,
+                max_on_disk_bytes,
+                total_on_disk_bytes,
+            )
         })
         .await
         .error_context("Failed to run disk size limit check to completion.")??;
@@ -405,20 +417,27 @@ where
     }
 }
 
-/// Determines the total number of bytes that can be written to disk without causing the underlying volume to end up
+/// Determines the total number of bytes the queue may occupy on disk without causing the underlying volume to end up
 /// with more than `storage_max_disk_ratio` in terms of used space. The minimum of `max_on_disk_bytes` and the result
 /// of this calculation is returned.
+///
+/// The available space reported by the volume already excludes the queue's own files, so `total_on_disk_bytes` is
+/// added back in: the result is the queue's total allowance, not the space left on top of what it already uses.
 ///
 /// # Errors
 ///
 /// If there is an error while retrieving the total or available space of the underlying volume, an error is returned.
 fn on_disk_bytes_limit(
     disk_usage_retriever: DiskUsageRetrieverWrapper, storage_max_disk_ratio: f64, max_on_disk_bytes: u64,
+    total_on_disk_bytes: u64,
 ) -> Result<u64, GenericError> {
     let total_space = disk_usage_retriever.inner.total_space()? as f64;
     let available_space = disk_usage_retriever.inner.available_space()? as f64;
     let disk_reserved = total_space * (1.0 - storage_max_disk_ratio);
-    let available_disk_usage = (available_space - disk_reserved).ceil() as u64;
+
+    // When the volume is already past the ratio, this goes negative and pulls the allowance below what the queue
+    // currently uses, so that existing entries get evicted. Casting to `u64` saturates the final result at zero.
+    let available_disk_usage = (total_on_disk_bytes as f64 + available_space - disk_reserved).ceil() as u64;
     Ok(max_on_disk_bytes.min(available_disk_usage))
 }
 
@@ -468,14 +487,15 @@ async fn try_deserialize_entry<T: DeserializeOwned>(entry: &PersistedEntry) -> R
     Ok(Some(deserialized))
 }
 
-fn generate_timestamped_filename() -> (PathBuf, u128) {
-    let now = Utc::now();
-    let now_ts = datetime_to_timestamp(now);
+fn generate_timestamped_filename() -> Result<(PathBuf, u128), GenericError> {
+    let now = Timestamp::now()?;
+    let now_ts = u128::try_from(now.as_unix_nanos())
+        .map_err(|_| generic_error!("System clock is set to before the Unix epoch."))?;
     let nonce = rand::rng().random_range(100000000..999999999);
 
-    let filename = format!("retry-{}-{}.json", now.format("%Y%m%d%H%M%S%f"), nonce).into();
+    let filename = format!("retry-{}-{}.json", now.format(TimestampFormat::CompactUtcNanos), nonce).into();
 
-    (filename, now_ts)
+    Ok((filename, now_ts))
 }
 
 fn decode_timestamped_filename(path: &Path) -> Option<u128> {
@@ -491,17 +511,9 @@ fn decode_timestamped_filename(path: &Path) -> Option<u128> {
         return None;
     }
 
-    // Try and decode the timestamp portion.
-    NaiveDateTime::parse_from_str(timestamp_str, "%Y%m%d%H%M%S%f")
-        .map(|dt| datetime_to_timestamp(dt.and_utc()))
-        .ok()
-}
-
-fn datetime_to_timestamp(dt: DateTime<Utc>) -> u128 {
-    let secs = (dt.timestamp() as u128) * 1_000_000_000;
-    let ns = dt.timestamp_subsec_nanos() as u128;
-
-    secs + ns
+    // Every version has written the timestamp in `TimestampFormat::CompactUtcNanos`. Dates before the Unix epoch aren't
+    // recognized.
+    parse_compact_utc_nanos(timestamp_str).and_then(|nanos| u128::try_from(nanos).ok())
 }
 
 async fn create_directory_recursive(path: PathBuf) -> Result<(), GenericError> {
@@ -625,6 +637,32 @@ mod tests {
         }
         fn available_space(&self) -> Result<u64, GenericError> {
             Ok(100)
+        }
+    }
+
+    /// A fake volume holding `other_used_bytes` of unrelated data plus whatever files are in `dir`.
+    ///
+    /// Like a real volume, the available space it reports shrinks as the queue writes entries.
+    struct DirBackedDiskUsageRetriever {
+        dir: PathBuf,
+        total_bytes: u64,
+        other_used_bytes: u64,
+    }
+
+    impl DiskUsageRetriever for DirBackedDiskUsageRetriever {
+        fn total_space(&self) -> Result<u64, GenericError> {
+            Ok(self.total_bytes)
+        }
+
+        fn available_space(&self) -> Result<u64, GenericError> {
+            let mut queue_bytes = 0;
+            for entry in std::fs::read_dir(&self.dir)? {
+                let metadata = entry?.metadata()?;
+                if metadata.is_file() {
+                    queue_bytes += metadata.len();
+                }
+            }
+            Ok(self.total_bytes - self.other_used_bytes - queue_bytes)
         }
     }
 
@@ -775,7 +813,11 @@ mod tests {
             root_path: root_path.clone(),
             max_on_disk_bytes: 80,
             storage_max_disk_ratio: 0.35,
-            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            disk_usage_retriever: Arc::new(DirBackedDiskUsageRetriever {
+                dir: root_path.clone(),
+                total_bytes: 100,
+                other_used_bytes: 0,
+            }),
             max_age_days: 10,
         })
         .await
@@ -784,8 +826,8 @@ mod tests {
         // Ensure the directory is empty.
         assert_eq!(0, files_in_dir(&root_path).await);
 
-        // The `storage_max_disk_ratio` is 0.35, and our `MockDiskUsageRetriever` returns 100 for both `total_space` and
-        // `available_space`, so `on_disk_bytes_limit()` returns min(80, 35) = 35.
+        // The `storage_max_disk_ratio` is 0.35 and the volume is 100 bytes with nothing else on it, so
+        // `on_disk_bytes_limit()` returns min(80, 35) = 35 regardless of how much the queue has written.
         //
         // First entry: total_on_disk_bytes(0) + required_bytes(30) < on_disk_bytes_limit(35)
         let push_result = persisted_queue.push(data1).await.expect("should not fail to push data");
@@ -814,10 +856,56 @@ mod tests {
         assert_eq!(0, files_in_dir(&root_path).await);
     }
 
+    #[tokio::test]
+    async fn storage_ratio_does_not_double_count_queue_bytes() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // The volume is 1000 bytes with 400 bytes of unrelated data, and the ratio reserves 500 bytes, so the queue may
+        // occupy 100 bytes in total. Entries serialize to about 30 bytes each, so three fit.
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024,
+            storage_max_disk_ratio: 0.5,
+            disk_usage_retriever: Arc::new(DirBackedDiskUsageRetriever {
+                dir: root_path.clone(),
+                total_bytes: 1000,
+                other_used_bytes: 400,
+            }),
+            max_age_days: 10,
+        })
+        .await
+        .expect("should not fail to create persisted queue");
+
+        // Counting the queue's files twice would leave room for only two entries, evicting one on the third push.
+        for _ in 0..3 {
+            let push_result = persisted_queue
+                .push(FakeData::random())
+                .await
+                .expect("should not fail to push data");
+            assert_eq!(0, push_result.items_dropped);
+
+            let available = persisted_queue
+                .available_capacity_bytes()
+                .await
+                .expect("should not fail to get available capacity");
+            assert_eq!(100 - persisted_queue.total_on_disk_bytes, available);
+        }
+        assert_eq!(3, files_in_dir(&root_path).await);
+
+        // A fourth entry exceeds the 100-byte allowance, so the oldest entry is evicted.
+        let push_result = persisted_queue
+            .push(FakeData::random())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(1, push_result.items_dropped);
+        assert_eq!(3, files_in_dir(&root_path).await);
+    }
+
     /// Writes a corrupt (non-JSON) file with a valid retry filename to the given directory, using a timestamp
     /// that sorts before any real entries (so it will be popped first).
     async fn write_corrupt_entry(dir: &Path) -> PathBuf {
-        let filename = "retry-20000101000000000000-100000000.json";
+        let filename = "retry-20000101000000000000000-100000000.json";
         let path = dir.join(filename);
         tokio::fs::write(&path, b"this is not valid json").await.unwrap();
         path
@@ -1063,5 +1151,164 @@ mod tests {
 
         assert_eq!(0, files_in_dir(&root_path).await);
         assert!(queue.is_empty());
+    }
+
+    fn at(secs: i64, nanos: u32) -> Timestamp {
+        Timestamp::from_unix_nanos(i128::from(secs) * 1_000_000_000 + i128::from(nanos))
+            .expect("test timestamp should be valid")
+    }
+
+    fn filename_timestamp(timestamp: Timestamp) -> String {
+        timestamp.format(TimestampFormat::CompactUtcNanos).to_string()
+    }
+
+    // Retry files persist across upgrades and downgrades, so these names and values must never change: every version
+    // has to read the names that every other version writes.
+    const FILENAME_TIMESTAMPS: &[(&str, u128)] = &[
+        ("19700101000000000000000", 0),
+        ("20000101000000000000000", 946_684_800_000_000_000),
+        ("20240229000000000000000", 1_709_164_800_000_000_000),
+        ("20261118134530000000000", 1_795_009_530_000_000_000),
+        ("20261118134530000000001", 1_795_009_530_000_000_001),
+        ("20261118134530000007000", 1_795_009_530_000_007_000),
+        ("20261118134530100000000", 1_795_009_530_100_000_000),
+        ("20261118134530123456789", 1_795_009_530_123_456_789),
+        ("20261118134530999999999", 1_795_009_530_999_999_999),
+        ("99991231235959999999999", 253_402_300_799_999_999_999),
+    ];
+
+    #[test]
+    fn filename_timestamps_decode_to_unix_nanoseconds() {
+        for (timestamp, expected) in FILENAME_TIMESTAMPS {
+            let path = PathBuf::from(format!("/queue/retry-{}-123456789.json", timestamp));
+            assert_eq!(decode_timestamped_filename(&path), Some(*expected), "{}", timestamp);
+        }
+    }
+
+    #[test]
+    fn filename_timestamps_are_written_with_nine_fraction_digits() {
+        let cases = [
+            (at(0, 0), "19700101000000000000000"),
+            (at(946_684_800, 0), "20000101000000000000000"),
+            (at(1_795_009_530, 0), "20261118134530000000000"),
+            (at(1_795_009_530, 1), "20261118134530000000001"),
+            (at(1_795_009_530, 7_000), "20261118134530000007000"),
+            (at(1_795_009_530, 100_000_000), "20261118134530100000000"),
+            (at(1_795_009_530, 123_456_789), "20261118134530123456789"),
+            (at(1_795_009_530, 999_999_999), "20261118134530999999999"),
+        ];
+
+        for (timestamp, expected) in cases {
+            let formatted = filename_timestamp(timestamp);
+            assert_eq!(formatted, expected);
+
+            let path = PathBuf::from(format!("retry-{}-123456789.json", formatted));
+            assert_eq!(
+                decode_timestamped_filename(&path),
+                u128::try_from(timestamp.as_unix_nanos()).ok()
+            );
+        }
+    }
+
+    #[test]
+    fn filenames_that_dont_match_the_retry_format_are_ignored() {
+        for filename in [
+            "other-20261118134530000000000-123456789.json",
+            "retry-20261118134530000000000-nonce.json",
+            "retry-20261118134530000000000.json",
+            "retry--123456789.json",
+            "retry-2026111813453000000000a-123456789.json",
+            // February 30th.
+            "retry-20260230000000000000000-123456789.json",
+        ] {
+            assert_eq!(decode_timestamped_filename(Path::new(filename)), None, "{}", filename);
+        }
+    }
+
+    #[tokio::test]
+    async fn existing_entries_are_ordered_by_their_filename_timestamp() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        let mut expected = Vec::new();
+        for (timestamp, value) in FILENAME_TIMESTAMPS.iter().rev() {
+            let path = root_path.join(format!("retry-{}-123456789.json", timestamp));
+            tokio::fs::write(&path, b"{}").await.unwrap();
+            expected.push(*value);
+        }
+        expected.sort_unstable();
+
+        let queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024 * 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            max_age_days: 10,
+        })
+        .await
+        .expect("should not fail to create persisted queue");
+
+        let actual = queue.entries.iter().map(|entry| entry.timestamp).collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn filename_timestamps_that_no_version_writes_are_ignored() {
+        // chrono, which earlier versions used, read some of these differently: fewer than nine fraction digits as
+        // whole nanoseconds, a leap second as the following second, and a date before the epoch not at all (it
+        // panicked or overflowed).
+        for timestamp in [
+            "2026111813453012345678",
+            "202611181345301234567890",
+            "20161231235960000000000",
+            "19691231235959000000000",
+            " 2026111813453000000000",
+            "+2026111813453000000000",
+        ] {
+            let path = PathBuf::from(format!("retry-{}-123456789.json", timestamp));
+            assert_eq!(decode_timestamped_filename(&path), None, "{}", timestamp);
+        }
+    }
+
+    #[tokio::test]
+    async fn files_dated_before_the_epoch_are_left_alone() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+        let before_epoch = root_path.join("retry-19691231235959000000000-123456789.json");
+        tokio::fs::write(&before_epoch, b"{}").await.unwrap();
+        tokio::fs::write(root_path.join("retry-20000101000000000000000-123456789.json"), b"{}")
+            .await
+            .unwrap();
+
+        let queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024 * 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            max_age_days: 10,
+        })
+        .await
+        .expect("should not fail to create persisted queue");
+        assert_eq!(queue.len(), 1);
+
+        let removed = remove_outdated_retry_files(&root_path, 0)
+            .await
+            .expect("should not fail to remove outdated files");
+        assert_eq!(removed, 1);
+        assert!(before_epoch.exists());
+    }
+
+    proptest::proptest! {
+        #[test]
+        // Up to 9999-12-30T22:00:00.999999999Z, the latest `Timestamp`.
+        fn property_test_filename_timestamps_round_trip(nanos in 0..=253_402_207_200_999_999_999i128) {
+            let timestamp = Timestamp::from_unix_nanos(nanos).expect("timestamp should be valid");
+            let formatted = filename_timestamp(timestamp);
+
+            proptest::prop_assert_eq!(formatted.len(), 23);
+            proptest::prop_assert!(formatted.bytes().all(|b| b.is_ascii_digit()));
+            let path = PathBuf::from(format!("retry-{}-123456789.json", formatted));
+            proptest::prop_assert_eq!(decode_timestamped_filename(&path), u128::try_from(nanos).ok());
+        }
     }
 }
