@@ -129,7 +129,7 @@ where
     }
 }
 
-impl std::fmt::Write for StringBuilder {
+impl<I> std::fmt::Write for StringBuilder<I> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         match self.push_str(s) {
             Some(()) => Ok(()),

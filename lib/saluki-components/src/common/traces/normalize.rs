@@ -1,6 +1,8 @@
-/// Normalization functions for OTLP traces
+//! Trace normalization helpers, matching the Datadog Agent's trace normalization.
+
 use std::borrow::Cow;
 use std::char;
+use std::fmt::Write as _;
 
 use saluki_common::strings::StringBuilder;
 use stringtheory::MetaString;
@@ -33,7 +35,9 @@ const ELLIPSIS: &str = "...";
 const STRUCTURED_SUFFIXES: [&str; 3] = [".json", ".msgpack", ".protobuf"];
 
 // default service name we assign a span if it's missing and we have no reasonable fallback
-const DEFAULT_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
+const DEFAULT_OTLP_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
+// default service name the trace-agent assigns a Datadog span with no service and no tracer language
+const DEFAULT_DD_SERVICE_NAME: &str = "unnamed-service";
 // default span name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_SPAN_NAME: MetaString = MetaString::from_static("unnamed_operation");
 
@@ -75,32 +79,64 @@ static IS_VALID_ASCII_TAG_CHAR_LOOKUP: [bool; 256] = {
     lookup
 };
 
+/// Why a value was modified during normalization, as the trace-agent reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NormalizeError {
+    /// The input was empty and was replaced with a fallback.
+    Empty,
+    /// The input exceeded its maximum length and was truncated.
+    TooLong,
+    /// Nothing valid survived normalization, so the input was replaced with a fallback.
+    Invalid,
+}
+
 /// Normalizes a span name.
 ///
 /// This function truncates the name to `MAX_NAME_LEN`, replaces invalid characters with underscores,
 /// and handles consecutive underscores and underscores after periods. An already-normalized name is
 /// returned unchanged, without allocating.
-pub fn normalize_name(mut name: MetaString) -> MetaString {
+pub fn normalize_name(name: MetaString) -> MetaString {
+    normalize_name_with_reason(name).0
+}
+
+/// Normalizes a span name, also returning why it was modified, as the trace-agent does.
+///
+/// Character repairs alone are not reported: only an empty name, a truncation, or a name with no alphabetic
+/// character (replaced by the default span name) are.
+pub fn normalize_name_with_reason(mut name: MetaString) -> (MetaString, Option<NormalizeError>) {
     if name.is_empty() {
         debug!(
             "normalize_name: name is empty, returning default span name: {}",
             DEFAULT_SPAN_NAME
         );
-        return DEFAULT_SPAN_NAME.clone();
+        return (DEFAULT_SPAN_NAME.clone(), Some(NormalizeError::Empty));
     }
+    let mut reason = None;
     if name.len() > MAX_NAME_LEN {
         name = MetaString::from(truncate_utf8(&name, MAX_NAME_LEN));
+        reason = Some(NormalizeError::TooLong);
         debug!("normalize_name: name is too long,truncated name: {}", name);
     }
 
     // Fast path: already normalized, so return the input without allocating.
     if is_valid_metric_name(&name) {
-        return name;
+        return (name, reason);
     }
 
+    match normalize_name_slow(name) {
+        Some(name) => (name, reason),
+        // Nothing valid survives, which overrides a truncation.
+        None => (DEFAULT_SPAN_NAME.clone(), Some(NormalizeError::Invalid)),
+    }
+}
+
+/// Repairs a non-empty name that failed the fast-path check.
+///
+/// Returns `None` when the name has no alphabetic character, so nothing valid survives.
+fn normalize_name_slow(name: MetaString) -> Option<MetaString> {
     // Normalize the name according to the following rules:
     // 1. Skip non-alphabetic characters at the start.
-    // 2. Replace non-alphanumeric characters (except '.' and '_') with '_'.
+    // 2. Replace non-alphanumeric characters (except '.') with '_'.
     // 3. Avoid consecutive underscores.
     // 4. Avoid underscores after periods.
     // 5. Avoid trailing underscores.
@@ -113,13 +149,13 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
     }
 
     if i >= name_bytes.len() {
-        return DEFAULT_SPAN_NAME.clone();
+        return None;
     }
     if is_valid_metric_name(&name.as_ref()[i..]) {
         if name.ends_with('_') {
-            return MetaString::from(&name.as_ref()[i..(name.len() - 1)]);
+            return Some(MetaString::from(&name.as_ref()[i..(name.len() - 1)]));
         }
-        return MetaString::from(&name.as_ref()[i..]);
+        return Some(MetaString::from(&name.as_ref()[i..]));
     }
     let mut prev_char = '\0';
 
@@ -133,12 +169,10 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
             if prev_char == '_' {
                 // Overwrite underscore with period
                 normalized.pop();
-                normalized.push('.');
-                prev_char = '.';
-            } else if prev_char != '.' {
-                normalized.push('.');
-                prev_char = '.';
             }
+            // Consecutive periods are kept, as the trace-agent does.
+            normalized.push('.');
+            prev_char = '.';
         } else {
             // Treat as underscore
             if prev_char != '.' && prev_char != '_' {
@@ -153,40 +187,72 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
     }
 
     if normalized.is_empty() {
-        return DEFAULT_SPAN_NAME.clone();
+        return None;
     }
 
-    MetaString::from(normalized)
+    Some(MetaString::from(normalized))
 }
 
-/// Normalizes a service name into `out`.
+/// Normalizes an OTLP service name into `out`, substituting `otlpresourcenoservicename` when nothing survives.
 ///
 /// The output is always written from a cleared buffer.
-pub(super) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I>) {
+pub(crate) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I>) {
+    let _ = normalize_service_value_into(service, out);
+    if out.as_str().is_empty() {
+        let _ = out.push_str(DEFAULT_OTLP_SERVICE_NAME.as_ref());
+    }
+}
+
+/// Normalizes a Datadog span service name into `out`, as the trace-agent does.
+///
+/// When the service is empty, or nothing valid survives normalization, it's replaced with the language's
+/// fallback: `unnamed-<lang>-service`, or `unnamed-service` when `lang` is empty. Returns why the service was
+/// modified, if it was. The output is always written from a cleared buffer.
+pub(crate) fn normalize_service_with_lang_into<I>(
+    service: &str, lang: &str, out: &mut StringBuilder<I>,
+) -> Option<NormalizeError> {
+    let reason = normalize_service_value_into(service, out);
+    if out.as_str().is_empty() {
+        if lang.is_empty() {
+            let _ = out.push_str(DEFAULT_DD_SERVICE_NAME);
+        } else {
+            let _ = write!(out, "unnamed-{lang}-service");
+        }
+    }
+    reason
+}
+
+/// Truncates and normalizes a service name as a tag value into `out`, leaving `out` empty when the service is
+/// empty or nothing valid survives.
+fn normalize_service_value_into<I>(service: &str, out: &mut StringBuilder<I>) -> Option<NormalizeError> {
     out.clear();
 
-    // TODO: add fall back service for languages
-    // for example, https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize.go#L124
     if service.is_empty() {
-        let _ = out.push_str(DEFAULT_SERVICE_NAME.as_ref());
-        return;
+        return Some(NormalizeError::Empty);
     }
 
+    let reason = (service.len() > MAX_SERVICE_LEN).then_some(NormalizeError::TooLong);
     let truncated = truncate_utf8_str(service, MAX_SERVICE_LEN);
     if is_normalized_ascii_tag(truncated, false) {
         let _ = out.push_str(truncated);
-        return;
+        return reason;
     }
     normalize_unchecked(truncated, false, out);
 
     if out.as_str().is_empty() {
-        let _ = out.push_str(DEFAULT_SERVICE_NAME.as_ref());
+        return Some(NormalizeError::Invalid);
     }
+    reason
+}
+
+/// Returns whether `code` is a valid HTTP status code, between 100 and 599.
+pub(crate) fn is_valid_status_code(code: &str) -> bool {
+    code.parse::<u64>().is_ok_and(|code| (100..600).contains(&code))
 }
 
 /// How a peer service name changed while being normalized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PeerServiceChange {
+pub(crate) enum PeerServiceChange {
     /// Value already conformed.
     Unchanged,
     /// Value exceeded `MAX_SERVICE_LEN` and was truncated.
@@ -199,7 +265,7 @@ pub(super) enum PeerServiceChange {
 ///
 /// The value is capped at `MAX_SERVICE_LEN` and normalized as a tag value; unlike a span's
 /// service name, nothing is substituted when normalization empties it.
-pub(super) fn normalize_peer_service_into<I>(value: &str, out: &mut StringBuilder<I>) -> PeerServiceChange {
+pub(crate) fn normalize_peer_service_into<I>(value: &str, out: &mut StringBuilder<I>) -> PeerServiceChange {
     out.clear();
 
     if value.is_empty() {
@@ -240,7 +306,7 @@ pub(crate) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut Strin
 ///
 /// Differs from normalizing a tag value by dropping leading characters that
 /// can't start a tag, such as digits.
-pub(super) fn normalize_tag_into<I>(value: &str, out: &mut StringBuilder<I>) {
+pub(crate) fn normalize_tag_into<I>(value: &str, out: &mut StringBuilder<I>) {
     out.clear();
     normalize_unchecked(value, true, out);
 }
@@ -249,7 +315,7 @@ pub(super) fn normalize_tag_into<I>(value: &str, out: &mut StringBuilder<I>) {
 ///
 /// Use this when extending an existing normalized prefix with a value already known to
 /// require normalization.
-pub(super) fn normalize_tag_value_append_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
+pub(crate) fn normalize_tag_value_append_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
     if value.is_empty() {
         return;
     }
@@ -322,7 +388,7 @@ fn normalize_unchecked<I>(value: &str, remove_digit_start_char: bool, out: &mut 
                     break;
                 }
                 continue;
-            } else if curr_char.is_ascii_digit() || matches!(curr_char, '.' | '/' | '-') {
+            } else if is_decimal_digit(curr_char) || matches!(curr_char, '.' | '/' | '-') {
                 if pending_underscore {
                     let _ = out.push('_');
                     pending_underscore = false;
@@ -342,6 +408,94 @@ fn normalize_unchecked<I>(value: &str, remove_digit_start_char: bool, out: &mut 
         }
     }
     // Trailing illegal chars (pending_underscore=true) are intentionally dropped.
+}
+
+/// Non-ASCII ranges of the Unicode decimal digit category (`Nd`), as of Unicode 15.0.0.
+///
+/// The trace-agent keeps any `Nd` character in a tag value, through Go's `unicode.IsDigit`. These ranges were
+/// generated from that function in Go 1.26, so they follow the Unicode version the trace-agent is built with.
+const NON_ASCII_DECIMAL_DIGITS: &[(char, char)] = &[
+    ('\u{0660}', '\u{0669}'),
+    ('\u{06F0}', '\u{06F9}'),
+    ('\u{07C0}', '\u{07C9}'),
+    ('\u{0966}', '\u{096F}'),
+    ('\u{09E6}', '\u{09EF}'),
+    ('\u{0A66}', '\u{0A6F}'),
+    ('\u{0AE6}', '\u{0AEF}'),
+    ('\u{0B66}', '\u{0B6F}'),
+    ('\u{0BE6}', '\u{0BEF}'),
+    ('\u{0C66}', '\u{0C6F}'),
+    ('\u{0CE6}', '\u{0CEF}'),
+    ('\u{0D66}', '\u{0D6F}'),
+    ('\u{0DE6}', '\u{0DEF}'),
+    ('\u{0E50}', '\u{0E59}'),
+    ('\u{0ED0}', '\u{0ED9}'),
+    ('\u{0F20}', '\u{0F29}'),
+    ('\u{1040}', '\u{1049}'),
+    ('\u{1090}', '\u{1099}'),
+    ('\u{17E0}', '\u{17E9}'),
+    ('\u{1810}', '\u{1819}'),
+    ('\u{1946}', '\u{194F}'),
+    ('\u{19D0}', '\u{19D9}'),
+    ('\u{1A80}', '\u{1A89}'),
+    ('\u{1A90}', '\u{1A99}'),
+    ('\u{1B50}', '\u{1B59}'),
+    ('\u{1BB0}', '\u{1BB9}'),
+    ('\u{1C40}', '\u{1C49}'),
+    ('\u{1C50}', '\u{1C59}'),
+    ('\u{A620}', '\u{A629}'),
+    ('\u{A8D0}', '\u{A8D9}'),
+    ('\u{A900}', '\u{A909}'),
+    ('\u{A9D0}', '\u{A9D9}'),
+    ('\u{A9F0}', '\u{A9F9}'),
+    ('\u{AA50}', '\u{AA59}'),
+    ('\u{ABF0}', '\u{ABF9}'),
+    ('\u{FF10}', '\u{FF19}'),
+    ('\u{104A0}', '\u{104A9}'),
+    ('\u{10D30}', '\u{10D39}'),
+    ('\u{11066}', '\u{1106F}'),
+    ('\u{110F0}', '\u{110F9}'),
+    ('\u{11136}', '\u{1113F}'),
+    ('\u{111D0}', '\u{111D9}'),
+    ('\u{112F0}', '\u{112F9}'),
+    ('\u{11450}', '\u{11459}'),
+    ('\u{114D0}', '\u{114D9}'),
+    ('\u{11650}', '\u{11659}'),
+    ('\u{116C0}', '\u{116C9}'),
+    ('\u{11730}', '\u{11739}'),
+    ('\u{118E0}', '\u{118E9}'),
+    ('\u{11950}', '\u{11959}'),
+    ('\u{11C50}', '\u{11C59}'),
+    ('\u{11D50}', '\u{11D59}'),
+    ('\u{11DA0}', '\u{11DA9}'),
+    ('\u{11F50}', '\u{11F59}'),
+    ('\u{16A60}', '\u{16A69}'),
+    ('\u{16AC0}', '\u{16AC9}'),
+    ('\u{16B50}', '\u{16B59}'),
+    ('\u{1D7CE}', '\u{1D7FF}'),
+    ('\u{1E140}', '\u{1E149}'),
+    ('\u{1E2F0}', '\u{1E2F9}'),
+    ('\u{1E4F0}', '\u{1E4F9}'),
+    ('\u{1E950}', '\u{1E959}'),
+    ('\u{1FBF0}', '\u{1FBF9}'),
+];
+
+/// Returns whether `c` is a Unicode decimal digit, as Go's `unicode.IsDigit` does.
+fn is_decimal_digit(c: char) -> bool {
+    if c.is_ascii() {
+        return c.is_ascii_digit();
+    }
+    NON_ASCII_DECIMAL_DIGITS
+        .binary_search_by(|&(start, end)| {
+            if end < c {
+                std::cmp::Ordering::Less
+            } else if start > c {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 fn is_valid_metric_name(name: &str) -> bool {
@@ -441,7 +595,7 @@ const fn is_valid_ascii_tag_char(c: char) -> bool {
 /// zero for `start > i64::MAX`, making the comparison `duration > 0` and zeroing any non-zero
 /// duration—the opposite of the reference for that boundary. See the regression test at the boundary
 /// below.
-pub(super) fn validate_and_fix_duration(start: u64, duration: u64) -> u64 {
+pub(crate) fn validate_and_fix_duration(start: u64, duration: u64) -> u64 {
     if duration > MAX_START_PLUS_DURATION.wrapping_sub(start) {
         0
     } else {
@@ -452,7 +606,7 @@ pub(super) fn validate_and_fix_duration(start: u64, duration: u64) -> u64 {
 /// Mirrors `validateAndFixStartTimeV1` (`pkg/trace/agent/normalizer.go`): a start timestamp before the
 /// year-2000 floor is replaced with the receive time minus `duration`, clamped to the receive time if
 /// that subtraction would go negative.
-pub(super) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
+pub(crate) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
     if start >= YEAR_2000_NANOSEC_TS {
         return start;
     }
@@ -468,7 +622,7 @@ pub(super) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
 }
 
 /// Truncate string to `max_len` bytes, respecting UTF-8 boundaries.
-pub(super) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
+pub(crate) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
     truncate_utf8_str(s, max_len)
 }
 
@@ -499,7 +653,7 @@ pub fn needs_name_normalization(name: &str) -> bool {
     name.is_empty() || name.len() > MAX_NAME_LEN || !is_valid_metric_name(name)
 }
 
-fn truncate_utf8_str(s: &str, max_len: usize) -> &str {
+pub(crate) fn truncate_utf8_str(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         return s;
     }
@@ -555,6 +709,14 @@ mod tests {
             (MetaString::from("$#weird_starting"), MetaString::from("weird_starting")),
             (MetaString::from("allowed:c0l0ns"), MetaString::from("allowed:c0l0ns")),
             (MetaString::from("1love"), MetaString::from("love")),
+            // Non-ASCII decimal digits are kept, other numeric characters are not, as in Go's `unicode.IsDigit`.
+            (MetaString::from("api\u{0662}"), MetaString::from("api\u{0662}")),
+            (MetaString::from("a\u{FF11}b"), MetaString::from("a\u{FF11}b")),
+            (
+                MetaString::from("x\u{1D7CE}\u{1D7FF}"),
+                MetaString::from("x\u{1D7CE}\u{1D7FF}"),
+            ),
+            (MetaString::from("api\u{00B2}"), MetaString::from("api")),
             (MetaString::from("ünicöde"), MetaString::from("ünicöde")),
             (MetaString::from("ünicöde:metäl"), MetaString::from("ünicöde:metäl")),
             (
@@ -643,6 +805,9 @@ mod tests {
                 ),
             ),
             (MetaString::from("double..point"), MetaString::from("double..point")),
+            // Consecutive periods survive a repair too.
+            (MetaString::from("http..request!"), MetaString::from("http..request")),
+            (MetaString::from("a_..b!"), MetaString::from("a..b")),
             (
                 MetaString::from("other_^.character^^_than_underscore"),
                 MetaString::from("other.character_than_underscore"),
@@ -677,7 +842,7 @@ mod tests {
         }
 
         normalize_service_into("", &mut sb);
-        assert_eq!(sb.as_str(), DEFAULT_SERVICE_NAME.as_ref());
+        assert_eq!(sb.as_str(), DEFAULT_OTLP_SERVICE_NAME.as_ref());
     }
 
     fn base_service_cases() -> Vec<(MetaString, MetaString)> {

@@ -46,11 +46,11 @@ use crate::common::datadog::{
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, KEY_ANALYZED_SPANS,
     TAG_DECISION_MAKER,
 };
-use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::common::otlp::util::{
     attributes_to_source, extract_trace_container_tags, Source as OtlpSource, SourceKind as OtlpSourceKind,
     KEY_DATADOG_CONTAINER_TAGS,
 };
+use crate::common::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::config::AgentEnv;
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";

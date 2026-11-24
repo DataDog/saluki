@@ -425,9 +425,19 @@ impl Span {
         &self.service
     }
 
+    /// Sets the service name.
+    pub fn set_service(&mut self, service: impl Into<MetaString>) {
+        self.service = service.into();
+    }
+
     /// Returns the operation name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Sets the operation name.
+    pub fn set_name(&mut self, name: impl Into<MetaString>) {
+        self.name = name.into();
     }
 
     /// Returns the resource name.
@@ -450,14 +460,29 @@ impl Span {
         self.parent_id
     }
 
+    /// Sets the parent span identifier.
+    pub fn set_parent_id(&mut self, parent_id: u64) {
+        self.parent_id = parent_id;
+    }
+
     /// Returns the start timestamp.
     pub fn start(&self) -> u64 {
         self.start
     }
 
+    /// Sets the start timestamp.
+    pub fn set_start(&mut self, start: u64) {
+        self.start = start;
+    }
+
     /// Returns the span duration.
     pub fn duration(&self) -> u64 {
         self.duration
+    }
+
+    /// Sets the span duration.
+    pub fn set_duration(&mut self, duration: u64) {
+        self.duration = duration;
     }
 
     /// Returns the error flag.
@@ -468,6 +493,11 @@ impl Span {
     /// Returns the span type.
     pub fn span_type(&self) -> &str {
         &self.span_type
+    }
+
+    /// Sets the span type.
+    pub fn set_span_type(&mut self, span_type: impl Into<MetaString>) {
+        self.span_type = span_type.into();
     }
 
     /// Returns the span links collection.
@@ -572,6 +602,11 @@ impl SpanLink {
     /// Returns the attributes map.
     pub fn attributes(&self) -> &FastHashMap<MetaString, AttributeValue> {
         &self.attributes
+    }
+
+    /// Returns a mutable reference to the attributes map.
+    pub fn attributes_mut(&mut self) -> &mut FastHashMap<MetaString, AttributeValue> {
+        &mut self.attributes
     }
 
     /// Returns the W3C tracestate value.

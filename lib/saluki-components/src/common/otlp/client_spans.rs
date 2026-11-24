@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use saluki_common::strings::StringBuilder;
 use saluki_metrics::{Counter, MetricsBuilder};
 
-use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
+use crate::common::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 
 /// Prefix on the SDK version in `tracer_version`, to tell OTLP clients from Datadog tracers.
 const TRACER_VERSION_PREFIX: &str = "otlp-";

@@ -36,8 +36,8 @@ use tracing::{debug, error};
 
 use crate::common::datadog::get_tracer_hostname;
 use crate::common::datadog::version_data::ContainerVersionData;
-use crate::common::otlp::traces::normalize::normalized_tag_value;
 use crate::common::otlp::util::extract_trace_container_tags;
+use crate::common::traces::normalize::normalized_tag_value;
 use crate::config::AgentEnv;
 
 mod aggregation;
