@@ -27,6 +27,9 @@ pub enum Pipeline {
     /// Internal trace processing. Active when OTLP is enabled and proxy/relay mode (which uses the
     /// core Agent for transport) is off.
     Traces,
+    /// ADP's logs pipeline (encoding and forwarding). Active when ADP handles logs itself: native
+    /// OTLP logs, rather than relaying them to the core Agent, or check logs.
+    Logs,
 }
 
 /// Which pipelines a config key affects.

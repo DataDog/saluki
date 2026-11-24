@@ -61,8 +61,8 @@ struct HttpBackend {
     ///
     /// For a Unix socket target, `uri` only carries the request path, so this names the socket as well.
     display_target: String,
-    /// Headers sent with every request, which depend on the payload type.
-    headers: &'static [(&'static str, &'static str)],
+    /// Headers sent with every request, which depend on the payload type and the configured `content_type`.
+    headers: Vec<(String, String)>,
 }
 
 /// HTTP client over either TCP or a Unix domain socket.
@@ -151,11 +151,11 @@ impl TargetSender {
             }
             TargetAddress::UnixDatagram(path) => create_unix_datagram_backend(path)?,
             TargetAddress::Unix(path) => match &config.http_path {
-                Some(http_path) => create_unix_http_client(path, http_path, config.corpus.payload.http_headers())?,
+                Some(http_path) => create_unix_http_client(path, http_path, config.http_headers())?,
                 None => create_unix_stream_backend(path)?,
             },
             TargetAddress::Grpc(url) => create_grpc_client(url)?,
-            TargetAddress::Http(url) => create_http_client(url, config.corpus.payload.http_headers())?,
+            TargetAddress::Http(url) => create_http_client(url, config.http_headers())?,
         };
 
         Ok(Self { backend, runtime })
@@ -404,7 +404,7 @@ fn create_grpc_client_with_backoff(
 ///
 /// Returns an error if the URL is invalid or the runtime can't be created.
 fn create_http_client(
-    url: &str, headers: &'static [(&'static str, &'static str)],
+    url: &str, headers: Vec<(String, String)>,
 ) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
     let uri = url
         .parse::<Uri>()
@@ -430,7 +430,7 @@ fn create_http_client(
 /// Returns an error if the path doesn't form a valid URI or the runtime can't be created.
 #[cfg(unix)]
 fn create_unix_http_client(
-    socket_path: &Path, http_path: &str, headers: &'static [(&'static str, &'static str)],
+    socket_path: &Path, http_path: &str, headers: Vec<(String, String)>,
 ) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
     // The host is never resolved, but HTTP/1.1 requires one: use `localhost`, as tracing libraries do over UDS.
     let uri = format!("http://localhost{}", http_path)
@@ -453,7 +453,7 @@ fn create_unix_http_client(
 
 #[cfg(not(unix))]
 fn create_unix_http_client(
-    socket_path: &Path, _http_path: &str, _headers: &'static [(&'static str, &'static str)],
+    socket_path: &Path, _http_path: &str, _headers: Vec<(String, String)>,
 ) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
     Err(saluki_error::generic_error!(
         "Unix stream targets are not supported on this platform: '{}'.",
@@ -513,8 +513,8 @@ async fn probe_http_target(backend: &HttpBackend) -> Result<(), String> {
 
 async fn try_http_post(backend: &HttpBackend, payload: &[u8]) -> Result<(), HttpSendError> {
     let mut builder = Request::builder().method(Method::POST).uri(backend.uri.clone());
-    for (name, value) in backend.headers {
-        builder = builder.header(*name, *value);
+    for (name, value) in &backend.headers {
+        builder = builder.header(name, value);
     }
     let request = builder
         .body(Full::new(Bytes::copy_from_slice(payload)))
@@ -639,6 +639,14 @@ mod tests {
     #[cfg(unix)]
     use super::create_unix_http_client;
     use super::{create_grpc_client_with_backoff, create_http_client, retry_backoff, TargetSender};
+    use crate::config::Config;
+
+    fn headers(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
 
     /// Accepts a single HTTP/1.1 request, answers it with `response`, and returns the request head and body.
     fn serve_one_request(listener: TcpListener, response: &'static str) -> thread::JoinHandle<(String, Vec<u8>)> {
@@ -683,16 +691,45 @@ mod tests {
         (head, body)
     }
 
-    fn http_sender(listener: &TcpListener, headers: &'static [(&'static str, &'static str)]) -> TargetSender {
+    fn http_sender(listener: &TcpListener, headers: Vec<(String, String)>) -> TargetSender {
         let url = format!("http://{}/v0.4/traces", listener.local_addr().unwrap());
         let (backend, runtime) = create_http_client(&url, headers).unwrap();
         TargetSender { backend, runtime }
     }
 
+    /// Sends one payload from a sender built from a configuration, and returns the head of the request it posted.
+    ///
+    /// `extra` is additional top-level settings, and `payload` is a single-line `corpus.payload` entry.
+    fn head_posted_for_config(extra: &str, payload: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let config: Config = serde_saphyr::from_str(&format!(
+            r#"
+seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "http://{}/v1/metrics"
+{extra}
+volume: 1
+corpus:
+  size: 1
+  payload:
+    {payload}
+"#,
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        config.corpus.validate().unwrap();
+        let mut sender = TargetSender::from_config(&config).unwrap();
+        let server = serve_one_request(listener, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}");
+
+        sender.send(b"payload").unwrap();
+
+        server.join().unwrap().0
+    }
+
     #[test]
     fn http_target_posts_the_payload_with_its_headers() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut sender = http_sender(&listener, &[("content-type", "application/msgpack")]);
+        let mut sender = http_sender(&listener, headers(&[("content-type", "application/msgpack")]));
         let server = serve_one_request(listener, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}");
 
         assert_eq!(sender.send(b"payload").unwrap(), 7);
@@ -709,14 +746,80 @@ mod tests {
         assert_eq!(body, b"payload");
     }
 
+    #[test]
+    fn http_target_posts_otlp_payloads_as_protobuf() {
+        for payload in [
+            "opentelemetry_metrics: {}",
+            "opentelemetry_traces: { services: [{ name: svc, service_type: http, scope_name: scope, operations: \
+             [{ id: op, method: GET, route: /r }] }] }",
+            "opentelemetry_logs: {}",
+        ] {
+            let head = head_posted_for_config("", payload);
+
+            assert!(
+                head.contains("content-type: application/x-protobuf\r\n"),
+                "unexpected request head for {payload}: {head}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_target_posts_a_static_payload_as_octet_stream_by_default() {
+        let head = head_posted_for_config("", r#"static_base64: "cGF5bG9hZA==""#);
+
+        assert!(
+            head.contains("content-type: application/octet-stream\r\n"),
+            "unexpected request head: {head}"
+        );
+    }
+
+    #[test]
+    fn http_target_posts_with_the_configured_content_type() {
+        let head = head_posted_for_config(
+            r#"content_type: "application/x-protobuf""#,
+            r#"static_base64: "cGF5bG9hZA==""#,
+        );
+
+        assert!(
+            head.contains("content-type: application/x-protobuf\r\n"),
+            "unexpected request head: {head}"
+        );
+        assert_eq!(
+            head.matches("content-type:").count(),
+            1,
+            "the content type should be sent once: {head}"
+        );
+    }
+
+    #[test]
+    fn http_target_posts_datadog_traces_as_msgpack() {
+        let head = head_posted_for_config(
+            "",
+            "datadog_traces: { v0.4: { contexts: { inclusive: { min: 1, max: 2 } } } }",
+        );
+
+        assert!(
+            head.contains("content-type: application/msgpack\r\n"),
+            "unexpected request head: {head}"
+        );
+        assert!(
+            head.contains("datadog-meta-lang: millstone\r\n"),
+            "unexpected request head: {head}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn unix_http_target_posts_the_payload_with_its_headers() {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("apm.socket");
         let listener = UnixListener::bind(&socket_path).unwrap();
-        let (backend, runtime) =
-            create_unix_http_client(&socket_path, "/v0.4/traces", &[("content-type", "application/msgpack")]).unwrap();
+        let (backend, runtime) = create_unix_http_client(
+            &socket_path,
+            "/v0.4/traces",
+            headers(&[("content-type", "application/msgpack")]),
+        )
+        .unwrap();
         let mut sender = TargetSender { backend, runtime };
         let server = serve_one_unix_request(listener, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}");
 
@@ -741,7 +844,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("apm.socket");
         let listener = UnixListener::bind(&socket_path).unwrap();
-        let (backend, runtime) = create_unix_http_client(&socket_path, "/v0.4/traces", &[]).unwrap();
+        let (backend, runtime) = create_unix_http_client(&socket_path, "/v0.4/traces", Vec::new()).unwrap();
         let sender = TargetSender { backend, runtime };
 
         // Like a proxy whose upstream isn't up yet, then is.
@@ -768,7 +871,7 @@ mod tests {
     fn gives_up_on_a_unix_http_target_that_never_becomes_ready() {
         let dir = tempfile::tempdir().unwrap();
         let (backend, runtime) =
-            create_unix_http_client(&dir.path().join("missing.socket"), "/v0.4/traces", &[]).unwrap();
+            create_unix_http_client(&dir.path().join("missing.socket"), "/v0.4/traces", Vec::new()).unwrap();
         let sender = TargetSender { backend, runtime };
 
         let error = sender
@@ -784,7 +887,7 @@ mod tests {
         // The listener is never accepted from, but the kernel still completes the handshake, so the probe connects and
         // then waits for a response that never comes.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let sender = http_sender(&listener, &[]);
+        let sender = http_sender(&listener, Vec::new());
 
         let started = std::time::Instant::now();
         let error = sender
@@ -802,7 +905,7 @@ mod tests {
     #[test]
     fn http_target_does_not_retry_a_client_error() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut sender = http_sender(&listener, &[("content-type", "application/octet-stream")]);
+        let mut sender = http_sender(&listener, headers(&[("content-type", "application/octet-stream")]));
         let server = serve_one_request(listener, "HTTP/1.1 400 Bad Request\r\ncontent-length: 3\r\n\r\nbad");
 
         let error = sender.send(b"payload").unwrap_err().to_string();

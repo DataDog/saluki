@@ -10,8 +10,8 @@ use bollard::{
     container::LogOutput,
     errors::Error,
     models::{
-        ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HostConfig, Mount, MountType,
-        NetworkingConfig, PortBinding,
+        ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HostConfig, HostConfigCgroupnsModeEnum, Mount,
+        MountType, NetworkingConfig, PortBinding,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -25,8 +25,8 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::time::{timeout_at, Instant};
 
 use crate::{
-    driver::with_transient_error_retry,
     removal::{bounded, RequestError},
+    retry::with_transient_error_retry,
     scope::CaseScope,
 };
 
@@ -47,6 +47,8 @@ pub struct ContainerSpec {
     published_ports: Vec<u16>,
     mounts: Vec<Mount>,
     sysctls: HashMap<String, String>,
+    host_pid: bool,
+    host_cgroup_namespace: bool,
 }
 
 impl ContainerSpec {
@@ -97,6 +99,18 @@ impl ContainerSpec {
     /// Sets a kernel parameter in the container's namespaces, such as `net.ipv4.ip_local_port_range`.
     pub fn with_sysctl(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.sysctls.insert(key.into(), value.into());
+        self
+    }
+
+    /// Runs the container in the host's PID namespace.
+    pub fn with_host_pid(mut self) -> Self {
+        self.host_pid = true;
+        self
+    }
+
+    /// Runs the container in the host's cgroup namespace.
+    pub fn with_host_cgroup_namespace(mut self) -> Self {
+        self.host_cgroup_namespace = true;
         self
     }
 }
@@ -206,6 +220,8 @@ impl CaseScope {
                 network_mode: Some(network.clone()),
                 port_bindings: Some(port_bindings),
                 sysctls: (!spec.sysctls.is_empty()).then_some(spec.sysctls),
+                pid_mode: spec.host_pid.then(|| "host".to_string()),
+                cgroupns_mode: spec.host_cgroup_namespace.then_some(HostConfigCgroupnsModeEnum::HOST),
                 ..Default::default()
             }),
             networking_config: Some(networking_config),
@@ -226,6 +242,27 @@ impl CaseScope {
 }
 
 impl Container {
+    /// Opens the container Docker already has under `name`, which belongs to no case scope: it has no case network, so
+    /// [`Self::status`] reports no address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Docker has no such container, or if `deadline` passes first.
+    pub async fn existing(docker: &Docker, name: &str, deadline: Instant) -> Result<Self, GenericError> {
+        let inspect = bounded(Some(deadline), docker.inspect_container(name, None))
+            .await
+            .map_err(|e| generic_error!("Failed to inspect container '{}': {}", name, e))?;
+        let id = inspect
+            .id
+            .ok_or_else(|| generic_error!("Docker reports no ID for container '{}'.", name))?;
+        Ok(Self {
+            docker: docker.clone(),
+            name: name.to_string(),
+            id,
+            network: String::new(),
+        })
+    }
+
     /// Returns the container's name.
     pub fn name(&self) -> &str {
         &self.name

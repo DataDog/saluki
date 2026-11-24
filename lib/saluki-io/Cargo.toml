@@ -17,7 +17,6 @@ async-compression = { workspace = true, features = ["gzip", "tokio", "zlib"] }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["tokio"] }
 bytes = { workspace = true }
-chrono = { workspace = true }
 fs4 = { workspace = true }
 futures = { workspace = true }
 h2 = { workspace = true }

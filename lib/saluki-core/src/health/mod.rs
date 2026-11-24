@@ -40,8 +40,7 @@ const DEFAULT_PROBE_BACKOFF_DUR: Duration = Duration::from_secs(1);
 /// A handle for updating the health of a component.
 pub struct Health {
     shared: Arc<SharedComponentState>,
-    request_rx: mpsc::Receiver<LivenessRequest>,
-    response_tx: mpsc::Sender<LivenessResponse>,
+    liveness: Option<LivenessChannel>,
     readiness_notify: Arc<Notify>,
 }
 
@@ -70,12 +69,93 @@ impl Health {
     ///
     /// This should generally be polled as part of a `select!` block to ensure it's checked alongside other
     /// asynchronous operations.
+    ///
+    /// For a component that runs in a topology, this method never resolves, because the topology answers liveness
+    /// probes around the run future of the component.
     pub async fn live(&mut self) {
-        // Simply wait for the health registry to send us a liveness probe, and if we receive one, we respond back to it
-        // immediately.
-        if let Some(request) = self.request_rx.recv().await {
-            let response = request.into_response();
-            let _ = self.response_tx.send(response).await;
+        match self.liveness.as_mut() {
+            Some(channel) => {
+                channel.respond().await;
+            }
+            None => std::future::pending().await,
+        }
+    }
+
+    /// Takes the liveness responder out of this handle.
+    ///
+    /// After this call, the returned [`LivenessResponder`] answers the liveness probes for the component, and
+    /// [`live`][Self::live] never resolves. The handle still controls readiness.
+    ///
+    /// Returns `None` if the responder was already taken.
+    pub(crate) fn take_liveness_responder(&mut self) -> Option<LivenessResponder> {
+        self.liveness.take().map(|channel| LivenessResponder { channel })
+    }
+}
+
+/// The channel pair that carries liveness probes to a component and its responses back to the registry.
+struct LivenessChannel {
+    request_rx: mpsc::Receiver<LivenessRequest>,
+    response_tx: mpsc::Sender<LivenessResponse>,
+}
+
+impl LivenessChannel {
+    /// Waits for a liveness probe and responds to it.
+    ///
+    /// Returns `false` if the registry closed the probe channel, and `true` otherwise.
+    async fn respond(&mut self) -> bool {
+        match self.request_rx.recv().await {
+            Some(request) => {
+                let response = request.into_response();
+                let _ = self.response_tx.send(response).await;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Answers liveness probes for a component while it runs a future.
+///
+/// A component that waits on an `.await` outside its `select!` loop can't answer probes. One example is a send into a
+/// full downstream channel. The component is not stuck. It waits for backpressure to clear, but the registry marks it
+/// as not live. `LivenessResponder` moves probe handling out of the component: [`drive`][Self::drive] answers probes
+/// whenever the task of the component runs, whatever the component is waiting on.
+///
+/// The component is live while its task is scheduled and polled. A probe still fails if the task blocks the thread, or
+/// if the runtime can't poll the task within the probe timeout.
+///
+/// # Missing
+///
+/// - Detection of a run future that waits forever. Such a component stays live, because its task still gets polled.
+///   Examples are two components that each wait on a full channel that the other one drains, and a forwarder that
+///   waits on a request that never completes. Catching these cases needs a progress-based signal, such as a check that
+///   a component with buffered input still sends events.
+pub(crate) struct LivenessResponder {
+    channel: LivenessChannel,
+}
+
+impl LivenessResponder {
+    /// Runs `fut` to completion and answers liveness probes while it runs.
+    ///
+    /// The probes and `fut` run in the same task. When `fut` completes, the responder is dropped, and the registry
+    /// marks the component as dead at the next probe.
+    pub(crate) async fn drive<F: Future>(mut self, fut: F) -> F::Output {
+        pin!(fut);
+
+        loop {
+            select! {
+                // Check probes first, so that each time the task wakes, a waiting probe is seen, even when `fut` uses
+                // up the cooperative budget of the task.
+                biased;
+
+                open = self.channel.respond() => {
+                    if !open {
+                        // The registry is gone, so there are no more probes to answer.
+                        return fut.await;
+                    }
+                },
+                output = &mut fut => return output,
+            }
         }
     }
 }
@@ -153,8 +233,10 @@ impl ComponentState {
 
         let handle = Health {
             shared,
-            request_rx,
-            response_tx,
+            liveness: Some(LivenessChannel {
+                request_rx,
+                response_tx,
+            }),
             readiness_notify,
         };
 
@@ -1221,5 +1303,75 @@ mod tests {
 
         // The component's health should have been reset to Unknown since its last response is stale:
         assert!(!component_live(&registry_state, COMPONENT_ID));
+    }
+
+    fn component_dead(state: &Mutex<RegistryState>, component_id: &str) -> bool {
+        let state = state.lock().unwrap();
+        let target = SubsystemIdentifier::from_dotted(component_id);
+        state
+            .component_state
+            .iter()
+            .find(|state| state.name == target)
+            .map(|state| state.health == HealthState::Dead)
+            .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn live_never_resolves_after_responder_is_taken() {
+        let (mut handle, mut registry, _registry_state, _runner_state) =
+            initialize_registry_with_component(COMPONENT_ID);
+        let _responder = handle.take_liveness_responder().expect("responder should be present");
+        assert!(handle.take_liveness_responder().is_none());
+
+        // Send a probe. The handle no longer owns the probe channel, so `live` must not answer it.
+        drive_until_quiesced(&mut registry);
+
+        let mut live_future = spawn(handle.live());
+        assert_pending!(live_future.poll());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn responder_answers_probes_while_driven_future_waits() {
+        let (mut handle, mut registry, registry_state, _runner_state) =
+            initialize_registry_with_component(COMPONENT_ID);
+        let responder = handle.take_liveness_responder().expect("responder should be present");
+
+        // The driven future waits on a channel that nothing sends to yet. This models a component that waits for room
+        // in a full downstream channel.
+        let (unblock_tx, unblock_rx) = oneshot::channel::<u32>();
+        let mut driven = spawn(responder.drive(async move { unblock_rx.await.unwrap() }));
+        assert_pending!(driven.poll());
+
+        // Send a probe. The responder must answer it, even though the driven future is still waiting.
+        drive_until_quiesced(&mut registry);
+        assert!(!component_live(&registry_state, COMPONENT_ID));
+
+        assert!(driven.is_woken());
+        assert_pending!(driven.poll());
+
+        assert!(registry.is_woken());
+        drive_until_quiesced(&mut registry);
+        assert!(component_live(&registry_state, COMPONENT_ID));
+
+        // Once the driven future completes, `drive` returns its output.
+        unblock_tx.send(42).unwrap();
+        assert!(driven.is_woken());
+        assert_eq!(assert_ready!(driven.poll()), 42);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn component_is_dead_after_driven_future_completes() {
+        let (mut handle, mut registry, registry_state, _runner_state) =
+            initialize_registry_with_component(COMPONENT_ID);
+        let responder = handle.take_liveness_responder().expect("responder should be present");
+
+        // The driven future completes at once, which drops the responder and closes the probe channel.
+        let mut driven = spawn(responder.drive(async {}));
+        assert_ready!(driven.poll());
+
+        // The handle is still alive, but nothing answers probes any more, so the registry marks the component as dead.
+        drive_until_quiesced(&mut registry);
+        assert!(component_dead(&registry_state, COMPONENT_ID));
+        drop(handle);
     }
 }

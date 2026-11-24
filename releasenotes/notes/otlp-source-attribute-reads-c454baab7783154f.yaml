@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    OTLP metrics and traces now read resource attributes for their hostname the way the Datadog Agent does. A literal
+    ``host`` attribute of any type is used as the hostname, and when an attribute appears more than once, its first
+    value is used even if it isn't a string, so a non-string ``datadog.host.name`` gives no hostname. The EKS cluster
+    name now comes from the last matching ``ec2.tag.kubernetes.io/cluster/`` attribute, as in the Agent.

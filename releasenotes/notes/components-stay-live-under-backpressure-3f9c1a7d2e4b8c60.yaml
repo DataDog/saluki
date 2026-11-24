@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Agent Data Plane no longer fails its liveness probe when a slow downstream component, such as a long
+    DogStatsD aggregation flush on a host with many contexts, makes upstream components wait. Previously
+    a component that waited more than 5 seconds to send to a full downstream channel stopped answering
+    liveness probes, so ``/live`` returned 503 and Kubernetes restarted the container.

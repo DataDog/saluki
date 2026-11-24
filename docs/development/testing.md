@@ -30,6 +30,12 @@ Unit tests that create containers are ignored by default, so `make test` doesn't
 containers. Their image comes from the internal registry. CI doesn't run them, so run them by hand when you change the
 container mechanisms, the container backend or the lifecycle.
 
+### Tests that need a kind cluster
+
+Unit tests that create pods are ignored too. Run them with `make test-kind`, which needs `kind` and `kubectl` on your
+`PATH` and a single-node kind cluster named `saluki-correctness`, or the one `KIND_CLUSTER_NAME` names, and builds the
+courier the tests place on its node. CI doesn't run them, so run them by hand when you change the pod backend.
+
 ### Architecture tests
 
 The `architecture-tests` crate in `test/architecture/` protects architectural invariants as part of the unit-test
@@ -55,7 +61,8 @@ used to assert correctness.
 **Terminology Note:** Correctness tests ***are integration tests*** in the sense that they run the entire system.
 However, in our repository, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
 
-Correctness test cases are specified by YAML configuration files found in `test/correctness/cases`.
+Correctness test cases are specified by YAML configuration files found in `test/correctness/cases`. For the case
+format, the steps, and how to read results, see [Panoramic cases](./panoramic.md).
 
 ### Binaries and program flow
 
@@ -63,7 +70,7 @@ All binaries live under `bin/correctness/`:
 
 | Binary             | Purpose                                                                                  |
 |--------------------|------------------------------------------------------------------------------------------|
-| **panoramic**      | Unified test runner for both correctness and integration tests.                          |
+| **panoramic**      | Test runner for the correctness and integration tests.                                   |
 | **millstone**      | Deterministic load generator.                                                            |
 | **`otlp-fixtures`** | Builds the static OTLP payloads of some correctness cases.                              |
 | **datadog-intake** | Mock Datadog API: receives test output                                                   |
@@ -96,19 +103,41 @@ The `test-correctness` target handles building all of the necessary prerequisite
 
 Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
 
+### OTLP receiver endpoints
+
+A correctness case that sends OTLP to ADP and to the Agent leaves `otlp_config.receiver.protocols.*.endpoint` unset in
+`datadog.yaml`. The `adp` participant's environment sets `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_{GRPC,HTTP}_ENDPOINT`, and
+ADP and the Agent in its container read the same value. The `agent` participant takes the harness default, which
+setting the key in `datadog.yaml` would withdraw.
+
 ### Static fixtures
 
-Some cases send a fixed request through a `static_base64` payload in their `millstone.yaml`.
-`bin/correctness/otlp-fixtures` builds that request, with a module for each OTLP signal that has static payloads: edit
-the fixture there, then run `make generate-correctness-fixtures` to rewrite the payloads. Don't edit the payloads by
-hand. The `check-correctness-fixtures` CI job runs the same target and fails if it changes any committed payload.
+Some cases send a fixed request through a `static_base64` payload in a sender config, such as a correctness case's
+`millstone.yaml`. `bin/correctness/otlp-fixtures` builds that request, with a module for each OTLP signal that has
+static payloads: edit the fixture there, then run `make generate-correctness-fixtures` to rewrite the payloads. Don't
+edit the payloads by hand. To add a fixture, create the sender config with a `static_base64: ""` placeholder, then add
+a table entry in `main.rs` with the config's path from the repository root. The `check-correctness-fixtures` CI job
+runs the same target and fails if it changes any committed payload.
+
+Name every sender config that `otlp-fixtures` writes `millstone*.yaml`, such as `millstone.yaml` or
+`millstone-traces-grpc.yaml`. Millstone's `every_test_case_config_parses` test only checks files with that name, so a
+differently named config skips the parse and validation check. `otlp-fixtures` refuses a target with another name.
+The trace builder in `traces.rs` takes a seed for the trace and span IDs: give each fixture that can reach the same
+destination its own seed, such as one per protocol.
 
 ## Integration tests (panoramic)
 
-Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
-output, port availability, exit behavior. They catch regressions from enabling new features or settings that cause
-crashes or early exits. They don't test output correctness. This type of test is often known as a "smoke test." For
-integration tests that check system output, see [correctness tests](#correctness-tests-panoramic) above.
+Integration tests run ADP, with the Datadog Agent where a case needs it, and assert high-level invariants: process
+stability, expected log output, port availability, exit behavior, and the metrics that reach a mock intake. Each case
+runs on the OSes it declares: in Linux and Windows containers, and as host processes on macOS. They catch regressions
+from enabling new features or settings that cause crashes or early exits. They don't compare ADP's output with the
+Datadog Agent's. This type of test is often known as a "smoke test." For tests that compare the two, see
+[correctness tests](#correctness-tests-panoramic) above.
+
+Test cases live in `test/integration/cases/`, one directory for each case, and the runner is **panoramic**
+(`bin/correctness/panoramic/`). Panoramic runs integration and correctness cases the same way: the directory says
+what a case is for. See [The two suites](./panoramic.md#the-two-suites). [Panoramic cases](./panoramic.md) explains how to write a case, run one, and read its
+results.
 
 ### Running
 
@@ -118,113 +147,15 @@ make test-integration-quick  # skip image builds
 make list-integration-tests  # list available tests
 ```
 
-### Test case config
+Panoramic moves every port the Datadog Agent and ADP bind off its default value, so tests don't collide with an Agent
+already running on the host. The defaults live in `DEFAULT_ENV` in
+`bin/correctness/panoramic/src/participants/datadog_agent.rs`. A port that a test binds **MUST** be below 49152. On
+macOS, tests run as host processes, and ports from 49152 up are handed out as source ports for outbound connections.
+macOS refuses to bind a port that another user's process holds, so a listener in that range fails intermittently.
 
-Test cases live in `test/integration/cases/` as `config.yaml` files. The runner is **panoramic**
-(`bin/correctness/panoramic/`).
-
-Each test defines a container and a list of high-level assertions. Assertions run sequentially by default but can also
-be configured to run in `parallel`.
-
-Panoramic moves every port the Core Agent and ADP bind off its default value, so tests don't collide with an Agent
-already running on the host. The defaults live in `bin/correctness/panoramic/src/test_env.rs`. A port that a test binds
-**MUST** be below 49152. On macOS, tests run as host processes, and ports from 49152 up are handed out as source ports
-for outbound connections. macOS refuses to bind a port that another user's process holds, so a listener in that range
-fails intermittently.
-
-CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
-
-### Step deadlines
-
-Each step uses its `timeout`, `duration`, or `during` as its budget. The `dogstatsd_replay` action uses a whole-action
-budget of `4 × timeout + capture_duration + 50ms`. The driver allows 10 seconds beyond that budget for the step to
-report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
-member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
-
-Each polling attempt (an HTTP request, Docker exec, or intake poll) is limited to the shorter of 10 seconds or the
-step's remaining time. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures
-(such as Docker API or intake sidecar errors) prevent evaluation, or its configuration is invalid. An unmet expectation
-remains `failed` after any product observation, even if later probes encounter harness errors.
-
-## Panoramic CLI and environment
-
-Both suites run through the same `panoramic` binary.
-
-```bash
-cargo run --release --bin panoramic -- --help
-```
-
-`panoramic plan <case directory> --subject-os <os>` reads a case written in the participant case schema, the one
-without a top-level `type:` key, and prints what it does on that OS as JSON, without starting anything: each
-participant's realization, image, command, environment and files with their contents, each endpoint and connection
-with its address, and the order participants are created and started in, with what each one waits for. `--text` prints
-the same plan in a format for people. It plans the case for every OS in its `subject_os`, so a field that can't be
-honored on any of them is an error on any host. The rejected case files under
-`bin/correctness/panoramic/testdata/bad/` show a few of these errors.
+CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage. The Windows job is in `.gitlab/windows.yml`.
 
 The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
-
-### Reading panoramic results
-
-The Make targets write artifacts beneath `target/test-output/panoramic/` by default. Set `SALUKI_TEST_OUTPUT_DIR` to
-relocate the shared test-output root, or `PANORAMIC_LOG_DIR` to override the location for panoramic only. Each run
-creates a timestamped `panoramic-*` directory beneath the base, and stdout and `run.json` identify the directory for a
-run. `make clean-test-logs` deletes the panoramic directory, and `make clean` includes that target.
-
-Exit codes distinguish the run-level result:
-
-| Code | Meaning |
-|------|---------|
-| 0 | Every test passed; run completed |
-| 1 | Assertion failure, unless code 2 applies |
-| 2 | Harness error, `timed_out` test, or interrupted run |
-| 3 | Empty selection or unmatched test name |
-
-An `errored` step couldn't be evaluated. Inspect test `error`, `timeout`, `cause`, and step `message` fields.
-
-Check `run.json` first: it's updated during execution, so passing entries don't prove the run finished. Inspect
-completeness before individual results, and treat unknown states, outcomes, or statuses as non-passing:
-
-```bash
-jq '{state, interrupted_reason, running, not_run}' run.json
-jq -r '.tests[] | select(.outcome != "passed" or (.issues | length) > 0) | "\(.name) \(.outcome) \(.log_dir)"' run.json
-```
-
-Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the test result and `assertions[].status` for
-each step. Check `issues` even on passes; they don't change `outcome`. Open reported artifact paths and
-`diagnostic_lines` sources for context and uncapped details.
-
-Follow report types in `bin/correctness/panoramic/src/machine_output.rs` for semantics. For precedence rules, see
-`TestResult::from_steps` in `reporter.rs` and `exit_code` in `collector.rs`. Check `schema_version` and `run.json`'s
-`build_revision` against the working tree.
-
-On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.
-
-### Resource cleanup
-
-After every test, the runner attempts cleanup and records each resource as `reclaimed`, `leaked`, or `unsettled` under
-`reclaim` in `result.json`. Docker containers, their shared volume, and network share one isolation-group entry; host
-processes and the state directory have separate entries. Correctness tests have one isolation-group entry per container
-group, or one `namespace:` entry per kind namespace, and the runner stops their background tasks first. Failed or
-skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the
-test outcome unchanged.
-
-The runner saves host-process `stdout.log` and `stderr.log` after reclaim drains the log pumps, including shutdown
-output. Setup failures and cancelled cases also retain these logs.
-
-### Reading traffic artifacts
-
-Traffic captures live under `<log_dir>/traffic/`. Start with `traffic/manifest.json`: it lists each capture, whether its
-file is still on disk, and why any capture is missing. Take file names from the manifest rather than guessing them.
-Captures are zstd-compressed JSON Lines:
-
-```bash
-jq -r '(.input // empty), .decoded[] | select(.file.present) | .file.name' traffic/manifest.json
-zstd -dc traffic/<file-name> | head -5
-```
-
-The module docs in `bin/correctness/panoramic/src/traffic.rs` explain each artifact, its retention, and record ordering.
-For intake sidecar captures, see "Intake artifacts" in `test/integration/README.md`.
 
 ## Benchmark tests: Single Machine Performance (SMP)
 
@@ -250,6 +181,53 @@ reported to Slack) and on-demand as a manual job on a PR; it is for long-term tr
 You can run experiments locally with `smp local-run` to debug experiment configs without waiting for CI (single
 replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment—for normal
 development, lean on CI.
+
+## Reviewing test changes
+
+Reviewers check test changes against two checklists: one for the test tools, and one for the test cases.
+
+### Correctness tooling review checklist
+
+Reviewers check changes to the tools under `bin/correctness/` against these rules:
+
+<!-- review:correctness-tooling -->
+Apply these rules to files under `bin/correctness/`: `panoramic`, `millstone`, `airlock`, `stele`, `datadog-intake`,
+and `otlp-fixtures`. Look first for bugs that hang a run, crash it, leave processes or containers behind, or let a
+case pass when ADP is wrong.
+
+- Each wait, probe, and exec has a deadline, and each read has a deadline or an idle timeout. A target that stops
+  responding fails the case, and doesn't hang the job.
+- An analysis compares only output that the case controls. It removes the targets' own telemetry, as
+  `is_internal_telemetry` does in the metrics analysis, because that telemetry depends on timing and on the container.
+- Don't ask for edge cases that no current case can produce. An analysis that is too strict fails a case, so it
+  doesn't hide a regression. Flag analysis logic that can let a case pass when ADP is wrong, such as a filter or a
+  tolerance that also matches real output.
+- Make sure that a regression in the testing harness and libraries doesn't leave a formerly asserted invariant
+  unchecked.
+<!-- /review -->
+
+### Test case review checklist
+
+Reviewers check changes to the test cases under `test/` against these rules:
+
+<!-- review:test-cases -->
+Apply these rules to files under `test/`: correctness cases, integration cases, and SMP experiments.
+
+- A correctness case must fail when ADP is wrong.
+- The Core Agent and ADP can both run some pipelines, such as DogStatsD and OTLP. If ADP doesn't receive the traffic,
+  the Core Agent handles it, and the case compares the Agent with itself. When a case turns on such a pipeline in ADP,
+  ask what shows that ADP received the traffic. Don't ask when the case or the description already shows it.
+- With `DD_DATA_PLANE_STANDALONE_MODE` set to `"true"`, ADP uses only its local configuration and doesn't register
+  with the Core Agent. The value is `"false"` or unset in connected mode, which is the production mode. Ask for a
+  connected-mode case when a change affects how settings reach ADP. Examples are changes to the configuration stream,
+  registration, and environment translation.
+- The `baseline` and `comparison` targets differ only in the setting under test and in the settings that turn on ADP.
+  Settings that only ADP reads can also differ, such as `DD_AGGREGATE_CONTEXT_LIMIT` and `ADP_DD_` variables. Flag a
+  setting that the Datadog Agent also reads and that only one side sets, when no comment explains it.
+- Flag a setting in a case or an SMP experiment that ADP no longer reads, such as a removed or renamed key. ADP
+  ignores it without an error, so the case no longer tests it. For SMP, comment on
+  `test/smp/regression/adp/experiments.yaml`, not on the generated `experiment.yaml` files.
+<!-- /review -->
 
 ## Fuzzing
 
@@ -285,7 +263,7 @@ agents drive runs there.
 
 # custom test tooling
 bin/correctness/
-├── panoramic/             : unified test runner (correctness + integration)
+├── panoramic/             : test runner (correctness + integration)
 ├── millstone/             : load generator
 ├── otlp-fixtures/         : static OTLP payload builder
 ├── datadog-intake/        : mock Datadog API

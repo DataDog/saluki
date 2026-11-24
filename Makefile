@@ -15,9 +15,6 @@ export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
 export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
 
-# Datadog Agent version used by the project-wide comparison image.
-export DATADOG_AGENT_VERSION := $(shell cat .datadog-agent-version)
-
 # SPDX license-list-data tag used by package-adp-host to harvest THIRD-PARTY-* license texts.
 # Pinned to match docker/Dockerfile.agent-data-plane so the host-built tarball ships the same
 # set of license texts as the linux Docker artifact; bump in lockstep with the Dockerfile.
@@ -36,10 +33,13 @@ endif
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
-# macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.84.6
+# The Linux Agent image from `.datadog-agent-version.json`. It's expanded where it's used, so only the recipes that use
+# it read the file. It isn't exported, because make would then read the file for every recipe.
+DD_AGENT_IMAGE = $(or $(shell $(PYTHON) ci/tooling/agent_version.py get integration.linux.image), \
+	$(error could not read integration.linux.image from .datadog-agent-version.json))
+
+# macOS integration-test settings. The Agent package comes from `.datadog-agent-version.json`.
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
-MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 
 # General build settings used for tooling, etc.
@@ -70,7 +70,7 @@ export CARGO_TOOL_VERSION_cargo-binstall ?= 1.18.1
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.6
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
-export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
+export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.152
 export CARGO_TOOL_VERSION_cargo-xwin ?= 0.22.0
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
@@ -78,7 +78,9 @@ export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export CARGO_TOOL_VERSION_cargo-auditable ?= 0.7.4
+# renovate: datasource=github-releases depName=DataDog/ddprof
 export DDPROF_VERSION ?= 0.20.0
+# renovate: datasource=github-releases depName=DataDog/lading
 export LADING_VERSION ?= 0.33.0
 
 # Windows cross-compilation settings. These targets currently assume a local macOS host.
@@ -209,10 +211,11 @@ build-adp-image-fips-release: ## Builds the ADP container image in release mode 
 .PHONY: build-datadog-agent-image
 build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent/ADP container image (debug mode)
 	@echo "[*] Building converged Datadog Agent image... (debug mode)"
+	@echo "[*] Using the Agent image $(DD_AGENT_IMAGE) from .datadog-agent-version.json"
 	@docker build \
 		--tag saluki-images/datadog-agent:testing-devel \
 		--tag local.dev/saluki-images/datadog-agent:testing-devel \
-		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
+		--build-arg "DD_AGENT_IMAGE=$(DD_AGENT_IMAGE)" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-devel \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -220,10 +223,11 @@ build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent
 .PHONY: build-datadog-agent-image-release
 build-datadog-agent-image-release: build-adp-image-release ## Builds the converged Datadog Agent/ADP container image (release mode)
 	@echo "[*] Building converged Datadog Agent image... (release mode)"
+	@echo "[*] Using the Agent image $(DD_AGENT_IMAGE) from .datadog-agent-version.json"
 	@docker build \
 		--tag saluki-images/datadog-agent:testing-release \
 		--tag local.dev/saluki-images/datadog-agent:testing-release \
-		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
+		--build-arg "DD_AGENT_IMAGE=$(DD_AGENT_IMAGE)" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-release \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -507,7 +511,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-docs check-deny check-fips-module check-licenses check-unused-deps generate-api-docs check-features check-aix-cross
+check-all: check-fmt check-clippy check-docs check-review-guidelines check-deny check-fips-module check-licenses check-unused-deps generate-api-docs check-features check-aix-cross
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools ensure-rust-nightly
@@ -575,7 +579,7 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 check-docs: check-lint-tools
 check-docs: ## Checks prose/code documentation against our style guide
 	@echo "[*] Checking prose/code documentation against our style guide..."
-	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,docs/development/plans/*,*datadog_configuration*}' docs lib bin
+	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,docs/development/plans/*,*datadog_configuration*,*codereview_guideline.md}' docs lib bin
 
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools
@@ -594,7 +598,13 @@ test: ## Runs all unit tests
 test-container-daemon: check-rust-build-tools cargo-install-cargo-nextest build-courier
 test-container-daemon: ## Runs the unit tests that need a Docker daemon
 	@echo "[*] Running unit tests against the Docker daemon..."
-	cargo nextest run -p airlock -p panoramic --run-ignored ignored-only
+	cargo nextest run -p airlock -p panoramic --run-ignored ignored-only -E 'not test(/kind_tests/)'
+
+.PHONY: test-kind
+test-kind: check-rust-build-tools cargo-install-cargo-nextest check-kind-tools build-courier
+test-kind: ## Runs the unit tests that need a kind cluster
+	@echo "[*] Running unit tests against a kind cluster..."
+	cargo nextest run -p panoramic --run-ignored ignored-only -E 'test(/kind_tests/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
@@ -615,26 +625,26 @@ test-miri: ## Runs all Miri-specific unit tests
 	cargo +$(RUST_NIGHTLY_VERSION) miri test -p stringtheory
 
 .PHONY: test-loom
-test-loom: check-rust-build-tools
+test-loom: check-rust-build-tools cargo-install-cargo-nextest
 test-loom: ## Runs all Loom-specific unit tests
 	@echo "[*] Running Loom-specific unit tests..."
-	cargo nextest run --release --features loom -p stringtheory -p saluki-core loom_tests
+	cargo nextest run --release --features loom -p stringtheory -p saluki-core -p saluki-metrics loom_tests
 
 .PHONY: test-all
 test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
+test-correctness: build-panoramic build-courier build-correctness-tools-image build-datadog-agent-image-release
 test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
 	@echo "[*] Running correctness test suite..."
-	@target/release/panoramic run -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
+	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
 
 .PHONY: test-correctness-case
-test-correctness-case: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
+test-correctness-case: build-panoramic build-courier build-correctness-tools-image build-datadog-agent-image-release
 test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
 	@echo "[*] Running '$(CASE)' correctness test case..."
-	@target/release/panoramic run -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui
+	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools
@@ -655,13 +665,13 @@ build-courier: ## Builds the static courier binary that panoramic runs inside co
 		--config 'target.$(COURIER_TARGET).linker="rust-lld"' --config 'profile.release.strip="symbols"'
 
 .PHONY: test-integration
-test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
+test-integration: build-panoramic build-courier build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
 	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: test-integration-quick
-test-integration-quick: build-panoramic
+test-integration-quick: build-panoramic build-courier
 test-integration-quick: ## Runs ADP integration tests (assumes images already built)
 	@echo "[*] Running ADP integration tests (quick mode)..."
 	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
@@ -708,62 +718,24 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 # linux flow builds and tests build-adp-image with whatever BUILD_PROFILE the pipeline sets.
 # panoramic stays at target/release/ unconditionally because it's the test harness, not the SUT;
 # build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
+# Cases take the two binaries with --set.
 test-integration-macos-run: BUILD_PROFILE ?= release
-test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all macOS integration cases (host processes); narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
 	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
-		--adp-binary-path "$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
-		--core-agent-binary-path "$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
-		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
+		--set "target/release/agent-data-plane=$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
+		--set "/tmp/saluki-dda/datadog-agent/bin/agent/agent=$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
+		$(if $(CASE),-t $(CASE)) --no-tui \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: provision-macos-test-env
-provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if it already matches the pinned version.
+provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-agent-version.json into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if its marker matches the file.
 	@echo "[*] Provisioning macOS test environment..."
 	@if [ "$(shell uname -s)" != "Darwin" ]; then \
 		echo "provision-macos-test-env only runs on macOS hosts" >&2; exit 1; \
 	fi
-	@if [ -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent ] && \
-	   [ "$$($(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version 2>/dev/null | awk '{print $$2}')" = "$(MACOS_TEST_AGENT_VERSION)" ]; then \
-		echo "[*] Datadog Agent $(MACOS_TEST_AGENT_VERSION) already extracted to $(MACOS_TEST_AGENT_INSTALL_DIR)"; \
-	else \
-		echo "[*] Installing Datadog Agent $(MACOS_TEST_AGENT_VERSION) into $(MACOS_TEST_AGENT_INSTALL_DIR)..."; \
-		mkdir -p $(MACOS_TEST_AGENT_DMG_DIR); \
-		DMG_PATH=$(MACOS_TEST_AGENT_DMG_DIR)/datadog-agent-$(MACOS_TEST_AGENT_VERSION).dmg; \
-		if [ ! -f "$$DMG_PATH" ]; then \
-			curl -fL "$(MACOS_TEST_AGENT_DMG_URL)" -o "$$DMG_PATH"; \
-		fi; \
-		MOUNT_DIR=$$(mktemp -d /tmp/saluki-dda-mount-XXXXXX); \
-		cleanup_mount() { bash "$(CURDIR)/ci/tooling/cleanup-macos-dda-mounts.sh" "$$MOUNT_DIR"; }; \
-		trap cleanup_mount EXIT; \
-		for attempt in 1 2 3; do \
-			if hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; then \
-				break; \
-			fi; \
-			if [ "$$attempt" = "3" ]; then \
-				echo "ERROR: failed to attach $$DMG_PATH after $$attempt attempts" >&2; \
-				exit 1; \
-			fi; \
-			echo "[*] Failed to attach $$DMG_PATH on attempt $$attempt; retrying..." >&2; \
-			sleep $$((attempt * 2)); \
-		done; \
-		PKG=$$(find "$$MOUNT_DIR" -name '*.pkg' | head -1); \
-		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX) && rm -rf "$$EXPAND_DIR"; \
-		pkgutil --expand-full "$$PKG" "$$EXPAND_DIR" >/dev/null; \
-		cleanup_mount; \
-		trap - EXIT; \
-		PAYLOAD_DIR=$$(find "$$EXPAND_DIR" -type d -name Payload | head -1); \
-		if [ -z "$$PAYLOAD_DIR" ] || [ ! -x "$$PAYLOAD_DIR/bin/agent/agent" ]; then \
-			echo "ERROR: pkg payload did not contain bin/agent/agent. Expanded layout:" >&2; \
-			find "$$EXPAND_DIR" -maxdepth 3 -type d >&2; \
-			exit 1; \
-		fi; \
-		rm -rf $(MACOS_TEST_AGENT_INSTALL_DIR); \
-		mkdir -p $$(dirname $(MACOS_TEST_AGENT_INSTALL_DIR)); \
-		mv "$$PAYLOAD_DIR" $(MACOS_TEST_AGENT_INSTALL_DIR); \
-		rm -rf "$$EXPAND_DIR"; \
-		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
-	fi
+	@$(PYTHON) ci/tooling/install_macos_agent.py \
+		--install-dir "$(MACOS_TEST_AGENT_INSTALL_DIR)" --cache-dir "$(MACOS_TEST_AGENT_DMG_DIR)"
 	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
 		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
 		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
@@ -796,7 +768,7 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
 .PHONY: test-integration-macos-ci
-test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
+test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the macOS integration cases (host processes)
 
 .PHONY: ensure-rust-nightly
 ensure-rust-nightly:
@@ -836,27 +808,35 @@ ifeq ($(shell command -v snouty >/dev/null || echo not-found), not-found)
 	$(error "snouty must be present to validate the Antithesis harness, see https://github.com/antithesishq/snouty")
 endif
 
+# Compose builds the scenarios for linux/amd64, so they take the amd64 debug package from .datadog-agent-version.json. Every recipe
+# that interpolates the Compose files needs these.
+ANTITHESIS_AGENT_DEBUG_DEB_ENV = \
+	AGENT_DEBUG_DEB_URL=$$($(PYTHON) ci/tooling/agent_version.py get integration.antithesis_debug_debs.amd64.url) && \
+	AGENT_DEBUG_DEB_SHA256=$$($(PYTHON) ci/tooling/agent_version.py get integration.antithesis_debug_debs.amd64.sha256) && \
+	export AGENT_DEBUG_DEB_URL AGENT_DEBUG_DEB_SHA256 && \
+	echo "[*] Using the Agent debug package $$AGENT_DEBUG_DEB_URL"
+
 .PHONY: antithesis-build
 antithesis-build: build-datadog-agent-image-release ## Builds the Antithesis harness container images
 	@echo "[*] Building Antithesis harness images..."
-	@docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
+	@$(ANTITHESIS_AGENT_DEBUG_DEB_ENV) && docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
 
 .PHONY: antithesis-build-differential
 antithesis-build-differential: build-datadog-agent-image-release ## Builds the differential Antithesis harness images
 	@echo "[*] Building differential Antithesis harness images..."
-	@docker compose -f $(ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE) build
+	@$(ANTITHESIS_AGENT_DEBUG_DEB_ENV) && docker compose -f $(ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE) build
 
 .PHONY: antithesis-validate-general
 antithesis-validate-general: check-antithesis-tools antithesis-build
 antithesis-validate-general: ## Validates the general Antithesis harness: builds images, runs 'snouty validate'
 	@echo "[*] Validating general Antithesis harness with snouty..."
-	@snouty validate $(ANTITHESIS_CONFIG_DIR)
+	@$(ANTITHESIS_AGENT_DEBUG_DEB_ENV) && snouty validate $(ANTITHESIS_CONFIG_DIR)
 
 .PHONY: antithesis-validate-differential
 antithesis-validate-differential: check-antithesis-tools antithesis-build-differential
 antithesis-validate-differential: ## Validates the differential Antithesis harness
 	@echo "[*] Validating differential Antithesis harness with snouty..."
-	@snouty validate $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)
+	@$(ANTITHESIS_AGENT_DEBUG_DEB_ENV) && snouty validate $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)
 
 .PHONY: antithesis-validate
 antithesis-validate: antithesis-validate-general antithesis-validate-differential ## Validates both Antithesis harnesses (general + differential)
@@ -879,7 +859,7 @@ endif
 	@DD_API_KEY=api-key-adp-profiling DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
 	DD_DATA_PLANE_STANDALONE_MODE=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
+	DD_DATA_PLANE_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
@@ -992,6 +972,18 @@ PYTHON = $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
 test-release-notes: ## Runs unit tests for release-note tooling
 	@$(PYTHON) -m unittest ci/tooling/test_release_notes.py -v
 
+.PHONY: generate-review-guidelines
+generate-review-guidelines: ## Generates the codereview_guideline.md files from docs/development
+	@$(PYTHON) ci/tooling/review_guidelines.py generate
+
+.PHONY: check-review-guidelines
+check-review-guidelines: ## Checks that the codereview_guideline.md files match docs/development
+	@$(PYTHON) ci/tooling/review_guidelines.py check
+
+.PHONY: test-review-guidelines
+test-review-guidelines: ## Runs unit tests for the review guideline generator
+	@$(PYTHON) -m unittest ci/tooling/test_review_guidelines.py -v
+
 .PHONY: check-release-notes
 check-release-notes: ## Validates committed Reno release-note files
 	@$(PYTHON) ci/tooling/release_notes.py check $$(find releasenotes/notes -type f -name '*.yaml' 2>/dev/null)
@@ -1000,6 +992,15 @@ check-release-notes: ## Validates committed Reno release-note files
 render-release-notes: ## Renders VERSION=X.Y.Z Reno notes as GitHub-flavored Markdown
 	@test -n "$(VERSION)" || { echo "Set VERSION=X.Y.Z" >&2; exit 2; }
 	@$(PYTHON) ci/tooling/release_notes.py render --version "$(VERSION)" --output -
+
+.PHONY: test-agent-version
+test-agent-version: ## Runs unit tests for the Agent version tooling
+	@$(PYTHON) -m unittest ci/tooling/test_agent_version.py ci/tooling/update-agent-version/test_discover_agent_version.py \
+		ci/tooling/update-agent-version/test_propose_agent_version.py ci/tooling/test_install_macos_agent.py
+
+.PHONY: check-agent-version
+check-agent-version: ## Validates .datadog-agent-version.json and .datadog-agent-release-lines.jsonl
+	@$(PYTHON) ci/tooling/agent_version.py validate
 
 .PHONY: ensure-python-venv
 ensure-python-venv: ## Creates the virtualenv that Python tooling prefers, or updates an existing one
@@ -1080,8 +1081,12 @@ cargo-preinstall: cargo-install-cargo-auditable
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 
+# Outside CI, a tool that is already installed is kept, whatever its version. In CI, a tool that cargo doesn't list at
+# its pinned version is installed again. This lets a version bump reach runners and images that keep their tools between
+# jobs.
 .PHONY: cargo-install-%
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
+cargo-install-%: override TOOL_INSTALLED = $(if $(findstring true,$(CI)),cargo install --list | grep -qxF "${TOOL} v$(CARGO_TOOL_VERSION_$(TOOL)):",test -f ${CARGO_BIN_DIR}/${TOOL})
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)
+	@$(if $(findstring true,$(AUTOINSTALL)),${TOOL_INSTALLED} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --force --quiet -y),)
