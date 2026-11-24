@@ -160,8 +160,9 @@ pub(crate) fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
 /// doubles the same way.
 ///
 /// The digits are the shortest that round-trip, as Go's `strconv.FormatFloat` writes them with precision -1. When two
-/// candidates are equally close, Go keeps the even last digit. Ryu does the same, but Rust's own formatting doesn't:
-/// it writes `1888570120608320.3` where Go writes `1888570120608320.2`. So the digits come from Ryu, in Go's layout.
+/// candidates are equally close, Go keeps the even last digit. The `ryu` crate does the same, but Rust's own formatting
+/// doesn't: it writes `1888570120608320.3` where Go writes `1888570120608320.2`. So the digits come from `ryu`, in Go's
+/// layout.
 fn float64_as_string(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -213,10 +214,10 @@ fn float64_as_string(value: f64) -> String {
     out
 }
 
-/// Splits the output of Ryu for a positive double into its significant digits and the position of the decimal point.
+/// Splits the output of `ryu` for a positive double into its significant digits and the position of the decimal point.
 ///
-/// The value is `0.<digits> × 10^point`. The digits have no leading or trailing zeros. Ryu writes forms such as `1.0`,
-/// `0.001`, `1e21`, and `1.5e-7`.
+/// The value is `0.<digits> × 10^point`. The digits have no leading or trailing zeros. `ryu` writes forms such as
+/// `1.0`, `0.001`, `1e21`, and `1.5e-7`.
 fn decimal_digits(formatted: &str) -> (String, i32) {
     let (mantissa, exponent) = match formatted.split_once('e') {
         Some((mantissa, exponent)) => (
