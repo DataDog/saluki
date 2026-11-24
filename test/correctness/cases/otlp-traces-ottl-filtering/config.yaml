@@ -51,6 +51,14 @@ procedure:
         baseline: intake-agent
         # Baseline is OTel-based (DDOT); use OTLP-direct analysis (skip stats comparison, do not require baseline SSI).
         otlp_direct_analysis_mode: true
+        # The filter drops every span of the `api-gateway` resource, which has `deployment.environment: production`. The
+        # spans of `product-service` survive: a trace with a server span and a cache span for each payload.
+        traces:
+          min_traces: 1000
+          min_spans: 2000
+          spans:
+            - {service: product-service, resource: ProductService/GetProduct}
+            - {service: product-service, resource: ProductService/ListProducts}
         # OTel baseline vs ADP: load/agent and pipeline add fields that differ or are absent in the other.
         additional_span_ignore_fields:
           - agent_metadata.target_tps

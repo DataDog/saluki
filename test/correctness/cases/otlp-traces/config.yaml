@@ -43,6 +43,18 @@ procedure:
         telemetry: traces
         comparison: intake-adp
         baseline: intake-agent
+        # The load has no Single Step Instrumentation metadata. Each of its 1000 payloads holds 2 traces and at least 4
+        # spans: a root span and a client span in `api-gateway`, and a server span and a cache span in `product-service`.
+        traces:
+          require_ssi: false
+          min_traces: 2000
+          min_spans: 4000
+          spans:
+            - {service: api-gateway, resource: "GET /api/v1/products/{id}"}
+            - {service: api-gateway, resource: "GET /api/v1/products"}
+            - {service: product-service, resource: ProductService/GetProduct}
+            - {service: product-service, resource: ProductService/ListProducts}
+          min_stats_groups: 4
         # TODO(#3433): for a string HTTP status code, the Agent sends `meta.http.status_code` next to
         # `metrics.http.status_code`, and ADP sends the number only. Remove this ignore once the gap is fixed,
         # or once a known difference scoped to the HTTP spans replaces it.
