@@ -4558,6 +4558,7 @@ dependencies = [
  "otlp-protos",
  "prost",
  "saluki-error",
+ "tempfile",
 ]
 
 [[package]]
