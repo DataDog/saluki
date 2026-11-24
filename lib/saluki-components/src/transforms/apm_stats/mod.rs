@@ -132,7 +132,7 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
             agent_hostname,
             workload_provider: self.workload_provider.clone(),
             splits: metrics_builder.register_counter("component_stats_splits_total"),
-            future_clamps: metrics_builder.register_counter("component_future_span_bucket_clamps_total"),
+            future_clamps: metrics_builder.register_counter("component_stats_future_bucket_clamps_total"),
         }))
     }
 
