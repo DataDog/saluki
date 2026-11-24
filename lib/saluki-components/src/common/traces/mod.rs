@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use saluki_core::data_model::event::trace::AttributeValue;
 
 pub mod normalize;
+pub mod rates;
 
 /// Formats an attribute value as a string, as the trace-agent does.
 pub fn attribute_as_string(value: &AttributeValue) -> Cow<'_, str> {

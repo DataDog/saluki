@@ -5,9 +5,9 @@
 //! window and are reported as metric events on the source's `metrics` output, so the metrics reach the backend under
 //! the trace-agent's names. Only the native intake counts: the trace-agent counts the payloads forwarded to it.
 //!
-//! `serve_traces_ms` is a histogram the trace-agent sends through DogStatsD, so it is reported as DogStatsD reports
-//! histograms: as the configured aggregates and percentiles (`histogram_aggregates`, `histogram_percentiles`), and as a
-//! distribution with `histogram_copy_to_distribution`.
+//! `serve_traces_ms` and `rate_response_bytes` are histograms the trace-agent sends through DogStatsD, so they are
+//! reported as DogStatsD reports histograms: as the configured aggregates and percentiles (`histogram_aggregates`,
+//! `histogram_percentiles`), and as a distribution with `histogram_copy_to_distribution`.
 //!
 //! Unlike the trace-agent, which keeps every tag combination it has seen and keeps publishing zeros for idle ones, a
 //! window only holds the combinations seen during it.
@@ -39,6 +39,7 @@ pub(super) const MAX_TAG_KEYS: usize = 1_000;
 
 const METRIC_TRACES_DROPPED: &str = "datadog.trace_agent.normalizer.traces_dropped";
 const METRIC_SERVE_TRACES_MS: &str = "datadog.trace_agent.receiver.serve_traces_ms";
+const METRIC_RATE_RESPONSE_BYTES: &str = "datadog.trace_agent.receiver.rate_response_bytes";
 const METRIC_ERROR: &str = "datadog.trace_agent.receiver.error";
 
 /// The tags receiver stats are kept under, as the trace-agent keys them.
@@ -145,6 +146,7 @@ pub(super) struct TagStats {
     traces_dropped: [i64; DropReason::ALL.len()],
     serve_ok: Histogram,
     serve_failed: Histogram,
+    rate_response_bytes: Histogram,
 }
 
 impl TagStats {
@@ -160,6 +162,11 @@ impl TagStats {
             &mut self.serve_failed
         };
         histogram.insert(elapsed.as_secs_f64() * 1_000.0, SampleRate::unsampled());
+    }
+
+    /// Records the size of the rates sent back to an accepted payload.
+    pub(super) fn rate_response_bytes(&mut self, bytes: usize) {
+        self.rate_response_bytes.insert(bytes as f64, SampleRate::unsampled());
     }
 }
 
@@ -286,6 +293,15 @@ impl ReceiverTelemetry {
                     );
                     self.push_histogram(&mut events, context, histogram, interval);
                 }
+            }
+
+            if !stats.rate_response_bytes.samples().is_empty() {
+                let endpoint = format!("endpoint:traces_{}", tags.endpoint_version);
+                let context = Context::from_parts(
+                    MetaString::from_static(METRIC_RATE_RESPONSE_BYTES),
+                    tags.tag_set(Some(&endpoint)),
+                );
+                self.push_histogram(&mut events, context, &mut stats.rate_response_bytes, interval);
             }
         }
 

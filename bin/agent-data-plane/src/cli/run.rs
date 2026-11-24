@@ -52,7 +52,7 @@ use saluki_components::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
         ChainedConfiguration, DatadogTraceNormalizerConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        TraceObfuscationConfiguration,
+        ServiceRates, TraceObfuscationConfiguration,
     },
 };
 use saluki_core::{
@@ -245,6 +245,9 @@ async fn create_topology(
         add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &shared)?;
     }
 
+    // The trace sampler publishes its rates by service, and the APM source's native intake sends them back to tracers.
+    let service_rates = ServiceRates::default();
+
     if dp.traces_pipeline_required() {
         add_baseline_traces_pipeline_to_blueprint(
             &mut blueprint,
@@ -252,6 +255,7 @@ async fn create_topology(
             env_provider,
             trace_sampling,
             semantic_registry.clone(),
+            service_rates.clone(),
         )
         .await?;
     }
@@ -285,6 +289,7 @@ async fn create_topology(
             env_provider,
             remote_agent_client_config,
             semantic_registry,
+            service_rates,
         )
         .await?;
     }
@@ -579,7 +584,7 @@ fn add_baseline_service_checks_pipeline_to_blueprint(
 async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     env_provider: &RemoteAgentEnvironmentProvider, trace_sampling: Option<TraceSamplingSubscription>,
-    semantic_registry: SemanticRegistryProvider,
+    semantic_registry: SemanticRegistryProvider, service_rates: ServiceRates,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let agent_env = AgentEnv::resolve(
@@ -604,6 +609,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         &config.domains.traces,
         agent_env.clone(),
         trace_sampling.unwrap_or_default(),
+        service_rates,
     );
 
     let trace_obfuscation_config = TraceObfuscationConfiguration {
@@ -998,7 +1004,7 @@ async fn add_dsd_pipeline_to_blueprint(
 async fn add_apm_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     env_provider: &RemoteAgentEnvironmentProvider, agent_client: Option<&RemoteAgentClientConfiguration>,
-    semantic_registry: SemanticRegistryProvider,
+    semantic_registry: SemanticRegistryProvider, service_rates: ServiceRates,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     // In standalone mode there is no workload provider, so the resolver finds nothing and the source forwards requests
@@ -1012,6 +1018,7 @@ async fn add_apm_pipeline_to_blueprint(
         config_system.live(|config| &config.shared.endpoints.api_key),
         agent_client.cloned(),
         semantic_registry,
+        service_rates,
     )?;
     blueprint.add_source("dd_traces_in", dd_traces_in)?;
 
