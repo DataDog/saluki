@@ -161,6 +161,13 @@ fails until `renamed-key-*` cases record the setting and its former names, by en
 `cast_de.rs` coercion to each schema type. For example, `dogstatsd_port: "8125.0"` is valid and coerced to the integer
 `8125`, and `1` or `"T"` is coerced to a `bool`.
 
+## Object arrays
+
+Object-array leaves accept arrays or single structured objects. A nonempty object becomes one element; an empty object
+becomes an empty array, as in the Agent's weakly typed structured decoder. An empty object inside an array remains an
+element. JSON-encoded strings must contain arrays. The generated leaf deserializer applies these rules, and the
+`deserialize_object_array` helper applies the structured forms to nested mapper `mappings`.
+
 ## Documented enum settings
 
 A `string` setting whose schema documentation names a closed set of values becomes an enum in `agent-data-plane-config`

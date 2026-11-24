@@ -522,6 +522,9 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Regex-based trace tag replacement rules"
+    documentation: |-
+      Accepts an array of rule objects or a single rule object. An empty object is an empty array,
+      as in the core Agent. A JSON-encoded string must contain an array.
 
   apm_config.sql_obfuscation_mode:
     support: partial
@@ -1077,6 +1080,10 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Metric mapping profile definitions"
+    documentation: |-
+      Accepts an array of profile objects or a single profile object. Each profile's `mappings`
+      also accepts an array of mapping objects or a single mapping object. An empty object is an
+      empty array, as in the core Agent. A JSON-encoded profile string must contain an array.
 
   dogstatsd_mem_based_rate_limiter.enabled:
     support: none
@@ -2803,8 +2810,9 @@ inventory:
       Each entry is an object, decoded as the Agent decodes it: a missing `prefix` is the empty
       prefix, and unknown fields are ignored. When a field holds a value that cannot be converted,
       such as a list where a string is expected, ADP logs a warning and applies no prefix rules.
-      ADP rejects a value that is not a list of objects; a null entry is an empty entry and matches
-      every metric, as in the Agent.
+      A single rule object is a one-element list. An empty object is an empty list, but an empty
+      object inside a list remains a rule. A null entry is an empty entry and matches every metric,
+      as in the Agent. A JSON-encoded string must contain an array.
 
       Exceptions apply across this whole key: a metric excepted by one rule is kept even when it
       matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the
@@ -2916,6 +2924,9 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Per-metric tag allow/deny filter list"
+    documentation: |-
+      Accepts an array of filter objects or a single filter object. An empty object is an empty
+      array, as in the core Agent. A JSON-encoded string must contain an array.
 
   min_tls_version:
     support: partial

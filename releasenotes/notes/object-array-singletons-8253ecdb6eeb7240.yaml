@@ -1,0 +1,5 @@
+fixes:
+  - |
+    Accept single objects in ``dogstatsd_mapper_profiles``, ``metric_filterlist_prefix``,
+    ``metric_tag_filterlist``, and ``apm_config.replace_tags``, including single mapper
+    mappings. Treat empty objects as empty lists, as the Datadog Agent does.

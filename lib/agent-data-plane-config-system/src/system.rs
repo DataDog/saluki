@@ -744,6 +744,93 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn object_array_singletons_reach_startup_and_live_configuration() {
+        let entries = [
+            (
+                "dogstatsd_mapper_profiles",
+                json!({ "name": "workers", "prefix": "worker.", "mappings": {
+                    "match": "worker.*", "name": "mapped"
+                }}),
+            ),
+            ("metric_filterlist_prefix", json!({ "prefix": "drop." })),
+            (
+                "metric_tag_filterlist",
+                json!({ "metric_name": "mapped", "tags": ["pod"] }),
+            ),
+            (
+                "apm_config.replace_tags",
+                json!({ "name": "http.url", "pattern": "token", "repl": "masked" }),
+            ),
+        ];
+        let singletons = || {
+            entries
+                .iter()
+                .map(|(key, value)| ConfigSetting::explicit(*key, value.clone()))
+        };
+        let (agent_tx, agent_rx) = mpsc::channel(4);
+        agent_tx.send(ConfigUpdate::snapshot(singletons())).await.unwrap();
+        let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+        let (system, updates) = ConfigurationSystem::connected(agent_rx, base)
+            .await
+            .expect("startup accepts singleton objects");
+        let expected = system.config();
+        assert_eq!(expected.domains.dogstatsd.mapper.profiles.len(), 1);
+        assert_eq!(expected.domains.dogstatsd.mapper.profiles[0].mappings.len(), 1);
+        assert_eq!(expected.domains.dogstatsd.metric_filter.prefix_rules.len(), 1);
+        assert_eq!(expected.domains.dogstatsd.tag_filterlist.len(), 1);
+        assert_eq!(expected.domains.traces.replace_tags.len(), 1);
+
+        // Queue an array snapshot, clear it with empty objects, then restore the singleton rules.
+        agent_tx
+            .send(ConfigUpdate::snapshot(
+                entries
+                    .iter()
+                    .map(|(key, value)| ConfigSetting::explicit(*key, json!([value]))),
+            ))
+            .await
+            .unwrap();
+        let update_task = tokio::spawn(updates.run());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while system.raw_snapshot()().pointer("/metric_tag_filterlist") != Some(&json!([entries[2].1])) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("array snapshot applies");
+        assert_eq!(*system.config(), *expected);
+
+        agent_tx
+            .send(ConfigUpdate::snapshot(
+                entries.iter().map(|(key, _)| ConfigSetting::explicit(*key, json!({}))),
+            ))
+            .await
+            .unwrap();
+        await_config(&system, "empty object arrays", |config| {
+            config.domains.dogstatsd.mapper.profiles.is_empty()
+                && config.domains.dogstatsd.metric_filter.prefix_rules.is_empty()
+                && config.domains.dogstatsd.tag_filterlist.is_empty()
+                && config.domains.traces.replace_tags.is_empty()
+        })
+        .await;
+
+        for setting in singletons() {
+            agent_tx.send(ConfigUpdate::Partial(setting)).await.unwrap();
+        }
+        await_config(&system, "restored singleton rules", |config| {
+            config == expected.as_ref()
+        })
+        .await;
+        drop(agent_tx);
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), update_task)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(Error::UpdateStreamClosed)
+        ));
+    }
+
     // The Agent streams `null` for an empty list, including one produced by ordinary loading, such as
     // `histogram_aggregates: []` in YAML. Its accessors read the null as empty, so startup must too.
     #[tokio::test]
@@ -1990,14 +2077,9 @@ mod tests {
     }
 
     #[test]
-    fn a_metric_filter_prefix_value_that_is_not_a_list_of_objects_is_rejected() {
-        // The Agent lifts a lone map into a list and runs with no rules for a string or a string entry.
-        // ADP rejects each of these instead.
-        let cases = [
-            json!({ "prefix": "a." }),
-            json!("a."),
-            json!([{ "prefix": "a." }, "b."]),
-        ];
+    fn a_metric_filter_prefix_value_with_invalid_elements_is_rejected() {
+        // The Agent runs with no rules for a string or a string entry. ADP rejects each of these instead.
+        let cases = [json!("a."), json!([{ "prefix": "a." }, "b."])];
         for value in cases {
             let sources = SourceTree::all_explicit(json!({ "metric_filterlist_prefix": value.clone() }));
             assert!(

@@ -36,9 +36,43 @@ pub use env_reader::{
     RenamedKey,
 };
 pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration, Leaf, LeafValue, LEAVES};
+pub use list_de::deserialize_object_array;
 pub use platform_default::is_containerized;
 pub use size_in_bytes::parse_size_in_bytes;
 pub use translate_error::{TranslateError, TranslateErrors};
+
+#[cfg(test)]
+mod object_array_shape_tests {
+    use serde_json::{json, Value};
+
+    use super::DatadogConfiguration;
+
+    #[test]
+    fn every_object_array_leaf_accepts_singletons_and_empty_objects() {
+        let entry = json!({ "name": "one" });
+        for (source, expected) in [
+            (entry.clone(), json!([entry])),
+            (json!([entry]), json!([entry])),
+            (json!([entry]).to_string().into(), json!([entry])),
+            (json!({}), json!([])),
+            (Value::Null, json!([])),
+            (json!([{}]), json!([{}])),
+        ] {
+            let config: DatadogConfiguration = serde_json::from_value(json!({
+                "dogstatsd_mapper_profiles": source,
+                "metric_filterlist_prefix": source,
+                "metric_tag_filterlist": source,
+                "apm_config": { "replace_tags": source }
+            }))
+            .unwrap();
+
+            assert_eq!(json!(config.dogstatsd_mapper_profiles), expected);
+            assert_eq!(json!(config.metric_filterlist_prefix), expected);
+            assert_eq!(json!(config.metric_tag_filterlist), expected);
+            assert_eq!(json!(config.apm_config.replace_tags), expected);
+        }
+    }
+}
 
 #[cfg(test)]
 mod string_list_shape_tests {

@@ -409,6 +409,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn singleton_object_arrays_load_from_yaml() {
+        let loaded = load_from_file(
+            "singleton_object_arrays",
+            r#"
+dogstatsd_mapper_profiles:
+  name: workers
+  prefix: worker.
+  mappings:
+    match: worker.*
+    name: mapped
+    tags: {worker: "$1"}
+metric_filterlist_prefix:
+  prefix: drop.
+  except_exact: [drop.keep]
+metric_tag_filterlist:
+  metric_name: mapped
+  tags: [pod]
+apm_config:
+  replace_tags:
+    name: http.url
+    pattern: token
+    repl: masked
+"#,
+        )
+        .await;
+
+        assert!(loaded.yaml_fallback_error.is_none());
+        let config = loaded.local();
+        let profiles = &config.domains.dogstatsd.mapper.profiles;
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "workers");
+        assert_eq!(profiles[0].prefix, "worker.");
+        assert_eq!(profiles[0].mappings.len(), 1);
+        assert_eq!(profiles[0].mappings[0].metric_match, "worker.*");
+        assert_eq!(profiles[0].mappings[0].name, "mapped");
+        assert_eq!(profiles[0].mappings[0].tags["worker"], "$1");
+        let prefixes = &config.domains.dogstatsd.metric_filter.prefix_rules;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0].prefix, "drop.");
+        assert_eq!(prefixes[0].except_exact, ["drop.keep"]);
+        let tags = &config.domains.dogstatsd.tag_filterlist;
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].metric_name, "mapped");
+        assert_eq!(tags[0].tags, ["pod"]);
+        let replacements = &config.domains.traces.replace_tags;
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(replacements[0].name, "http.url");
+        assert_eq!(replacements[0].pattern, "token");
+        assert_eq!(replacements[0].repl, "masked");
+    }
+
+    #[tokio::test]
+    async fn empty_objects_load_as_empty_object_arrays() {
+        let loaded = load_from_file(
+            "empty_object_arrays",
+            "dogstatsd_mapper_profiles: {}\nmetric_filterlist_prefix: {}\nmetric_tag_filterlist: {}\napm_config: {replace_tags: {}}\n",
+        )
+        .await;
+
+        assert!(loaded.yaml_fallback_error.is_none());
+        let config = loaded.local();
+        assert!(config.domains.dogstatsd.mapper.profiles.is_empty());
+        assert!(config.domains.dogstatsd.metric_filter.prefix_rules.is_empty());
+        assert!(config.domains.dogstatsd.tag_filterlist.is_empty());
+        assert!(config.domains.traces.replace_tags.is_empty());
+    }
+
+    #[tokio::test]
     async fn load_rejects_translation_invalid_local_sources() {
         let path = std::env::temp_dir().join(format!("adp_local_bad_{}.yaml", std::process::id()));
         // The file parses, but typed translation rejects the value.
