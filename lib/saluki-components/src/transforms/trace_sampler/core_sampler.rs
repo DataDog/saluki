@@ -271,6 +271,12 @@ impl Sampler {
     pub fn size(&self) -> i64 {
         self.seen.len() as i64
     }
+
+    /// Returns the total weight counted across all signatures and buckets.
+    #[cfg(test)]
+    pub(super) fn total_seen_weight(&self) -> f32 {
+        self.all_sigs_seen.iter().sum()
+    }
 }
 
 #[cfg(test)]

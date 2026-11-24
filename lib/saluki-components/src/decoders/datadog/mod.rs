@@ -39,17 +39,28 @@ const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
 /// Plausible minimum average wire size of a span containing a random span ID and epoch-nanosecond start time.
 const MIN_BYTES_PER_SPAN: u32 = 21;
 
+/// A decoded v1.0 tracer payload.
+#[derive(Debug)]
+pub struct DecodedV1 {
+    /// One trace per trace chunk. Each trace's attributes are its chunk's attributes only.
+    pub traces: Vec<Trace>,
+    /// The tracer payload's own attributes, kept apart from the chunk attributes so that payload-level values win
+    /// where the trace-agent's receiver reads only the payload (process tags, SDK export mode), and so that
+    /// they can be written back on the tracer payload rather than on every chunk.
+    pub payload_attributes: FastHashMap<MetaString, AttributeValue>,
+}
+
 /// Decodes a single v1.0 tracer payload into unified trace events.
 ///
 /// Each trace chunk in the payload becomes one [`Trace`]. Payload-level metadata (container ID,
-/// tracer language, environment, and so on) is cloned onto every trace, and payload-level
-/// attributes are merged into each trace's attributes with per-chunk attributes taking precedence.
+/// tracer language, environment, and so on) is cloned onto every trace. Payload-level attributes
+/// are returned separately, in [`DecodedV1::payload_attributes`].
 ///
 /// # Errors
 ///
 /// Returns a [`DecodeError`] if the input is not a well-formed v1.0 tracer payload (truncated,
 /// malformed MessagePack, oversized headers, out-of-range string references, and so on).
-pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
+pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
     let mut reader = bytes;
     let payload = decode_tracer_payload(&mut reader)?;
     if !reader.is_empty() {
@@ -70,23 +81,22 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
 
     let mut traces = Vec::with_capacity(payload.chunks.len());
     for chunk in payload.chunks {
-        // Payload-level attributes form the base; per-chunk attributes override on key conflict.
-        let mut attributes = payload.attributes.clone();
-        attributes.extend(chunk.attributes);
-
         let mut trace = Trace::new(chunk.spans, TraceIngestInfo::Datadog);
         trace.trace_id_high = chunk.trace_id_high;
         trace.trace_id_low = chunk.trace_id_low;
         trace.origin = chunk.origin;
         trace.payload = payload_fields.clone();
-        trace.attributes = Arc::new(attributes);
+        trace.attributes = Arc::new(chunk.attributes);
         trace.priority = chunk.priority;
         trace.dropped_trace = chunk.dropped_trace;
         trace.sampling_mechanism = chunk.sampling_mechanism;
         traces.push(trace);
     }
 
-    Ok(traces)
+    Ok(DecodedV1 {
+        traces,
+        payload_attributes: payload.attributes,
+    })
 }
 
 /// Payload attribute holding the process tags.

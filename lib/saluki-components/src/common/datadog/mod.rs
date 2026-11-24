@@ -19,7 +19,7 @@ pub mod validation;
 pub(crate) mod version_data;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace, TraceIngestInfo};
 use stringtheory::MetaString;
 use tracing::debug;
 
@@ -90,6 +90,9 @@ pub const TOP_LEVEL_KEY: &str = "_top_level";
 
 /// Span attribute key used to mark spans that sampling kept as standalone events (`_dd.analyzed`).
 pub const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
+
+/// Span attribute key a tracer uses to mark the spans it considers top-level (`_dd.top_level`).
+pub const TRACER_TOP_LEVEL_KEY: &str = "_dd.top_level";
 
 /// Decision maker value for probabilistic sampling (matches Datadog Agent).
 pub const DECISION_MAKER_PROBABILISTIC: &str = "-9";
@@ -193,6 +196,39 @@ pub fn get_root_span_index(spans: &[Span]) -> Option<usize> {
     Some(length - 1)
 }
 
+/// Marks the spans the tracer flagged as top-level (`_dd.top_level` = 1) with `_top_level`, in-place.
+///
+/// Used instead of [`compute_top_level`] when the client already computed top-level spans. Datadog traces read the
+/// flag through [`as_double_value`]. OTLP traces read it as a number only, as the trace-agent reads span metrics on
+/// its OTLP path.
+pub fn update_tracer_top_level(spans: &mut [Span], ingest_info: TraceIngestInfo) {
+    let read_flag = match ingest_info {
+        TraceIngestInfo::Datadog => as_double_value,
+        TraceIngestInfo::Otlp { .. } => AttributeValue::as_num,
+    };
+    for span in spans {
+        if span.attributes.get(TRACER_TOP_LEVEL_KEY).and_then(read_flag) == Some(1.0) {
+            span.attributes
+                .insert(MetaString::from_static(TOP_LEVEL_KEY), AttributeValue::Float(1.0));
+        }
+    }
+}
+
+/// Reads an attribute as a float the way the trace-agent does: numbers as-is, a string parsed as a float, and a bool
+/// as 1 or 0. Other types read as `None`.
+///
+/// shortcut: Rust's float parsing rejects the hexadecimal (`0x1p0`) and underscore forms the trace-agent accepts,
+/// upgrade if a tracer sends them.
+pub fn as_double_value(value: &AttributeValue) -> Option<f64> {
+    match value {
+        AttributeValue::String(s) => s.parse().ok(),
+        AttributeValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        AttributeValue::Float(f) => Some(*f),
+        AttributeValue::Int(i) => Some(*i as f64),
+        AttributeValue::Bytes(_) | AttributeValue::Array(_) | AttributeValue::KeyValueList(_) => None,
+    }
+}
+
 /// Computes top-level marks from the span relationships themselves, marking spans in-place.
 ///
 /// A span is top-level when it is a root span, its parent is missing from the trace (the entry
@@ -228,8 +264,6 @@ pub fn compute_top_level(spans: &mut [Span]) {
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::event::trace::TraceIngestInfo;
-
     use super::*;
 
     fn span(span_id: u64, parent_id: u64, hostname: Option<&str>) -> Span {
@@ -276,5 +310,18 @@ mod tests {
             TraceIngestInfo::Datadog,
         );
         assert_eq!(tracer_hostname(&trace), Some("local-root-host"));
+    }
+
+    #[test]
+    fn as_double_value_mirrors_go_any_value() {
+        let string = |s: &str| AttributeValue::String(MetaString::from(s));
+        assert_eq!(as_double_value(&AttributeValue::Float(1.0)), Some(1.0));
+        assert_eq!(as_double_value(&AttributeValue::Int(1)), Some(1.0));
+        assert_eq!(as_double_value(&string("1")), Some(1.0));
+        assert_eq!(as_double_value(&string("1.5e0")), Some(1.5));
+        assert_eq!(as_double_value(&string("abc")), None);
+        assert_eq!(as_double_value(&AttributeValue::Bool(true)), Some(1.0));
+        assert_eq!(as_double_value(&AttributeValue::Bool(false)), Some(0.0));
+        assert_eq!(as_double_value(&AttributeValue::Bytes(vec![1])), None);
     }
 }

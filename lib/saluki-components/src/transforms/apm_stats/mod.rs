@@ -172,6 +172,11 @@ impl ApmStats {
     }
 
     fn process_trace(&mut self, trace: &Trace) {
+        // The client already sent stats for this payload.
+        if trace.payload.receiver().client_computed_stats {
+            return;
+        }
+
         let root_span = trace
             .spans()
             .iter()
@@ -265,8 +270,8 @@ impl ApmStats {
             });
 
         // OTLP traces use the payload hostname, then the root span's `_dd.hostname`. Datadog traces use only the tracer
-        // payload hostname, as the trace-agent does for v1.0 payloads and as the trace encoder does. Both fall back to
-        // the agent hostname.
+        // payload hostname, as the trace-agent does; the decoders promote a v0.x root `_dd.hostname` onto the payload.
+        // Both fall back to the agent hostname.
         let tracer_hostname = match trace.ingest_info() {
             TraceIngestInfo::Otlp { .. } => get_tracer_hostname(trace),
             TraceIngestInfo::Datadog => Some(&trace.payload.hostname).filter(|hostname| !hostname.is_empty()),
@@ -572,7 +577,7 @@ mod tests {
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
     use saluki_core::components::test_util::TestComponentDriver;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
+    use saluki_core::data_model::event::trace::{AttributeValue, ReceiverMetadata, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
     use saluki_env::workload::providers::TestWorkloadProvider;
@@ -767,6 +772,65 @@ mod tests {
         // Flush and verify we got stats
         let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
         assert!(!stats.is_empty(), "Expected stats to be produced");
+    }
+
+    fn test_transform(agent_hostname: &str) -> ApmStats {
+        ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now_nanos()),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::from("none"),
+            agent_hostname: MetaString::from(agent_hostname),
+            workload_provider: None,
+            splits: Counter::noop(),
+        }
+    }
+
+    #[test]
+    fn process_trace_skips_client_computed_stats() {
+        let now = now_nanos();
+        let mut transform = test_transform("");
+
+        let span = make_test_span("test-service", "test-operation", "test-resource");
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.payload.receiver = Some(Arc::new(ReceiverMetadata {
+            client_computed_stats: true,
+            ..ReceiverMetadata::default()
+        }));
+
+        transform.process_trace(&trace);
+
+        let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
+        assert!(stats.is_empty(), "client-computed stats must not be recomputed");
+    }
+
+    #[test]
+    fn payload_key_hostname_depends_on_ingest_protocol() {
+        let transform = test_transform("agent-host");
+        let root_with_hostname = || {
+            let mut attrs = FastHashMap::default();
+            attrs.insert(
+                MetaString::from("_dd.hostname"),
+                AttributeValue::String(MetaString::from("root-host")),
+            );
+            make_test_span("svc", "op", "res").with_attributes(attrs)
+        };
+        let hostname = |ingest_info, payload_hostname: &str| {
+            let mut trace = Trace::new(vec![root_with_hostname()], ingest_info);
+            trace.payload.hostname = MetaString::from(payload_hostname);
+            transform
+                .build_payload_key(&trace, "", ContainerVersionData::default())
+                .hostname
+        };
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
+
+        // Datadog traces ignore the root span's `_dd.hostname`, as the trace-agent does.
+        assert_eq!(hostname(TraceIngestInfo::Datadog, "payload-host"), "payload-host");
+        assert_eq!(hostname(TraceIngestInfo::Datadog, ""), "agent-host");
+        // OTLP traces fall back to it when the payload has no hostname.
+        assert_eq!(hostname(otlp, "payload-host"), "payload-host");
+        assert_eq!(hostname(otlp, ""), "root-host");
     }
 
     #[test]
@@ -1979,7 +2043,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_key_hostname_depends_on_ingest_protocol() {
+    fn otlp_hostname_prefers_payload_then_root_span_then_agent() {
         let now = now_nanos();
         let transform = ApmStats {
             concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
@@ -1989,7 +2053,7 @@ mod tests {
             workload_provider: None,
             splits: Counter::noop(),
         };
-        let trace_with = |ingest_info, payload_hostname: &str, root_hostname: Option<&str>| {
+        let trace_with = |payload_hostname: &str, root_hostname: Option<&str>| {
             let mut attrs = FastHashMap::default();
             if let Some(root_hostname) = root_hostname {
                 attrs.insert(
@@ -1998,7 +2062,13 @@ mod tests {
                 );
             }
             let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
-            let mut trace = Trace::new(vec![root_span], ingest_info);
+            // The root span fallback applies to OTLP traces only; Datadog traces use the payload hostname alone.
+            let mut trace = Trace::new(
+                vec![root_span],
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            );
             trace.payload.hostname = MetaString::from(payload_hostname);
             trace
         };
@@ -2009,24 +2079,10 @@ mod tests {
                 .to_string()
         };
 
-        let otlp = TraceIngestInfo::Otlp {
-            receiver_sampling_rate: 1.0,
-        };
-
-        // OTLP traces fall back to the root span's `_dd.hostname` when the payload has no hostname.
-        assert_eq!(
-            hostname(&trace_with(otlp, "payload-host", Some("root-host"))),
-            "payload-host"
-        );
-        assert_eq!(hostname(&trace_with(otlp, "", Some("root-host"))), "root-host");
-        assert_eq!(hostname(&trace_with(otlp, "", None)), "agent-host");
-        // Datadog traces ignore it, as the trace-agent does for v1.0 payloads.
-        let datadog = TraceIngestInfo::Datadog;
-        assert_eq!(
-            hostname(&trace_with(datadog, "payload-host", Some("root-host"))),
-            "payload-host"
-        );
-        assert_eq!(hostname(&trace_with(datadog, "", Some("root-host"))), "agent-host");
+        // The payload hostname beats the root span's `_dd.hostname`.
+        assert_eq!(hostname(&trace_with("payload-host", Some("root-host"))), "payload-host");
+        assert_eq!(hostname(&trace_with("", Some("root-host"))), "root-host");
+        assert_eq!(hostname(&trace_with("", None)), "agent-host");
     }
 
     #[test]
