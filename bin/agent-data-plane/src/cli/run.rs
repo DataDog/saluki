@@ -1012,7 +1012,7 @@ async fn add_apm_pipeline_to_blueprint(
         config_system.live(|config| &config.shared.endpoints.api_key),
         agent_client.cloned(),
         semantic_registry,
-    );
+    )?;
     blueprint.add_source("dd_traces_in", dd_traces_in)?;
 
     if DataPlaneConfiguration::from_configuration(&config).native_trace_intake_enabled() {
@@ -1023,8 +1023,11 @@ async fn add_apm_pipeline_to_blueprint(
         blueprint
             .add_transform("dd_traces_normalize", dd_traces_normalize_config)?
             .connect_components_in_order(["dd_traces_in.traces", "dd_traces_normalize", "traces_process"])?
-            // The normalizer reports its telemetry as metric events, as the sampler does.
-            .connect_components("dd_traces_normalize.metrics", "metrics_enrich")?;
+            // The normalizer and the intake report their telemetry as metric events, as the sampler does.
+            .connect_components(
+                ["dd_traces_in.metrics", "dd_traces_normalize.metrics"],
+                "metrics_enrich",
+            )?;
     } else {
         // Without native intake the source proxies trace payloads and emits nothing on its traces output. A topology
         // can't hold an unconnected output, and the trace pipeline may not exist, so the output goes to a blackhole.

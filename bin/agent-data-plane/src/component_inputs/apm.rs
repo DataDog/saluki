@@ -14,8 +14,10 @@ use saluki_components::sources::{
     ApmConfiguration, InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation, InfoReplaceRule,
     InfoTagFilter, InfoTagFilters, TraceIntakeConfiguration, TracerFlareConfiguration,
 };
+use saluki_components::transforms::HistogramConfiguration;
 use saluki_env::workload::CaptureEntityResolver;
 use saluki_env::WorkloadProvider;
+use saluki_error::GenericError;
 
 use super::{forwarder_configuration, trace_tag_replacer_configuration};
 
@@ -29,12 +31,18 @@ pub(crate) fn apm_source_configuration(
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>, api_key: Live<String>,
     agent_client: Option<RemoteAgentClientConfiguration>, semantic_registry: SemanticRegistryProvider,
-) -> ApmConfiguration {
+) -> Result<ApmConfiguration, GenericError> {
     let apm = &config.domains.apm;
     let shared = &config.shared;
     let (bind_host, non_local_traffic) = apm.listen_host(&shared.bind_host, containerized);
 
-    ApmConfiguration {
+    let trace_intake = if apm.native_trace_intake {
+        Some(trace_intake_configuration(config)?)
+    } else {
+        None
+    };
+
+    Ok(ApmConfiguration {
         receiver_socket: apm.receiver_socket.clone().unwrap_or_default(),
         proxy_destination: apm.proxy_destination.clone(),
         capture_entity_resolver,
@@ -51,15 +59,23 @@ pub(crate) fn apm_source_configuration(
         agent_client,
         semantic_registry,
         validate_endpoint: validate_endpoint(&shared.endpoints),
-        trace_intake: apm.native_trace_intake.then(|| trace_intake_configuration(config)),
-    }
+        trace_intake,
+    })
 }
 
 /// Builds the native trace intake settings, with the receiver limits resolved as the trace-agent resolves them.
-fn trace_intake_configuration(config: &SalukiConfiguration) -> TraceIntakeConfiguration {
+fn trace_intake_configuration(config: &SalukiConfiguration) -> Result<TraceIntakeConfiguration, GenericError> {
     let apm = &config.domains.apm;
     let parallelism = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-    TraceIntakeConfiguration {
+    // The trace-agent sends its receiver histograms through DogStatsD, which summarizes them with these settings.
+    let histogram = &config.shared.metrics_encoding.histogram;
+    let histogram = HistogramConfiguration::new(
+        &histogram.aggregates,
+        &histogram.percentiles,
+        histogram.copy_to_distribution,
+        histogram.copy_to_distribution_prefix.clone(),
+    );
+    Ok(TraceIntakeConfiguration {
         max_request_bytes: apm.max_payload_size,
         decoders: apm.effective_decoders(parallelism),
         decoder_timeout: apm.effective_decoder_timeout(),
@@ -69,7 +85,8 @@ fn trace_intake_configuration(config: &SalukiConfiguration) -> TraceIntakeConfig
             .traces
             .features
             .contains(&traces::ApmFeature::TooManyRequests),
-    }
+        histogram,
+    })
 }
 
 /// Returns the URL of `/api/v2/validate`, as the trace-agent resolves it: under an explicit `dd_url`, or under the
@@ -223,6 +240,7 @@ mod tests {
             None,
             SemanticRegistryProvider::default(),
         )
+        .unwrap()
     }
 
     #[test]
@@ -243,7 +261,8 @@ mod tests {
             Live::new_fixed("api-key".to_string()),
             None,
             SemanticRegistryProvider::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(source.receiver_port, 9126);
         assert_eq!(source.receiver_socket, "/tmp/receiver.sock");

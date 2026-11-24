@@ -1942,22 +1942,22 @@ inventory:
 
   histogram_aggregates:
     support: full
-    pipelines: [dogstatsd, checks]
+    pipelines: [dogstatsd, checks, traces]
     description: "Histogram aggregate statistics"
 
   histogram_copy_to_distribution:
     support: full
-    pipelines: [dogstatsd, checks]
+    pipelines: [dogstatsd, checks, traces]
     description: "Copy histograms to distributions"
 
   histogram_copy_to_distribution_prefix:
     support: full
-    pipelines: [dogstatsd, checks]
+    pipelines: [dogstatsd, checks, traces]
     description: "Prefix for hist-to-dist copies"
 
   histogram_percentiles:
     support: full
-    pipelines: [checks, dogstatsd]
+    pipelines: [checks, dogstatsd, traces]
     description: "Histogram percentile aggregates"
 
   hostname:

@@ -18,6 +18,9 @@
 //! | The body ends early | 400 `unexpected-eof` |
 //! | The payload doesn't decode | 400 |
 //! | Accepted | 200 |
+//!
+//! Each outcome but the cross-site rejection is counted in the [receiver telemetry](super::receiver_telemetry), as
+//! the trace-agent counts it.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -39,15 +42,23 @@ use tokio::time::{sleep, sleep_until, Instant};
 use tracing::debug;
 
 use super::container_tags::ContainerTagsHasher;
+use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
+use crate::common::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
 use crate::decoders::datadog::{decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export};
+use crate::transforms::HistogramConfiguration;
 
 const SEC_FETCH_SITE_HEADER: HeaderName = HeaderName::from_static("sec-fetch-site");
 const PROCESS_TAGS_HEADER: HeaderName = HeaderName::from_static("x-datadog-process-tags");
+const LANG_HEADER: HeaderName = HeaderName::from_static("datadog-meta-lang");
+const LANG_VERSION_HEADER: HeaderName = HeaderName::from_static("datadog-meta-lang-version");
+const TRACER_VERSION_HEADER: HeaderName = HeaderName::from_static("datadog-meta-tracer-version");
 const LANG_INTERPRETER_HEADER: HeaderName = HeaderName::from_static("datadog-meta-lang-interpreter");
 const LANG_INTERPRETER_VENDOR_HEADER: HeaderName = HeaderName::from_static("datadog-meta-lang-interpreter-vendor");
 const COMPUTED_TOP_LEVEL_HEADER: HeaderName = HeaderName::from_static("datadog-client-computed-top-level");
 const COMPUTED_STATS_HEADER: HeaderName = HeaderName::from_static("datadog-client-computed-stats");
 const DROPPED_P0_TRACES_HEADER: HeaderName = HeaderName::from_static("datadog-client-dropped-p0-traces");
+const DROPPED_P0_SPANS_HEADER: HeaderName = HeaderName::from_static("datadog-client-dropped-p0-spans");
+const TRACE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-datadog-trace-count");
 const SEND_REAL_HTTP_STATUS_HEADER: HeaderName = HeaderName::from_static("datadog-send-real-http-status");
 
 /// Longest `Datadog-Meta-*` value kept, in bytes, as the trace-agent bounds them.
@@ -76,6 +87,10 @@ pub struct TraceIntakeConfiguration {
     /// Whether a payload rejected for want of a decoder gets `429 Too Many Requests` rather than `200 OK`
     /// (`apm_config.features` contains `429`).
     pub reject_with_too_many_requests: bool,
+
+    /// How the receiver telemetry reports its `serve_traces_ms` histogram, as DogStatsD reports histograms
+    /// (`histogram_aggregates`, `histogram_percentiles`, `histogram_copy_to_distribution`).
+    pub histogram: HistogramConfiguration,
 }
 
 /// An intake endpoint version, as the trace-agent's `Version`.
@@ -86,9 +101,9 @@ pub(super) enum EndpointVersion {
 }
 
 impl EndpointVersion {
-    fn as_meta_string(self) -> MetaString {
+    fn as_str(self) -> &'static str {
         match self {
-            Self::V10 => MetaString::from_static("v1.0"),
+            Self::V10 => "v1.0",
         }
     }
 }
@@ -99,15 +114,22 @@ pub(super) struct TraceIntake {
     config: Arc<TraceIntakeConfiguration>,
     decoders: Arc<Semaphore>,
     traces: mpsc::Sender<Vec<Trace>>,
+    telemetry: Arc<ReceiverTelemetry>,
 }
 
 impl TraceIntake {
     pub(super) fn new(config: TraceIntakeConfiguration, traces: mpsc::Sender<Vec<Trace>>) -> Self {
         Self {
             decoders: Arc::new(Semaphore::new(config.decoders.get())),
+            telemetry: Arc::new(ReceiverTelemetry::new(config.histogram.clone())),
             config: Arc::new(config),
             traces,
         }
+    }
+
+    /// Returns the receiver telemetry the intake counts into.
+    pub(super) fn telemetry(&self) -> Arc<ReceiverTelemetry> {
+        Arc::clone(&self.telemetry)
     }
 
     /// Handles a trace payload sent to the endpoint of `version`.
@@ -122,12 +144,14 @@ impl TraceIntake {
         if header_str(headers, &SEC_FETCH_SITE_HEADER) == Some("cross-site") {
             return http_error(StatusCode::FORBIDDEN, "cross-site request rejected");
         }
+        let connection = parts.extensions.get::<ConnectInfo<ConnectionAddress>>();
 
         let _permit = select! {
             biased;
             permit = self.decoders.clone().acquire_owned() => permit.expect("the decoder semaphore is never closed"),
             _ = sleep_until(deadline) => {
                 debug!("Request timed out waiting for a decoder. Payload dropped.");
+                self.telemetry.record(header_tags(version, headers, connection), |stats| stats.payload_timeout += 1);
                 return StatusCode::TOO_MANY_REQUESTS.into_response();
             },
             _ = sleep(self.config.decoder_timeout) => {
@@ -140,14 +164,21 @@ impl TraceIntake {
                 } else {
                     StatusCode::OK
                 };
+                self.telemetry.record(header_tags(version, headers, connection), |stats| stats.payload_refused += 1);
                 return rate_by_service(status);
             },
         };
 
+        // As `serve_traces_ms` in the trace-agent, the serve time runs from when a decoder is free.
+        let start = Instant::now();
         let body = match read_body(headers, body, self.config.max_request_bytes, deadline, true).await {
             Ok(body) => body,
-            Err(error) => return error.into_response(),
+            Err(error) => {
+                self.record_rejection(version, headers, connection, start, error.drop_reason());
+                return error.into_response();
+            }
         };
+        let body_len = body.len();
 
         let decoded = match version {
             EndpointVersion::V10 => decode_v1_payload(&body),
@@ -159,11 +190,11 @@ impl TraceIntake {
             Ok(decoded) => decoded,
             Err(error) => {
                 debug!(%error, "Cannot decode {version:?} traces payload.");
+                self.record_rejection(version, headers, connection, start, DropReason::DecodingError);
                 return http_error(StatusCode::BAD_REQUEST, &error.to_string());
             }
         };
         let mut traces = decoded.traces;
-        let connection = parts.extensions.get::<ConnectInfo<ConnectionAddress>>();
 
         // A v1.0 payload's own container ID wins over the request's.
         let payload_container_id = traces.first().map(|trace| trace.payload.container_id.clone());
@@ -177,6 +208,7 @@ impl TraceIntake {
         };
 
         let mut receiver = receiver_metadata(version, headers, connection, traces.len());
+        receiver.service = first_service(&traces);
         receiver.process_tags = resolve_process_tags(
             &decoded.payload_attributes,
             first_span(&traces),
@@ -191,19 +223,87 @@ impl TraceIntake {
         });
 
         let receiver = Arc::new(receiver);
+        let mut spans = 0;
         for trace in &mut traces {
             if let Some(container_id) = &container_id {
                 trace.payload.container_id = container_id.clone();
             }
             trace.payload.receiver = Some(Arc::clone(&receiver));
+            spans += trace.spans().len();
         }
+        let trace_count = traces.len();
 
         if !traces.is_empty() && self.traces.send(traces).await.is_err() {
             debug!("APM source stopped. Payload dropped.");
         }
 
+        // The trace-agent counts the dropped P0s the client reports separately from the per-chunk weight.
+        let dropped_p0_traces = header_count(headers, &DROPPED_P0_TRACES_HEADER);
+        let dropped_p0_spans = header_count(headers, &DROPPED_P0_SPANS_HEADER);
+        self.telemetry.record(ReceiverTags::from_receiver(&receiver), |stats| {
+            stats.traces_received += trace_count as i64;
+            stats.traces_bytes += body_len as i64;
+            stats.spans_received += spans as i64;
+            stats.payload_accepted += 1;
+            stats.client_dropped_p0_traces += dropped_p0_traces.unwrap_or(0);
+            stats.client_dropped_p0_spans += dropped_p0_spans.unwrap_or(0);
+            // Recorded once the traces are handed over, as the trace-agent's deferred timer is.
+            stats.serve_time(start.elapsed(), true);
+        });
+
         rate_by_service(StatusCode::OK)
     }
+
+    /// Counts a payload that couldn't be read or decoded, as the trace-agent does.
+    fn record_rejection(
+        &self, version: EndpointVersion, headers: &HeaderMap, connection: Option<&ConnectInfo<ConnectionAddress>>,
+        start: Instant, reason: DropReason,
+    ) {
+        self.telemetry.record_error(version.as_str(), reason);
+        // As in the trace-agent, a missing or unparseable `X-Datadog-Trace-Count` counts no trace.
+        let dropped = header_count(headers, &TRACE_COUNT_HEADER).unwrap_or(0);
+        self.telemetry
+            .record(header_tags(version, headers, connection), |stats| {
+                stats.drop_traces(reason, dropped);
+                stats.serve_time(start.elapsed(), false);
+            });
+    }
+}
+
+/// Returns the receiver telemetry tags that come from the request alone, as the trace-agent tags them, with no service.
+fn header_tags(
+    version: EndpointVersion, headers: &HeaderMap, connection: Option<&ConnectInfo<ConnectionAddress>>,
+) -> ReceiverTags {
+    let meta = |name: &HeaderName| shared_meta(truncate_utf8(header_str(headers, name).unwrap_or_default()));
+    ReceiverTags {
+        lang: meta(&LANG_HEADER),
+        lang_version: meta(&LANG_VERSION_HEADER),
+        lang_vendor: meta(&LANG_INTERPRETER_VENDOR_HEADER),
+        interpreter: meta(&LANG_INTERPRETER_HEADER),
+        tracer_version: meta(&TRACER_VERSION_HEADER),
+        endpoint_version: MetaString::from_static(version.as_str()),
+        connection_type: connection_type(connection),
+        service: MetaString::empty(),
+    }
+}
+
+/// Returns the service of the payload's first span, truncated as the trace-agent truncates it.
+fn first_service(traces: &[Trace]) -> MetaString {
+    let service = first_span(traces).map(|span| span.service()).unwrap_or_default();
+    shared_meta(truncate_utf8_str(service, MAX_SERVICE_LEN))
+}
+
+/// Returns a string that is cheap to clone, so that the telemetry can key on it without copying it again.
+fn shared_meta(value: &str) -> MetaString {
+    if value.is_empty() {
+        return MetaString::empty();
+    }
+    MetaString::try_inline(value).unwrap_or_else(|| MetaString::from(Arc::<str>::from(value)))
+}
+
+/// Returns a header's value parsed as a signed 64-bit count, if it parses.
+fn header_count(headers: &HeaderMap, name: &HeaderName) -> Option<i64> {
+    header_str(headers, name).and_then(|value| value.parse::<i64>().ok())
 }
 
 /// Builds the receiver metadata that comes from the request alone.
@@ -211,13 +311,11 @@ fn receiver_metadata(
     version: EndpointVersion, headers: &HeaderMap, connection: Option<&ConnectInfo<ConnectionAddress>>,
     chunk_count: usize,
 ) -> ReceiverMetadata {
-    let meta = |name: &HeaderName| MetaString::from(truncate_utf8(header_str(headers, name).unwrap_or_default()));
+    let tags = header_tags(version, headers, connection);
 
     // Go divides by the payload's chunk count when it processes the payload, after dropping invalid chunks; dividing
     // by the decoded count spreads the weight over slightly more chunks when some are dropped.
-    let dropped_p0s = header_str(headers, &DROPPED_P0_TRACES_HEADER)
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(0);
+    let dropped_p0s = header_count(headers, &DROPPED_P0_TRACES_HEADER).unwrap_or(0);
     let client_dropped_p0s_weight = if chunk_count == 0 {
         0.0
     } else {
@@ -228,10 +326,13 @@ fn receiver_metadata(
         client_dropped_p0s_weight,
         client_computed_stats: is_header_true(header_str(headers, &COMPUTED_STATS_HEADER)),
         client_computed_top_level: is_header_true(header_str(headers, &COMPUTED_TOP_LEVEL_HEADER)),
-        interpreter: meta(&LANG_INTERPRETER_HEADER),
-        lang_vendor: meta(&LANG_INTERPRETER_VENDOR_HEADER),
-        endpoint_version: version.as_meta_string(),
-        connection_type: connection_type(connection),
+        lang: tags.lang,
+        lang_version: tags.lang_version,
+        tracer_version: tags.tracer_version,
+        interpreter: tags.interpreter,
+        lang_vendor: tags.lang_vendor,
+        endpoint_version: tags.endpoint_version,
+        connection_type: tags.connection_type,
         ..ReceiverMetadata::new()
     }
 }
@@ -286,6 +387,16 @@ enum BodyError {
     UnexpectedEof,
     /// The receiver timeout elapsed.
     Timeout,
+}
+
+impl BodyError {
+    fn drop_reason(&self) -> DropReason {
+        match self {
+            Self::TooLarge => DropReason::PayloadTooLarge,
+            Self::UnexpectedEof => DropReason::UnexpectedEof,
+            Self::Timeout => DropReason::Timeout,
+        }
+    }
 }
 
 impl IntoResponse for BodyError {
@@ -374,6 +485,7 @@ mod tests {
     use futures::stream;
     use http::Request;
     use rmp::encode;
+    use saluki_core::data_model::event::metric::MetricValues;
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::data_model::tags::{SharedTagSet, Tag, TagSet};
     use saluki_env::workload::origin::{ResolvedExternalData, ResolvedOrigin};
@@ -391,6 +503,7 @@ mod tests {
             decoder_timeout: Duration::from_millis(50),
             receiver_timeout: Duration::from_secs(5),
             reject_with_too_many_requests: false,
+            histogram: HistogramConfiguration::default(),
         }
     }
 
@@ -478,6 +591,139 @@ mod tests {
         assert_eq!(receiver.endpoint_version, "v1.0");
         // Resolved from the first span, as in the trace-agent.
         assert_eq!(receiver.process_tags, "entrypoint.name:app");
+    }
+
+    /// Returns the value of each counter the intake reported, by name, with its tags in order.
+    fn counters(intake: &TraceIntake) -> Vec<(String, Vec<String>, f64)> {
+        intake
+            .telemetry
+            .take_window_events()
+            .iter()
+            .filter_map(|event| {
+                let metric = event.try_as_metric()?;
+                let MetricValues::Rate(points, _) = metric.values() else {
+                    return None;
+                };
+                let tags = metric.context().tags().into_iter().map(|tag| tag.as_str().to_string());
+                let value = points.into_iter().map(|(_, value)| value).sum();
+                Some((metric.context().name().to_string(), tags.collect(), value))
+            })
+            .collect()
+    }
+
+    fn counter(counters: &[(String, Vec<String>, f64)], name: &str) -> (Vec<String>, f64) {
+        counters
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, tags, value)| (tags.clone(), *value))
+            .unwrap_or_else(|| panic!("{name} is missing: {counters:?}"))
+    }
+
+    #[tokio::test]
+    async fn an_accepted_payload_is_counted_under_its_header_and_service_tags() {
+        let (intake, mut traces) = intake(config());
+        let headers = [
+            ("Datadog-Meta-Lang", "python"),
+            ("Datadog-Meta-Lang-Version", "3.12"),
+            ("Datadog-Meta-Tracer-Version", "2.0.0"),
+            ("Datadog-Client-Dropped-P0-Traces", "5"),
+            ("Datadog-Client-Dropped-P0-Spans", "7"),
+        ];
+        let payload = v1_payload(None, 2);
+        let payload_len = payload.len();
+
+        let (status, _, _) = send(&intake, sized_request(&headers, payload)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let receiver = traces.try_recv().unwrap()[0].payload.receiver.clone().unwrap();
+        assert_eq!(receiver.lang, "python");
+        assert_eq!(receiver.service, "checkout-service");
+
+        let counters = counters(&intake);
+        let expected_tags = [
+            "lang:python",
+            "lang_version:3.12",
+            "tracer_version:2.0.0",
+            "endpoint_version:v1.0",
+            "connection_type:unknown",
+            "service:checkout-service",
+        ];
+        for (name, expected) in [
+            ("datadog.trace_agent.receiver.traces_received", 2.0),
+            ("datadog.trace_agent.receiver.traces_bytes", payload_len as f64),
+            ("datadog.trace_agent.receiver.spans_received", 2.0),
+            ("datadog.trace_agent.receiver.payload_accepted", 1.0),
+            ("datadog.trace_agent.receiver.client_dropped_p0_traces", 5.0),
+            ("datadog.trace_agent.receiver.client_dropped_p0_spans", 7.0),
+        ] {
+            assert_eq!(
+                counter(&counters, name),
+                (expected_tags.map(String::from).to_vec(), expected),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_service_tag_is_truncated_as_the_normalizer_truncates_services() {
+        let long = "s".repeat(MAX_SERVICE_LEN + 10);
+        let trace = Trace::new(
+            vec![saluki_core::data_model::event::trace::Span::default().with_service(long.as_str())],
+            saluki_core::data_model::event::trace::TraceIngestInfo::Datadog,
+        );
+        assert_eq!(first_service(&[trace]).len(), MAX_SERVICE_LEN);
+        assert!(first_service(&[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_payload_that_does_not_decode_counts_an_error_and_its_dropped_traces() {
+        let (intake, _traces) = intake(config());
+        let headers = [("Datadog-Meta-Lang", "go"), ("X-Datadog-Trace-Count", "3")];
+
+        let (status, _, _) = send(&intake, sized_request(&headers, vec![0xc1])).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let counters = counters(&intake);
+        let (tags, errors) = counter(&counters, "datadog.trace_agent.receiver.error");
+        assert_eq!(tags, ["handler:traces", "v:v1.0", "error:decoding-error"]);
+        assert_eq!(errors, 1.0);
+        let (tags, dropped) = counter(&counters, "datadog.trace_agent.normalizer.traces_dropped");
+        assert_eq!(
+            tags,
+            [
+                "lang:go",
+                "endpoint_version:v1.0",
+                "connection_type:unknown",
+                "reason:decoding_error"
+            ]
+        );
+        assert_eq!(dropped, 3.0);
+        assert_eq!(
+            counter(&counters, "datadog.trace_agent.receiver.payload_accepted").1,
+            0.0
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_bodies_count_their_error() {
+        let too_long = (LIMIT + 1).to_string();
+        let cases = [
+            (
+                request(&[("Content-Length", &too_long)], Body::empty()),
+                "error:payload-too-large",
+            ),
+            (
+                request(&[], streamed(vec![Err(std::io::Error::other("closed"))])),
+                "error:unexpected-eof",
+            ),
+        ];
+        for (request, expected) in cases {
+            let (intake, _traces) = intake(config());
+            send(&intake, request).await;
+            let (tags, errors) = counter(&counters(&intake), "datadog.trace_agent.receiver.error");
+            assert_eq!(tags[2], expected);
+            assert_eq!(errors, 1.0);
+        }
     }
 
     #[tokio::test]
@@ -586,6 +832,15 @@ mod tests {
             assert_eq!(response_headers[CONTENT_TYPE], "application/json");
             assert_eq!(body, RATE_BY_SERVICE_BODY);
             assert!(traces.try_recv().is_err(), "a refused payload is dropped");
+            let counters = counters(&intake);
+            assert_eq!(
+                counter(&counters, "datadog.trace_agent.receiver.payload_refused").1,
+                1.0
+            );
+            assert_eq!(
+                counter(&counters, "datadog.trace_agent.receiver.payload_accepted").1,
+                0.0
+            );
         }
     }
 
@@ -602,6 +857,10 @@ mod tests {
 
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert!(body.is_empty());
+        assert_eq!(
+            counter(&counters(&intake), "datadog.trace_agent.receiver.payload_timeout").1,
+            1.0
+        );
     }
 
     #[test]
@@ -636,6 +895,9 @@ mod tests {
                 ("datadog-client-computed-stats", "yes"),
                 ("datadog-client-computed-top-level", "false"),
                 ("datadog-client-dropped-p0-traces", "6"),
+                ("datadog-meta-lang", "python"),
+                ("datadog-meta-lang-version", "3.12"),
+                ("datadog-meta-tracer-version", "2.0.0"),
                 ("datadog-meta-lang-interpreter", "CPython"),
                 ("datadog-meta-lang-interpreter-vendor", "python-foundation"),
             ]
@@ -648,6 +910,9 @@ mod tests {
         assert!(receiver.client_computed_stats);
         assert!(!receiver.client_computed_top_level);
         assert_eq!(receiver.client_dropped_p0s_weight, 1.5);
+        assert_eq!(receiver.lang, "python");
+        assert_eq!(receiver.lang_version, "3.12");
+        assert_eq!(receiver.tracer_version, "2.0.0");
         assert_eq!(receiver.interpreter, "CPython");
         assert_eq!(receiver.lang_vendor, "python-foundation");
         assert_eq!(receiver.endpoint_version, "v1.0");
