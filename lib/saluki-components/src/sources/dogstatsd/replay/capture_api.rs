@@ -14,15 +14,18 @@ use serde::{Deserialize, Serialize};
 
 use super::DogStatsDCaptureControl;
 
+/// Route for starting a capture (`POST`).
+pub const CAPTURE_TRIGGER_ROUTE: &str = "/dogstatsd/capture/trigger";
+
 /// Request body for `POST /dogstatsd/capture/trigger`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CaptureTriggerBody {
     /// Duration of the capture, parsed by `parse_duration` (for example, `"10s"`, `"500ms"`).
     pub duration: String,
 
     /// Optional override for the capture output directory. When omitted, the source's
     /// configured default directory is used.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
     /// Whether the capture file should be zstd-compressed.
@@ -31,7 +34,7 @@ pub struct CaptureTriggerBody {
 }
 
 /// Response body for `POST /dogstatsd/capture/trigger`.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CaptureTriggerResponseBody {
     /// Absolute path the capture is being written to.
     pub path: String,
@@ -73,13 +76,13 @@ impl APIHandler for DogStatsDCaptureAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().route("/dogstatsd/capture/trigger", post(Self::trigger_handler))
+        Router::new().route(CAPTURE_TRIGGER_ROUTE, post(Self::trigger_handler))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{unique_dir, wait_until_inactive};
+    use super::super::test_support::{temp_dir, wait_until_inactive};
     use super::*;
     use crate::sources::dogstatsd::replay::TrafficCapture;
 
@@ -109,7 +112,8 @@ mod tests {
     async fn trigger_rejects_invalid_duration() {
         // A malformed duration is rejected up front (BAD_REQUEST), before the capture runtime is consulted.
         let control = DogStatsDCaptureControl::new();
-        control.bind(TrafficCapture::new(unique_dir("capture-api-bad-duration"), 1));
+        let target_dir = temp_dir();
+        control.bind(TrafficCapture::new(target_dir.path().to_path_buf(), 1));
 
         let err = DogStatsDCaptureAPIHandler::trigger_handler(State(control), Json(trigger_body("not-a-duration")))
             .await
@@ -121,9 +125,9 @@ mod tests {
 
     #[tokio::test]
     async fn trigger_starts_capture_and_returns_path() {
-        let target_dir = unique_dir("capture-api-start");
+        let target_dir = temp_dir();
         let control = DogStatsDCaptureControl::new();
-        control.bind(TrafficCapture::new(target_dir.clone(), 1));
+        control.bind(TrafficCapture::new(target_dir.path().to_path_buf(), 1));
 
         let Json(response) =
             DogStatsDCaptureAPIHandler::trigger_handler(State(control.clone()), Json(trigger_body("100ms")))
@@ -132,23 +136,22 @@ mod tests {
         assert!(
             response
                 .path
-                .starts_with(target_dir.to_str().expect("path should be utf-8")),
+                .starts_with(target_dir.path().to_str().expect("path should be utf-8")),
             "returned path {:?} should be inside the configured directory {:?}",
             response.path,
-            target_dir
+            target_dir.path()
         );
         assert!(response.path.contains("datadog-capture"));
         assert!(control.is_ongoing().expect("control should be bound"));
 
         wait_until_inactive(|| control.is_ongoing().expect("control should be bound"));
-        let _ = std::fs::remove_dir_all(target_dir);
     }
 
     #[tokio::test]
     async fn trigger_rejects_concurrent_capture() {
-        let target_dir = unique_dir("capture-api-concurrent");
+        let target_dir = temp_dir();
         let control = DogStatsDCaptureControl::new();
-        control.bind(TrafficCapture::new(target_dir.clone(), 1));
+        control.bind(TrafficCapture::new(target_dir.path().to_path_buf(), 1));
 
         let _ = DogStatsDCaptureAPIHandler::trigger_handler(State(control.clone()), Json(trigger_body("1s")))
             .await
@@ -167,6 +170,23 @@ mod tests {
 
         control.stop_capture().expect("stop should succeed");
         wait_until_inactive(|| control.is_ongoing().expect("control should be bound"));
-        let _ = std::fs::remove_dir_all(target_dir);
+    }
+
+    #[test]
+    fn trigger_body_wire_format_omits_absent_path() {
+        let mut body = trigger_body("10s");
+        assert_eq!(
+            serde_json::to_string(&body).expect("body should serialize"),
+            r#"{"duration":"10s","compressed":false}"#
+        );
+
+        body.path = Some("/tmp/capture".to_string());
+        body.compressed = true;
+        let json = serde_json::to_string(&body).expect("body should serialize");
+        assert_eq!(json, r#"{"duration":"10s","path":"/tmp/capture","compressed":true}"#);
+
+        let decoded: CaptureTriggerBody = serde_json::from_str(&json).expect("body should deserialize");
+        assert_eq!(decoded.path.as_deref(), Some("/tmp/capture"));
+        assert!(decoded.compressed);
     }
 }

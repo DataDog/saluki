@@ -152,6 +152,12 @@ default:
     # tmpfs-backed /tmp.
     DOCKER_LOOPBACK_PATH: "/var"
 
+# Configure `buildcache` to use our shared cache bucket.
+.buildcache-variables:
+  variables:
+    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
+    BUILDCACHE_S3_REGION: "us-east-1"
+
 .build-arm64-variables:
   variables:
     BUILD_ARCH: arm64

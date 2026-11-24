@@ -31,7 +31,7 @@ use tokio_rustls::TlsConnector;
 use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _};
 
 use super::{
-    conn::{check_connection_state, HttpProtocol, HttpsCapableConnectorBuilder},
+    conn::{check_connection_state, http_protocol_alpns, HttpProtocol, HttpsCapableConnectorBuilder},
     telemetry::HttpTransactionErrorTelemetry,
     EndpointTelemetryLayer,
 };
@@ -219,6 +219,9 @@ impl HttpClientBuilder {
     /// Sets the HTTP protocol selection for client connections.
     ///
     /// Defaults to [`HttpProtocol::Auto`], which automatically negotiates HTTP/2 with HTTP/1.1 fallback.
+    ///
+    /// [`HttpProtocol::Http2`] sends HTTP/2 on every connection: plaintext connections use prior knowledge (h2c), and
+    /// TLS connections advertise only `h2` through ALPN.
     pub fn with_http_protocol(mut self, protocol: HttpProtocol) -> Self {
         self.connector_builder = self.connector_builder.with_http_protocol(protocol);
         self
@@ -332,8 +335,8 @@ impl HttpClientBuilder {
     ///
     /// Any ALPN protocols already present in `config` are discarded before the configuration is passed to
     /// `hyper-rustls`. [`Self::with_http_protocol`] remains the sole source of HTTP protocol selection:
-    /// [`HttpProtocol::Auto`] advertises HTTP/2 with HTTP/1.1 fallback, while [`HttpProtocol::Http1`] enables only
-    /// HTTP/1.1 and does not advertise ALPN.
+    /// [`HttpProtocol::Auto`] advertises HTTP/2 with HTTP/1.1 fallback, [`HttpProtocol::Http1`] enables only
+    /// HTTP/1.1 and does not advertise ALPN, and [`HttpProtocol::Http2`] advertises only HTTP/2.
     ///
     /// The supplied configuration is validated for FIPS compliance during [`Self::build`].
     pub fn with_client_tls_config(mut self, config: ClientConfig) -> Self {
@@ -372,6 +375,7 @@ impl HttpClientBuilder {
     /// If there was an error building the TLS configuration for the client, or if a supplied complete TLS
     /// configuration fails FIPS validation in a FIPS build, an error will be returned.
     pub fn build(self) -> Result<HttpClient, GenericError> {
+        let http_protocol = self.connector_builder.http_protocol;
         let tls_config = match self.client_tls_config {
             Some(mut config) => {
                 ensure_client_config_fips_compliant(&config)?;
@@ -384,9 +388,13 @@ impl HttpClientBuilder {
         let tls_handshake_timeout = connector.tls_handshake_timeout();
         // The inner connector verifies HTTPS proxies; this separate config verifies destinations through CONNECT.
         // Keep native roots and verification enabled here even if the inner connector uses an insecure local config.
-        let proxy_tls_config = ClientTLSConfigBuilder::new()
+        let mut proxy_tls_config = ClientTLSConfigBuilder::new()
             .with_root_cert_store(load_platform_root_certificates_inner()?)
             .build()?;
+        if http_protocol == HttpProtocol::Http2 {
+            // The proxy connector can't report a negotiated `h2`. Advertise `h2` only when the client requires it.
+            proxy_tls_config.alpn_protocols = http_protocol_alpns(http_protocol);
+        }
         let mut proxy_connector = hyper_http_proxy::ProxyConnector::unsecured(connector);
         proxy_connector.set_tls(Some(TlsConnector::from(Arc::new(proxy_tls_config))));
         // A zero timeout means the handshake deadline is disabled, matching `HttpsCapableConnector`'s own
@@ -398,7 +406,11 @@ impl HttpClientBuilder {
                 proxy_connector.add_proxy(proxy.to_owned());
             }
         }
-        let client = self.hyper_builder.build(proxy_connector);
+        let mut hyper_builder = self.hyper_builder;
+        if http_protocol == HttpProtocol::Http2 {
+            hyper_builder.http2_only(true);
+        }
+        let client = hyper_builder.build(proxy_connector);
 
         let inner = ServiceBuilder::new()
             .option_layer(self.request_timeout.map(TimeoutLayer::new))
@@ -432,18 +444,22 @@ impl Default for HttpClientBuilder {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 
+    use http::Version;
     use http_body::Body as _;
     use http_body_util::{Empty, Full};
+    use hyper::{server::conn::http2, service::service_fn};
+    use hyper_util::rt::TokioIo;
     use rustls::{server::WebPkiClientVerifier, ClientConfig, RootCertStore, ServerConfig};
     use saluki_tls::test_util::SelfSignedCert;
     use tokio::{
-        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
         net::TcpListener,
+        sync::{mpsc, oneshot},
         time::timeout,
     };
-    use tokio_rustls::TlsAcceptor;
+    use tokio_rustls::{LazyConfigAcceptor, TlsAcceptor};
 
     use super::*;
 
@@ -621,6 +637,196 @@ mod tests {
         );
 
         proxy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn http2_protocol_sends_http2_to_a_plaintext_server() {
+        initialize_crypto_provider();
+        let (addr, mut seen_versions) = spawn_h2c_server().await;
+        let mut client = client_builder_without_roots(HttpProtocol::Http2)
+            .build()
+            .expect("client should build");
+
+        let response = send_empty_get(&mut client, &format!("http://{addr}/"))
+            .await
+            .expect("an HTTP/2 client should complete a request against an HTTP/2-only server");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(seen_versions.recv().await, Some(Version::HTTP_2));
+    }
+
+    #[tokio::test]
+    async fn http1_protocol_fails_against_an_http2_only_server() {
+        initialize_crypto_provider();
+        let (addr, mut seen_versions) = spawn_h2c_server().await;
+        let mut client = client_builder_without_roots(HttpProtocol::Http1)
+            .build()
+            .expect("client should build");
+
+        let result = send_empty_get(&mut client, &format!("http://{addr}/")).await;
+
+        assert!(
+            result.is_err(),
+            "an HTTP/1.1 client should fail against an HTTP/2-only server"
+        );
+        assert_eq!(seen_versions.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn http2_protocol_sends_http2_over_a_unix_socket() {
+        initialize_crypto_provider();
+        let socket_dir = tempfile::tempdir().expect("should create temp dir");
+        let socket_path = socket_dir.path().join("h2.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("should bind Unix socket");
+        let (seen_tx, mut seen_versions) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.expect("server should accept a connection");
+                tokio::spawn(serve_h2(stream, seen_tx.clone()));
+            }
+        });
+        let mut client = client_builder_without_roots(HttpProtocol::Http2)
+            .with_unix_socket_path(&socket_path)
+            .build()
+            .expect("client should build");
+
+        let response = send_empty_get(&mut client, "http://localhost/")
+            .await
+            .expect("an HTTP/2 client should complete a request over a Unix socket");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(seen_versions.recv().await, Some(Version::HTTP_2));
+    }
+
+    #[tokio::test]
+    async fn http2_protocol_negotiates_h2_over_tls() {
+        initialize_crypto_provider();
+        let server_cert = SelfSignedCert::localhost();
+        let mut server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(server_cert.cert_chain(), server_cert.private_key())
+            .expect("server TLS config should build");
+        // The server also accepts HTTP/1.1, so it negotiates `h2` only if the client advertises it.
+        server_config.alpn_protocols = vec![b"http/1.1".to_vec(), b"h2".to_vec()];
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("should bind listener");
+        let port = listener.local_addr().expect("should have local address").port();
+        let (seen_tx, mut seen_versions) = mpsc::unbounded_channel();
+        let (alpn_tx, alpn_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("server should accept a connection");
+            let stream = TlsAcceptor::from(Arc::new(server_config))
+                .accept(stream)
+                .await
+                .expect("TLS handshake should succeed");
+            let _ = alpn_tx.send(stream.get_ref().1.alpn_protocol().map(ToOwned::to_owned));
+            serve_h2(stream, seen_tx).await;
+        });
+        let mut client = HttpClient::builder()
+            .with_tls_config(|builder| builder.with_root_cert_store(root_store(&server_cert)))
+            .with_http_protocol(HttpProtocol::Http2)
+            .build()
+            .expect("client should build");
+
+        let response = send_empty_get(&mut client, &format!("https://localhost:{port}/"))
+            .await
+            .expect("an HTTP/2 client should complete a request over TLS");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(alpn_rx.await.expect("server should report ALPN"), Some(b"h2".to_vec()));
+        assert_eq!(seen_versions.recv().await, Some(Version::HTTP_2));
+    }
+
+    #[tokio::test]
+    async fn http2_protocol_advertises_only_h2_through_a_proxy_tunnel() {
+        initialize_crypto_provider();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("should bind listener");
+        let proxy_addr = listener.local_addr().expect("should have local address");
+        let (alpn_tx, alpn_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("proxy should accept a connection");
+            let mut request = [0; 4096];
+            let bytes_read = stream
+                .read(&mut request)
+                .await
+                .expect("proxy should read the CONNECT request");
+            assert!(bytes_read > 0, "proxy should receive a CONNECT request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
+                .await
+                .expect("proxy should write the CONNECT response");
+            // Read the ClientHello, then drop the tunnel. The test needs only the offered ALPN protocols.
+            let handshake = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream)
+                .await
+                .expect("tunnel should start a TLS handshake");
+            let offered_alpn: Vec<Vec<u8>> = handshake
+                .client_hello()
+                .alpn()
+                .map(|protocols| protocols.map(<[u8]>::to_vec).collect())
+                .unwrap_or_default();
+            let _ = alpn_tx.send(offered_alpn);
+        });
+
+        let proxy_uri: Uri = format!("http://{proxy_addr}").parse().expect("proxy URI should parse");
+        let mut client = client_builder_without_roots(HttpProtocol::Http2)
+            .with_proxies(vec![Proxy::new(hyper_http_proxy::Intercept::All, proxy_uri)])
+            .build()
+            .expect("client should build");
+
+        // The request fails because the proxy drops the tunnel.
+        let _ = send_empty_get(&mut client, "https://example.invalid/").await;
+
+        assert_eq!(alpn_rx.await.expect("proxy should report ALPN"), vec![b"h2".to_vec()]);
+    }
+
+    /// Returns a client builder that trusts no root certificates, so it builds without the platform root store.
+    fn client_builder_without_roots(protocol: HttpProtocol) -> HttpClientBuilder {
+        HttpClient::builder()
+            .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()))
+            .with_http_protocol(protocol)
+    }
+
+    /// Serves HTTP/2 connections without TLS on an ephemeral port.
+    ///
+    /// Reports the HTTP version of each request that the server handles.
+    async fn spawn_h2c_server() -> (SocketAddr, mpsc::UnboundedReceiver<Version>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("should bind listener");
+        let addr = listener.local_addr().expect("should have local address");
+        let (seen_tx, seen_versions) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.expect("server should accept a connection");
+                tokio::spawn(serve_h2(stream, seen_tx.clone()));
+            }
+        });
+        (addr, seen_versions)
+    }
+
+    /// Answers each request on `io` with a 200 response, speaking only HTTP/2.
+    async fn serve_h2<T>(io: T, seen_versions: mpsc::UnboundedSender<Version>)
+    where
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let service = service_fn(move |request: Request<Incoming>| {
+            let _ = seen_versions.send(request.version());
+            async { Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"ok")))) }
+        });
+
+        // A client that doesn't speak HTTP/2 fails the connection. Each test asserts on the client side.
+        let _ = http2::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(io), service)
+            .await;
+    }
+
+    async fn send_empty_get(client: &mut HttpClient, uri: &str) -> Result<Response<Incoming>, GenericError> {
+        let request = Request::get(uri)
+            .body(Empty::<Bytes>::new())
+            .expect("request should build");
+        timeout(Duration::from_secs(5), client.send(request))
+            .await
+            .map_err(|_| GenericError::msg("HTTP request timed out"))?
     }
 
     fn mutual_tls_configs() -> (ServerConfig, ClientConfig) {

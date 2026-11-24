@@ -434,6 +434,17 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_AGENT_RECEIVER_HTTP_ENDPOINT"],
+        path: &[
+            "data_plane",
+            "experimental",
+            "otlp",
+            "proxy",
+            "agent_receiver_http_endpoint",
+        ],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS"],
         path: &["data_plane", "experimental", "otlp", "proxy", "logs"],
         decode: EnvDecode::Bool,
@@ -1000,6 +1011,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_ORIGIN_DETECTION_UNIFIED"],
         path: &["origin_detection_unified"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_DEBUG_VERBOSITY"],
+        path: &["otlp_config", "debug", "verbosity"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_LOGS_ENABLED"],

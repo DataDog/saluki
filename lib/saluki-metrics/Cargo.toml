@@ -10,12 +10,15 @@ workspace = true
 
 [features]
 default = []
+loom = ["dep:loom"]
 test = []
 
 [dependencies]
+loom = { workspace = true, optional = true }
 metrics = { workspace = true }
 papaya = { workspace = true }
 saluki-metrics-macros = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 trybuild = { workspace = true }

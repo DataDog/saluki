@@ -20,12 +20,13 @@ use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::resolve_source_from_attributes;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
-    otel_span_to_dd_span, otel_span_to_dd_span_v1, otlp_value_to_string, SpanConversion, SpanNaming,
+    otel_span_to_dd_span, otel_span_to_dd_span_v1, SpanConversion, SpanNaming,
 };
 use crate::common::otlp::util::{
     get_string_attribute, is_datadog_container_tag_attribute, resolve_otlp_trace_container_tags,
     set_resource_attributes, write_infra_tag_attributes, SourceKind,
 };
+use crate::common::otlp::value::otlp_value_to_string;
 use crate::common::otlp::Metrics;
 
 const DATADOG_HOSTNAME_ATTR: &str = "datadog.host.name";
@@ -389,10 +390,15 @@ impl OtlpTracesTranslator {
         let trace_count_hint = resource_spans.scope_spans.len();
         traces_by_id.reserve(trace_count_hint);
 
+        // The sender's SDK identity, from before enrichment could replace those attributes with its own tags.
+        let spans_received = metrics
+            .spans_received()
+            .for_client(&resource_meta.language_name, &resource_meta.tracer_version);
+
         for scope_spans in resource_spans.scope_spans {
             let scope = scope_spans.scope;
             let scope_ref = scope.as_ref();
-            metrics.spans_received().increment(scope_spans.spans.len() as u64);
+            spans_received.increment(scope_spans.spans.len() as u64);
             for span in scope_spans.spans {
                 let trace_id = convert_trace_id(&span.trace_id);
                 let trace_id_high = convert_trace_id_high(&span.trace_id);
@@ -1692,6 +1698,143 @@ mod tests {
             ("message_type", "otlp_spans"),
         ];
         assert_eq!(recorder.counter(("component_events_dropped_total", span_tags)), Some(3));
+    }
+
+    /// Translates a batch of two spans from a resource with the given attributes and returns the span counts recorded
+    /// for the given client tags.
+    fn spans_received_for(
+        resource_attrs: Vec<KeyValue>, client_tags: &'static [(&'static str, &'static str)],
+    ) -> Option<u64> {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let mut translator = OtlpTracesTranslator::new(
+            OtlpTracesSettings {
+                string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                ..traces_settings()
+            },
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let trace = [0xAAu8; 16];
+        let rs = build_resource_spans(
+            resource_attrs,
+            vec![span(trace, [1u8; 8], vec![]), span(trace, [2u8; 8], vec![])],
+        );
+        let _ = translator.translate_spans(rs, &metrics).count();
+
+        recorder.counter(("component_events_received_total", client_tags))
+    }
+
+    /// The span counter carries the sending client's language and `otlp-`-prefixed SDK version.
+    /// https://github.com/DataDog/saluki/issues/2391
+    #[test]
+    fn translate_spans_tags_received_spans_with_the_client_language_and_version() {
+        let received = spans_received_for(
+            vec![
+                string_kv("telemetry.sdk.language", "Go"),
+                string_kv("telemetry.sdk.version", "1.2.3"),
+            ],
+            &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("message_type", "otlp_spans"),
+                ("lang", "go"),
+                ("tracer_version", "otlp-1.2.3"),
+                ("endpoint_version", "opentelemetry_grpc_v1"),
+            ],
+        );
+        assert_eq!(received, Some(2));
+    }
+
+    /// Infrastructure enrichment can write a tag under the same key as an SDK attribute, replacing the sender's value
+    /// on the resource. The counter must still name the sender.
+    #[test]
+    fn translate_spans_tags_received_spans_with_the_sender_sdk_when_enrichment_uses_the_same_keys() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("abc123")),
+            &["telemetry.sdk.language:enriched", "telemetry.sdk.version:9.9.9"],
+        );
+        let mut translator = OtlpTracesTranslator::new(
+            OtlpTracesSettings {
+                infra_attributes_enabled: true,
+                container_tag_promotion: ContainerTagPromotion::Off,
+                ..translator_config()
+            },
+            MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(provider)),
+        );
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let trace = [0xBBu8; 16];
+        let rs = build_resource_spans(
+            vec![
+                string_kv("container.id", "abc123"),
+                string_kv("telemetry.sdk.language", "go"),
+                string_kv("telemetry.sdk.version", "1.2.3"),
+            ],
+            vec![span(trace, [1u8; 8], vec![]), span(trace, [2u8; 8], vec![])],
+        );
+        let _ = translator.translate_spans(rs, &metrics).count();
+
+        let sender: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("message_type", "otlp_spans"),
+            ("lang", "go"),
+            ("tracer_version", "otlp-1.2.3"),
+            ("endpoint_version", "opentelemetry_grpc_v1"),
+        ];
+        let enriched: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("message_type", "otlp_spans"),
+            ("lang", "enriched"),
+            ("tracer_version", "otlp-9.9.9"),
+            ("endpoint_version", "opentelemetry_grpc_v1"),
+        ];
+        assert_eq!(recorder.counter(("component_events_received_total", sender)), Some(2));
+        assert_eq!(recorder.counter(("component_events_received_total", enriched)), None);
+    }
+
+    /// Without `telemetry.sdk.language` the `lang` tag is left off.
+    #[test]
+    fn translate_spans_omits_lang_without_an_sdk_language() {
+        let received = spans_received_for(
+            vec![string_kv("telemetry.sdk.version", "1.2.3")],
+            &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("message_type", "otlp_spans"),
+                ("tracer_version", "otlp-1.2.3"),
+                ("endpoint_version", "opentelemetry_grpc_v1"),
+            ],
+        );
+        assert_eq!(received, Some(2));
+    }
+
+    /// Without `telemetry.sdk.version` the tracer version is still emitted, as a bare `otlp-`.
+    #[test]
+    fn translate_spans_keeps_the_otlp_tracer_version_prefix_without_an_sdk_version() {
+        let received = spans_received_for(
+            vec![string_kv("telemetry.sdk.language", "go")],
+            &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("message_type", "otlp_spans"),
+                ("lang", "go"),
+                ("tracer_version", "otlp-"),
+                ("endpoint_version", "opentelemetry_grpc_v1"),
+            ],
+        );
+        assert_eq!(received, Some(2));
     }
 
     /// A zero-ID span in one trace must not affect a well-formed trace in the same batch.

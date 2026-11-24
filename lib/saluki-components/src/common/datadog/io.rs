@@ -671,7 +671,8 @@ async fn run_io_loop<B>(
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
         let task_name = endpoint_io_loop_task_name(&resolved_endpoint);
 
-        let spawn_endpoint_worker = |worker_config: &ForwarderConfiguration,
+        let spawn_endpoint_worker = |worker_io: &ForwarderIo<B>,
+                                     worker_config: &ForwarderConfiguration,
                                      worker_metrics: &MetricsBuilder,
                                      queue_telemetry: &SharedTransactionQueueTelemetry,
                                      task_name: String,
@@ -684,7 +685,7 @@ async fn run_io_loop<B>(
                 task_name,
                 run_endpoint_io_loop(
                     endpoint_rx,
-                    io.clone(),
+                    worker_io.clone(),
                     secrets.clone(),
                     worker_config.clone(),
                     endpoint_telemetry,
@@ -700,6 +701,7 @@ async fn run_io_loop<B>(
         };
 
         let tx = spawn_endpoint_worker(
+            &io,
             &config,
             &metrics_builder,
             &shared_txnq_telemetry,
@@ -707,16 +709,19 @@ async fn run_io_loop<B>(
             false,
         );
         let shadow_tx = if shadow_enabled {
-            let (shadow_config, shadow_metrics, shadow_queue_telemetry) = shadow_setup.get_or_insert_with(|| {
-                let mut shadow_config = config.clone();
-                // Validation must not consume authoritative disk capacity or delay shutdown for in-flight shadows.
-                shadow_config.retry.storage_max_size_bytes = 0;
-                shadow_config.stop_wait_for_inflight = false;
-                let shadow_metrics = metrics_builder.clone().add_default_tag("traffic:sketch_shadow");
-                let shadow_queue_telemetry = SharedTransactionQueueTelemetry::from_builder(&shadow_metrics);
-                (shadow_config, shadow_metrics, shadow_queue_telemetry)
-            });
+            let (shadow_io, shadow_config, shadow_metrics, shadow_queue_telemetry) =
+                shadow_setup.get_or_insert_with(|| {
+                    let shadow_config = config.for_sketch_shadow();
+                    let shadow_metrics = metrics_builder.clone().add_default_tag("traffic:sketch_shadow");
+                    // Shadow transactions carry no event or data point counts. Their sent bytes, HTTP errors, and
+                    // queue evictions still count, so tag them as validation traffic.
+                    let mut shadow_io = io.clone();
+                    shadow_io.telemetry = ComponentTelemetry::from_builder(&shadow_metrics);
+                    let shadow_queue_telemetry = SharedTransactionQueueTelemetry::from_builder(&shadow_metrics);
+                    (shadow_io, shadow_config, shadow_metrics, shadow_queue_telemetry)
+                });
             Some(spawn_endpoint_worker(
+                shadow_io,
                 shadow_config,
                 shadow_metrics,
                 shadow_queue_telemetry,
@@ -737,6 +742,10 @@ async fn run_io_loop<B>(
         });
     }
 
+    let shadow_telemetry = shadow_setup
+        .as_ref()
+        .map_or_else(|| io.telemetry.clone(), |(shadow_io, ..)| shadow_io.telemetry.clone());
+
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
         let is_metrics_request = transaction.metadata().payload_info.is_some()
@@ -746,6 +755,7 @@ async fn run_io_loop<B>(
             .sketch_shadow
             .as_ref()
             .is_some_and(|shadow| shadow.is_shadow);
+        let telemetry = if is_shadow { &shadow_telemetry } else { &io.telemetry };
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -755,7 +765,7 @@ async fn run_io_loop<B>(
             }
 
             if endpoint_sender.send(transaction.clone()).await.is_err() {
-                io.telemetry.track_permanently_failed_transaction(
+                telemetry.track_permanently_failed_transaction(
                     transaction.metadata(),
                     None,
                     &endpoint_sender.endpoint_domain,

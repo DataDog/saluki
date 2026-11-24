@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
+use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
 use crate::core::spec::{
     CollectFile, Consumed, ExitChannel, FileSource, FileSpec, Keep, OutputChannel, ParticipantSpec, ProcessSpec,
     Protocol,
@@ -65,7 +65,7 @@ impl ParticipantType for Millstone {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        &[(Os::Linux, Enclosure::LinuxContainer)]
+        LINUX_CONTAINER_OR_POD
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
@@ -124,7 +124,8 @@ impl ParticipantType for Millstone {
             command: Some(vec![Template::parse("/bin/sh")?, Template::parse(SENDERS)?]),
             files: BTreeMap::from([(BASELINE_YAML.to_string(), baseline), (SENDERS.to_string(), senders)]),
             processes: Some(vec![sender("comparison")?, sender("baseline")?]),
-            collect: Some(
+            // A pod's files are read through the node, and the capture directory is outside `/airlock`.
+            collect: (cx.realization.enclosure != Enclosure::KubernetesPod).then(|| {
                 CAPTURE_FILES
                     .iter()
                     .map(|name| CollectFile {
@@ -132,8 +133,8 @@ impl ParticipantType for Millstone {
                         name: name.to_string(),
                         keep: Keep::OnFailure,
                     })
-                    .collect(),
-            ),
+                    .collect()
+            }),
             aliases: BTreeMap::from([(MILLSTONE_YAML, COMPARISON_YAML)]),
             consumes: BTreeMap::from([("comparison_target", TARGET), ("baseline_target", TARGET)]),
             ..ParticipantSpec::default()

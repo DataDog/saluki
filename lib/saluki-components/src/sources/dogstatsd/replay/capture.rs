@@ -133,9 +133,9 @@ impl DogStatsDCaptureControl {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, time::Duration};
+    use std::time::Duration;
 
-    use super::super::test_support::{unique_dir, wait_until_inactive};
+    use super::super::test_support::{temp_dir, wait_until_inactive};
     use super::{DogStatsDCaptureControl, TrafficCapture, UNAVAILABLE_CAPTURE_CONTROL_ERROR};
 
     #[test]
@@ -152,8 +152,8 @@ mod tests {
     #[test]
     fn control_drives_bound_capture_runtime() {
         let control = DogStatsDCaptureControl::new();
-        let target_dir = unique_dir("capture-control");
-        let capture = TrafficCapture::new(target_dir.clone(), 1);
+        let target_dir = temp_dir();
+        let capture = TrafficCapture::new(target_dir.path().to_path_buf(), 1);
         control.bind(capture);
 
         let capture_path = control
@@ -170,7 +170,5 @@ mod tests {
         wait_until_inactive(|| control.is_ongoing().expect("control should be bound"));
 
         assert!(capture_path.exists());
-
-        let _ = fs::remove_dir_all(target_dir);
     }
 }
