@@ -31,5 +31,7 @@ procedure:
     timeout: 60s
   - parallel:
       - {step: process_stable_for, on: adp, process: adp, duration: 10s}
-      - {step: log_not_contains, on: adp, pattern: "processing_rules", during: 10s}
+      # ADP doesn't report the string. The core Agent logs a notice about the setting's type, so only ADP's lines are
+      # searched.
+      - {step: log_not_contains, on: adp, pattern: "DATAPLANE.*processing_rules", regex: true, during: 10s}
       - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}
