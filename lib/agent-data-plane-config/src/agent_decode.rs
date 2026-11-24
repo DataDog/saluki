@@ -40,7 +40,13 @@ impl std::error::Error for DecodeError {}
 /// it ignoring case.
 ///
 /// `name` is the Agent's field name: the `mapstructure` or `json` tag, or the Go field name, such as `Name`, when the
-/// field has no tag. When several keys match only ignoring case, the Agent picks any one of them.
+/// field has no tag.
+///
+/// When several keys match only ignoring case, this function takes the first one in key order. The Agent's decoders
+/// differ here: `mapstructure` picks any one of them, and `encoding/json` takes the last one in the document, even over
+/// the exact spelling. The first match is one of the results that `mapstructure` can give. Matching `encoding/json`
+/// would need the order of the keys in the document, which a parsed `Value` doesn't keep, and only a configuration
+/// that sets a field twice can tell the difference.
 pub fn field<'a>(entry: &'a Map<String, Value>, name: &str) -> &'a Value {
     entry
         .get(name)
