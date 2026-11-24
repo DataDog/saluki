@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.28
+# syntax=docker/dockerfile:1.29
 # DD_AGENT_IMAGE has no default: callers pass the Linux Agent image from `.datadog-agent-version.json`, as
 # `make build-datadog-agent-image` does.
 ARG DD_AGENT_IMAGE=

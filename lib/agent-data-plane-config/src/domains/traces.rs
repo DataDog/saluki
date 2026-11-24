@@ -30,6 +30,13 @@ pub enum ApmFeature {
 
     /// Stops emitting the `otel.scope.*` tags on OTLP spans. The deprecated `otel.library.*` tags remain.
     DisableOtelScopeConvention,
+    /// `429`: the trace receiver answers `429 Too Many Requests`, rather than `200 OK`, to a payload it rejects because
+    /// no decoder freed up within `apm_config.decoder_timeout`.
+    TooManyRequests,
+
+    /// `disable-convert-traces`: the trace receiver decodes trace payloads into the legacy span model, rather than
+    /// converting them to the v1 representation.
+    DisableConvertTraces,
 
     /// An unrecognized feature ID, carried verbatim.
     Other(String),
@@ -43,6 +50,8 @@ impl ApmFeature {
             ApmFeature::DisableOperationAndResourceNameLogicV2 => "disable_operation_and_resource_name_logic_v2",
             ApmFeature::DisableReceiveResourceSpansV2 => "disable_receive_resource_spans_v2",
             ApmFeature::DisableOtelScopeConvention => "disable_otel_scope_convention",
+            ApmFeature::TooManyRequests => "429",
+            ApmFeature::DisableConvertTraces => "disable-convert-traces",
             ApmFeature::Other(feature) => feature,
         }
     }
@@ -55,6 +64,8 @@ impl From<&str> for ApmFeature {
             "disable_operation_and_resource_name_logic_v2" => ApmFeature::DisableOperationAndResourceNameLogicV2,
             "disable_receive_resource_spans_v2" => ApmFeature::DisableReceiveResourceSpansV2,
             "disable_otel_scope_convention" => ApmFeature::DisableOtelScopeConvention,
+            "429" => ApmFeature::TooManyRequests,
+            "disable-convert-traces" => ApmFeature::DisableConvertTraces,
             other => ApmFeature::Other(other.to_owned()),
         }
     }
@@ -569,6 +580,8 @@ mod tests {
                 ApmFeature::DisableReceiveResourceSpansV2,
             ),
             ("disable_otel_scope_convention", ApmFeature::DisableOtelScopeConvention),
+            ("429", ApmFeature::TooManyRequests),
+            ("disable-convert-traces", ApmFeature::DisableConvertTraces),
         ] {
             assert_eq!(ApmFeature::from(id), feature, "{id}");
         }
@@ -598,6 +611,8 @@ mod tests {
             ApmFeature::DisableOperationAndResourceNameLogicV2,
             ApmFeature::DisableReceiveResourceSpansV2,
             ApmFeature::DisableOtelScopeConvention,
+            ApmFeature::TooManyRequests,
+            ApmFeature::DisableConvertTraces,
             ApmFeature::Other("table_names".to_owned()),
         ] {
             assert_eq!(ApmFeature::from(feature.as_str()), feature);

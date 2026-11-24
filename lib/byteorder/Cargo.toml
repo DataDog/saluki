@@ -1,0 +1,15 @@
+[package]
+name = "byteorder"
+# Must satisfy our dependencies' `byteorder` 1.x requirements for `[patch.crates-io]` to apply.
+version = "1.5.0"
+edition = { workspace = true }
+license = "Unlicense OR MIT"
+repository = { workspace = true }
+publish = false
+
+[features]
+default = ["std"]
+std = []
+
+[lints]
+workspace = true

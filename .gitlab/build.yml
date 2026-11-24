@@ -1,4 +1,5 @@
 .build-adp-definition:
+  extends: .buildcache-variables
   stage: build
   image: ${SALUKI_GENERAL_CI_IMAGE}
   needs:
@@ -8,9 +9,6 @@
   variables:
     APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
-    # Configure `buildcache` to use our shared cache bucket.
-    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
-    BUILDCACHE_S3_REGION: "us-east-1"
   script:
     - docker buildx create --name adp-builder --driver docker-container --use
     - echo "Acquiring temporary AWS credentials..."

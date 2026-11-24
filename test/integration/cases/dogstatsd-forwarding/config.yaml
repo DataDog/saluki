@@ -1,77 +1,87 @@
-type: integration
-name: "dogstatsd-forwarding"
 description: "Verifies DogStatsD message forwarding mirrors framed payloads and preserves ingestion"
 timeout: 90s
-# Not yet validated under mac; opt in by adding `mac` to this list once verified.
-runtimes: [linux]
+# Not yet validated under mac; opt in by adding `macos` to this list once verified.
+subject_os: [linux]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dsd-forwarding"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DOGSTATSD_TCP_PORT: "9126"
-  DD_DOGSTATSD_SOCKET: "/tmp/dsd-forwarding.sock"
-  DD_DOGSTATSD_STREAM_SOCKET: "/tmp/dsd-forwarding-stream.sock"
-  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
-  DD_STATSD_FORWARD_HOST: "127.0.0.1"
-  DD_STATSD_FORWARD_PORT: "9125"
-
-container:
-  entrypoint:
-    - "/opt/datadog-agent/embedded/bin/python3"
-    - "/forwarding-test/run_forwarding_test.py"
-  files:
-    - "run_forwarding_test.py:/forwarding-test/run_forwarding_test.py"
-  exposed_ports:
-    - "48125/udp"
-    - "9126/tcp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/forwarding-test/run_forwarding_test.py"
+    # The script replaces the image's entrypoint and starts s6 itself, so s6 still writes ADP's and
+    # the Agent's exit records and logs.
+    processes:
+      - {name: script, exit: container, output: container}
+      - {name: adp, exit: {record: data-plane}, output: {file: adp.log}}
+      - {name: agent, exit: {record: agent}, output: {file: agent.log}}
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-dsd-forwarding"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_DOGSTATSD_TCP_PORT: "{{ self.endpoints.dogstatsd_tcp.port }}"
+      DD_DOGSTATSD_SOCKET: "{{ self.endpoints.dogstatsd_uds.path }}"
+      DD_DOGSTATSD_STREAM_SOCKET: "{{ self.endpoints.dogstatsd_uds_stream.path }}"
+      DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+      # The script's own receiver, which the case connects to no participant.
+      DD_STATSD_FORWARD_HOST: "127.0.0.1"
+      DD_STATSD_FORWARD_PORT: "9125"
+    files:
+      /forwarding-test/run_forwarding_test.py: run_forwarding_test.py
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "DogStatsD packet forwarding enabled"
     timeout: 15s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/dsd-forwarded-udp-malformed"
     pattern: "this is not dogstatsd"
     timeout: 30s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/dsd-forwarded-udp-metric"
     pattern: "adp.forwarding.integration:1|c|#source:integration"
     timeout: 30s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/dsd-forwarded-stream-one"
     pattern: "adp.forwarding.stream_one:1|c"
     timeout: 30s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/dsd-forwarded-stream-two"
     pattern: "adp.forwarding.stream_two:2|c"
     timeout: 30s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/dsd-forwarded-uds-packet"
     pattern: "adp.forwarding.uds_datagram:1|c"
     timeout: 30s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/dsd-forwarded-uds-stream-packet"
     pattern: "adp.forwarding.uds_stream:1|c"
     timeout: 30s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/dsd-metric-parsed"
     pattern: "component_events_received_total"
     timeout: 30s
   - parallel:
-      - assertion: process_stable_for
-        duration: 10s
-      - assertion: port_listening
-        port: 48125
-        protocol: udp
+      - {step: process_stable_for, on: adp, process: adp, duration: 10s}
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: ':{{ adp.endpoints.dogstatsd_udp.port }}" | DogStatsD listener started.'
         timeout: 10s
-      - assertion: port_listening
-        port: 9126
-        protocol: tcp
-        timeout: 10s
-      - assertion: log_not_contains
+      - {step: port_listening, on: adp, endpoint: dogstatsd_tcp, timeout: 10s}
+      - step: log_not_contains
+        on: adp
         pattern: "Unsupported configuration key|panic|PANIC"
         regex: true
         during: 10s

@@ -235,8 +235,6 @@ pub struct DataPlane {
     pub standalone_mode: Option<bool>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
-    /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
-    pub otlp: DataPlaneOtlp,
     /// Unstable features (`data_plane.experimental.*`).
     pub experimental: DataPlaneExperimental,
 }
@@ -267,31 +265,11 @@ pub struct DataPlaneExperimentalApm {
     ///
     /// Defaults to `http://127.0.0.1:8127`.
     pub proxy_destination: Option<String>,
-}
-
-// TODO(#2177): Delete these ADP-only defaults when receiver endpoints return to the canonical
-// schema-provided defaults (`localhost:4317` and `localhost:4318`).
-const DEFAULT_ADP_OTLP_RECEIVER_GRPC_ENDPOINT: &str = "localhost:6317";
-const DEFAULT_ADP_OTLP_RECEIVER_HTTP_ENDPOINT: &str = "localhost:6318";
-
-/// Temporary ADP-only OTLP receiver endpoint settings.
-///
-/// These settings override the schema-provided endpoint values so ADP and the Core Agent do not
-/// bind the same ports. The Core Agent does not read them.
-///
-/// TODO(#2177): Remove these keys and use the canonical
-/// `otlp_config.receiver.protocols.*.endpoint` keys once listener ownership prevents contention.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct DataPlaneOtlp {
-    /// gRPC receiver endpoint (`data_plane.otlp.receiver_grpc_endpoint_temporary`).
+    /// Whether the APM proxy serves the trace intake endpoints itself
+    /// (`data_plane.experimental.apm.native_trace_intake`).
     ///
-    /// Defaults to `localhost:6317`. Change this only to avoid a listener conflict.
-    pub receiver_grpc_endpoint_temporary: Option<String>,
-    /// HTTP receiver endpoint (`data_plane.otlp.receiver_http_endpoint_temporary`).
-    ///
-    /// Defaults to `localhost:6318`. Change this only to avoid a listener conflict.
-    pub receiver_http_endpoint_temporary: Option<String>,
+    /// Defaults to `false`.
+    pub native_trace_intake: Option<bool>,
 }
 
 /// `data_plane.checks.*`.
@@ -639,21 +617,6 @@ impl SalukiOnly {
         if let Some(v) = self.otlp_config.traces.ignore_missing_datadog_fields {
             otlp.traces.ignore_missing_datadog_fields = v;
         }
-        // Replace the schema-translated endpoints so ADP cannot inherit the Core Agent's ports.
-        //
-        // TODO(#2177): Remove this override when ADP uses the canonical endpoint keys and defaults.
-        otlp.receiver.grpc.endpoint = self
-            .data_plane
-            .otlp
-            .receiver_grpc_endpoint_temporary
-            .clone()
-            .unwrap_or_else(|| DEFAULT_ADP_OTLP_RECEIVER_GRPC_ENDPOINT.to_string());
-        otlp.receiver.http.endpoint = self
-            .data_plane
-            .otlp
-            .receiver_http_endpoint_temporary
-            .clone()
-            .unwrap_or_else(|| DEFAULT_ADP_OTLP_RECEIVER_HTTP_ENDPOINT.to_string());
 
         // domains.traces
         let traces = &mut config.domains.traces;
@@ -702,6 +665,9 @@ impl SalukiOnly {
         if let Some(v) = self.data_plane.experimental.apm.proxy_destination.clone() {
             config.domains.apm.proxy_destination = v;
         }
+        if let Some(v) = self.data_plane.experimental.apm.native_trace_intake {
+            config.domains.apm.native_trace_intake = v;
+        }
 
         // domains.checks
         if let Some(v) = &self.checks_ipc_endpoint {
@@ -713,7 +679,7 @@ impl SalukiOnly {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::defaults::{
-        DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_APM_PROXY_DESTINATION,
+        DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_APM_NATIVE_TRACE_INTAKE, DEFAULT_APM_PROXY_DESTINATION,
         DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES, DEFAULT_ENCODER_FLUSH_TIMEOUT,
         DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_RARE_SAMPLER_CARDINALITY,
         DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES,
@@ -774,16 +740,11 @@ mod tests {
             "data_plane": {
                 "standalone_mode": true,
                 "checks": { "enabled": true },
-                // TODO(#2177): Remove this block and its endpoint assertions when ADP uses the
-                // canonical schema-provided endpoint keys.
-                "otlp": {
-                    "receiver_grpc_endpoint_temporary": "0.0.0.0:19317",
-                    "receiver_http_endpoint_temporary": "0.0.0.0:19318"
-                },
                 "experimental": {
                     "apm": {
                         "enabled": true,
-                        "proxy_destination": "unix:///var/run/datadog/trace-agent.socket"
+                        "proxy_destination": "unix:///var/run/datadog/trace-agent.socket",
+                        "native_trace_intake": true
                     }
                 }
             },
@@ -867,8 +828,6 @@ mod tests {
         assert_eq!(otlp.contexts.cached_tagsets_limit, 222);
         assert_eq!(otlp.contexts.string_interner_size, 333);
         assert_eq!(otlp.receiver.http.transport, "tcp");
-        assert_eq!(otlp.receiver.grpc.endpoint, "0.0.0.0:19317");
-        assert_eq!(otlp.receiver.http.endpoint, "0.0.0.0:19318");
         assert_eq!(otlp.traces.string_interner_size.get(), 777);
         assert!(otlp.traces.enable_compute_top_level_by_span_kind);
         assert!(otlp.traces.ignore_missing_datadog_fields);
@@ -901,6 +860,7 @@ mod tests {
             config.domains.apm.proxy_destination,
             "unix:///var/run/datadog/trace-agent.socket"
         );
+        assert!(config.domains.apm.native_trace_intake);
 
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
@@ -1149,13 +1109,7 @@ mod tests {
             DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES
         );
 
-        // Temporary ADP defaults replace the witnessed schema values.
-        //
-        // TODO(#2177): Expect the canonical `localhost:4317` and `localhost:4318` defaults after
-        // removing the ADP-only endpoint settings.
         let otlp = &config.domains.otlp;
-        assert_eq!(otlp.receiver.grpc.endpoint, "localhost:6317");
-        assert_eq!(otlp.receiver.http.endpoint, "localhost:6318");
         assert_eq!(otlp.traces.string_interner_size, DEFAULT_STRING_INTERNER_SIZE_BYTES);
 
         assert_eq!(
@@ -1174,5 +1128,6 @@ mod tests {
 
         assert!(!config.control.apm);
         assert_eq!(config.domains.apm.proxy_destination, DEFAULT_APM_PROXY_DESTINATION);
+        assert_eq!(config.domains.apm.native_trace_intake, DEFAULT_APM_NATIVE_TRACE_INTAKE);
     }
 }

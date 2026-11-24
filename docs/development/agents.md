@@ -83,6 +83,7 @@ Use the `/panoramic` skill for correctness and integration testing.
 | [How we review](./how-we-review.md) | Reviewing a change: what to look for, and how to write review comments |
 | [Code review](./code-review.md) | Checking a change against the review checklists, or changing the review guidelines |
 | [Testing](./testing.md) | Choosing which kind of test to write, and running test suites |
+| [Panoramic cases](./panoramic.md) | Writing, running, or debugging a panoramic case; reading its results |
 | [Testing patterns](./testing-patterns.md) | Writing unit tests or property tests |
 | [Configuration system](./configuration-system.md) | Working on configuration, the schema overlay, or the configuration inventory |
 | [Datadog Agent version](./agent-version.md) | How we manage, update, and use the right version of the Datadog Agent |
@@ -102,7 +103,7 @@ in this guide.
 | `config-system` | Work on the configuration system | [Configuration system](./configuration-system.md) |
 | `create-release-note` | Write a release note fragment | [Release notes](./contributing.md#release-notes) |
 | `external-pr-ci-trigger` | Run CI for an external contributor's pull request (maintainers only) | |
-| `panoramic` | Run correctness and integration tests and read their results | [Testing](./testing.md) |
+| `panoramic` | Run correctness and integration tests and read their results | [Panoramic cases](./panoramic.md) |
 
 ## Plans
 

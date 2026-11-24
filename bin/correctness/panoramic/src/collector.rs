@@ -328,10 +328,11 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::assertions::{AssertionResult, AssertionStatus};
+    use crate::core::record::StepStatus;
     use crate::core::result::{ErrorKind, TestResult};
     use crate::events::create_event_channel;
     use crate::machine_output::RUN_REPORT_FILE_NAME;
+    use crate::reporter::test_support::step;
     use crate::reporter::OutputFormat;
     use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use crate::runner::{RunArgs, Runner};
@@ -342,7 +343,6 @@ mod tests {
     /// A spawned `Runner` with scripted tests, a collector, and a shared log directory.
     struct ScriptedRun {
         log_dir: tempfile::TempDir,
-        _mounts_dir: tempfile::TempDir,
         collector: RunCollector,
         cancel_all: CancellationToken,
         events: mpsc::UnboundedReceiver<TestEvent>,
@@ -353,7 +353,6 @@ mod tests {
         /// Spawns a sequential runner. On a current-thread runtime, it starts when the test yields.
         fn spawn(tests: Vec<ScriptedTest>, fail_fast: bool) -> Self {
             let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-            let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
             let selected = tests.iter().map(|t| t.name.clone()).collect();
             let report = RunReport::new(
                 Vec::new(),
@@ -364,7 +363,7 @@ mod tests {
             );
             let collector = RunCollector::start(report, fail_fast);
 
-            let mut runner = Runner::new(log_dir.path(), test_runner_settings(mounts_dir.path()));
+            let mut runner = Runner::new(log_dir.path(), test_runner_settings());
             for test in tests {
                 runner.register(Box::new(test)).expect("scripted test names are unique");
             }
@@ -375,7 +374,6 @@ mod tests {
 
             Self {
                 log_dir,
-                _mounts_dir: mounts_dir,
                 collector,
                 cancel_all,
                 events,
@@ -387,7 +385,6 @@ mod tests {
         async fn consume(self, interrupts: &mut Interrupts) -> (RunEnd, ConsumedReport) {
             let Self {
                 log_dir,
-                _mounts_dir,
                 mut collector,
                 cancel_all,
                 events,
@@ -458,14 +455,13 @@ mod tests {
         interrupts
     }
 
-    fn result(name: &str, status: AssertionStatus) -> TestResult {
-        let assertion = AssertionResult {
-            name: "log_contains".to_string(),
-            status,
-            message: String::new(),
-            duration: Duration::from_millis(1),
-        };
-        TestResult::from_assertions(name, Duration::from_secs(1), vec![assertion], Vec::new())
+    fn result(name: &str, status: StepStatus) -> TestResult {
+        TestResult::from_steps(
+            name,
+            Duration::from_secs(1),
+            vec![step(0, "log_contains", status)],
+            Vec::new(),
+        )
     }
 
     fn completed(result: TestResult) -> TestEvent {
@@ -679,7 +675,7 @@ mod tests {
         );
         let mut collector = RunCollector::start(report, false);
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
-        collector.observe(&completed(result("a", AssertionStatus::Passed)));
+        collector.observe(&completed(result("a", StepStatus::Passed)));
 
         collector.finish(Ok(()));
 
@@ -695,12 +691,7 @@ mod tests {
         let timed_out = || TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(1), Vec::new());
         let setup_error = || TestResult::errored("e", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new());
         let cases = [
-            (
-                "pass",
-                vec![result("a", AssertionStatus::Passed)],
-                false,
-                ExitCode::SUCCESS,
-            ),
+            ("pass", vec![result("a", StepStatus::Passed)], false, ExitCode::SUCCESS),
             (
                 "skip",
                 vec![TestResult::skipped("s", "no such OS")],
@@ -709,19 +700,13 @@ mod tests {
             ),
             (
                 "skip and pass",
-                vec![
-                    TestResult::skipped("s", "no such OS"),
-                    result("a", AssertionStatus::Passed),
-                ],
+                vec![TestResult::skipped("s", "no such OS"), result("a", StepStatus::Passed)],
                 false,
                 ExitCode::SUCCESS,
             ),
             (
                 "pass and fail",
-                vec![
-                    result("a", AssertionStatus::Passed),
-                    result("b", AssertionStatus::Failed),
-                ],
+                vec![result("a", StepStatus::Passed), result("b", StepStatus::Failed)],
                 false,
                 ExitCode::from(EXIT_ASSERTION_FAILURE),
             ),
@@ -734,13 +719,13 @@ mod tests {
             // Harness errors take precedence over assertion failures.
             (
                 "fail and timeout",
-                vec![result("b", AssertionStatus::Failed), timed_out()],
+                vec![result("b", StepStatus::Failed), timed_out()],
                 false,
                 ExitCode::from(EXIT_HARNESS_ERROR),
             ),
             (
                 "pass, then interrupt",
-                vec![result("a", AssertionStatus::Passed)],
+                vec![result("a", StepStatus::Passed)],
                 true,
                 ExitCode::from(EXIT_HARNESS_ERROR),
             ),
@@ -782,7 +767,7 @@ mod tests {
         );
         let mut collector = RunCollector::start(report, false);
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
-        collector.observe(&completed(result("a", AssertionStatus::Passed)));
+        collector.observe(&completed(result("a", StepStatus::Passed)));
         collector.finish(Ok(()));
         let (tx, mut interrupts) = Interrupts::manual();
 

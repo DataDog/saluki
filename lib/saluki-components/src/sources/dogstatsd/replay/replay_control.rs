@@ -7,14 +7,35 @@ use std::sync::{Arc, Mutex};
 
 use datadog_protos::agent::TaggerState;
 use rand::RngExt as _;
-use saluki_error::{generic_error, GenericError};
+use snafu::Snafu;
 
 use super::{CapturedTaggerHandle, CapturedTaggerStore};
 
-const UNAVAILABLE_REPLAY_CONTROL_ERROR: &str =
-    "DogStatsD replay control is unavailable because the source is not running.";
+/// Error returned by [`DogStatsDReplayControl`] operations.
+#[derive(Debug, Eq, PartialEq, Snafu)]
+pub enum ReplayControlError {
+    /// The DogStatsD source hasn't been built and bound to the control handle yet.
+    #[snafu(display("DogStatsD replay control is unavailable because the source is not running."))]
+    Unavailable,
 
-const REPLAY_ALREADY_IN_PROGRESS_ERROR: &str = "DogStatsD replay already in progress.";
+    /// Another replay session is already active.
+    #[snafu(display("DogStatsD replay already in progress."))]
+    AlreadyInProgress,
+
+    /// The given session doesn't own the active replay session.
+    #[snafu(display(
+        "DogStatsD replay session '{}' does not own active replay session '{}'.",
+        session_id,
+        active_session_id
+    ))]
+    NotOwner {
+        /// Session that tried to finish the replay.
+        session_id: String,
+
+        /// Session that owns the active replay.
+        active_session_id: String,
+    },
+}
 
 /// Default number of times to replay a capture file when the CLI omits an explicit count.
 pub const DEFAULT_REPLAY_LOOPS: u32 = 1;
@@ -59,15 +80,12 @@ impl DogStatsDReplayControl {
     ///
     /// Returns an error if the DogStatsD source hasn't been built and bound to this control handle yet, or if another
     /// replay session is already active.
-    pub fn start_session(&self, tagger_state: Option<TaggerState>) -> Result<ReplaySession, GenericError> {
+    pub fn start_session(&self, tagger_state: Option<TaggerState>) -> Result<ReplaySession, ReplayControlError> {
         let mut state = self.inner.lock().expect("replay control mutex poisoned");
-        let captured_tagger = state
-            .captured_tagger
-            .clone()
-            .ok_or_else(|| generic_error!("{}", UNAVAILABLE_REPLAY_CONTROL_ERROR))?;
+        let captured_tagger = state.captured_tagger.clone().ok_or(ReplayControlError::Unavailable)?;
 
         if state.active_session_id.is_some() {
-            return Err(generic_error!("{}", REPLAY_ALREADY_IN_PROGRESS_ERROR));
+            return Err(ReplayControlError::AlreadyInProgress);
         }
 
         let session = ReplaySession {
@@ -87,12 +105,9 @@ impl DogStatsDReplayControl {
     ///
     /// Returns an error if the DogStatsD source hasn't been built and bound to this control handle yet, or if the given
     /// session does not own the active replay.
-    pub fn finish_session(&self, session_id: &str) -> Result<(), GenericError> {
+    pub fn finish_session(&self, session_id: &str) -> Result<(), ReplayControlError> {
         let mut state = self.inner.lock().expect("replay control mutex poisoned");
-        let captured_tagger = state
-            .captured_tagger
-            .clone()
-            .ok_or_else(|| generic_error!("{}", UNAVAILABLE_REPLAY_CONTROL_ERROR))?;
+        let captured_tagger = state.captured_tagger.clone().ok_or(ReplayControlError::Unavailable)?;
 
         match state.active_session_id.as_deref() {
             Some(active_session_id) if active_session_id == session_id => {
@@ -100,11 +115,10 @@ impl DogStatsDReplayControl {
                 state.active_session_id = None;
                 Ok(())
             }
-            Some(active_session_id) => Err(generic_error!(
-                "DogStatsD replay session '{}' does not own active replay session '{}'.",
-                session_id,
-                active_session_id
-            )),
+            Some(active_session_id) => Err(ReplayControlError::NotOwner {
+                session_id: session_id.to_string(),
+                active_session_id: active_session_id.to_string(),
+            }),
             None => Ok(()),
         }
     }
@@ -148,7 +162,14 @@ mod tests {
         let err = control
             .start_session(Some(make_state()))
             .expect_err("unbound control should fail");
-        assert_eq!(err.to_string(), UNAVAILABLE_REPLAY_CONTROL_ERROR);
+        assert_eq!(err, ReplayControlError::Unavailable);
+        assert_eq!(
+            err.to_string(),
+            "DogStatsD replay control is unavailable because the source is not running."
+        );
+
+        let err = control.finish_session("any").expect_err("unbound control should fail");
+        assert_eq!(err, ReplayControlError::Unavailable);
     }
 
     #[test]
@@ -179,7 +200,8 @@ mod tests {
         let err = control
             .start_session(Some(make_state()))
             .expect_err("second session should fail");
-        assert!(err.to_string().contains("replay already in progress"));
+        assert_eq!(err, ReplayControlError::AlreadyInProgress);
+        assert_eq!(err.to_string(), "DogStatsD replay already in progress.");
     }
 
     #[test]
@@ -192,7 +214,20 @@ mod tests {
         let err = control
             .finish_session("wrong-session")
             .expect_err("non-owner should fail");
-        assert!(err.to_string().contains("does not own"));
+        assert_eq!(
+            err,
+            ReplayControlError::NotOwner {
+                session_id: "wrong-session".to_string(),
+                active_session_id: session.id.clone(),
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "DogStatsD replay session 'wrong-session' does not own active replay session '{}'.",
+                session.id
+            )
+        );
 
         assert!(captured_tagger.current().is_some());
         control

@@ -1,4 +1,4 @@
-//! OTLP traces translation logic (shared between source and decoder)
+//! OTLP traces translation logic of the OTLP source.
 
 pub mod normalize;
 mod sampling;

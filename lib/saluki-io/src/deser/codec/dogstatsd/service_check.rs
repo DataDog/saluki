@@ -72,17 +72,17 @@ pub fn parse_dogstatsd_service_check<'a>(
                 maybe_timestamp = Some(timestamp);
             }
             // Hostname: client-provided hostname for the host that this service check originated from.
-            HOSTNAME_PREFIX => {
+            HOSTNAME_PREFIX if chunk != HOSTNAME_PREFIX => {
                 let (_, hostname) = all_consuming(preceded(tag(HOSTNAME_PREFIX), string_field)).parse(chunk)?;
                 maybe_hostname = Some(hostname);
             }
             // Local Data: client-provided data used for resolving the entity ID that this service check originated from.
-            LOCAL_DATA_PREFIX if config.client_origin_detection => {
+            LOCAL_DATA_PREFIX if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX => {
                 let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
                 maybe_local_data = Some(local_data);
             }
             // External Data: client-provided data used for resolving the entity ID that this service check originated from.
-            EXTERNAL_DATA_PREFIX if config.client_origin_detection => {
+            EXTERNAL_DATA_PREFIX if config.client_origin_detection && chunk != EXTERNAL_DATA_PREFIX => {
                 let (_, external_data) =
                     all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
                 maybe_external_data = Some(external_data);
@@ -102,8 +102,9 @@ pub fn parse_dogstatsd_service_check<'a>(
                 let (_, cardinality) = cardinality(chunk)?;
                 maybe_cardinality = cardinality;
             }
-            // Origin detection fields are ignored when client origin detection is disabled.
-            LOCAL_DATA_PREFIX | EXTERNAL_DATA_PREFIX => {}
+            // A known field with an empty value (for example, `h:`) is treated as missing, as for events. Origin
+            // detection fields are also ignored when client origin detection is disabled.
+            HOSTNAME_PREFIX | LOCAL_DATA_PREFIX | EXTERNAL_DATA_PREFIX => {}
             _ if chunk.starts_with(CARDINALITY_PREFIX) => {}
             // An unknown or malformed field (for example, a stray `T`). Like any other invalid field, the caller
             // skips it in permissive mode, matching the reference DogStatsD server, and rejects the service check
@@ -163,7 +164,6 @@ pub fn parse_dogstatsd_service_check<'a>(
 
 #[cfg(test)]
 mod tests {
-    use nom::IResult;
     use saluki_core::data_model::{
         event::service_check::{CheckStatus, ServiceCheck},
         origin::OriginTagCardinality,
@@ -173,26 +173,15 @@ mod tests {
 
     use super::{parse_dogstatsd_service_check, DogStatsDCodecConfiguration};
 
-    type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
-
-    fn parse_dsd_service_check(input: &[u8]) -> NomResult<'_, ServiceCheck> {
-        let default_config = DogStatsDCodecConfiguration::default();
-        parse_dsd_service_check_with_conf(input, &default_config)
+    #[track_caller]
+    fn parse_dsd_service_check(input: &[u8]) -> ServiceCheck {
+        parse_dsd_service_check_with_conf(input, &DogStatsDCodecConfiguration::default())
     }
 
-    fn parse_dsd_service_check_with_conf<'input>(
-        input: &'input [u8], config: &DogStatsDCodecConfiguration,
-    ) -> NomResult<'input, ServiceCheck> {
-        let (remaining, service_check) = parse_dsd_service_check_direct(input, config)?;
-        assert!(remaining.is_empty());
-
-        Ok(service_check)
-    }
-
-    fn parse_dsd_service_check_direct<'input>(
-        input: &'input [u8], config: &DogStatsDCodecConfiguration,
-    ) -> IResult<&'input [u8], ServiceCheck> {
-        let (remaining, packet) = parse_dogstatsd_service_check(input, config)?;
+    #[track_caller]
+    fn parse_dsd_service_check_with_conf(input: &[u8], config: &DogStatsDCodecConfiguration) -> ServiceCheck {
+        let (remaining, packet) = parse_dogstatsd_service_check(input, config)
+            .unwrap_or_else(|e| panic!("failed to parse {:?}: {e:?}", String::from_utf8_lossy(input)));
         assert!(remaining.is_empty());
 
         let mut service_check_tags = TagSet::default();
@@ -200,68 +189,79 @@ mod tests {
             service_check_tags.insert_tag(tag);
         }
 
-        let service_check = ServiceCheck::new(packet.name, packet.status)
+        ServiceCheck::new(packet.name, packet.status)
             .with_timestamp(packet.timestamp)
             .with_hostname(packet.hostname.map(|s| s.into()))
             .with_tags(service_check_tags)
-            .with_message(packet.message.map(|s| s.into()));
-
-        Ok((remaining, service_check))
-    }
-
-    #[track_caller]
-    fn check_basic_service_check_eq(expected: ServiceCheck, actual: ServiceCheck) {
-        assert_eq!(expected.name(), actual.name());
-        assert_eq!(expected.status(), actual.status());
-        assert_eq!(expected.timestamp(), actual.timestamp());
-        assert_eq!(expected.hostname(), actual.hostname());
-        assert_eq!(expected.tags(), actual.tags());
-        assert_eq!(expected.message(), actual.message());
-        assert_eq!(expected.origin_tags(), actual.origin_tags());
+            .with_message(packet.message.map(|s| s.into()))
     }
 
     #[test]
-    fn basic_service_checks() {
+    fn service_check_single_extensions() {
         let name = "testsvc";
-        let sc_status = CheckStatus::Warning;
-        let raw = format!("_sc|{}|{}", name, sc_status.as_u8());
-        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
-        let expected = ServiceCheck::new(name, sc_status);
-        check_basic_service_check_eq(expected, actual);
-    }
+        let tags = ["tag1", "tag2"];
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
+        let message = MetaString::from("service running properly");
 
-    #[test]
-    fn service_check_timestamp() {
-        let name = "testsvc";
-        let sc_status = CheckStatus::Warning;
-        let sc_timestamp = 1234567890;
-        let raw = format!("_sc|{}|{}|d:{}", name, sc_status.as_u8(), sc_timestamp);
-        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
-        let expected = ServiceCheck::new(name, sc_status).with_timestamp(sc_timestamp);
-        check_basic_service_check_eq(expected, actual);
+        let cases = [
+            (
+                format!("_sc|{}|{}", name, CheckStatus::Warning.as_u8()),
+                ServiceCheck::new(name, CheckStatus::Warning),
+            ),
+            (
+                format!("_sc|{}|{}|d:1234567890", name, CheckStatus::Warning.as_u8()),
+                ServiceCheck::new(name, CheckStatus::Warning).with_timestamp(1234567890),
+            ),
+            (
+                format!("_sc|{}|{}|#{}", name, CheckStatus::Warning.as_u8(), tags.join(",")),
+                ServiceCheck::new(name, CheckStatus::Warning).with_tags(shared_tag_set),
+            ),
+            (
+                format!("_sc|{}|{}|m:{}", name, CheckStatus::Ok.as_u8(), message),
+                ServiceCheck::new(name, CheckStatus::Ok).with_message(message),
+            ),
+        ];
+
+        for (raw, expected) in cases {
+            assert_eq!(parse_dsd_service_check(raw.as_bytes()), expected, "{raw}");
+        }
     }
 
     #[test]
     fn service_check_fields_after_empty_or_one_byte_field_are_parsed() {
         let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
         let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
-        let name = "testsvc";
-        let sc_status = CheckStatus::Warning;
-        let tags = ["tag1", "tag2"];
-        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
-        let expected = || ServiceCheck::new(name, sc_status).with_tags(shared_tag_set.clone());
+        let expected = ServiceCheck::new("testsvc", CheckStatus::Warning)
+            .with_tags(SharedTagSet::from(TagSet::from_iter(["tag1".into(), "tag2".into()])));
 
         // An empty field is skipped in permissive mode, but rejects the service check in strict mode.
-        let raw = format!("_sc|{}|{}||#{}", name, sc_status.as_u8(), tags.join(","));
-        let actual = parse_dsd_service_check_with_conf(raw.as_bytes(), &permissive).unwrap();
-        check_basic_service_check_eq(expected(), actual);
+        let raw = "_sc|testsvc|1||#tag1,tag2";
+        assert_eq!(parse_dsd_service_check_with_conf(raw.as_bytes(), &permissive), expected);
         assert!(parse_dogstatsd_service_check(raw.as_bytes(), &strict).is_err());
 
         // A one-byte field, such as a bare `#`, carries no value, and the fields after it are parsed in both modes.
-        let raw = format!("_sc|{}|{}|#|#{}", name, sc_status.as_u8(), tags.join(","));
+        let raw = "_sc|testsvc|1|#|#tag1,tag2";
         for config in [&permissive, &strict] {
-            let actual = parse_dsd_service_check_with_conf(raw.as_bytes(), config).unwrap();
-            check_basic_service_check_eq(expected(), actual);
+            assert_eq!(parse_dsd_service_check_with_conf(raw.as_bytes(), config), expected);
+        }
+    }
+
+    #[test]
+    fn empty_field_values_are_treated_as_missing() {
+        // Like events, empty values don't reject the service check in either mode.
+        let raw = b"_sc|testsvc|0|h:|c:|e:|card:|#env:prod";
+        for permissive in [true, false] {
+            let config = DogStatsDCodecConfiguration::default()
+                .with_client_origin_detection(true)
+                .with_permissive_mode(permissive);
+            let (remaining, packet) = parse_dogstatsd_service_check(raw, &config)
+                .unwrap_or_else(|e| panic!("permissive={permissive}: failed to parse: {e:?}"));
+            assert!(remaining.is_empty());
+            assert_eq!(packet.hostname, None);
+            assert_eq!(packet.local_data, None);
+            assert_eq!(packet.external_data, None);
+            assert_eq!(packet.cardinality, None);
+            assert_eq!(packet.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
         }
     }
 
@@ -287,18 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn service_check_tags() {
-        let name = "testsvc";
-        let sc_status = CheckStatus::Warning;
-        let tags = ["tag1", "tag2"];
-        let raw = format!("_sc|{}|{}|#{}", name, sc_status.as_u8(), tags.join(","));
-        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
-        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
-        let expected = ServiceCheck::new(name, sc_status).with_tags(shared_tag_set);
-        check_basic_service_check_eq(expected, actual);
-    }
-
-    #[test]
     fn service_check_tags_with_invalid_utf8_are_normalized() {
         let mut input = b"_sc|testsvc|0|#env:prod,tag:".to_vec();
         input.extend_from_slice(&[0xff, 0xfe]);
@@ -307,20 +295,8 @@ mod tests {
         let expected = ServiceCheck::new("testsvc", CheckStatus::Ok).with_tags(SharedTagSet::from(TagSet::from_iter(
             tags.iter().map(|&tag| tag.into()),
         )));
-        let actual = parse_dsd_service_check(&input).expect("service check with invalid tag bytes should parse");
 
-        check_basic_service_check_eq(expected, actual);
-    }
-
-    #[test]
-    fn service_check_message() {
-        let name = "testsvc";
-        let sc_status = CheckStatus::Ok;
-        let sc_message = MetaString::from("service running properly");
-        let raw = format!("_sc|{}|{}|m:{}", name, sc_status.as_u8(), sc_message);
-        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
-        let expected = ServiceCheck::new(name, sc_status).with_message(sc_message);
-        check_basic_service_check_eq(expected, actual);
+        assert_eq!(parse_dsd_service_check(&input), expected);
     }
 
     #[test]
@@ -338,13 +314,13 @@ mod tests {
             sc_local_data,
             sc_external_data,
         );
-        let result = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let result = parse_dsd_service_check(raw.as_bytes());
         let tags = ["tag1", "tag2"];
         let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
         let expected = ServiceCheck::new(name, sc_status)
             .with_message(sc_message)
             .with_tags(shared_tag_set);
-        check_basic_service_check_eq(expected, result);
+        assert_eq!(result, expected);
 
         // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
@@ -377,13 +353,13 @@ mod tests {
             sc_message
         );
         let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
-        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let actual = parse_dsd_service_check(raw.as_bytes());
         let expected = ServiceCheck::new(name, sc_status)
             .with_timestamp(sc_timestamp)
             .with_hostname(sc_hostname)
             .with_tags(shared_tag_set)
             .with_message(sc_message);
-        check_basic_service_check_eq(expected, actual);
+        assert_eq!(actual, expected);
 
         // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
@@ -437,6 +413,6 @@ mod tests {
     #[test]
     fn service_check_semi_real_payload_kafka() {
         let raw_payload = "_sc|kafka.can_connect|2|#env:staging,service:datadog-agent,dd.internal.entity_id:none,dd.internal.card:none,instance:kafka-127.0.0.1-9999,jmx_server:127.0.0.1|m:Unable to instantiate or initialize instance 127.0.0.1:9999. Is the target JMX Server or JVM running? Failed to retrieve RMIServer stub: javax.naming.ServiceUnavailableException [Root exception is java.rmi.ConnectException: Connection refused to host: 127.0.0.1; nested exception is: \\n\tjava.net.ConnectException: Connection refused (Connection refused)]";
-        let _ = parse_dsd_service_check(raw_payload.as_bytes()).unwrap();
+        parse_dsd_service_check(raw_payload.as_bytes());
     }
 }

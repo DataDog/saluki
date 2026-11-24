@@ -11,9 +11,12 @@ use saluki_api::{
     routing::{delete, post, Router},
     APIHandler, Json, StatusCode,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use super::DogStatsDReplayControl;
+use super::{DogStatsDReplayControl, ReplayControlError};
+
+/// Route for starting a replay session (`POST`). Append `/{session_id}` to finish it (`DELETE`).
+pub const REPLAY_SESSION_ROUTE: &str = "/dogstatsd/replay/session";
 
 /// API handler for the DogStatsD replay session control surface.
 #[derive(Clone)]
@@ -56,20 +59,18 @@ impl DogStatsDReplayAPIHandler {
 }
 
 /// Response body for `POST /dogstatsd/replay/session`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ReplaySessionResponseBody {
     /// Opaque session identifier the replay client must use when finishing the replay.
     pub session_id: String,
 }
 
-fn map_replay_control_error(err: saluki_error::GenericError) -> (StatusCode, String) {
-    let message = err.to_string();
-    let status = if message.contains("replay already in progress") || message.contains("does not own") {
-        StatusCode::CONFLICT
-    } else {
-        StatusCode::PRECONDITION_FAILED
+fn map_replay_control_error(err: ReplayControlError) -> (StatusCode, String) {
+    let status = match err {
+        ReplayControlError::Unavailable => StatusCode::PRECONDITION_FAILED,
+        ReplayControlError::AlreadyInProgress | ReplayControlError::NotOwner { .. } => StatusCode::CONFLICT,
     };
-    (status, message)
+    (status, err.to_string())
 }
 
 impl APIHandler for DogStatsDReplayAPIHandler {
@@ -81,9 +82,9 @@ impl APIHandler for DogStatsDReplayAPIHandler {
 
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new()
-            .route("/dogstatsd/replay/session", post(Self::start_session_handler))
+            .route(REPLAY_SESSION_ROUTE, post(Self::start_session_handler))
             .route(
-                "/dogstatsd/replay/session/{session_id}",
+                &format!("{REPLAY_SESSION_ROUTE}/{{session_id}}"),
                 delete(Self::finish_session_handler),
             )
     }
@@ -127,6 +128,27 @@ mod tests {
             .expect_err("invalid protobuf should fail");
 
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(
+            err.1.starts_with("Invalid tagger state: "),
+            "unexpected body: {}",
+            err.1
+        );
+    }
+
+    #[tokio::test]
+    async fn unbound_control_is_precondition_failed() {
+        let control = DogStatsDReplayControl::new();
+        let expected_message = "DogStatsD replay control is unavailable because the source is not running.";
+
+        let err = DogStatsDReplayAPIHandler::start_session_handler(State(control.clone()), Bytes::new())
+            .await
+            .expect_err("unbound start should fail");
+        assert_eq!(err, (StatusCode::PRECONDITION_FAILED, expected_message.to_string()));
+
+        let err = DogStatsDReplayAPIHandler::finish_session_handler(State(control), Path("any".to_string()))
+            .await
+            .expect_err("unbound finish should fail");
+        assert_eq!(err, (StatusCode::PRECONDITION_FAILED, expected_message.to_string()));
     }
 
     #[tokio::test]
@@ -166,7 +188,13 @@ mod tests {
             DogStatsDReplayAPIHandler::start_session_handler(State(control), Bytes::from(make_state().encode_to_vec()))
                 .await
                 .expect_err("second session should fail");
-        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert_eq!(
+            err,
+            (
+                StatusCode::CONFLICT,
+                "DogStatsD replay already in progress.".to_string()
+            )
+        );
     }
 
     #[tokio::test]
@@ -183,7 +211,11 @@ mod tests {
         let err = DogStatsDReplayAPIHandler::finish_session_handler(State(control.clone()), Path("wrong".to_string()))
             .await
             .expect_err("non-owner should fail");
-        assert_eq!(err.0, StatusCode::CONFLICT);
+        let expected_message = format!(
+            "DogStatsD replay session 'wrong' does not own active replay session '{}'.",
+            session.session_id
+        );
+        assert_eq!(err, (StatusCode::CONFLICT, expected_message));
         assert!(captured_tagger.current().is_some());
 
         DogStatsDReplayAPIHandler::finish_session_handler(State(control), Path(session.session_id))

@@ -88,11 +88,6 @@ pub struct ActivePhase {
 }
 
 impl ActivePhase {
-    /// How long the phase has been running.
-    pub fn elapsed(&self) -> Duration {
-        self.started.elapsed()
-    }
-
     /// Records the phase as finished and returns its timing.
     ///
     /// Consuming the phase keeps one entry per phase in the tracker.
@@ -108,16 +103,6 @@ impl ActivePhase {
         }
 
         timing
-    }
-
-    /// Records the phase as finished and returns the timings of every phase finished so far.
-    ///
-    /// For callers that report the whole set rather than accumulating timings themselves.
-    pub fn finish_and_collect(self) -> Vec<PhaseTiming> {
-        let tracker = self.tracker.clone();
-        self.finish();
-
-        tracker.completed()
     }
 }
 
@@ -342,7 +327,7 @@ impl fmt::Display for IssueKind {
 /// The runner's cleanup result for one registered resource.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReclaimEntry {
-    /// The resource: `isolation_group:<id>`, `case_scope:<name>`, `process:<name>`, or `directory:<path>`.
+    /// The resource, such as `case_scope:<name>`, `host_process:<name>`, `namespace:<name>` or `directory:<path>`.
     pub resource: String,
     /// Cleanup status. Failed or unconfirmed removal also adds an issue.
     pub result: ReclaimResult,
@@ -506,12 +491,6 @@ impl TestResult {
         self
     }
 
-    /// Attaches full per-assertion mismatch details, indexed alongside `assertion_results`.
-    pub fn with_assertion_details(mut self, details: Vec<Vec<String>>) -> Self {
-        self.assertion_details = details;
-        self
-    }
-
     /// Returns the display label: `PASS`, `FAIL`, `ERROR`, `TIMEOUT`, `SKIP`, or `INTERRUPTED` for a signal
     /// interruption.
     pub fn label(&self) -> &'static str {
@@ -634,7 +613,8 @@ mod tests {
         let phases = PhaseTracker::default();
 
         phases.enter("container_start").finish();
-        let timings = phases.enter("assertions").finish_and_collect();
+        phases.enter("assertions").finish();
+        let timings = phases.completed();
 
         assert_eq!(
             timings.iter().map(|t| t.phase.as_str()).collect::<Vec<_>>(),

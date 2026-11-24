@@ -25,6 +25,9 @@ const EXIT_SOFTWARE: i64 = 1;
 /// How long past the courier's own deadline the harness waits for it to exit.
 const EXIT_MARGIN: Duration = Duration::from_secs(5);
 
+/// The most bytes a send carries as an argument. Windows command lines stop at 32 767 characters, and each byte is two.
+pub(crate) const MAX_ARGUMENT_PAYLOAD: usize = 15_000;
+
 /// A response to an HTTP `GET` request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct HttpResponse {
@@ -37,11 +40,18 @@ pub(crate) struct Courier<'a> {
     on: &'a dyn Realized,
     /// Where the courier is in the participant.
     path: &'a str,
+    /// Whether the payload of a send goes to the courier's standard input.
+    stdin: bool,
 }
 
 impl<'a> Courier<'a> {
     pub(crate) fn new(on: &'a dyn Realized, path: &'a str) -> Self {
-        Self { on, path }
+        Self { on, path, stdin: true }
+    }
+
+    /// A courier in a participant where a command's input has no end: the payload of a send is an argument.
+    pub(crate) fn without_stdin(self) -> Self {
+        Self { stdin: false, ..self }
     }
 
     /// Checks that something accepts a connection at `address`, or that a socket or pipe exists there.
@@ -58,9 +68,22 @@ impl<'a> Courier<'a> {
     /// # Errors
     ///
     /// Returns a software error if the address refuses the bytes within `limit`, and a harness error if the courier
-    /// cannot run.
+    /// cannot run, or if the payload is over [`MAX_ARGUMENT_PAYLOAD`] bytes where it is an argument.
     pub(crate) async fn send(&self, address: &str, payload: Bytes, limit: Duration) -> Result<(), HandleError> {
-        self.run("send", &[address], Some(payload), limit, &mut tokio::io::sink())
+        let sink = &mut tokio::io::sink();
+        if self.stdin {
+            return self.run("send", &[address], Some(payload), limit, sink).await;
+        }
+        if payload.len() > MAX_ARGUMENT_PAYLOAD {
+            return Err(HandleError::Harness(format!(
+                "a send here carries at most {} bytes, because the payload is a command-line argument, and this one is \
+                 {} bytes",
+                MAX_ARGUMENT_PAYLOAD,
+                payload.len()
+            )));
+        }
+        let hex: String = payload.iter().map(|byte| format!("{byte:02x}")).collect();
+        self.run("send", &[address, "--payload-hex", &hex], None, limit, sink)
             .await
     }
 
