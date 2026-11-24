@@ -52,6 +52,12 @@ procedure:
           series:
             - {name: otlp.cumulative.monotonic, metric_type: count, value: 15}
             - {name: raymond.test.cumulative.as.gauge}
+          known_differences:
+            - gap: gap/otlp-rate-as-gauge-test-name
+              issue: 3406
+              paths: [type]
+              when: {name: [raymond.test.cumulative.as.gauge]}
+              reason: ADP reports this sum as a gauge of its rate, and the Agent reports it as a count
       - step: intake_from
         on: intake-adp
         telemetry: metrics
