@@ -9,9 +9,18 @@ use saluki_io::net::{client::http::HttpClientBuilder, ListenAddress};
 
 /// Where a proxy forwards requests to.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Destination {
+pub enum Destination {
     /// A TCP host and port.
-    Tcp { host: String, port: u16 },
+    Tcp {
+        /// Host name or IP address, without brackets for IPv6.
+        ///
+        /// Valid hosts include `localhost`, `agent.internal`, `127.0.0.1`, and `::1`. `[::1]` isn't valid, because the
+        /// proxy adds the brackets to the request URI itself.
+        host: String,
+
+        /// Port.
+        port: u16,
+    },
 
     /// A Unix domain socket path.
     #[cfg(unix)]

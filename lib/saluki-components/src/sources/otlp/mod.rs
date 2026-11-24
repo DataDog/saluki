@@ -22,6 +22,7 @@ use saluki_core::{
         event::{metric::context::ContextResolver, Event, EventType},
         tags::{SharedTagSet, TagSet},
     },
+    observability::ComponentMetricsExt as _,
     runtime,
     topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
 };
@@ -29,6 +30,7 @@ use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{server::http::Http2Config, ListenAddress};
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -37,8 +39,11 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, receiver::OtlpReceiver, traces::translator::OtlpTracesSettings, CorsConfiguration, Metrics,
-    OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
+    build_metrics,
+    proxy::{OtlpProxy, OtlpProxyDestinations},
+    receiver::OtlpReceiver,
+    traces::translator::OtlpTracesSettings,
+    CorsConfiguration, Metrics, OtlpHandler, OtlpRoutes, OtlpServerConfiguration, OtlpTlsConfiguration,
 };
 
 mod debug_output;
@@ -88,6 +93,16 @@ pub struct OtlpConfiguration {
 
     /// Receiver settings.
     pub receiver: OtlpReceiver,
+
+    /// How the source serves each signal.
+    ///
+    /// The source doesn't process a proxied signal: it streams its requests to `proxy_destinations`.
+    pub routes: OtlpRoutes,
+
+    /// Upstream OTLP receivers of the proxied signals.
+    ///
+    /// Required when a signal is proxied.
+    pub proxy_destinations: Option<OtlpProxyDestinations>,
 
     /// Metrics translation settings.
     pub metrics: OtlpMetricsSettings,
@@ -166,6 +181,16 @@ impl SourceBuilder for OtlpConfiguration {
 
         self.receiver.check_endpoints()?;
 
+        let proxy = if self.routes.any_proxied() {
+            let destinations = self.proxy_destinations.as_ref().ok_or_else(|| {
+                generic_error!("An OTLP signal is proxied, but the OTLP source has no proxy destinations.")
+            })?;
+            let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
+            Some(OtlpProxy::new(destinations, metrics_builder)?)
+        } else {
+            None
+        };
+
         // An empty endpoint turns its server off.
         let grpc_endpoint = if self.receiver.grpc.endpoint.is_empty() {
             None
@@ -213,6 +238,8 @@ impl SourceBuilder for OtlpConfiguration {
         let debug_output = OtlpDebugOutput::new(self.debug_verbosity);
 
         Ok(Box::new(Otlp {
+            routes: self.routes,
+            proxy,
             context_resolver,
             origin_tag_resolver,
             grpc_endpoint,
@@ -247,6 +274,8 @@ impl MemoryBounds for OtlpConfiguration {
 }
 
 pub struct Otlp {
+    routes: OtlpRoutes,
+    proxy: Option<OtlpProxy>,
     context_resolver: ContextResolver,
     origin_tag_resolver: OtlpOriginTagResolver,
     grpc_endpoint: Option<ListenAddress>,
@@ -271,6 +300,8 @@ pub struct Otlp {
 impl Source for Otlp {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let Self {
+            routes,
+            proxy,
             context_resolver,
             origin_tag_resolver,
             grpc_endpoint,
@@ -313,6 +344,7 @@ impl Source for Otlp {
         let handler = SourceHandler::new(tx, metrics.clone(), debug_output);
         let mut server_config =
             OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
+                .with_routes(routes)
                 .with_cors(cors)
                 .with_grpc_http2_config(grpc_http2_config)
                 .with_http_max_request_body_size(http_max_request_body_size);
@@ -322,6 +354,9 @@ impl Source for Otlp {
         }
         if let Some(tls) = grpc_tls_config {
             server_config = server_config.with_grpc_tls(tls);
+        }
+        if let Some(proxy) = proxy {
+            server_config = server_config.with_proxy(proxy);
         }
 
         server_config
@@ -589,7 +624,9 @@ mod tests {
     use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use prost::Message;
-    use saluki_core::components::{test_util::TestComponentDriver, ComponentContext};
+    use saluki_core::components::{
+        sources::SourceBuilder as _, test_util::TestComponentDriver, BuildContext, ComponentContext,
+    };
     use saluki_core::data_model::event::Event;
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
@@ -604,11 +641,13 @@ mod tests {
         OtlpMetricsSettings, SummaryMode,
     };
     use crate::common::otlp::origin::OtlpOriginTagResolver;
+    use crate::common::otlp::proxy::OtlpProxyDestinations;
     use crate::common::otlp::receiver::receiver;
     use crate::common::otlp::traces::translator::{
         custom_status_code_registry, traces_settings, translate_custom_status_code,
     };
-    use crate::common::otlp::{build_metrics, Metrics, OtlpHandler};
+    use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpRoute, OtlpRoutes};
+    use crate::common::proxy::Destination;
 
     /// Returns metrics settings carrying the configuration defaults.
     fn metrics_settings() -> OtlpMetricsSettings {
@@ -631,6 +670,8 @@ mod tests {
         OtlpConfiguration {
             default_hostname: MetaString::default(),
             receiver: receiver(),
+            routes: OtlpRoutes::ALL_INTERNAL,
+            proxy_destinations: None,
             metrics: metrics_settings(),
             traces_enabled: false,
             traces: traces_settings(),
@@ -1080,6 +1121,38 @@ mod tests {
             };
             assert_eq!(log.message(), r#"{"message":"","status":""}"#);
             assert!(log.additional_properties().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_proxied_signal_needs_proxy_destinations() {
+        let mut config = source_configuration();
+        config.receiver.metrics_enabled = true;
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
+        config.routes = OtlpRoutes {
+            traces: OtlpRoute::Proxied,
+            ..OtlpRoutes::ALL_INTERNAL
+        };
+
+        match config.build(BuildContext::test_source("otlp_proxy_destinations")).await {
+            Ok(_) => panic!("build should fail without proxy destinations"),
+            Err(e) => assert_eq!(
+                e.to_string(),
+                "An OTLP signal is proxied, but the OTLP source has no proxy destinations."
+            ),
+        }
+
+        let destination = |port| Destination::Tcp {
+            host: "127.0.0.1".to_string(),
+            port,
+        };
+        config.proxy_destinations = Some(OtlpProxyDestinations {
+            grpc: destination(4319),
+            http: destination(4320),
+        });
+        if let Err(e) = config.build(BuildContext::test_source("otlp_proxy_destinations")).await {
+            panic!("build should succeed with proxy destinations: {e}");
         }
     }
 }
