@@ -411,6 +411,26 @@ impl TracesAnalyzer {
                 "{} mismatched span(s)/stats group(s) between baseline and comparison.",
                 error_count
             );
+            let mut all_details = Vec::new();
+            let only_in_baseline = self
+                .baseline_spans
+                .keys()
+                .filter(|span_id| !self.comparison_spans.contains_key(span_id))
+                .count();
+            let only_in_comparison = self
+                .comparison_spans
+                .keys()
+                .filter(|span_id| !self.baseline_spans.contains_key(span_id))
+                .count();
+            if only_in_baseline + only_in_comparison > 0 {
+                let counts = format!(
+                    "  {} span(s) only in baseline, {} only in comparison.",
+                    only_in_baseline, only_in_comparison
+                );
+                msg.push('\n');
+                msg.push_str(&counts);
+                all_details.push(counts);
+            }
             for (mismatches, label) in [(&span_mismatches, "span(s)"), (&stats_mismatches, "stats group(s)")] {
                 if mismatches.is_empty() {
                     continue;
@@ -439,11 +459,12 @@ impl TracesAnalyzer {
                 }
             }
 
-            let mut all_details = span_mismatches
-                .iter()
-                .chain(&stats_mismatches)
-                .map(|mismatch| mismatch.render(usize::MAX))
-                .collect::<Vec<_>>();
+            all_details.extend(
+                span_mismatches
+                    .iter()
+                    .chain(&stats_mismatches)
+                    .map(|mismatch| mismatch.render(usize::MAX)),
+            );
             all_details.extend(stale);
 
             Err((generic_error!("{}", msg), all_details))
@@ -716,59 +737,74 @@ impl Mismatch {
 }
 
 /// Compares the spans of both sides by span ID, and returns the spans with differences that no entry of `ratchet`
-/// covers, in the order of their IDs.
+/// covers.
 ///
-/// A span on one side only is a mismatch of its own, which does not stop the comparison of the other spans. A field
-/// that differs in a span on both sides is a difference at `span.<field>`. The view that an entry's `when` matches is
-/// the span's service, name and resource, from the baseline.
+/// A span on one side only is a mismatch of its own, which does not stop the comparison of the other spans. These come
+/// first, named with their trace ID and in its order, so that the spans of a lost trace stay together. The spans whose
+/// fields differ follow, in the order of their IDs. A field that differs in a span on both sides is a difference at
+/// `span.<field>`. The view that an entry's `when` matches is the span's service, name and resource, from the baseline.
 fn compare_spans(
     baseline: &HashMap<u64, Span>, comparison: &HashMap<u64, Span>, recorder: &mut DifferenceRecorder,
     ratchet: &mut Ratchet<'_>,
 ) -> Vec<Mismatch> {
-    let mismatch = |span_id: u64, span: &Value, diffs: Vec<String>| Mismatch {
-        subject: format!("span {} ({})", span_id, span_name(&span_view(span))),
-        diffs,
-    };
-
-    let mut mismatches = Vec::new();
-    for (span_id, baseline_span) in baseline {
-        let baseline_span = serde_json::to_value(baseline_span).unwrap();
-        let unknown = match comparison.get(span_id) {
-            Some(comparison_span) => {
-                let comparison_span = serde_json::to_value(comparison_span).unwrap();
-                recorder.clear();
-                treediff::diff(&baseline_span, &comparison_span, recorder);
-                let view = span_view(&baseline_span);
-                recorder
-                    .diffs()
-                    .iter()
-                    .filter(|recorded| {
-                        let diff = FieldDiff {
-                            path: format!("{}{}", SPAN_PREFIX, recorded.diff.path),
-                            ..recorded.diff.clone()
-                        };
-                        !ratchet.allows(&diff, &view)
-                    })
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            }
-            None => vec!["only in baseline".to_string()],
+    let mut one_sided = Vec::new();
+    let only = |span: &Span, side: &str| {
+        let view = span_view(&serde_json::to_value(span).unwrap());
+        let mismatch = Mismatch {
+            subject: format!(
+                "span {} (trace_id={} {})",
+                span.span_id(),
+                span.trace_id(),
+                span_name(&view)
+            ),
+            diffs: vec![format!("only in {}", side)],
         };
+        ((span.trace_id(), span.span_id()), mismatch)
+    };
+    let mut differing = Vec::new();
+    for (span_id, baseline_span) in baseline {
+        let Some(comparison_span) = comparison.get(span_id) else {
+            one_sided.push(only(baseline_span, "baseline"));
+            continue;
+        };
+        let baseline_span = serde_json::to_value(baseline_span).unwrap();
+        let comparison_span = serde_json::to_value(comparison_span).unwrap();
+        recorder.clear();
+        treediff::diff(&baseline_span, &comparison_span, recorder);
+        let view = span_view(&baseline_span);
+        let unknown = recorder
+            .diffs()
+            .iter()
+            .filter(|recorded| {
+                let diff = FieldDiff {
+                    path: format!("{}{}", SPAN_PREFIX, recorded.diff.path),
+                    ..recorded.diff.clone()
+                };
+                !ratchet.allows(&diff, &view)
+            })
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         if !unknown.is_empty() {
-            mismatches.push((*span_id, mismatch(*span_id, &baseline_span, unknown)));
+            let mismatch = Mismatch {
+                subject: format!("span {} ({})", span_id, span_name(&view)),
+                diffs: unknown,
+            };
+            differing.push((*span_id, mismatch));
         }
     }
-
     for (span_id, comparison_span) in comparison {
         if !baseline.contains_key(span_id) {
-            let comparison_span = serde_json::to_value(comparison_span).unwrap();
-            let only = vec!["only in comparison".to_string()];
-            mismatches.push((*span_id, mismatch(*span_id, &comparison_span, only)));
+            one_sided.push(only(comparison_span, "comparison"));
         }
     }
 
-    mismatches.sort_by_key(|(span_id, _)| *span_id);
-    mismatches.into_iter().map(|(_, mismatch)| mismatch).collect()
+    one_sided.sort_by_key(|(key, _)| *key);
+    differing.sort_by_key(|(span_id, _)| *span_id);
+    one_sided
+        .into_iter()
+        .map(|(_, mismatch)| mismatch)
+        .chain(differing.into_iter().map(|(_, mismatch)| mismatch))
+        .collect()
 }
 
 /// Compares the statistics groups of both sides, and returns the groups with differences that no entry of `ratchet`

@@ -1079,8 +1079,11 @@ mod tests {
         for expected in [
             "span 11 (service=\"db\" name=\"db.query\" resource=\"SELECT 1\"):\n    metrics._dd.measured: \
              baseline=<missing> comparison=1.0",
-            "span 30 (service=\"api\" name=\"web.request\" resource=\"GET /lost\"):\n    only in baseline",
-            "span 40 (service=\"api\" name=\"web.request\" resource=\"GET /new\"):\n    only in comparison",
+            "1 span(s) only in baseline, 1 only in comparison.",
+            "span 30 (trace_id=3 service=\"api\" name=\"web.request\" resource=\"GET /lost\"):\n    only in \
+             baseline",
+            "span 40 (trace_id=4 service=\"api\" name=\"web.request\" resource=\"GET /new\"):\n    only in \
+             comparison",
             "stats group service=\"db\" name=\"db.query\" resource=\"SELECT 1\":\n    only in baseline",
             "stats group service=\"db\" name=\"db.query\" resource=\"SELECT 2\":\n    only in comparison",
         ] {
@@ -1088,6 +1091,11 @@ mod tests {
         }
         assert!(!report.message.contains("span 10"), "{}", report.message);
         assert!(!report.message.contains("no longer occurs"), "{}", report.message);
+
+        // The spans on one side only come before the spans whose fields differ, so the samples keep them.
+        let position = |subject: &str| report.message.find(subject).expect("the message names the span");
+        assert!(position("span 30 ") < position("span 11 "), "{}", report.message);
+        assert!(position("span 40 ") < position("span 11 "), "{}", report.message);
     }
 
     #[tokio::test]
