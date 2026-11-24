@@ -83,13 +83,18 @@ pin_digest() {
     echo "${1%@*}@${digest}"
 }
 
-# Succeed if the image exists and is younger than `max_age_days` days.
+# Succeed if the image exists and is younger than `max_age_days` days. If the script can't read the
+# age of the image, it builds the image again.
 fresh_image_exists() {
-    local image="$1" created age_days
+    local image="$1" created created_epoch age_days
     # A multi-platform index has one config for each platform, keyed by platform.
     created="$(docker buildx imagetools inspect "${image}" --format '{{json .Image}}' 2>/dev/null \
         | jq -er 'if has("created") then .created else ([.[].created] | max) end' 2>/dev/null)" || return 1
-    age_days=$(( ( $(date -u +%s) - $(date -u -d "${created}" +%s) ) / 86400 ))
+    if ! created_epoch="$(date -u -d "${created}" +%s 2>/dev/null)"; then
+        log "${image} exists, but its creation time '${created}' isn't a date; rebuilding."
+        return 1
+    fi
+    age_days=$(( ( $(date -u +%s) - created_epoch ) / 86400 ))
     if (( age_days >= max_age_days )); then
         log "${image} exists but is ${age_days} days old (limit ${max_age_days}); rebuilding."
         return 1
