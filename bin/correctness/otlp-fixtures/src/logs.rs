@@ -924,7 +924,7 @@ fn processing_rule_records(start_index: u64) -> Vec<LogRecord> {
         // Matched by the include rule only through a property, so kept.
         record(4, "attr-include", vec![kv("marker", string("keep"))]),
         // Dropped by the exclude rule, through the message and through a property.
-        with_body(5, "keep-healthcheck", "healthcheck ok", vec![]),
+        with_body(5, "keep-body-exclude", "healthcheck ok", vec![]),
         record(6, "keep-attr-exclude", vec![kv("probe", string("healthcheck"))]),
         // Dropped by the include rule.
         record(7, "drop-no-marker", vec![]),
