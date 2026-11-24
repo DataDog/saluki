@@ -240,21 +240,35 @@ impl ExpectedSpan {
     }
 
     /// Says what the spans of the expected service hold, to show how close a side came.
+    ///
+    /// It lists the fields that the expectation sets: the names, the resources, or both as `name/resource` pairs.
     fn describe_service(&self, spans: &HashMap<u64, Span>) -> String {
-        let names = spans
+        let (what, label): (&str, fn(&Span) -> String) = match (&self.name, &self.resource) {
+            (Some(_), Some(_)) => ("name/resource pairs", |span| {
+                format!("{}/{}", span.name(), span.resource())
+            }),
+            (None, Some(_)) => ("resources", |span| span.resource().to_string()),
+            _ => ("names", |span| span.name().to_string()),
+        };
+        let labels = spans
             .values()
             .filter(|span| span.service() == self.service)
-            .map(Span::name)
+            .map(label)
             .collect::<Vec<_>>();
-        if names.is_empty() {
+        if labels.is_empty() {
             return "no span has that service".to_string();
         }
 
-        let distinct = names.iter().copied().collect::<BTreeSet<_>>();
-        let listed = distinct.iter().take(MAX_LISTED).copied().collect::<Vec<_>>();
+        let distinct = labels.iter().collect::<BTreeSet<_>>();
+        let listed = distinct
+            .iter()
+            .take(MAX_LISTED)
+            .map(|label| label.as_str())
+            .collect::<Vec<_>>();
         format!(
-            "{} span(s) have that service, with the names {}{}",
-            names.len(),
+            "{} span(s) have that service, with the {} {}{}",
+            labels.len(),
+            what,
             listed.join(", "),
             if distinct.len() > MAX_LISTED { ", and more" } else { "" }
         )

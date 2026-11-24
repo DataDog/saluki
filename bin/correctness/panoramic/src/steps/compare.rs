@@ -703,6 +703,7 @@ mod tests {
                 span_json("other", "other.a", "a", 1, 10, false),
                 span_json("other", "other.b", "b", 1, 11, false),
                 span_json("api", "other.c", "c", 2, 20, false),
+                span_json("db", "other.d", "SELECT 2", 3, 30, false),
             ],
             &fixture_groups(),
         );
@@ -723,7 +724,7 @@ mod tests {
         assert!(
             report.message.contains(
                 "The comparison holds no span that meets `spans[1]` (service=db, resource=SELECT 1): \
-                 no span has that service."
+                 1 span(s) have that service, with the resources SELECT 2."
             ),
             "{}",
             report.message
