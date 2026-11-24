@@ -58,15 +58,15 @@ pub(crate) struct CaseInfo {
     pub(crate) file: PathBuf,
     pub(crate) description: Option<String>,
     pub(crate) timeout: Timeout,
+    /// The case is loaded and planned, but no run includes it.
+    pub(crate) disabled: bool,
 }
 
-/// A case's time budget, written with a unit: `20m`, `180s`.
+/// A time budget, written with a unit: `20m`, `180s`. A case's timeout and a step's durations are written this way.
 #[derive(Clone, Debug, Serialize)]
 #[serde(into = "String")]
 pub(crate) struct Timeout {
     pub(crate) text: String,
-    // TODO: remove the dead_code allowance once the lifecycle runs cases.
-    #[allow(dead_code)]
     pub(crate) duration: Duration,
 }
 
@@ -119,6 +119,8 @@ struct CaseFile {
     #[serde(default, deserialize_with = "strict_optional_string")]
     description: Option<String>,
     timeout: Timeout,
+    #[serde(default)]
+    disabled: bool,
     subject_os: Vec<Os>,
     participants: BTreeMap<String, ParticipantEntry>,
     procedure: Vec<Value>,
@@ -484,15 +486,6 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
     };
 
     let text = fs::read_to_string(&file).map_err(|e| vec![error(None, format!("cannot be read: {}", e))])?;
-    let shape: Value = serde_saphyr::from_str(&text).map_err(|e| vec![error(None, e.to_string())])?;
-    if shape.get("type").is_some() {
-        return Err(vec![error(
-            None,
-            "this is a legacy case file (it has a top-level 'type'), which the participant case schema does not \
-             read"
-                .to_string(),
-        )]);
-    }
     let case: CaseFile = serde_saphyr::from_str(&text).map_err(|e| vec![error(None, e.to_string())])?;
     let suite = dir
         .canonicalize()
@@ -621,6 +614,7 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
             file,
             description: case.description,
             timeout: case.timeout,
+            disabled: case.disabled,
         },
         subject_os: case.subject_os,
         participants,

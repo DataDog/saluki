@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    Fix the persisted retry queue counting its own files twice when applying
+    ``forwarder_storage_max_disk_ratio``. When the disk-ratio limit was the one
+    in force, Agent Data Plane evicted retry files earlier than the Datadog Agent
+    would, and the ``network_http_retry_queue_capacity_bytes`` and
+    ``network_http_retry_queue_capacity_secs`` metrics under-reported the
+    remaining capacity.

@@ -15,7 +15,8 @@ Usage:
         --output-report <path> \
         --output-csv <path> \
         --output-txt <path> \
-        --threshold <percent>
+        --threshold <percent> \
+        [--build-profile <profile>]
 
 Exit codes:
     0 - Success, size change within threshold
@@ -368,6 +369,7 @@ def generate_report(
     bloaty_txt_output: str,
     module_rollup: str,
     using_stripped_binaries: bool = False,
+    build_profile: str | None = None,
 ) -> tuple[str, bool]:
     """
     Generate a Markdown report and determine pass/fail status.
@@ -401,6 +403,8 @@ def generate_report(
         change_percent_fmt = f"{change_percent:.2f}%"
 
     analysis_type = "stripped binaries" if using_stripped_binaries else "full binaries"
+    if build_profile:
+        analysis_type = f"`{build_profile}` profile, {analysis_type}"
 
     report = f"""
 **Baseline:** {baseline_sha} &middot; **Comparison:** {comparison_sha} &middot; [diff](../../compare/{baseline_sha}..{comparison_sha})
@@ -476,6 +480,12 @@ def main() -> int:
         type=float,
         default=5.0,
         help="Failure threshold as percentage (default: 5.0)",
+    )
+    parser.add_argument(
+        "--build-profile",
+        type=str,
+        required=False,
+        help="Cargo profile the binaries were built with, shown in the report",
     )
 
     args = parser.parse_args()
@@ -576,6 +586,7 @@ def main() -> int:
         bloaty_txt_output=txt_output,
         module_rollup=module_rollup_table,
         using_stripped_binaries=using_debug_files,
+        build_profile=args.build_profile,
     )
     args.output_report.write_text(report)
 

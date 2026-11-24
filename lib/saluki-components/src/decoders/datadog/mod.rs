@@ -64,6 +64,7 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
         env: payload.env,
         hostname: payload.hostname,
         app_version: payload.app_version,
+        container_tags: None,
         client_dropped_p0s_weight: 0.0,
     };
 

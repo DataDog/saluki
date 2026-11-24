@@ -346,6 +346,12 @@ pub enum HttpProtocol {
 
     /// Use HTTP/1.1 only.
     Http1,
+
+    /// Use HTTP/2 only, with no HTTP/1.1 fallback.
+    ///
+    /// TLS connections advertise only `h2` through ALPN. [`HttpClientBuilder`](super::HttpClientBuilder) speaks HTTP/2
+    /// with prior knowledge (h2c) on plaintext connections.
+    Http2,
 }
 
 /// A connector that supports HTTP or HTTPS.
@@ -477,7 +483,7 @@ pub struct HttpsCapableConnectorBuilder {
     tls_handshake_timeout: Option<Duration>,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
-    http_protocol: HttpProtocol,
+    pub(super) http_protocol: HttpProtocol,
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
     #[cfg(target_os = "linux")]
@@ -590,10 +596,11 @@ impl HttpsCapableConnectorBuilder {
 }
 
 /// Selects the ALPN protocols to advertise for the given HTTP protocol.
-fn http_protocol_alpns(protocol: HttpProtocol) -> Vec<Vec<u8>> {
+pub(super) fn http_protocol_alpns(protocol: HttpProtocol) -> Vec<Vec<u8>> {
     match protocol {
         HttpProtocol::Auto => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         HttpProtocol::Http1 => Vec::new(),
+        HttpProtocol::Http2 => vec![b"h2".to_vec()],
     }
 }
 
@@ -730,6 +737,13 @@ mod tests {
         let alpn_protocols = http_protocol_alpns(HttpProtocol::Http1);
 
         assert!(alpn_protocols.is_empty());
+    }
+
+    #[test]
+    fn http2_protocol_advertises_only_h2_alpn() {
+        let alpn_protocols = http_protocol_alpns(HttpProtocol::Http2);
+
+        assert_eq!(alpn_protocols, vec![b"h2".to_vec()]);
     }
 
     // vsock takes priority over unix when both are configured, matching Agent behavior.

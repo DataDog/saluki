@@ -10,6 +10,7 @@ use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
 use saluki_app::util::wait_for_shutdown_signal;
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
@@ -777,10 +778,7 @@ fn handle_stats_summary_analysis(cmd: &StatsCommand, mut response: StatsResponse
     // Add each metric summary to the table.
     for metric_summary in response.stats.into_iter().take(cmd.limit.unwrap_or(usize::MAX)) {
         let tags = metric_summary.tags.join(",");
-        let last_seen = chrono::DateTime::from_timestamp(metric_summary.last_seen as i64, 0)
-            .unwrap_or_default()
-            .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M:%S");
+        let last_seen = format_last_seen(metric_summary.last_seen, TimeZone::system());
 
         table.add_row(Row::from([
             Cell::new(metric_summary.name),
@@ -791,6 +789,12 @@ fn handle_stats_summary_analysis(cmd: &StatsCommand, mut response: StatsResponse
     }
 
     table.lines().collect()
+}
+
+/// Formats a metric's last-seen Unix timestamp, in seconds, as local time in the given time zone.
+fn format_last_seen(last_seen: u64, tz: &TimeZone) -> String {
+    let timestamp = Timestamp::from_unix_seconds(last_seen as i64).unwrap_or(Timestamp::UNIX_EPOCH);
+    timestamp.format(TimestampFormat::DateTime(tz)).to_string()
 }
 
 fn handle_stats_cardinality_analysis<'a>(cmd: &StatsCommand, response: StatsResponse<'a>) -> Vec<String> {
@@ -1033,15 +1037,27 @@ mod tests {
 
     use agent_data_plane_config::domains::dogstatsd::Listeners;
     use prost_types::Value;
+    use saluki_common::time::TimeZone;
     use tokio_util::sync::CancellationToken;
 
     use super::{
         analyze_dogstatsd_stats, compute_target_offset, default_capture_duration, default_replay_loops,
-        dogstatsd_replay_target, dogstatsd_socket_path, parse_remote_dogstatsd_command, AnalysisMode,
+        dogstatsd_replay_target, dogstatsd_socket_path, format_last_seen, parse_remote_dogstatsd_command, AnalysisMode,
         DogstatsdSubcommand, GenericError, ReplayTarget, SortDirection, StatsCommand, TimestampResolution,
     };
     #[cfg(not(target_os = "linux"))]
     use crate::cli::remote::CommandOutput;
+
+    #[test]
+    fn last_seen_is_local_time_in_whole_seconds() {
+        let utc = TimeZone::utc();
+        let minus_five = TimeZone::posix("<-05>5").expect("test zone should be valid");
+        assert_eq!(format_last_seen(1_700_000_100, utc), "2023-11-14 22:15:00");
+        assert_eq!(format_last_seen(1_700_000_100, &minus_five), "2023-11-14 17:15:00");
+        assert_eq!(format_last_seen(0, &minus_five), "1969-12-31 19:00:00");
+        // Values past `i64::MAX` wrap to before 1970.
+        assert_eq!(format_last_seen(u64::MAX, utc), "1969-12-31 23:59:59");
+    }
 
     #[test]
     fn remote_command_descriptors_are_the_canonical_remote_command_inventory() {

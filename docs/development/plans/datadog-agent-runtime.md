@@ -88,7 +88,7 @@ Every pull request in the stack checks its changes against these.
 - The supervisors `internal-sup`, `ctrl-pln`, `env-provider`, `workload`, and `autodiscovery` keep their names, as does
   every worker. The `privileged-api-endpoints` integration test asserts `ctrl-pln`.
 - The facade's supervisor under `ctrl-pln` is `remote-agent`.
-- The registration task is `adp-remote-agent-task`, built as `{identifier}-remote-agent-task`.
+- The registration worker is `remote-agent-session`, and runs under `internal-sup` next to the `config-stream` worker.
 
 ### Routes
 
@@ -118,19 +118,15 @@ lines, so they catch a missing `datadog_agent_runtime` target.
 These are deliberately out of scope for the stack, because each one changes behavior. A follow-up pull request removes
 its item when it merges.
 
-1. **Supervise the registration and configuration stream loops.** `RemoteAgentBootstrap::new` spawns the registration
-   loop with `spawn_traced_named`, and `RemoteAgentBootstrap::create_config_stream` spawns the configuration stream
-   loop with `tokio::spawn` (both in `remote_agent/mod.rs`). Neither task is supervised, and neither stops on shutdown.
-   The registration loop also keeps running when `RemoteAgentBootstrap::new` returns an error, so a caller that retries
-   leaves one extra registration loop behind per failed attempt. Turn them into shutdown-aware workers with a
-   `(Handle, Worker)` shape, and then remove the exception from the conventions in `src/lib.rs` and the background task
-   notes on both methods. Deferred because registration has to finish before the supervision tree exists, so this
-   changes the startup sequence.
-2. **Use one resolved secure API address.** `RemoteAgent::start` advertises the address from
+1. **Use one resolved secure API address.** `RemoteAgent::start` advertises the address from
    `LocalConfiguration::advertised_secure_api_address` when it registers, which ADP takes from its local configuration.
    ADP binds the privileged API to the address from its authoritative configuration
    (`bin/agent-data-plane/src/internal/control_plane.rs`). If the Datadog Agent supplies a different
    `data_plane.secure_api_listen_address`, the two disagree. Deferred because fixing it changes which value wins.
+2. **Bound the registration calls with a request deadline.** `RemoteAgentClient` sets only a connect timeout, so a
+   register or refresh call that never returns stalls the registration loop. Before the tree runs, it also stalls the
+   handoff to the registration worker, which waits for the attempt in flight. Deferred because a deadline changes when
+   an attempt fails.
 3. **Make the default log file per binary.** `PlatformSettings::get_default_log_file_path` in
    `lib/datadog-agent/commons/src/platform/mod.rs` hard-codes `agent-data-plane.log`. Until then,
    `LoggingTranslator::new` takes the default log file from the binary, and ADP passes that function's result. Deferred
