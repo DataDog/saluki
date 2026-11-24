@@ -27,6 +27,53 @@ pub struct Domain {
 
     /// OTLP context cache sizing.
     pub contexts: Contexts,
+
+    /// Debug logging of the OTLP data ADP receives.
+    pub debug: DebugOutput,
+}
+
+/// Debug logging of received OTLP data.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct DebugOutput {
+    /// How much detail is logged for each received export request.
+    ///
+    /// Stays [`DebugVerbosity::None`] unless `otlp_config.debug.verbosity` is configured explicitly. A schema default
+    /// of `basic` doesn't turn the output on.
+    pub verbosity: DebugVerbosity,
+}
+
+/// How much detail is logged for each received OTLP export request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum DebugVerbosity {
+    /// Log nothing.
+    #[default]
+    None,
+
+    /// Log one summary line per request, with the number of items received.
+    Basic,
+
+    /// Log the summary line, then about one line for each item received.
+    Normal,
+
+    /// Log the summary line, then every field of every item received.
+    Detailed,
+}
+
+impl FromStr for DebugVerbosity {
+    type Err = Error;
+
+    /// Parses a verbosity, ignoring case, so `Basic` and `DETAILED` are accepted as well as `basic` and `detailed`.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "basic" => Ok(Self::Basic),
+            "normal" => Ok(Self::Normal),
+            "detailed" => Ok(Self::Detailed),
+            _ => Err(Error::new_without_source(format!(
+                "unknown debug verbosity `{value}`; expected `none`, `basic`, `normal`, or `detailed`"
+            ))),
+        }
+    }
 }
 
 /// Default TTL for cached prior points used when converting cumulative sums to deltas.
@@ -586,7 +633,7 @@ impl Default for Contexts {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContainerTagPromotion, CumulativeMonotonicMode, GrpcReceiver, GrpcTransport, HttpReceiver,
+        ContainerTagPromotion, CumulativeMonotonicMode, DebugVerbosity, GrpcReceiver, GrpcTransport, HttpReceiver,
         InitialCumulativeMonotonicValue,
     };
 
@@ -696,5 +743,24 @@ mod tests {
     fn http_receiver_defaults_to_agent_compatible_values() {
         let http = HttpReceiver::default();
         assert_eq!(http.max_request_body_size, 0, "0 means 20 MiB default (Agent default)");
+    }
+
+    #[test]
+    fn debug_verbosity_parses_in_any_case() {
+        for (configured, expected) in [
+            ("none", DebugVerbosity::None),
+            ("Basic", DebugVerbosity::Basic),
+            ("NORMAL", DebugVerbosity::Normal),
+            ("DeTaIlEd", DebugVerbosity::Detailed),
+        ] {
+            assert_eq!(configured.parse::<DebugVerbosity>().unwrap(), expected, "{configured}");
+        }
+    }
+
+    #[test]
+    fn debug_verbosity_rejects_an_unknown_value_and_names_it() {
+        let error = "Loud".parse::<DebugVerbosity>().unwrap_err();
+
+        assert!(error.to_string().contains("unknown debug verbosity `Loud`"));
     }
 }

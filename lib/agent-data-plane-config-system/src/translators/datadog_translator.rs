@@ -26,8 +26,9 @@ use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricPrefixRule, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    ContainerTagPromotion, CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue,
-    SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+    ContainerTagPromotion, CumulativeMonotonicMode, DebugVerbosity, GrpcTransport, HistogramMode,
+    InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT,
+    DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule, SqlObfuscationMode, TagFilter};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
@@ -1568,6 +1569,21 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.dogstatsd.origin.unified = value;
     }
 
+    fn consume_otlp_config_debug_verbosity(&mut self, value: String) {
+        // The schema default is `basic`, which would turn the output on for every user, so only a configured value
+        // counts. A section declared without a `verbosity` is indistinguishable from an unset one, and stays off.
+        if self.sources.provenance("otlp_config.debug.verbosity") != Provenance::Explicit {
+            return;
+        }
+
+        // An unrecognized value leaves the output off and doesn't stop ADP from starting: this is an optional
+        // diagnostic setting, and a translation error would fail the whole configuration.
+        match value.parse::<DebugVerbosity>() {
+            Ok(verbosity) => self.config.domains.otlp.debug.verbosity = verbosity,
+            Err(error) => warn!(%error, "Invalid `otlp_config.debug.verbosity`; OTLP debug output stays off."),
+        }
+    }
+
     fn consume_otlp_config_logs_enabled(&mut self, value: bool) {
         self.config.domains.otlp.receiver.logs_enabled = value;
     }
@@ -2075,7 +2091,7 @@ mod tests {
     use agent_data_plane_config::domains::{
         dogstatsd::{MetricFilter, MetricPrefixRule, OriginTagCardinality},
         otlp::{
-            CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
+            CumulativeMonotonicMode, DebugVerbosity, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
         traces::{ApmFeature, SqlObfuscationMode, TagFilter},
@@ -4313,5 +4329,64 @@ mod tests {
         let errors = errors.expect("zero delta_ttl should record a translation error");
         assert!(errors.to_string().contains("otlp_config.metrics.delta_ttl"));
         assert!(errors.to_string().contains("time to live must be positive"));
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_translates_each_explicit_level() {
+        for (configured, expected) in [
+            ("none", DebugVerbosity::None),
+            ("basic", DebugVerbosity::Basic),
+            ("normal", DebugVerbosity::Normal),
+            ("detailed", DebugVerbosity::Detailed),
+            ("Basic", DebugVerbosity::Basic),
+            ("DETAILED", DebugVerbosity::Detailed),
+        ] {
+            let (config, errors) = translate_explicit(json!({
+                "otlp_config": { "debug": { "verbosity": configured } }
+            }));
+
+            assert!(errors.is_none());
+            assert_eq!(config.domains.otlp.debug.verbosity, expected);
+        }
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_is_off_when_unset() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::None);
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_stays_off_when_the_stream_supplies_its_default() {
+        // The stream carries the schema default `basic` for every user who configured nothing.
+        let (config, errors) =
+            translate_stream(&[("otlp_config.debug.verbosity", json!("basic"), StreamProvenance::Default)]);
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::None);
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_honors_an_explicit_value_from_the_stream() {
+        let (config, errors) = translate_stream(&[(
+            "otlp_config.debug.verbosity",
+            json!("detailed"),
+            StreamProvenance::Explicit,
+        )]);
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::Detailed);
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_unknown_value_stays_off_without_failing_translation() {
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "debug": { "verbosity": "loud" } }
+        }));
+
+        assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::None);
+        assert!(errors.is_none(), "an unknown verbosity must not fail the configuration");
     }
 }

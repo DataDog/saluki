@@ -3109,17 +3109,24 @@ inventory:
     description: "Unified origin detection mode"
 
   otlp_config.debug.verbosity:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [otlp]
-    description: "Verbosity of the OTLP debug exporter"
+    description: "Verbosity of OTLP debug logging"
     documentation: |-
-      In the core Agent's OTLP logs path: when the `otlp_config.debug` section is declared and verbosity
-      is a valid level other than none, a debug exporter is added to the logs (and other enabled)
-      pipelines; invalid levels leave it detached.
+      ADP logs the OTLP metrics, logs, and traces it receives natively, at the level this key sets:
 
-      ADP ignores this key: it has no OTLP debug exporter.
+      - `none`: nothing is logged.
+      - `basic`: one summary line per received export request, with the number of items it carries.
+      - `normal`: the summary line, then about one line per item.
+      - `detailed`: the summary line, then every field of every item.
+
+      The output stays off unless you set the key, and values are matched ignoring case. An unrecognized value
+      leaves the output off and logs a warning. A configured `otlp_config.debug` section with no `verbosity`
+      doesn't turn it on in ADP. ADP writes the output to its log at the `info` level, so a higher log level hides it.
+      The format of the lines is ADP's own. `detailed` prints trace and span IDs as lists of numbers. Support is
+      partial because of this format, and because ADP doesn't read the section's other settings, such as log sampling.
+      In OTLP proxy mode, ADP doesn't honor this key, including for the traces it decodes itself when `proxy_traces` is
+      false. Issue #3281 tracks this.
 
   otlp_config.logs.batch.flush_timeout:
     support: none

@@ -41,11 +41,14 @@ use crate::common::otlp::{
     OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
 };
 
+mod debug_output;
 mod logs;
 mod metrics;
 mod resolver;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 
+use self::debug_output::OtlpDebugOutput;
+pub use self::debug_output::OtlpDebugVerbosity;
 use self::logs::render::{CONTENT_BUFFER_RETENTION_LIMIT_BYTES, CONTENT_FIELDS_RETENTION_LIMIT_BYTES};
 use self::logs::translator::OtlpLogsTranslator;
 pub use self::metrics::config::{
@@ -97,6 +100,9 @@ pub struct OtlpConfiguration {
 
     /// Context resolver settings.
     pub contexts: OtlpContextSettings,
+
+    /// How much detail to log about each OTLP export request received.
+    pub debug_verbosity: OtlpDebugVerbosity,
 
     /// Maximum length of a span's resource name, in bytes.
     ///
@@ -192,6 +198,7 @@ impl SourceBuilder for OtlpConfiguration {
         let translator_metrics =
             metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
         let logs_translator = OtlpLogsTranslator::new(origin_tag_resolver.clone());
+        let debug_output = OtlpDebugOutput::new(self.debug_verbosity);
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -211,6 +218,7 @@ impl SourceBuilder for OtlpConfiguration {
             metrics,
             translator_metrics,
             logs_translator,
+            debug_output,
         }))
     }
 }
@@ -244,6 +252,7 @@ pub struct Otlp {
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
     translator_metrics: metrics::telemetry::OtlpMetricsTranslatorMetrics,
     logs_translator: OtlpLogsTranslator,
+    debug_output: OtlpDebugOutput,
 }
 
 #[async_trait]
@@ -267,6 +276,7 @@ impl Source for Otlp {
             metrics,
             translator_metrics,
             logs_translator,
+            debug_output,
         } = *self;
 
         let global_shutdown = context.take_shutdown_handle();
@@ -288,7 +298,7 @@ impl Source for Otlp {
         )?;
 
         // Build our gRPC and HTTP servers and spawn them.
-        let handler = SourceHandler::new(tx, metrics.clone());
+        let handler = SourceHandler::new(tx, metrics.clone(), debug_output);
         let mut server_config =
             OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
                 .with_cors(cors)
@@ -363,11 +373,16 @@ enum OtlpSignal {
 struct SourceHandler {
     tx: mpsc::Sender<OtlpSignal>,
     metrics: Metrics,
+    debug_output: OtlpDebugOutput,
 }
 
 impl SourceHandler {
-    fn new(tx: mpsc::Sender<OtlpSignal>, metrics: Metrics) -> Self {
-        Self { tx, metrics }
+    fn new(tx: mpsc::Sender<OtlpSignal>, metrics: Metrics, debug_output: OtlpDebugOutput) -> Self {
+        Self {
+            tx,
+            metrics,
+            debug_output,
+        }
     }
 }
 
@@ -378,6 +393,7 @@ impl OtlpHandler for SourceHandler {
             self.metrics.metrics_errors_decode().increment(1);
             generic_error!("Failed to decode metrics export request: {}", e)
         })?;
+        self.debug_output.log_metrics(&request);
 
         // Send the entire request as a single channel message so the converter processes it
         // atomically. This preserves the request boundary for usage beacon emission without
@@ -391,6 +407,7 @@ impl OtlpHandler for SourceHandler {
 
     async fn handle_logs(&self, body: Bytes) -> Result<(), GenericError> {
         let request = ExportLogsServiceRequest::decode(body).error_context("Failed to decode logs export request.")?;
+        self.debug_output.log_logs(&request);
 
         for resource_logs in request.resource_logs {
             self.tx
@@ -404,6 +421,7 @@ impl OtlpHandler for SourceHandler {
     async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError> {
         let request =
             ExportTraceServiceRequest::decode(body).error_context("Failed to decode trace export request.")?;
+        self.debug_output.log_traces(&request);
 
         for resource_spans in request.resource_spans {
             self.tx
@@ -569,8 +587,8 @@ mod tests {
 
     use super::{
         apply_static_metric_tags, parse_configured_metric_tags, CumulativeMonotonicMode, ExportLogsServiceRequest,
-        HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings, OtlpMetricsSettings,
-        SummaryMode,
+        HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings, OtlpDebugVerbosity,
+        OtlpMetricsSettings, SummaryMode,
     };
     use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::common::otlp::receiver::receiver;
@@ -609,6 +627,7 @@ mod tests {
                 cached_tagsets_limit: 500_000,
                 string_interner_size: 2 * 1024 * 1024,
             },
+            debug_verbosity: OtlpDebugVerbosity::None,
             max_resource_len: usize::MAX,
             semantic_registry: SemanticRegistryProvider::default(),
             workload_provider: Arc::new(saluki_env::workload::providers::NoopWorkloadProvider),
@@ -849,7 +868,7 @@ mod tests {
 
         let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
         let (tx, _rx) = tokio::sync::mpsc::channel::<super::OtlpSignal>(1);
-        let handler = super::SourceHandler::new(tx, metrics);
+        let handler = super::SourceHandler::new(tx, metrics, super::OtlpDebugOutput::default());
 
         // Invalid protobuf bytes cause decode to fail.
         let result = handler.handle_metrics(bytes::Bytes::from_static(b"not protobuf")).await;
@@ -872,7 +891,7 @@ mod tests {
         // Create a channel with no receiver, then drop the receiver so the send fails.
         let (tx, rx) = tokio::sync::mpsc::channel::<super::OtlpSignal>(1);
         drop(rx);
-        let handler = super::SourceHandler::new(tx, metrics);
+        let handler = super::SourceHandler::new(tx, metrics, super::OtlpDebugOutput::default());
 
         // A valid (empty) request that decodes fine but can't be sent because the channel is closed.
         let request = otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest::default();
