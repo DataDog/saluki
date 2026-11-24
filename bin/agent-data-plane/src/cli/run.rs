@@ -166,6 +166,12 @@ async fn create_topology(
         );
     }
 
+    // Like the Agent, refuse to proxy OTLP signals from a receiver that sets TLS: the connection to the Agent is
+    // plaintext. The other pipelines keep running.
+    if let Some(message) = dp.otlp_blocked_message() {
+        error!(reason = %message, "ADP won't start OTLP ingest.");
+    }
+
     // If no data pipelines are enabled, then there's nothing for us to do.
     if !dp.data_pipelines_enabled() {
         return Err(generic_error!("No data pipelines are enabled. Exiting."));

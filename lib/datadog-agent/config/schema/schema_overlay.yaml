@@ -733,6 +733,9 @@ inventory:
       Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
       when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
       exactly.
+      A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
+      from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
+      to the Agent.
 
   data_plane.experimental.otlp.proxy.metrics:
     support: partial
@@ -745,6 +748,9 @@ inventory:
       Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
       when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
       exactly.
+      A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
+      from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
+      to the Agent.
 
   data_plane.experimental.otlp.proxy.traces:
     support: partial
@@ -757,6 +763,9 @@ inventory:
       Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
       when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
       exactly.
+      A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
+      from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
+      to the Agent.
 
   data_plane.log_file:
     support: full
@@ -3497,6 +3506,7 @@ inventory:
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
       When set, the server requests client certificates and verifies them if presented, but does not require them.
       Defaults to empty (no client certificate verification).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
     support: none
@@ -3514,6 +3524,7 @@ inventory:
     documentation: |-
       Path to the PEM-encoded certificate chain file for the OTLP gRPC receiver. When set together with
       `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
     support: none
@@ -3566,6 +3577,7 @@ inventory:
     documentation: |-
       Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
       certificate in `cert_file`. Defaults to empty (TLS disabled).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
     support: none
@@ -3733,6 +3745,7 @@ inventory:
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
       When set, the server requests client certificates and verifies them if presented, but does not require them.
       Defaults to empty (no client certificate verification).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
     support: none
@@ -3750,6 +3763,7 @@ inventory:
     documentation: |-
       Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When set together with
       `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
     support: none
@@ -3802,6 +3816,7 @@ inventory:
     documentation: |-
       Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
       certificate in `cert_file`. Defaults to empty (TLS disabled).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.http.tls.key_pem:
     support: none

@@ -414,6 +414,13 @@ pub struct GrpcReceiver {
 
     /// TLS settings for the gRPC receiver.
     pub tls: Tls,
+
+    /// Whether an input explicitly set any `tls` value of the gRPC receiver. (not in Datadog Agent config
+    /// schema)
+    ///
+    /// The translator derives this from the merged sources, not from the typed TLS fields. Those fields omit
+    /// some `tls` keys, and they can't tell an explicit empty value from the default.
+    pub tls_configured: bool,
 }
 
 /// OTLP HTTP receiver.
@@ -432,6 +439,13 @@ pub struct HttpReceiver {
     /// TLS settings for the HTTP receiver.
     pub tls: Tls,
 
+    /// Whether an input explicitly set any `tls` value of the HTTP receiver. (not in Datadog Agent config
+    /// schema)
+    ///
+    /// The translator derives this from the merged sources, not from the typed TLS fields. Those fields omit
+    /// some `tls` keys, and they can't tell an explicit empty value from the default.
+    pub tls_configured: bool,
+
     /// Maximum HTTP request body size, in bytes.
     ///
     /// Defaults to `0`, which applies the 20 MiB limit used by the Datadog Agent. A positive value
@@ -447,6 +461,7 @@ impl Default for HttpReceiver {
             transport: "tcp".to_string(),
             cors: Cors::default(),
             tls: Tls::default(),
+            tls_configured: false,
             max_request_body_size: 0,
         }
     }
