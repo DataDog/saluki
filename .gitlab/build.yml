@@ -1,4 +1,5 @@
 .build-adp-definition:
+  extends: .buildcache-variables
   stage: build
   image: ${SALUKI_GENERAL_CI_IMAGE}
   needs:
@@ -8,17 +9,22 @@
   variables:
     APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
-    # Configure `buildcache` to use our shared cache bucket.
-    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
-    BUILDCACHE_S3_REGION: "us-east-1"
   script:
     - docker buildx create --name adp-builder --driver docker-container --use
     - echo "Acquiring temporary AWS credentials..."
     - ci/tooling/get-temporary-aws-credentials.sh
     - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
     # Bake the Agent version into the binary so version gates work without a runtime env var.
-    # Use "nightly" for nightly CI (dev Agent); the pinned public release version otherwise.
-    - if [ -n "${AGENT_NIGHTLY}" ]; then DD_AGENT_VERSION="nightly"; else DD_AGENT_VERSION="${PUBLIC_DD_AGENT_VERSION}"; fi
+    # Use "nightly" for nightly CI (dev Agent). Otherwise use the Declared version from `.datadog-agent-version.json`:
+    # the target minor's patch zero on a release branch, or the Integration version's nightly on `main`.
+    - |
+      if [ -n "${AGENT_NIGHTLY}" ]; then
+        DD_AGENT_VERSION="nightly"
+      else
+        DD_AGENT_VERSION=$(jq -er 'if has("target") then .target + ".0" else .integration.version end' \
+          .datadog-agent-version.json) || exit 1
+      fi
+      echo "Compiling ADP with DD_AGENT_VERSION=${DD_AGENT_VERSION}"
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true

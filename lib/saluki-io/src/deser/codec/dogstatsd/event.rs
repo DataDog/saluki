@@ -217,7 +217,6 @@ pub fn parse_dogstatsd_event<'a>(
 
 #[cfg(test)]
 mod tests {
-    use nom::IResult;
     use saluki_core::data_model::{
         event::eventd::{AlertType, EventD, Priority},
         origin::OriginTagCardinality,
@@ -227,25 +226,20 @@ mod tests {
 
     use super::{parse_dogstatsd_event, DogStatsDCodecConfiguration};
 
-    type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
-
-    fn parse_dsd_eventd(input: &[u8]) -> NomResult<'_, EventD> {
-        let default_config = DogStatsDCodecConfiguration::default();
-        parse_dsd_eventd_with_conf(input, &default_config)
+    /// Builds an `_e{title_len,text_len}:title|text` frame, followed by `extensions` verbatim.
+    fn event_frame(title: &str, text: &str, extensions: &str) -> String {
+        format!("_e{{{},{}}}:{}|{}{}", title.len(), text.len(), title, text, extensions)
     }
 
-    fn parse_dsd_eventd_with_conf<'input>(
-        input: &'input [u8], config: &DogStatsDCodecConfiguration,
-    ) -> NomResult<'input, EventD> {
-        let (remaining, eventd) = parse_dsd_eventd_direct(input, config)?;
-        assert!(remaining.is_empty());
-        Ok(eventd)
+    #[track_caller]
+    fn parse_dsd_eventd(input: &[u8]) -> EventD {
+        parse_dsd_eventd_with_conf(input, &DogStatsDCodecConfiguration::default())
     }
 
-    fn parse_dsd_eventd_direct<'input>(
-        input: &'input [u8], config: &DogStatsDCodecConfiguration,
-    ) -> IResult<&'input [u8], EventD> {
-        let (remaining, packet) = parse_dogstatsd_event(input, config)?;
+    #[track_caller]
+    fn parse_dsd_eventd_with_conf(input: &[u8], config: &DogStatsDCodecConfiguration) -> EventD {
+        let (remaining, packet) = parse_dogstatsd_event(input, config)
+            .unwrap_or_else(|e| panic!("failed to parse {:?}: {e:?}", String::from_utf8_lossy(input)));
         assert!(remaining.is_empty());
 
         let mut event_tags = TagSet::default();
@@ -253,94 +247,64 @@ mod tests {
             event_tags.insert_tag(tag);
         }
 
-        let eventd = EventD::new(packet.title, packet.text)
+        EventD::new(packet.title, packet.text)
             .with_timestamp(packet.timestamp)
             .with_hostname(packet.hostname.map(|s| s.into()))
             .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
             .with_alert_type(packet.alert_type)
             .with_priority(packet.priority)
             .with_source_type_name(packet.source_type_name.map(|s| s.into()))
-            .with_alert_type(packet.alert_type)
-            .with_tags(event_tags);
-
-        Ok((remaining, eventd))
-    }
-
-    #[track_caller]
-    fn check_basic_eventd_eq(expected: EventD, actual: EventD) {
-        assert_eq!(expected.title(), actual.title());
-        assert_eq!(expected.text(), actual.text());
-        assert_eq!(expected.timestamp(), actual.timestamp());
-        assert_eq!(expected.hostname(), actual.hostname());
-        assert_eq!(expected.aggregation_key(), actual.aggregation_key());
-        assert_eq!(expected.priority(), actual.priority());
-        assert_eq!(expected.source_type_name(), actual.source_type_name());
-        assert_eq!(expected.alert_type(), actual.alert_type());
-        assert_eq!(expected.tags(), actual.tags());
-        assert_eq!(expected.origin_tags(), actual.origin_tags());
+            .with_tags(event_tags)
     }
 
     #[test]
-    fn basic_eventd() {
-        let event_title = "my event";
-        let event_text = "text";
-        let raw = format!(
-            "_e{{{},{}}}:{}|{}",
-            event_title.len(),
-            event_text.len(),
-            event_title,
-            event_text
-        );
-
-        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
-        let expected = EventD::new(event_title, event_text);
-        check_basic_eventd_eq(expected, actual);
-    }
-
-    #[test]
-    fn eventd_tags() {
-        let event_title = "my event";
-        let event_text = "text";
+    fn eventd_single_extensions() {
+        let title = "my event";
+        let text = "text";
         let tags = ["tag1", "tag2"];
         let shared_tag_set: SharedTagSet = tags.iter().map(|&s| Tag::from(s)).collect::<TagSet>().into_shared();
-        let raw = format!(
-            "_e{{{},{}}}:{}|{}|#{}",
-            event_title.len(),
-            event_text.len(),
-            event_title,
-            event_text,
-            tags.join(","),
-        );
 
-        let expected = EventD::new(event_title, event_text).with_tags(shared_tag_set);
-        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
-        check_basic_eventd_eq(expected, actual);
+        let cases = [
+            ("basic", String::new(), EventD::new(title, text)),
+            (
+                "tags",
+                format!("|#{}", tags.join(",")),
+                EventD::new(title, text).with_tags(shared_tag_set),
+            ),
+            (
+                "priority",
+                format!("|p:{}", Priority::Low),
+                EventD::new(title, text).with_priority(Priority::Low),
+            ),
+            (
+                "alert type",
+                format!("|t:{}", AlertType::Warning),
+                EventD::new(title, text).with_alert_type(AlertType::Warning),
+            ),
+        ];
+
+        for (name, extensions, expected) in cases {
+            let actual = parse_dsd_eventd(event_frame(title, text, &extensions).as_bytes());
+            assert_eq!(actual, expected, "{name}");
+        }
     }
 
     #[test]
     fn eventd_fields_after_empty_or_one_byte_field_are_parsed() {
         let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
         let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
-        let tags = ["tag1", "tag2"];
-        let shared_tag_set: SharedTagSet = tags.iter().map(|&s| Tag::from(s)).collect::<TagSet>().into_shared();
-        let expected = || {
-            EventD::new("title", "text")
-                .with_tags(shared_tag_set.clone())
-                .with_priority(Priority::Normal)
-                .with_alert_type(AlertType::Info)
-        };
+        let expected = EventD::new("title", "text")
+            .with_tags(SharedTagSet::from(TagSet::from_iter(["tag1".into(), "tag2".into()])));
 
         // An empty field is skipped in permissive mode, but rejects the event in strict mode.
-        let raw = format!("_e{{5,4}}:title|text||#{}", tags.join(","));
-        let actual = parse_dsd_eventd_with_conf(raw.as_bytes(), &permissive).unwrap();
-        check_basic_eventd_eq(expected(), actual);
+        let raw = event_frame("title", "text", "||#tag1,tag2");
+        assert_eq!(parse_dsd_eventd_with_conf(raw.as_bytes(), &permissive), expected);
         assert!(parse_dogstatsd_event(raw.as_bytes(), &strict).is_err());
 
         // A one-byte field, such as a bare `#`, carries no value, and the fields after it are parsed in both modes.
-        let raw = format!("_e{{5,4}}:title|text|#|#{}", tags.join(","));
+        let raw = event_frame("title", "text", "|#|#tag1,tag2");
         for config in [&permissive, &strict] {
-            let actual = parse_dsd_eventd_with_conf(raw.as_bytes(), config).unwrap();
-            check_basic_eventd_eq(expected(), actual);
+            assert_eq!(parse_dsd_eventd_with_conf(raw.as_bytes(), config), expected);
         }
     }
 
@@ -374,47 +338,8 @@ mod tests {
         let expected = EventD::new("title", "text").with_tags(SharedTagSet::from(TagSet::from_iter(
             tags.iter().map(|&tag| tag.into()),
         )));
-        let actual = parse_dsd_eventd(&input).expect("event with invalid tag bytes should parse");
 
-        check_basic_eventd_eq(expected, actual);
-    }
-
-    #[test]
-    fn eventd_priority() {
-        let event_title = "my event";
-        let event_text = "text";
-        let event_priority = Priority::Low;
-        let raw = format!(
-            "_e{{{},{}}}:{}|{}|p:{}",
-            event_title.len(),
-            event_text.len(),
-            event_title,
-            event_text,
-            event_priority
-        );
-
-        let expected = EventD::new(event_title, event_text).with_priority(event_priority);
-        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
-        check_basic_eventd_eq(expected, actual);
-    }
-
-    #[test]
-    fn eventd_alert_type() {
-        let event_title = "my event";
-        let event_text = "text";
-        let event_alert_type = AlertType::Warning;
-        let raw = format!(
-            "_e{{{},{}}}:{}|{}|t:{}",
-            event_title.len(),
-            event_text.len(),
-            event_title,
-            event_text,
-            event_alert_type
-        );
-
-        let expected = EventD::new(event_title, event_text).with_alert_type(event_alert_type);
-        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
-        check_basic_eventd_eq(expected, actual);
+        assert_eq!(parse_dsd_eventd(&input), expected);
     }
 
     #[test]
@@ -432,24 +357,24 @@ mod tests {
         let event_cardinality = "low";
         let tags = ["tags1", "tags2"];
         let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
-        let raw = format!(
-            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|card:{}|#{}",
-            event_title.len(),
-            event_text.len(),
+        let raw = event_frame(
             event_title,
             event_text,
-            event_hostname,
-            event_aggregation_key,
-            event_priority,
-            event_source_type,
-            event_alert_type,
-            event_timestamp,
-            event_local_data,
-            event_external_data,
-            event_cardinality,
-            tags.join(","),
+            &format!(
+                "|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|card:{}|#{}",
+                event_hostname,
+                event_aggregation_key,
+                event_priority,
+                event_source_type,
+                event_alert_type,
+                event_timestamp,
+                event_local_data,
+                event_external_data,
+                event_cardinality,
+                tags.join(","),
+            ),
         );
-        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+        let actual = parse_dsd_eventd(raw.as_bytes());
         let expected = EventD::new(event_title, event_text)
             .with_hostname(event_hostname)
             .with_aggregation_key(event_aggregation_key)
@@ -458,7 +383,7 @@ mod tests {
             .with_alert_type(event_alert_type)
             .with_timestamp(event_timestamp)
             .with_tags(shared_tag_set);
-        check_basic_eventd_eq(expected, actual);
+        assert_eq!(actual, expected);
 
         // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);

@@ -137,14 +137,67 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns `true` if the OTLP pipeline is enabled.
     ///
     /// The pipeline needs at least one OTLP signal. Like the Agent, ADP treats OTLP as disabled when none is enabled,
-    /// instead of failing startup.
+    /// instead of failing startup. It is also disabled when [`otlp_blocked`](Self::otlp_blocked) is `true`.
     pub const fn otlp_enabled(&self) -> bool {
-        self.config.control.otlp && self.otlp_signals_enabled()
+        self.config.control.otlp && !self.otlp_blocked() && self.otlp_signals_enabled()
     }
 
     /// Returns `true` if the OTLP pipeline is enabled but every OTLP signal (metrics, logs, and traces) is disabled.
+    ///
+    /// It is `false` when [`otlp_blocked`](Self::otlp_blocked) is `true`, so a blocked pipeline gets one error.
     pub const fn otlp_enabled_without_signals(&self) -> bool {
-        self.config.control.otlp && !self.otlp_signals_enabled()
+        self.config.control.otlp && !self.otlp_blocked() && !self.otlp_signals_enabled()
+    }
+
+    /// Returns `true` if OTLP is enabled, any proxy flag is `true`, and a receiver sets `tls`.
+    ///
+    /// A proxy flag counts even for a disabled signal, as in the Agent.
+    ///
+    /// ADP rejects TLS here because the Agent and ADP can't easily use the same customer TLS configuration to set up
+    /// both sides. ADP reads the canonical configuration locations to set up its own listener, which would leave the
+    /// Agent listening for the proxied signals in plaintext. That would violate the customer's intended security
+    /// configuration, so ADP rejects a configuration that asks for TLS.
+    pub const fn otlp_blocked(&self) -> bool {
+        let receiver = &self.config.domains.otlp.receiver;
+        self.config.control.otlp
+            && self.otlp_proxy_enabled()
+            && (receiver.grpc.tls_configured || receiver.http.tls_configured)
+    }
+
+    /// Returns the error to log when [`otlp_blocked`](Self::otlp_blocked) is `true`, and `None` otherwise.
+    ///
+    /// It names the protocols that set `tls` and the proxy flags that are `true`. It is worded like the Agent's
+    /// `ErrDataPlaneProxyTLS`.
+    pub fn otlp_blocked_message(&self) -> Option<String> {
+        if !self.otlp_blocked() {
+            return None;
+        }
+
+        let otlp = &self.config.domains.otlp;
+        let protocols = [
+            ("grpc", otlp.receiver.grpc.tls_configured),
+            ("http", otlp.receiver.http.tls_configured),
+        ]
+        .into_iter()
+        .filter(|(_, set)| *set)
+        .map(|(protocol, _)| format!("otlp_config.receiver.protocols.{protocol}"))
+        .collect::<Vec<_>>()
+        .join(" and ");
+        let signals = [
+            ("logs", otlp.proxy.logs_enabled),
+            ("metrics", otlp.proxy.metrics_enabled),
+            ("traces", otlp.proxy.traces_enabled),
+        ]
+        .into_iter()
+        .filter(|(_, proxied)| *proxied)
+        .map(|(signal, _)| format!("data_plane.experimental.otlp.proxy.{signal}"))
+        .collect::<Vec<_>>()
+        .join(" and ");
+
+        Some(format!(
+            "OTLP receiver TLS is not supported when ADP proxies OTLP signals to the Agent: remove tls from \
+            {protocols}, or set {signals} to false"
+        ))
     }
 
     /// Returns `true` if at least one OTLP signal (metrics, logs, or traces) is enabled.
@@ -190,15 +243,22 @@ impl<'a> DataPlaneConfiguration<'a> {
             || self.traces_pipeline_required()
     }
 
+    /// Returns `true` if ADP handles OTLP logs itself, rather than relaying them to the Core Agent.
+    ///
+    /// It mirrors the native branch of the OTLP topology, which wires the OTLP source's logs into the logs pipeline
+    /// and is taken when OTLP is enabled and `otlp_proxy_enabled()` is false. The topology branches on that check
+    /// itself, so a change to when it proxies must update this function too.
+    pub const fn otlp_logs_native(&self) -> bool {
+        self.otlp_enabled() && !self.otlp_proxy_enabled()
+    }
+
     /// Returns `true` if the logs pipeline is required.
     ///
     /// This indicates that the "baseline" logs pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as Checks or OTLP.
+    /// pipelines, such as Checks or OTLP. It also decides whether the classifier's `logs` pipeline is active, so the
+    /// startup compatibility check follows the topology.
     pub const fn logs_pipeline_required(&self) -> bool {
-        // We consider the logs pipeline to be enabled if:
-        // - Checks is enabled
-        // - OTLP is enabled and not in proxy mode
-        self.checks_enabled() || (self.otlp_enabled() && !self.otlp_proxy_enabled())
+        self.checks_enabled() || self.otlp_logs_native()
     }
 
     /// Returns `true` if the events pipeline is required.
@@ -242,6 +302,9 @@ impl<'a> DataPlaneConfiguration<'a> {
         }
         if self.traces_pipeline_required() {
             s.insert(Pipeline::Traces);
+        }
+        if self.logs_pipeline_required() {
+            s.insert(Pipeline::Logs);
         }
         s
     }
@@ -462,6 +525,7 @@ mod tests {
         assert!(dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+        assert!(dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -475,6 +539,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
+        assert!(dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -505,6 +570,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+        assert!(!dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -520,6 +586,7 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
+        assert!(!dp.active_pipelines().contains(&Pipeline::Logs));
     }
 
     #[test]
@@ -616,6 +683,121 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(!dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+    }
+
+    /// Returns a configuration that enables OTLP and DogStatsD, proxies the given signals, and sets TLS on the gRPC
+    /// receiver.
+    fn tls_configuration(logs: bool, metrics: bool, traces: bool) -> SalukiConfiguration {
+        let mut config = pipeline_configuration(false, true, true, proxy(logs, metrics, traces));
+        config.domains.otlp.receiver.grpc.tls_configured = true;
+        config
+    }
+
+    #[test]
+    fn receiver_tls_with_any_proxy_flag_blocks_otlp_ingest() {
+        // The proxy flag for the enabled metrics signal, and the flags for the disabled logs and traces signals.
+        for (logs, metrics, traces) in [(false, true, false), (true, false, false), (false, false, true)] {
+            let config = tls_configuration(logs, metrics, traces);
+            let dp = DataPlaneConfiguration::from_configuration(&config);
+
+            assert!(dp.otlp_blocked(), "{:?}", (logs, metrics, traces));
+            assert!(!dp.otlp_enabled());
+            assert!(!dp.otlp_enabled_without_signals());
+            assert!(!dp.logs_pipeline_required());
+            assert!(!dp.traces_pipeline_required());
+            // DogStatsD is unaffected.
+            assert!(dp.data_pipelines_enabled());
+            assert_eq!(dp.active_pipelines(), HashSet::from([Pipeline::DogStatsD]));
+        }
+    }
+
+    #[test]
+    fn receiver_tls_on_either_protocol_blocks_otlp_ingest() {
+        for (grpc, http) in [(true, false), (false, true), (true, true)] {
+            let mut config = tls_configuration(true, false, false);
+            config.domains.otlp.receiver.grpc.tls_configured = grpc;
+            config.domains.otlp.receiver.http.tls_configured = http;
+            let dp = DataPlaneConfiguration::from_configuration(&config);
+
+            assert!(dp.otlp_blocked(), "{:?}", (grpc, http));
+        }
+    }
+
+    #[test]
+    fn receiver_tls_without_a_proxy_flag_allows_otlp_ingest() {
+        // With every flag false, ADP handles every signal itself, so the TLS is not proxied.
+        let config = tls_configuration(false, false, false);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.otlp_blocked());
+        assert!(dp.otlp_enabled());
+        assert!(dp.active_pipelines().contains(&Pipeline::Otlp));
+    }
+
+    #[test]
+    fn receiver_tls_blocks_nothing_while_otlp_is_off() {
+        let mut config = tls_configuration(true, true, true);
+        config.control.otlp = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.otlp_blocked());
+        assert!(!dp.otlp_enabled());
+    }
+
+    #[test]
+    fn blocked_message_names_the_protocol_and_the_proxy_flags_that_are_set() {
+        let mut config = tls_configuration(true, false, true);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        assert_eq!(
+            dp.otlp_blocked_message().as_deref(),
+            Some(
+                "OTLP receiver TLS is not supported when ADP proxies OTLP signals to the Agent: remove tls from \
+                otlp_config.receiver.protocols.grpc, or set data_plane.experimental.otlp.proxy.logs and \
+                data_plane.experimental.otlp.proxy.traces to false"
+            )
+        );
+
+        config.domains.otlp.receiver.grpc.tls_configured = false;
+        config.domains.otlp.receiver.http.tls_configured = true;
+        config.domains.otlp.proxy.logs_enabled = false;
+        config.domains.otlp.proxy.metrics_enabled = true;
+        config.domains.otlp.proxy.traces_enabled = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        assert_eq!(
+            dp.otlp_blocked_message().as_deref(),
+            Some(
+                "OTLP receiver TLS is not supported when ADP proxies OTLP signals to the Agent: remove tls from \
+                otlp_config.receiver.protocols.http, or set data_plane.experimental.otlp.proxy.metrics to false"
+            )
+        );
+
+        config.domains.otlp.receiver.grpc.tls_configured = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        let message = dp.otlp_blocked_message().expect("both protocols block OTLP ingest");
+        assert!(
+            message.contains(
+                "remove tls from otlp_config.receiver.protocols.grpc and otlp_config.receiver.protocols.http,"
+            ),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn there_is_no_blocked_message_unless_otlp_is_blocked() {
+        let config = tls_configuration(false, false, false);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert_eq!(dp.otlp_blocked_message(), None);
+    }
+
+    #[test]
+    fn a_blocked_otlp_pipeline_reports_no_missing_signals() {
+        let mut config = tls_configuration(true, false, false);
+        config.domains.otlp.receiver.metrics_enabled = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.otlp_blocked());
+        assert!(!dp.otlp_enabled_without_signals());
     }
 
     #[test]

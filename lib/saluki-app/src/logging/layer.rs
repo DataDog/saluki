@@ -1,10 +1,6 @@
-use std::{fmt, path::Path, str::FromStr as _, sync::OnceLock};
+use std::{fmt, path::Path};
 
-use chrono::{
-    format::{DelayedFormat, Item, StrftimeItems},
-    Utc,
-};
-use chrono_tz::Tz;
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use tracing::{field, Event, Level, Subscriber};
 use tracing_subscriber::{
@@ -55,6 +51,7 @@ where
 struct AgentLikeFormatter {
     app_name: String,
     rfc3339: bool,
+    tz: TimeZone,
 }
 
 impl AgentLikeFormatter {
@@ -65,6 +62,9 @@ impl AgentLikeFormatter {
         Self {
             app_name: get_agent_logger_name(),
             rfc3339,
+            // Detecting the time zone can read from disk, so do it here, while logging is set up, rather than while
+            // formatting the first event.
+            tz: TimeZone::system().clone(),
         }
     }
 }
@@ -81,7 +81,7 @@ where
         write!(
             writer,
             "{} | {} | {} | ",
-            get_delayed_format_now(self.rfc3339),
+            format_log_timestamp(Timestamp::now().ok(), &self.tz, self.rfc3339),
             self.app_name,
             metadata.level()
         )?;
@@ -490,39 +490,35 @@ impl field::Visit for AgentLikeJsonFieldVisitor {
     }
 }
 
-/// Gets a delayed formatter for the current time.
+/// Formats a timestamp for a log line, in the given time zone.
 ///
-/// When `rfc3339` is `true`, returns RFC 3339 format (`2024-12-31T23:59:59Z`, system timezone).
-/// When `false`, returns the legacy format (`2024-12-31 23:59:59 UTC`, system timezone).
-fn get_delayed_format_now(rfc3339: bool) -> DelayedFormat<impl Iterator<Item = &'static Item<'static>> + Clone> {
-    // We fallback to using UTC if something goes wrong during timezone detection.
-    static SYSTEM_TZ: OnceLock<Tz> = OnceLock::new();
-    let system_tz = SYSTEM_TZ.get_or_init(|| {
-        iana_time_zone::get_timezone()
-            .map_err(|_| ())
-            .and_then(|raw_tz| Tz::from_str(&raw_tz).map_err(|_| ()))
-            .unwrap_or(Tz::UTC)
-    });
+/// When `rfc3339` is `true`, this uses [`TimestampFormat::Rfc3339`] (`2024-12-31T18:59:59.123456789-05:00`). When
+/// `false`, it uses the legacy format, [`TimestampFormat::DateTimeWithAbbreviation`] (`2024-12-31 18:59:59 EST`).
+/// Without a timestamp, because the system clock is out of range, it writes `unknown time` in either format, so that
+/// the line is still logged.
+fn format_log_timestamp(timestamp: Option<Timestamp>, tz: &TimeZone, rfc3339: bool) -> LogTimestamp<'_> {
+    LogTimestamp { timestamp, tz, rfc3339 }
+}
 
-    let format_items: &[Item<'static>] = if rfc3339 {
-        static RFC3339_FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
-        RFC3339_FORMAT_ITEMS.get_or_init(|| {
-            StrftimeItems::new("%+")
-                .parse()
-                .expect("should not fail to parse datetime format")
-        })
-    } else {
-        static FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
-        FORMAT_ITEMS.get_or_init(|| {
-            StrftimeItems::new("%Y-%m-%d %H:%M:%S %Z")
-                .parse()
-                .expect("should not fail to parse datetime format")
-        })
-    };
+struct LogTimestamp<'a> {
+    timestamp: Option<Timestamp>,
+    tz: &'a TimeZone,
+    rfc3339: bool,
+}
 
-    Utc::now()
-        .with_timezone(system_tz)
-        .format_with_items(format_items.iter())
+impl fmt::Display for LogTimestamp<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(timestamp) = self.timestamp else {
+            return f.write_str("unknown time");
+        };
+
+        let format = if self.rfc3339 {
+            TimestampFormat::Rfc3339(self.tz)
+        } else {
+            TimestampFormat::DateTimeWithAbbreviation(self.tz)
+        };
+        fmt::Display::fmt(&timestamp.format(format), f)
+    }
 }
 
 #[cfg(test)]
@@ -624,6 +620,7 @@ mod tests {
             AgentLikeFormatter {
                 app_name: "DATAPLANE".to_string(),
                 rfc3339: false,
+                tz: TimeZone::utc().clone(),
             },
             || {
                 event!(Level::WARN, answer = 42_i64, enabled = true, message = "agent-message");
@@ -637,6 +634,85 @@ mod tests {
         assert!(output.contains("layer.rs:"));
         assert!(output.contains(" | answer:42,enabled:true | agent-message"));
         assert!(output.ends_with('\n'));
+    }
+
+    // Test zones, matching the current rules of `America/New_York`, `Asia/Kolkata` and `America/Sao_Paulo`, plus an
+    // offset with seconds, which RFC 3339 can't write. They're built from POSIX rules so that the tests don't depend on
+    // the host's time zone database.
+    fn zone(name: &str) -> TimeZone {
+        let rule = match name {
+            "utc" => return TimeZone::utc().clone(),
+            "new_york" => "EST5EDT,M3.2.0,M11.1.0",
+            "kolkata" => "IST-5:30",
+            "sao_paulo" => "<-03>3",
+            "with_seconds" => "TST1:00:30",
+            _ => panic!("unknown test zone {name}"),
+        };
+        TimeZone::posix(rule).expect("test zone should be valid")
+    }
+
+    fn at(secs: i64, nanos: u32) -> Timestamp {
+        Timestamp::from_unix_nanos(i128::from(secs) * 1_000_000_000 + i128::from(nanos))
+            .expect("test timestamp should be valid")
+    }
+
+    #[test]
+    fn rfc3339_timestamps_use_the_shortest_exact_fraction_and_a_numeric_offset() {
+        // 2024-12-31T23:59:59Z
+        let secs = 1_735_689_599;
+        let cases = [
+            ("utc", 123_456_789, "2024-12-31T23:59:59.123456789+00:00"),
+            ("utc", 0, "2024-12-31T23:59:59+00:00"),
+            ("utc", 1_000_000, "2024-12-31T23:59:59.001+00:00"),
+            ("utc", 120_000_000, "2024-12-31T23:59:59.120+00:00"),
+            ("utc", 123_456_000, "2024-12-31T23:59:59.123456+00:00"),
+            ("utc", 123_450_000, "2024-12-31T23:59:59.123450+00:00"),
+            ("utc", 100, "2024-12-31T23:59:59.000000100+00:00"),
+            ("new_york", 123_456_789, "2024-12-31T18:59:59.123456789-05:00"),
+            ("kolkata", 123_456_789, "2025-01-01T05:29:59.123456789+05:30"),
+            ("sao_paulo", 123_456_789, "2024-12-31T20:59:59.123456789-03:00"),
+            ("with_seconds", 123_456_789, "2024-12-31T22:58:59.123456789-01:01"),
+        ];
+
+        for (tz, nanos, expected) in cases {
+            let actual = format_log_timestamp(Some(at(secs, nanos)), &zone(tz), true).to_string();
+            assert_eq!(actual, expected, "zone {tz}, nanos {nanos}");
+        }
+    }
+
+    #[test]
+    fn legacy_timestamps_use_whole_seconds_and_the_zone_abbreviation() {
+        let cases = [
+            ("utc", 1_735_689_599, 123_456_789, "2024-12-31 23:59:59 UTC"),
+            ("new_york", 1_735_689_599, 123_456_789, "2024-12-31 18:59:59 EST"),
+            ("kolkata", 1_735_689_599, 123_456_789, "2025-01-01 05:29:59 IST"),
+            ("sao_paulo", 1_735_689_599, 123_456_789, "2024-12-31 20:59:59 -03"),
+            ("with_seconds", 1_735_689_599, 123_456_789, "2024-12-31 22:59:29 TST"),
+            // Fractional seconds are truncated, not rounded.
+            ("utc", 1_735_689_599, 999_999_999, "2024-12-31 23:59:59 UTC"),
+            // Either side of the 2024 spring-forward transition in New York, and a summer time.
+            ("new_york", 1_710_053_999, 0, "2024-03-10 01:59:59 EST"),
+            ("new_york", 1_710_054_000, 0, "2024-03-10 03:00:00 EDT"),
+            ("new_york", 1_720_493_204, 0, "2024-07-08 22:46:44 EDT"),
+            // The 2024 fall-back transition in New York repeats 01:00 to 02:00, first in EDT and then in EST.
+            ("new_york", 1_730_611_800, 0, "2024-11-03 01:30:00 EDT"),
+            ("new_york", 1_730_613_599, 0, "2024-11-03 01:59:59 EDT"),
+            ("new_york", 1_730_613_600, 0, "2024-11-03 01:00:00 EST"),
+            ("new_york", 1_730_615_400, 0, "2024-11-03 01:30:00 EST"),
+        ];
+
+        for (tz, secs, nanos, expected) in cases {
+            let actual = format_log_timestamp(Some(at(secs, nanos)), &zone(tz), false).to_string();
+            assert_eq!(actual, expected, "zone {tz}, secs {secs}, nanos {nanos}");
+        }
+    }
+
+    #[test]
+    fn missing_timestamps_are_written_as_unknown_time() {
+        for rfc3339 in [true, false] {
+            let actual = format_log_timestamp(None, &zone("new_york"), rfc3339).to_string();
+            assert_eq!(actual, "unknown time", "rfc3339 {rfc3339}");
+        }
     }
 
     fn render_agent_event(formatter: AgentLikeFormatter, emit: impl FnOnce()) -> String {
