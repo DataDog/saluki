@@ -90,8 +90,8 @@ pub struct TracesOptions {
     /// Trace statistics and span field differences that are expected, each tagged with the gap and the issue that
     /// explain it.
     ///
-    /// A matching difference doesn't fail the case, but an entry path that matches nothing does, so that fixing a gap
-    /// requires removing its entries.
+    /// A matching difference doesn't fail the case, but an entry path that matches nothing for one of the values of
+    /// `when` does, so that fixing a gap requires removing its entries.
     #[serde(default)]
     pub known_differences: Vec<KnownDifference>,
 
