@@ -341,8 +341,7 @@ impl SpanConcentrator {
         let end = s.start + s.duration;
         let mut btime = (end - end % self.bsize).max(self.oldest_ts);
         if btime > now {
-            // Matches the Agent: a future bucket is not flushed until the clock reaches it, holding its memory until
-            // then.
+            // A future bucket does not flush until the clock reaches it, so use the current bucket, as the Agent does.
             self.future_clamps += 1;
             btime = align_ts(now, self.bsize).max(self.oldest_ts);
         }
