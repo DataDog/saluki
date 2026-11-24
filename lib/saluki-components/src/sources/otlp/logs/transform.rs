@@ -117,9 +117,9 @@ impl PropertySink for HashMap<MetaString, JsonValue> {
     }
 }
 
-impl PropertySink for Vec<(String, JsonValue)> {
+impl PropertySink for serde_json::Map<String, JsonValue> {
     fn set(&mut self, key: String, value: JsonValue) {
-        self.push((key, value));
+        self.insert(key, value);
     }
 }
 
@@ -169,11 +169,11 @@ fn flattened_value(value: Option<&OtlpValue>, depth: usize) -> (JsonValue, bool)
                 let element = match element.value.as_ref() {
                     // Only a map element that spreads has keys to look at. Every other element is a single value.
                     Some(map @ KvlistValue(_)) if depth + 1 != FLATTEN_STRING_DEPTH => {
-                        let mut flattened = Vec::new();
+                        let mut flattened = serde_json::Map::new();
                         non_finite |= flatten_attribute(Cow::Borrowed(""), Some(map), depth + 1, &mut flattened);
-                        match flattened.iter().rposition(|(key, _)| key.is_empty()) {
-                            Some(index) => flattened.swap_remove(index).1,
-                            None => JsonValue::Object(flattened.into_iter().collect()),
+                        match flattened.remove("") {
+                            Some(value) => value,
+                            None => JsonValue::Object(flattened),
                         }
                     }
                     other => {
