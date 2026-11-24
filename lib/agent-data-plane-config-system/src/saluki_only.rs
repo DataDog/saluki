@@ -217,6 +217,8 @@ pub struct SalukiOnly {
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
     pub data_plane: DataPlane,
+    /// Experimental ADP feature gates (`experimental.*`).
+    pub experimental: Experimental,
     /// APM trace knobs (`apm_config.*`).
     pub apm_config: ApmConfig,
     /// OTLP receiver and trace knobs (`otlp_config.*`).
@@ -225,6 +227,25 @@ pub struct SalukiOnly {
     pub ottl_filter_config: Option<OttlFilterConfig>,
     /// OTTL span-transform processor (`ottl_transform_config`).
     pub ottl_transform_config: Option<OttlTransformConfig>,
+}
+
+/// `experimental.*`: experimental top-level ADP feature gates.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Experimental {
+    /// Experimental programmable metrics execution engine (`experimental.programmable_metrics.*`).
+    pub programmable_metrics: ExperimentalProgrammableMetrics,
+}
+
+/// `experimental.programmable_metrics.*`: boot-time switch for the single-region fused metric engine.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ExperimentalProgrammableMetrics {
+    /// Whether the single-region programmable metrics engine runs instead of the native transform chain
+    /// (`experimental.programmable_metrics.enabled`).
+    ///
+    /// Defaults to `false`.
+    pub enabled: Option<bool>,
 }
 
 /// `data_plane.*` Saluki-only knobs.
@@ -544,6 +565,9 @@ impl SalukiOnly {
         if let Some(v) = self.data_plane.experimental.apm.enabled {
             config.control.apm = v;
         }
+        if let Some(v) = self.experimental.programmable_metrics.enabled {
+            config.control.programmable_metrics = v;
+        }
         config.control.memory_limit = self.memory_limit.map(|v| v.as_u64());
         config.control.memory_slop_factor = self.memory_slop_factor.unwrap_or(DEFAULT_MEMORY_SLOP_FACTOR);
         config.control.enable_global_limiter = self.enable_global_limiter.unwrap_or(DEFAULT_ENABLE_GLOBAL_LIMITER);
@@ -787,6 +811,12 @@ mod tests {
                     }
                 }
             },
+            // nested: experimental
+            "experimental": {
+                "programmable_metrics": {
+                    "enabled": true
+                }
+            },
             // nested: apm_config
             "apm_config": {
                 "max_resource_len": 1234,
@@ -824,6 +854,7 @@ mod tests {
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
         assert!(config.control.apm);
+        assert!(config.control.programmable_metrics);
         assert_eq!(config.control.memory_limit, Some(ByteSize::mb(512).as_u64()));
         assert_eq!(config.control.memory_slop_factor, 0.3);
         assert!(!config.control.enable_global_limiter);
@@ -1173,6 +1204,7 @@ mod tests {
         assert_eq!(traces.rare_sampler.cardinality, DEFAULT_RARE_SAMPLER_CARDINALITY);
 
         assert!(!config.control.apm);
+        assert!(!config.control.programmable_metrics);
         assert_eq!(config.domains.apm.proxy_destination, DEFAULT_APM_PROXY_DESTINATION);
     }
 }

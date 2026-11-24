@@ -134,6 +134,11 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.config.control.dogstatsd
     }
 
+    /// Returns `true` if the experimental single-region programmable metrics engine is enabled.
+    pub const fn programmable_metrics_enabled(&self) -> bool {
+        self.config.control.programmable_metrics
+    }
+
     /// Returns `true` if the OTLP pipeline is enabled.
     ///
     /// The pipeline needs at least one OTLP signal. Like the Agent, ADP treats OTLP as disabled when none is enabled,

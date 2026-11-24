@@ -39,6 +39,12 @@ pub struct ControlConfiguration {
     /// Defaults to `false`. See [`domains::apm`](crate::domains::apm).
     pub apm: bool,
 
+    /// Whether the experimental single-region programmable metrics execution engine is enabled
+    /// (`experimental.programmable_metrics.enabled`).
+    ///
+    /// Defaults to `false`.
+    pub programmable_metrics: bool,
+
     /// Whether standalone mode is active, running without a core Agent. (not in Datadog Agent
     /// config schema)
     pub standalone_mode: bool,

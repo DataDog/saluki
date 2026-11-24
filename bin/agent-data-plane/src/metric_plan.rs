@@ -1,18 +1,21 @@
 //! Lowers ADP's typed [`SalukiConfiguration`] into a [`MetricPlan`] and renders `explain` output.
 
+use std::sync::Arc;
+
 use agent_data_plane_config::SalukiConfiguration;
 use saluki_components::{
     config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration},
-    transforms::{DogStatsDMapperProfile, DogStatsDMetricMapping},
+    transforms::{DogStatsDMapperProfile, DogStatsDMetricMapping, MetricRegionConfiguration},
 };
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_core::data_model::event::metric::{Metric, MetricOrigin};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_plan::{
     explain_plan,
     lowering::{
-        lower_native_pipeline, NativePipelineConfig, RoutingPolicySpec, STREAM_CHECKS, STREAM_LIVENESS, STREAM_OTLP,
-        STREAM_TRACE_SAMPLER,
+        lower_native_pipeline, NativePipelineConfig, RoutingPolicySpec, STREAM_CHECKS, STREAM_DOGSTATSD,
+        STREAM_LIVENESS, STREAM_OTLP, STREAM_TRACE_SAMPLER,
     },
-    MetricPlan, TelemetryContract,
+    validate_plan, MetricPlan, RuntimeBindings, TelemetryContract,
 };
 
 use crate::{
@@ -141,6 +144,60 @@ pub fn render_plan_explanation(config: &SalukiConfiguration, as_json: bool) -> R
     } else {
         Ok(explain_plan(&plan, &[TelemetryContract::default_internal_telemetry()]))
     }
+}
+
+/// Lowers and validates `config` into a boot-time [`MetricRegionConfiguration`] hosting the single fused region.
+pub fn build_metric_region_configuration(
+    config: &SalukiConfiguration, bindings: RuntimeBindings,
+) -> Result<MetricRegionConfiguration, GenericError> {
+    let native = native_pipeline_config(config)?;
+    let plan = lower_native_pipeline(&native);
+    let validated = validate_plan(&plan).map_err(|errors| {
+        let messages: Vec<String> = errors.into_iter().map(|e| e.to_string()).collect();
+        generic_error!(
+            "Failed to validate lowered programmable metrics plan: {}",
+            messages.join("; ")
+        )
+    })?;
+
+    let default_stream = if native.dogstatsd_enabled {
+        STREAM_DOGSTATSD.to_string()
+    } else {
+        native
+            .passthrough_streams
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "empty".to_string())
+    };
+
+    let mut region = MetricRegionConfiguration::new(
+        validated,
+        default_stream,
+        config.domains.dogstatsd.aggregation.flush_interval,
+    )
+    .with_bindings(bindings);
+
+    // When both DogStatsD and passthrough sources (OTLP, checks, liveness, trace sampler) feed the single fused
+    // region, route DogStatsD-origin metrics into the aggregation branch and all other metrics into the shared
+    // passthrough enrichment branch.
+    if native.dogstatsd_enabled && !native.passthrough_streams.is_empty() {
+        let passthrough_stream: &'static str = match native.passthrough_streams[0].as_str() {
+            STREAM_LIVENESS => STREAM_LIVENESS,
+            STREAM_CHECKS => STREAM_CHECKS,
+            STREAM_OTLP => STREAM_OTLP,
+            STREAM_TRACE_SAMPLER => STREAM_TRACE_SAMPLER,
+            _ => STREAM_DOGSTATSD,
+        };
+        region = region.with_stream_classifier(Arc::new(move |metric: &Metric| {
+            if metric.metadata().origin().is_some_and(MetricOrigin::is_dogstatsd) {
+                STREAM_DOGSTATSD
+            } else {
+                passthrough_stream
+            }
+        }));
+    }
+
+    Ok(region)
 }
 
 #[cfg(test)]
@@ -424,6 +481,8 @@ mod tests {
             ),
         ];
 
+        let input_for_region = input.clone();
+
         // 1. Run native component chain.
         let native_out = run_native_dogstatsd_chain(&config, input.clone()).await;
 
@@ -453,9 +512,25 @@ mod tests {
         assert!(plan_out.iter().any(|(n, _, _)| n == "acme.hist.latency.avg"));
         assert!(!plan_out.iter().any(|(n, _, _)| n == "acme.hist.latency.max"));
         assert!(!plan_out.iter().any(|(n, _, _)| n == "acme.blocked"));
-        assert!(plan_out
-            .iter()
-            .any(|(n, tags, _)| n == "acme.mapped.job.count" && tags.contains(&"job:other".to_string())));
+        // 3. Also run the exact same lowered plan through `MetricRegionTransform` (single fused Tokio task).
+        let mut standalone_config = config.clone();
+        standalone_config.control.standalone_mode = true;
+        let region_cfg = build_metric_region_configuration(&standalone_config, RuntimeBindings::default())
+            .expect("metric region config");
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_component_id("metrics_region")
+            .transform(region_cfg)
+            .await
+            .expect("region driver");
+        control.send(buffer_from_metrics(input_for_region)).await;
+        control.shutdown().await.expect("region shutdown");
+        let region_metrics = collect_all_metrics(outputs.default_output()).await;
+        let region_out = canonicalize_metrics(region_metrics);
+
+        assert_eq!(
+            region_out, native_out,
+            "single-region MetricRegionTransform must match native DogStatsD transform chain"
+        );
     }
 
     #[test]
