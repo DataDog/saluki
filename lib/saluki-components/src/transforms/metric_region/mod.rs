@@ -24,6 +24,7 @@ use saluki_error::{generic_error, GenericError};
 use saluki_metric_kernels::{
     aggregate::{AggregateContextSnapshotEntry, AggregatedMetric},
     routing_filter::MetricMirroring,
+    tag_filter::DEFAULT_CONTEXT_CACHE_CAPACITY as TAG_FILTER_CONTEXT_CACHE_CAPACITY,
 };
 use saluki_metric_plan::{
     lowering::TARGET_PRIMARY, validate_plan, GenerationManager, InstallOutcome, MetricPlan, Op, RuntimeBindings,
@@ -176,6 +177,7 @@ impl TransformBuilder for MetricRegionConfiguration {
             bindings,
             default_stream: self.default_stream.clone(),
             stream_classifier: self.stream_classifier.clone(),
+            stream_batches: BTreeMap::new(),
             flush_interval: self.flush_interval,
             live_plans: self.live_plans.clone(),
             live_mirroring: self.live_mirroring.clone(),
@@ -191,23 +193,34 @@ impl MemoryBounds for MetricRegionConfiguration {
         builder.minimum().with_single_value::<MetricRegion>("component struct");
 
         for node in &self.plan.plan().nodes {
-            if let Op::Aggregate { context_limit, .. } = node.op {
-                builder
-                    .firm()
-                    .with_expr(UsageExpr::product(
-                        "aggregation state map",
-                        UsageExpr::sum(
-                            "context map entry",
-                            UsageExpr::struct_size::<Context>("context"),
-                            UsageExpr::struct_size::<AggregatedMetric<()>>("aggregated metric"),
-                        ),
-                        UsageExpr::config("aggregate_context_limit", context_limit),
-                    ))
-                    .with_expr(UsageExpr::product(
-                        "retained context snapshot",
-                        UsageExpr::struct_size::<AggregateContextSnapshotEntry>("snapshot entry"),
-                        UsageExpr::config("aggregate_context_limit", context_limit),
-                    ));
+            match &node.op {
+                Op::Aggregate { context_limit, .. } => {
+                    builder
+                        .firm()
+                        .with_expr(UsageExpr::product(
+                            "aggregation state map",
+                            UsageExpr::sum(
+                                "context map entry",
+                                UsageExpr::struct_size::<Context>("context"),
+                                UsageExpr::struct_size::<AggregatedMetric<()>>("aggregated metric"),
+                            ),
+                            UsageExpr::config("aggregate_context_limit", *context_limit),
+                        ))
+                        .with_expr(UsageExpr::product(
+                            "retained context snapshot",
+                            UsageExpr::struct_size::<AggregateContextSnapshotEntry>("snapshot entry"),
+                            UsageExpr::config("aggregate_context_limit", *context_limit),
+                        ));
+                }
+                Op::TagFilter {
+                    entries,
+                    value_allowlists,
+                } if !entries.is_empty() || !value_allowlists.is_empty() => {
+                    builder
+                        .firm()
+                        .with_fixed_amount("tag filter context cache", TAG_FILTER_CONTEXT_CACHE_CAPACITY * 64);
+                }
+                _ => {}
             }
         }
     }
@@ -218,12 +231,22 @@ struct MetricRegion {
     bindings: RuntimeBindings,
     default_stream: String,
     stream_classifier: Option<StreamClassifier>,
+    stream_batches: BTreeMap<&'static str, Vec<Metric>>,
     flush_interval: Duration,
     live_plans: Option<Live<MetricPlan>>,
     live_mirroring: Option<(String, Live<MetricMirroring>)>,
     host_tags_expiry: Option<(String, Duration)>,
     context_snapshot_requests: Option<AggregateContextSnapshotRequestReceiver>,
     target_to_output: BTreeMap<String, OutputName>,
+}
+
+#[inline]
+fn push_emitted(emitted: &mut BTreeMap<String, Vec<Metric>>, target: &str, metric: Metric) {
+    if let Some(buf) = emitted.get_mut(target) {
+        buf.push(metric);
+    } else {
+        emitted.insert(target.to_string(), vec![metric]);
+    }
 }
 
 impl MetricRegion {
@@ -246,40 +269,47 @@ impl MetricRegion {
             for metric in metrics.drain(..) {
                 buffered.push(Event::Metric(metric)).await?;
             }
+            if metrics.capacity() > 256 {
+                metrics.shrink_to(256);
+            }
             buffered.flush().await?;
         }
         Ok(())
     }
 
     fn ingest_buffer(&mut self, events: EventsBuffer, now: u64, emitted: &mut BTreeMap<String, Vec<Metric>>) {
-        if let Some(classifier) = self.stream_classifier.clone() {
-            let mut by_stream: BTreeMap<&'static str, Vec<Metric>> = BTreeMap::new();
+        if let Some(classifier) = self.stream_classifier.as_ref() {
             for metric in events.into_events::<Metric>() {
                 let stream_name = classifier(&metric);
-                by_stream.entry(stream_name).or_default().push(metric);
+                self.stream_batches.entry(stream_name).or_default().push(metric);
             }
-            for (stream_name, batch) in by_stream {
+            for (&stream_name, batch) in self.stream_batches.iter_mut() {
+                if batch.is_empty() {
+                    continue;
+                }
                 let effective_stream = if self.generations.active_engine().stream_index(stream_name).is_some() {
                     stream_name
                 } else {
                     self.default_stream.as_str()
                 };
-                if let Err(e) = self.generations.ingest(effective_stream, now, batch, |target, metric| {
-                    emitted.entry(target.to_string()).or_default().push(metric);
-                }) {
+                if let Err(e) = self
+                    .generations
+                    .ingest(effective_stream, now, batch.drain(..), |target, metric| {
+                        push_emitted(emitted, target, metric);
+                    })
+                {
                     error!(stream = effective_stream, error = %e, "Failed to ingest metrics into region.");
                 }
             }
-        } else {
-            let stream = self.default_stream.clone();
-            if let Err(e) = self
-                .generations
-                .ingest(&stream, now, events.into_events::<Metric>(), |target, metric| {
-                    emitted.entry(target.to_string()).or_default().push(metric);
-                })
-            {
-                error!(stream = %stream, error = %e, "Failed to ingest metrics into region.");
-            }
+        } else if let Err(e) = self.generations.ingest(
+            &self.default_stream,
+            now,
+            events.into_events::<Metric>(),
+            |target, metric| {
+                push_emitted(emitted, target, metric);
+            },
+        ) {
+            error!(stream = %self.default_stream, error = %e, "Failed to ingest metrics into region.");
         }
     }
 
@@ -353,7 +383,7 @@ impl Transform for MetricRegion {
                     if self.generations.has_buffered_state() || self.generations.pending_cut_timestamp().is_some() {
                         let now = get_unix_timestamp();
                         self.generations.flush(now, final_flush, |target, metric| {
-                            emitted.entry(target.to_string()).or_default().push(metric);
+                            push_emitted(&mut emitted, target, metric);
                         });
                         if let Err(e) = self.dispatch_emitted(&mut emitted, context.dispatcher()).await {
                             error!(error = %e, "Failed to dispatch flushed metrics from region.");

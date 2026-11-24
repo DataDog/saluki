@@ -87,6 +87,7 @@ pub struct FusedMetricEngine {
     steps: Vec<CompiledOp>,
     step_ids: Vec<NodeId>,
     inboxes: Vec<Vec<Metric>>,
+    scratch: Vec<Metric>,
     stream_to_step: BTreeMap<String, StepIdx>,
     target_names: Vec<String>,
     stateful_steps: Vec<StepIdx>,
@@ -234,6 +235,7 @@ impl FusedMetricEngine {
             steps,
             step_ids,
             inboxes,
+            scratch: Vec::new(),
             stream_to_step,
             target_names,
             stateful_steps,
@@ -378,139 +380,245 @@ impl FusedMetricEngine {
         mut emit: impl FnMut(TargetIdx, Metric),
     ) {
         self.inboxes[stream_idx].extend(metrics);
-        self.run_from(stream_idx, timestamp_secs, &mut emit);
+        run_steps_from(
+            &mut self.steps,
+            &mut self.inboxes,
+            &mut self.scratch,
+            stream_idx,
+            timestamp_secs,
+            &mut emit,
+        );
+    }
+
+    /// Executes one batch entering at `stream_idx` at `timestamp_secs`, passing resolved target names to `emit`.
+    pub fn ingest_named(
+        &mut self, stream_idx: StepIdx, timestamp_secs: u64, metrics: impl IntoIterator<Item = Metric>,
+        mut emit: impl FnMut(&str, Metric),
+    ) {
+        self.inboxes[stream_idx].extend(metrics);
+        let target_names = &self.target_names;
+        run_steps_from(
+            &mut self.steps,
+            &mut self.inboxes,
+            &mut self.scratch,
+            stream_idx,
+            timestamp_secs,
+            &mut |target_idx, metric| emit(&target_names[target_idx], metric),
+        );
     }
 
     /// Flushes every stateful `Aggregate` step in topological order at `current_time_secs`, propagating emitted metrics
     /// through all downstream operators (including any downstream chained `Aggregate`).
     pub fn flush(&mut self, current_time_secs: u64, shutdown: bool, mut emit: impl FnMut(TargetIdx, Metric)) {
-        for idx in 0..self.steps.len() {
-            if !self.inboxes[idx].is_empty() {
-                let batch = std::mem::take(&mut self.inboxes[idx]);
-                self.execute_step(idx, current_time_secs, batch, &mut emit);
-            }
+        flush_steps(
+            &mut self.steps,
+            &mut self.inboxes,
+            &mut self.scratch,
+            current_time_secs,
+            shutdown,
+            &mut emit,
+        );
+    }
 
-            let next_target = match &mut self.steps[idx] {
-                CompiledOp::Aggregate {
-                    core,
-                    flush_open_windows,
-                    next,
-                } => {
-                    if !core.is_empty() {
-                        let flush_open = shutdown && *flush_open_windows;
-                        if let Some(next_idx) = *next {
-                            let dest = &mut self.inboxes[next_idx];
-                            core.flush_into(current_time_secs, flush_open, |metric| dest.push(metric));
-                        } else {
-                            core.flush_into(current_time_secs, flush_open, |_| {});
+    /// Flushes every stateful `Aggregate` step in topological order, passing resolved target names to `emit`.
+    pub fn flush_named(&mut self, current_time_secs: u64, shutdown: bool, mut emit: impl FnMut(&str, Metric)) {
+        let target_names = &self.target_names;
+        flush_steps(
+            &mut self.steps,
+            &mut self.inboxes,
+            &mut self.scratch,
+            current_time_secs,
+            shutdown,
+            &mut |target_idx, metric| emit(&target_names[target_idx], metric),
+        );
+    }
+}
+
+const FLUSH_CHUNK_SIZE: usize = 1024;
+const MAX_RETAINED_BUFFER_CAP: usize = 256;
+
+#[inline]
+fn clear_and_cap(buf: &mut Vec<Metric>) {
+    buf.clear();
+    if buf.capacity() > MAX_RETAINED_BUFFER_CAP {
+        buf.shrink_to(MAX_RETAINED_BUFFER_CAP);
+    }
+}
+
+#[inline]
+fn move_batch(dest: &mut Vec<Metric>, batch: &mut Vec<Metric>) {
+    if dest.is_empty() {
+        std::mem::swap(dest, batch);
+    } else {
+        dest.append(batch);
+    }
+}
+
+fn flush_steps(
+    steps: &mut [CompiledOp], inboxes: &mut [Vec<Metric>], scratch: &mut Vec<Metric>, current_time_secs: u64,
+    shutdown: bool, emit: &mut impl FnMut(TargetIdx, Metric),
+) {
+    for idx in 0..steps.len() {
+        if !inboxes[idx].is_empty() {
+            scratch.clear();
+            std::mem::swap(scratch, &mut inboxes[idx]);
+            execute_step(steps, inboxes, 0, idx, current_time_secs, scratch, emit);
+            clear_and_cap(scratch);
+            if inboxes[idx].capacity() > MAX_RETAINED_BUFFER_CAP {
+                inboxes[idx].shrink_to(MAX_RETAINED_BUFFER_CAP);
+            }
+        }
+
+        let (head, tail) = steps.split_at_mut(idx + 1);
+        let (_, tail_inboxes) = inboxes.split_at_mut(idx + 1);
+        if let CompiledOp::Aggregate {
+            core,
+            flush_open_windows,
+            next,
+        } = &mut head[idx]
+        {
+            if !core.is_empty() {
+                let flush_open = shutdown && *flush_open_windows;
+                if let Some(next_idx) = *next {
+                    let base = idx + 1;
+                    let rel_next = next_idx - base;
+                    core.flush_into(current_time_secs, flush_open, |metric| {
+                        tail_inboxes[rel_next].push(metric);
+                        if tail_inboxes[rel_next].len() >= FLUSH_CHUNK_SIZE {
+                            run_steps_from_offset(tail, tail_inboxes, scratch, base, next_idx, current_time_secs, emit);
                         }
+                    });
+                    if !tail_inboxes[rel_next].is_empty() {
+                        run_steps_from_offset(tail, tail_inboxes, scratch, base, next_idx, current_time_secs, emit);
                     }
-                    *next
+                } else {
+                    core.flush_into(current_time_secs, flush_open, |_| {});
                 }
-                _ => None,
-            };
-            let _ = next_target;
+            }
         }
     }
+}
 
-    fn run_from(&mut self, start_idx: StepIdx, timestamp_secs: u64, emit: &mut impl FnMut(TargetIdx, Metric)) {
-        for idx in start_idx..self.steps.len() {
-            if self.inboxes[idx].is_empty() {
-                continue;
-            }
-            let batch = std::mem::take(&mut self.inboxes[idx]);
-            self.execute_step(idx, timestamp_secs, batch, emit);
+fn run_steps_from(
+    steps: &mut [CompiledOp], inboxes: &mut [Vec<Metric>], scratch: &mut Vec<Metric>, start_idx: StepIdx,
+    timestamp_secs: u64, emit: &mut impl FnMut(TargetIdx, Metric),
+) {
+    run_steps_from_offset(steps, inboxes, scratch, 0, start_idx, timestamp_secs, emit);
+}
+
+fn run_steps_from_offset(
+    steps: &mut [CompiledOp], inboxes: &mut [Vec<Metric>], scratch: &mut Vec<Metric>, base_idx: StepIdx,
+    start_idx: StepIdx, timestamp_secs: u64, emit: &mut impl FnMut(TargetIdx, Metric),
+) {
+    let rel_start = start_idx.saturating_sub(base_idx);
+    for rel_idx in rel_start..steps.len() {
+        if inboxes[rel_idx].is_empty() {
+            continue;
+        }
+        scratch.clear();
+        std::mem::swap(scratch, &mut inboxes[rel_idx]);
+        execute_step(steps, inboxes, base_idx, rel_idx, timestamp_secs, scratch, emit);
+        clear_and_cap(scratch);
+        if inboxes[rel_idx].capacity() > MAX_RETAINED_BUFFER_CAP {
+            inboxes[rel_idx].shrink_to(MAX_RETAINED_BUFFER_CAP);
         }
     }
+}
 
-    fn execute_step(
-        &mut self, idx: StepIdx, timestamp_secs: u64, mut batch: Vec<Metric>, emit: &mut impl FnMut(TargetIdx, Metric),
-    ) {
-        match &mut self.steps[idx] {
-            CompiledOp::Source { next } | CompiledOp::Merge { next } => {
-                if let Some(next_idx) = *next {
-                    self.inboxes[next_idx].extend(batch);
-                }
+fn execute_step(
+    steps: &mut [CompiledOp], inboxes: &mut [Vec<Metric>], base_idx: StepIdx, rel_idx: StepIdx, timestamp_secs: u64,
+    batch: &mut Vec<Metric>, emit: &mut impl FnMut(TargetIdx, Metric),
+) {
+    match &mut steps[rel_idx] {
+        CompiledOp::Source { next } | CompiledOp::Merge { next } => {
+            if let Some(next_idx) = *next {
+                move_batch(&mut inboxes[next_idx - base_idx], batch);
             }
-            CompiledOp::Tee { targets } => {
-                if let Some((&last, rest)) = targets.split_last() {
-                    for &target in rest {
-                        self.inboxes[target].extend(batch.iter().cloned());
-                    }
-                    self.inboxes[last].extend(batch);
+        }
+        CompiledOp::Tee { targets } => {
+            if let Some((&last, rest)) = targets.split_last() {
+                for &target in rest {
+                    inboxes[target - base_idx].extend(batch.iter().cloned());
                 }
+                move_batch(&mut inboxes[last - base_idx], batch);
             }
-            CompiledOp::Map { kernel, next } => {
-                for metric in &mut batch {
-                    kernel.apply(metric);
-                }
-                if let Some(next_idx) = *next {
-                    self.inboxes[next_idx].extend(batch);
-                }
+        }
+        CompiledOp::Map { kernel, next } => {
+            for metric in batch.iter_mut() {
+                kernel.apply(metric);
             }
-            CompiledOp::PrefixFilter { kernel, next } => {
-                batch.retain_mut(|metric| kernel.apply(metric));
-                if let Some(next_idx) = *next {
-                    self.inboxes[next_idx].extend(batch);
-                }
+            if let Some(next_idx) = *next {
+                move_batch(&mut inboxes[next_idx - base_idx], batch);
             }
-            CompiledOp::TimestampSplit {
-                agg_next,
-                passthrough_next,
-            } => {
-                for metric in batch {
+        }
+        CompiledOp::PrefixFilter { kernel, next } => {
+            batch.retain_mut(|metric| kernel.apply(metric));
+            if let Some(next_idx) = *next {
+                move_batch(&mut inboxes[next_idx - base_idx], batch);
+            }
+        }
+        CompiledOp::TimestampSplit {
+            agg_next,
+            passthrough_next,
+        } => {
+            if !batch.iter().any(|metric| metric.values().any_timestamped()) {
+                if let Some(next_idx) = *agg_next {
+                    move_batch(&mut inboxes[next_idx - base_idx], batch);
+                }
+            } else {
+                for metric in batch.drain(..) {
                     let outcome = split_for_no_aggregation(metric);
                     if let (Some(m), Some(next_idx)) = (outcome.aggregate, *agg_next) {
-                        self.inboxes[next_idx].push(m);
+                        inboxes[next_idx - base_idx].push(m);
                     }
                     if let (Some(m), Some(next_idx)) = (outcome.passthrough, *passthrough_next) {
-                        self.inboxes[next_idx].push(m);
+                        inboxes[next_idx - base_idx].push(m);
                     }
                 }
             }
-            CompiledOp::TagFilter { kernel, next } => {
-                for metric in &mut batch {
+        }
+        CompiledOp::TagFilter { kernel, next } => {
+            for metric in batch.iter_mut() {
+                kernel.apply(metric);
+            }
+            if let Some(next_idx) = *next {
+                move_batch(&mut inboxes[next_idx - base_idx], batch);
+            }
+        }
+        CompiledOp::Aggregate { core, .. } => {
+            for metric in batch.drain(..) {
+                let _ = core.insert(timestamp_secs, metric);
+            }
+        }
+        CompiledOp::PostAggregateFilter { kernel, next } => {
+            batch.retain(|metric| kernel.should_keep(metric));
+            if let Some(next_idx) = *next {
+                move_batch(&mut inboxes[next_idx - base_idx], batch);
+            }
+        }
+        CompiledOp::EnrichHostTags { kernel, next, .. } => {
+            if kernel.is_active() {
+                for metric in batch.iter_mut() {
                     kernel.apply(metric);
                 }
-                if let Some(next_idx) = *next {
-                    self.inboxes[next_idx].extend(batch);
-                }
             }
-            CompiledOp::Aggregate { core, .. } => {
-                for metric in batch {
-                    let _ = core.insert(timestamp_secs, metric);
-                }
+            if let Some(next_idx) = *next {
+                move_batch(&mut inboxes[next_idx - base_idx], batch);
             }
-            CompiledOp::PostAggregateFilter { kernel, next } => {
-                batch.retain(|metric| kernel.should_keep(metric));
-                if let Some(next_idx) = *next {
-                    self.inboxes[next_idx].extend(batch);
-                }
-            }
-            CompiledOp::EnrichHostTags { kernel, next, .. } => {
-                if kernel.is_active() {
-                    for metric in &mut batch {
-                        kernel.apply(metric);
-                    }
-                }
-                if let Some(next_idx) = *next {
-                    self.inboxes[next_idx].extend(batch);
-                }
-            }
-            CompiledOp::RouteFilter { kernel, next, .. } => {
-                batch.retain(|metric| kernel.should_forward(metric));
-                if let Some(next_idx) = *next {
-                    self.inboxes[next_idx].extend(batch);
-                }
-            }
-            CompiledOp::Emit { target_idx } => {
-                let target_idx = *target_idx;
-                for metric in batch {
-                    emit(target_idx, metric);
-                }
-            }
-            CompiledOp::Drop => {}
         }
+        CompiledOp::RouteFilter { kernel, next, .. } => {
+            batch.retain(|metric| kernel.should_forward(metric));
+            if let Some(next_idx) = *next {
+                move_batch(&mut inboxes[next_idx - base_idx], batch);
+            }
+        }
+        CompiledOp::Emit { target_idx } => {
+            let target_idx = *target_idx;
+            for metric in batch.drain(..) {
+                emit(target_idx, metric);
+            }
+        }
+        CompiledOp::Drop => {}
     }
 }
 

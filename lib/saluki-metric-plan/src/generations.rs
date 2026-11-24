@@ -347,14 +347,11 @@ impl GenerationManager {
             .engine
             .stream_index(stream)
             .ok_or_else(|| generic_error!("active generation does not declare stream `{stream}`"))?;
-        let target_names = self.active.engine.target_names().to_vec();
 
         self.max_admitted_ts = self.max_admitted_ts.max(timestamp_secs);
         self.active
             .engine
-            .ingest(stream_idx, timestamp_secs, metrics, |t_idx, metric| {
-                emit(&target_names[t_idx], metric);
-            });
+            .ingest_named(stream_idx, timestamp_secs, metrics, emit);
 
         Ok(AdmissionStamp {
             timestamp_secs,
@@ -371,10 +368,7 @@ impl GenerationManager {
             }
         }
 
-        let target_names = self.active.engine.target_names().to_vec();
-        self.active.engine.flush(current_time_secs, shutdown, |t_idx, metric| {
-            emit(&target_names[t_idx], metric);
-        });
+        self.active.engine.flush_named(current_time_secs, shutdown, emit);
     }
 
     fn complete_cut(&mut self, cut_timestamp_secs: u64, shutdown: bool, emit: &mut impl FnMut(&str, Metric)) {
@@ -385,10 +379,7 @@ impl GenerationManager {
         // Drain all buckets closed up to `cut_timestamp_secs` from the retiring generation FIRST, so upstream
         // aggregates flush through any unchanged downstream aggregates before state is transferred.
         if self.active.engine.has_buffered_state() {
-            let old_targets = self.active.engine.target_names().to_vec();
-            self.active.engine.flush(cut_timestamp_secs, shutdown, |t_idx, metric| {
-                emit(&old_targets[t_idx], metric);
-            });
+            self.active.engine.flush_named(cut_timestamp_secs, shutdown, emit);
         }
 
         // Transfer any remaining state (such as idle counter keep-alive entries) from unchanged stateful nodes.
