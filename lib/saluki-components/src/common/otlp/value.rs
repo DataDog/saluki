@@ -50,7 +50,7 @@ fn write_raw_json(out: &mut String, value: Option<&OtlpValue>) -> Result<(), Non
             if !value.is_finite() {
                 return Err(NonFiniteDouble);
             }
-            out.push_str(&float64_as_string(*value));
+            write_float64(out, *value);
         }
         // `AsRaw` copies bytes by appending them to a nil slice, so empty bytes stay nil, which is `null`.
         Some(OtlpValue::BytesValue(value)) if value.is_empty() => out.push_str("null"),
@@ -164,19 +164,29 @@ pub(crate) fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
 /// doesn't: it writes `1888570120608320.3` where Go writes `1888570120608320.2`. So the digits come from `ryu`, in Go's
 /// layout.
 fn float64_as_string(value: f64) -> String {
+    let mut out = String::new();
+    write_float64(&mut out, value);
+    out
+}
+
+/// Writes a double as [`float64_as_string`] renders it.
+fn write_float64(out: &mut String, value: f64) {
     if value.is_nan() {
-        return "NaN".to_string();
+        out.push_str("NaN");
+        return;
     }
     if value.is_infinite() {
-        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+        out.push_str(if value > 0.0 { "Infinity" } else { "-Infinity" });
+        return;
     }
     if value == 0.0 {
-        return if value.is_sign_negative() { "-0" } else { "0" }.to_string();
+        out.push_str(if value.is_sign_negative() { "-0" } else { "0" });
+        return;
     }
 
     let mut buffer = ryu::Buffer::new();
-    let (digits, point) = decimal_digits(buffer.format_finite(value.abs()));
-    let mut out = String::with_capacity(digits.len() + 8);
+    let mut digits = [0; MAX_DIGITS];
+    let (digits, point) = decimal_digits(buffer.format_finite(value.abs()), &mut digits);
     if value < 0.0 {
         out.push('-');
     }
@@ -199,11 +209,11 @@ fn float64_as_string(value: f64) -> String {
     } else if point <= 0 {
         out.push_str("0.");
         out.extend(std::iter::repeat_n('0', point.unsigned_abs() as usize));
-        out.push_str(&digits);
+        out.push_str(digits);
     } else {
         let point = point as usize;
         if point >= digits.len() {
-            out.push_str(&digits);
+            out.push_str(digits);
             out.extend(std::iter::repeat_n('0', point - digits.len()));
         } else {
             out.push_str(&digits[..point]);
@@ -211,29 +221,41 @@ fn float64_as_string(value: f64) -> String {
             out.push_str(&digits[point..]);
         }
     }
-    out
 }
 
-/// Splits the output of `ryu` for a positive double into its significant digits and the position of the decimal point.
+/// The most significant digits that `ryu` writes for a double.
+const MAX_DIGITS: usize = 17;
+
+/// Splits the output of `ryu` for a positive double into its significant digits, written into `buffer`, and the
+/// position of the decimal point.
 ///
 /// The value is `0.<digits> × 10^point`. The digits have no leading or trailing zeros. `ryu` writes forms such as
 /// `1.0`, `0.001`, `1e21`, and `1.5e-7`.
-fn decimal_digits(formatted: &str) -> (String, i32) {
+fn decimal_digits<'a>(formatted: &str, buffer: &'a mut [u8; MAX_DIGITS]) -> (&'a str, i32) {
     let (mantissa, exponent) = match formatted.split_once('e') {
         Some((mantissa, exponent)) => (
             mantissa,
-            exponent.parse::<i32>().expect("Ryu writes a decimal exponent"),
+            exponent.parse::<i32>().expect("ryu writes a decimal exponent"),
         ),
         None => (formatted, 0),
     };
     let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
 
-    let mut digits = String::with_capacity(integer.len() + fraction.len());
-    digits.push_str(integer);
-    digits.push_str(fraction);
-    let leading_zeros = digits.len() - digits.trim_start_matches('0').len();
-    let digits = digits.trim_start_matches('0').trim_end_matches('0').to_string();
-    let point = integer.len() as i32 + exponent - leading_zeros as i32;
+    let mut len = 0;
+    let mut point = integer.len() as i32 + exponent;
+    for digit in integer.bytes().chain(fraction.bytes()) {
+        if len == 0 && digit == b'0' {
+            // A leading zero moves the point instead.
+            point -= 1;
+            continue;
+        }
+        buffer[len] = digit;
+        len += 1;
+    }
+    while len > 0 && buffer[len - 1] == b'0' {
+        len -= 1;
+    }
+    let digits = simdutf8::basic::from_utf8(&buffer[..len]).expect("ryu writes ASCII digits");
     (digits, point)
 }
 
