@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Event"],"mod":["eventd","log","metric","service_check","trace","trace_stats"],"struct":["EventType"],"trait":["EventKind"]};
+window.SIDEBAR_ITEMS = {"enum":["Event"],"mod":["eventd","log","metric","opaque","service_check","trace","trace_stats"],"struct":["EventType"],"trait":["EventKind"]};

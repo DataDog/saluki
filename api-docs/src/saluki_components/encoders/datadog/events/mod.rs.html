@@ -138,7 +138,7 @@
 <a href=#138 id=138 data-nosnippet>138</a><span class="attr">#[async_trait]
 <a href=#139 id=139 data-nosnippet>139</a></span><span class="kw">impl </span>IncrementalEncoder <span class="kw">for </span>DatadogEvents {
 <a href=#140 id=140 data-nosnippet>140</a>    <span class="kw">async fn </span>process_event(<span class="kw-2">&amp;mut </span><span class="self">self</span>, event: Event) -&gt; <span class="prelude-ty">Result</span>&lt;ProcessResult, GenericError&gt; {
-<a href=#141 id=141 data-nosnippet>141</a>        <span class="kw">let </span>eventd = <span class="kw">match </span>event.try_into_eventd() {
+<a href=#141 id=141 data-nosnippet>141</a>        <span class="kw">let </span>eventd = <span class="kw">match </span>event.try_into_event_d() {
 <a href=#142 id=142 data-nosnippet>142</a>            <span class="prelude-val">Some</span>(eventd) =&gt; eventd,
 <a href=#143 id=143 data-nosnippet>143</a>            <span class="prelude-val">None </span>=&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>(ProcessResult::Continue),
 <a href=#144 id=144 data-nosnippet>144</a>        };
