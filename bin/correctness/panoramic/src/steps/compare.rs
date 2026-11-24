@@ -17,6 +17,7 @@ use tokio::time::Instant;
 
 use super::analysis::{
     AnalysisMode, AnalysisRunner, LogsAnalysisOptions, MetricsOptions, TracesAnalysisOptions, TracesOptions,
+    TRACE_ID_FIELD,
 };
 use super::intake::CollectedData;
 use super::stopped;
@@ -84,6 +85,16 @@ impl StepFactory for CompareFactory {
         only_for(traces.is_some(), "traces", Telemetry::Traces)?;
         only_for(metrics.is_some(), "metrics", Telemetry::Metrics)?;
         only_for(logs.is_some(), "logs", Telemetry::Logs)?;
+        if additional_span_ignore_fields
+            .iter()
+            .flatten()
+            .any(|field| field == TRACE_ID_FIELD)
+        {
+            return Err(format!(
+                "'additional_span_ignore_fields' can't hold '{}': a split trace shows up only there",
+                TRACE_ID_FIELD
+            ));
+        }
         let otlp_direct_analysis_mode = otlp_direct_analysis_mode.unwrap_or_default();
         let traces = traces.unwrap_or_default();
         traces.validate(otlp_direct_analysis_mode)?;
@@ -997,6 +1008,51 @@ mod tests {
         assert!(!report.message.contains("stats group(s))"), "{}", report.message);
     }
 
+    #[test]
+    fn a_traces_known_difference_cannot_cover_the_trace_id() {
+        let build = |path: &str| {
+            let fields = format!(
+                "{{telemetry: traces, comparison: app, baseline: peer, traces: {{known_differences: [{{gap: g, \
+                 issue: 1, paths: ['{}'], when: {{service: [api]}}, reason: r}}]}}}}",
+                path
+            );
+            CompareFactory
+                .build(&StepFields(serde_saphyr::from_str(&fields).unwrap()))
+                .map(|_| ())
+        };
+
+        for path in ["span.trace_id", "span.*", "span.**", "span.**.trace_id"] {
+            let error = build(path).unwrap_err();
+            assert!(error.contains("which covers 'span.trace_id'"), "{}: {}", path, error);
+        }
+        for path in ["span.metrics.*", "span.meta.**", "span.parent_id"] {
+            assert!(build(path).is_ok(), "{}", path);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_split_trace_fails_on_the_trace_id_of_the_spans_on_both_sides() {
+        // The comparison puts span 11 in a trace of its own: the span IDs match, and the trace counts differ.
+        let mut split = fixture_spans(true);
+        split[1]["trace_id"] = json!(3);
+
+        let report = compare(
+            "{telemetry: traces, comparison: app, baseline: peer}",
+            &tracing(split, &fixture_groups()),
+            &fixture_traces(),
+        )
+        .await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "span 11 (service=\"db\" name=\"db.query\" resource=\"SELECT 1\"):\n    trace_id: baseline=1 \
+                 comparison=3"
+            ),
+            "{}",
+            report.message
+        );
+    }
+
     #[tokio::test]
     async fn a_span_on_one_side_only_leaves_the_other_spans_and_the_stats_compared() {
         let fields = "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false, \
@@ -1110,6 +1166,10 @@ mod tests {
             (
                 "{telemetry: traces, comparison: app, baseline: peer, traces: {min_traces: 0}}",
                 "invalid value: integer `0`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, additional_span_ignore_fields: [start, trace_id]}",
+                "'additional_span_ignore_fields' can't hold 'trace_id'",
             ),
         ];
         for (fields, expected) in cases {

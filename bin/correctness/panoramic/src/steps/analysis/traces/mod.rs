@@ -15,7 +15,7 @@ use treediff::value::Key;
 
 use super::expectations::{ExpectedSpan, HeldTraces, TracesExpectations};
 use super::join_failures;
-use super::ratchet::{DiffKind, FieldDiff, KnownDifference, Ratchet};
+use super::ratchet::{path_matches, DiffKind, FieldDiff, KnownDifference, Ratchet};
 use crate::steps::analysis::TracesAnalysisOptions;
 use crate::steps::intake::CollectedData;
 
@@ -76,6 +76,10 @@ const STATS_PREFIX: &str = "stats.";
 /// The prefix of the paths of a traces known difference that cover the fields of a span on both sides.
 const SPAN_PREFIX: &str = "span.";
 
+/// The span field that a split or merged trace differs in, on the spans that both sides hold. Neither a known difference
+/// nor `additional_span_ignore_fields` may cover it.
+pub const TRACE_ID_FIELD: &str = "trace_id";
+
 /// The fields of a span that the view of a span holds, and that name it in a failure.
 const SPAN_VIEW_FIELDS: &[&str] = &["service", "name", "resource"];
 
@@ -130,7 +134,8 @@ impl TracesOptions {
     ///
     /// # Errors
     ///
-    /// If an entry names no issue, has a path outside the trace statistics and the span fields, or has a span path
+    /// If an entry names no issue, has a path outside the trace statistics and the span fields, has a path that covers
+    /// the trace ID of a span, or has a span path
     /// and doesn't scope itself to spans by service, name or resource, or if `otlp_direct_analysis_mode` skips the
     /// statistics comparison that an option or an entry's path applies to, or if a step that compares stats sets
     /// expectations or turns off `require_ssi` and sets no `min_stats_groups`, an error is returned.
@@ -186,6 +191,13 @@ impl TracesOptions {
                     "known difference '{}' has the path '{}': a traces known difference covers only '{}*' and '{}*' \
                      paths",
                     entry.gap, path, STATS_PREFIX, SPAN_PREFIX
+                ));
+            }
+            let trace_id = format!("{}{}", SPAN_PREFIX, TRACE_ID_FIELD);
+            if let Some(path) = entry.paths.iter().find(|path| path_matches(path, &trace_id)) {
+                return Err(format!(
+                    "known difference '{}' has the path '{}', which covers '{}': a split trace shows up only there",
+                    entry.gap, path, trace_id
                 ));
             }
             let scoped = !entry.when.is_empty()

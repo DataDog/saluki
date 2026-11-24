@@ -207,7 +207,7 @@ impl<'a> Ratchet<'a> {
 }
 
 /// Returns `true` if `path` matches the glob `pattern`.
-fn path_matches(pattern: &str, path: &str) -> bool {
+pub(super) fn path_matches(pattern: &str, path: &str) -> bool {
     let pattern = pattern.split('.').collect::<Vec<_>>();
     let path = path.split('.').collect::<Vec<_>>();
     segments_match(&pattern, &path)
