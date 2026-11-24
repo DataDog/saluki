@@ -3,7 +3,6 @@ use std::{borrow::Cow, fmt, fmt::Write, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
-use metrics::{Counter, Gauge, Histogram};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
@@ -28,7 +27,7 @@ use saluki_env::{workload::EntityId, EnvironmentProvider, HostProvider, Workload
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
-use saluki_metrics::MetricsBuilder;
+use saluki_metrics::{static_metrics, Counter, Histogram, MetricsBuilder};
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::{
@@ -48,8 +47,8 @@ use crate::common::datadog::{
     TAG_DECISION_MAKER,
 };
 use crate::common::otlp::util::{
-    attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
-    SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
+    attributes_to_source, extract_trace_container_tags, Source as OtlpSource, SourceKind as OtlpSourceKind,
+    KEY_DATADOG_CONTAINER_TAGS,
 };
 use crate::common::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::config::AgentEnv;
@@ -201,7 +200,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let payload_telemetry = TracePayloadTelemetry::from_builder(&metrics_builder);
+        let payload_telemetry = TracePayloadTelemetry::new(context.component_id(), context.component_type().as_str());
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create request builder for traces which is used to generate HTTP requests.
@@ -249,48 +248,32 @@ pub struct DatadogTrace {
 }
 
 /// Telemetry for what the traces encoder writes into payloads.
+#[static_metrics(prefix = component, labels(component_id, component_type))]
 struct TracePayloadTelemetry {
-    traces: Counter,
-    spans: Counter,
-    events: Counter,
-    bytes_uncompressed: Counter,
-    payload_size: Histogram,
-    largest_payload_size: Gauge,
-    largest_payload_size_seen: usize,
+    traces_encoded_total: Counter,
+    spans_encoded_total: Counter,
+    trace_events_encoded_total: Counter,
+    bytes_uncompressed_total: Counter,
+    /// The size of each request body.
+    ///
+    /// Exported distributions keep their buckets, sum and count, but not the exact maximum, so a derived gauge keeps
+    /// the largest body seen so far.
+    #[metric(derived(max))]
+    payload_size_bytes: Histogram,
 }
 
 impl TracePayloadTelemetry {
-    fn from_builder(builder: &MetricsBuilder) -> Self {
-        Self {
-            traces: builder.register_counter("component_traces_encoded_total"),
-            spans: builder.register_counter("component_spans_encoded_total"),
-            events: builder.register_counter("component_trace_events_encoded_total"),
-            bytes_uncompressed: builder.register_counter("component_bytes_uncompressed_total"),
-            payload_size: builder.register_histogram("component_payload_size_bytes"),
-            largest_payload_size: builder.register_gauge("component_payload_size_max_bytes"),
-            largest_payload_size_seen: 0,
-        }
-    }
-
     /// Tracks a trace written into a payload.
     fn track_trace(&self, counts: TraceCounts) {
-        self.traces.increment(1);
-        self.spans.increment(counts.spans);
-        self.events.increment(counts.events);
+        self.traces_encoded_total().increment(1);
+        self.spans_encoded_total().increment(counts.spans);
+        self.trace_events_encoded_total().increment(counts.events);
     }
 
     /// Tracks a flushed payload, given its size before compression and the size of the request body.
-    ///
-    /// The body size goes into a distribution, and the largest body seen so far goes into a gauge: exported
-    /// distributions keep their buckets, sum and count, but not the exact maximum.
-    fn track_payload(&mut self, uncompressed_len: usize, body_len: usize) {
-        self.bytes_uncompressed.increment(uncompressed_len as u64);
-        self.payload_size.record(body_len as f64);
-
-        if body_len > self.largest_payload_size_seen {
-            self.largest_payload_size_seen = body_len;
-            self.largest_payload_size.set(body_len as f64);
-        }
+    fn track_payload(&self, uncompressed_len: usize, body_len: usize) {
+        self.bytes_uncompressed_total().increment(uncompressed_len as u64);
+        self.payload_size_bytes().record(body_len as f64);
     }
 }
 
@@ -405,7 +388,7 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
+    payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
     payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
@@ -644,7 +627,11 @@ impl TraceEndpointEncoder {
         // writer leaves it: the agent's own hostname is reported once, on the agent payload.
         let otlp_container_tags = is_otlp
             .then(|| {
-                resolve_container_tags_from_attrs(&trace.attributes, source.as_ref(), ignore_missing_datadog_fields)
+                resolve_container_tags_from_attrs(
+                    &trace.attributes,
+                    trace.payload.resolved_container_tags(),
+                    source.as_ref(),
+                )
             })
             .flatten();
         let (container_tags, hostname_str): (Option<&str>, Option<&str>) = if is_otlp {
@@ -668,7 +655,7 @@ impl TraceEndpointEncoder {
         // are gathered only when the version is missing.
         let version_tags = if trace.payload.app_version.is_empty() && !trace.payload.container_id.is_empty() {
             let mut tags = TagSet::default();
-            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            extract_trace_container_tags(trace.payload.resolved_container_tags(), &trace.attributes, &mut tags);
             if let Some(provider_tags) = self.container_tags.get(&trace.payload.container_id) {
                 tags.merge_shared(&provider_tags);
             }
@@ -1007,47 +994,38 @@ fn resolve_hostname<'a>(
 }
 
 fn resolve_container_tags_from_attrs(
-    attributes: &FastHashMap<MetaString, AttributeValue>, source: Option<&OtlpSource>, ignore_missing_fields: bool,
+    attributes: &FastHashMap<MetaString, AttributeValue>, resolved_tags: &[MetaString], source: Option<&OtlpSource>,
 ) -> Option<MetaString> {
+    // An explicit, non-empty `datadog.container_tags` attribute is always emitted, with the tags the source resolved
+    // from the resource appended. Everything reaches the payload regardless of how missing Datadog fields are
+    // treated, matching the trace agent's receiver, which extracts container tags unconditionally.
+    let mut flattened = String::new();
     if let Some(AttributeValue::String(tags)) = attributes.get(KEY_DATADOG_CONTAINER_TAGS) {
         if !tags.is_empty() {
-            return Some(tags.clone());
+            flattened.push_str(tags.as_ref());
         }
     }
 
-    if ignore_missing_fields {
-        return None;
-    }
-    let mut container_tags = TagSet::default();
-    extract_container_tags_from_attributes_map(attributes, &mut container_tags);
     let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargate);
-    if container_tags.is_empty() && !is_fargate_source {
-        return None;
+    if resolved_tags.is_empty() {
+        let mut container_tags = TagSet::default();
+        extract_trace_container_tags(resolved_tags, attributes, &mut container_tags);
+        for tag in container_tags {
+            append_tags(&mut flattened, tag.as_str());
+        }
+    } else {
+        // The resolved tags are already deduplicated, so append them instead of copying them into a tag set.
+        for tag in resolved_tags {
+            append_tags(&mut flattened, tag.as_ref());
+        }
     }
-
-    let mut flattened = flatten_container_tag(container_tags);
     if is_fargate_source {
         if let Some(src) = source {
             append_tags(&mut flattened, &src.tag());
         }
     }
 
-    if flattened.is_empty() {
-        None
-    } else {
-        Some(MetaString::from(flattened))
-    }
-}
-
-fn flatten_container_tag(tags: TagSet) -> String {
-    let mut flattened = String::new();
-    for tag in tags {
-        if !flattened.is_empty() {
-            flattened.push(',');
-        }
-        flattened.push_str(tag.as_str());
-    }
-    flattened
+    (!flattened.is_empty()).then(|| MetaString::from(flattened))
 }
 
 fn append_tags(target: &mut String, tags: &str) {
@@ -1086,12 +1064,9 @@ mod tests {
 
     use datadog_protos::traces::{idx, AgentPayload};
     use protobuf::Message as _;
-    use saluki_core::data_model::{
-        event::{
-            trace::{ReceiverMetadata, Span as DdSpan, Trace, TraceIngestInfo},
-            Event,
-        },
-        tags::Tag,
+    use saluki_core::data_model::event::{
+        trace::{ReceiverMetadata, Span as DdSpan, Trace, TraceIngestInfo},
+        Event,
     };
     use saluki_env::workload::providers::TestWorkloadProvider;
     use saluki_metrics::test::TestRecorder;
@@ -1603,50 +1578,248 @@ mod tests {
     }
 
     #[test]
-    fn flatten_container_tag_comma_joins_the_tag_set() {
-        assert_eq!("", flatten_container_tag(TagSet::default()));
-
-        let single: TagSet = std::iter::once(Tag::from_static("image_name:web")).collect();
-        assert_eq!("image_name:web", flatten_container_tag(single));
-
-        let multiple: TagSet = ["image_name:web", "runtime:docker"]
-            .into_iter()
-            .map(Tag::from_static)
-            .collect();
-        let flattened = flatten_container_tag(multiple);
-        assert_eq!(
-            BTreeSet::from(["image_name:web", "runtime:docker"]),
-            flattened.split(',').collect::<BTreeSet<_>>()
-        );
-    }
-
-    #[test]
-    fn resolve_container_tags_prefers_explicit_container_tags_attribute() {
-        // An explicit, non-empty `datadog.container_tags` attribute is used verbatim.
+    fn resolve_container_tags_merges_explicit_and_extracted_tags() {
         let mut attributes = FastHashMap::default();
         attributes.insert(
             MetaString::from(KEY_DATADOG_CONTAINER_TAGS),
-            AttributeValue::String(MetaString::from("region:us,team:core")),
+            AttributeValue::String(MetaString::from("team:core")),
         );
+        attributes.insert(
+            MetaString::from("kube_namespace"),
+            AttributeValue::String(MetaString::from("payments")),
+        );
+
+        // An explicit, non-empty `datadog.container_tags` attribute is emitted, and the tags resolved from the
+        // resource are appended rather than replacing it.
+        let merged = resolve_container_tags_from_attrs(&attributes, &[], None).expect("container tags should resolve");
+        assert_eq!(merged.as_ref(), "team:core,kube_namespace:payments");
+
+        // The explicit attribute alone still resolves.
+        attributes.remove(&MetaString::from("kube_namespace"));
         assert_eq!(
-            Some(MetaString::from("region:us,team:core")),
-            resolve_container_tags_from_attrs(&attributes, None, false)
+            resolve_container_tags_from_attrs(&attributes, &[], None).map(|tags| tags.to_string()),
+            Some("team:core".to_string())
         );
     }
 
     #[test]
     fn resolve_container_tags_returns_none_without_container_attributes() {
+        // With no container attributes, resolved tags, or Fargate source there is nothing to emit.
         let attributes = FastHashMap::default();
-        // `ignore_missing_fields` skips the extraction path entirely.
-        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, true));
-        // Honoring fields but with no container attributes and no Fargate source still yields nothing.
-        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, false));
+        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, &[], None));
     }
 
-    /// `ignore_missing_datadog_fields` is an OTLP setting: with it on, an OTLP trace no longer derives its container
-    /// tags from its resource attributes, while a Datadog trace encodes the same either way.
     #[test]
-    fn ignore_missing_datadog_fields_applies_only_to_otlp_traces() {
+    fn resolve_container_tags_uses_the_tags_the_source_resolved() {
+        let resolved = [
+            MetaString::from("image_tag:v1"),
+            MetaString::from("kube_namespace:payments"),
+        ];
+        let attributes = FastHashMap::from_iter([(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("core")),
+        )]);
+
+        // The resolved tags stand in for the attributes, which would otherwise yield `team:core`.
+        let tags = resolve_container_tags_from_attrs(&attributes, &resolved, None).expect("tags");
+        assert_eq!(
+            BTreeSet::from(["image_tag:v1", "kube_namespace:payments"]),
+            tags.split(',').collect::<BTreeSet<_>>()
+        );
+
+        // An explicit `datadog.container_tags` attribute is emitted along with the resolved tags.
+        let explicit = FastHashMap::from_iter([(
+            MetaString::from(KEY_DATADOG_CONTAINER_TAGS),
+            AttributeValue::String(MetaString::from("region:us")),
+        )]);
+        let merged = resolve_container_tags_from_attrs(&explicit, &resolved, None).expect("tags");
+        assert_eq!(
+            BTreeSet::from(["region:us", "image_tag:v1", "kube_namespace:payments"]),
+            merged.split(',').collect::<BTreeSet<_>>()
+        );
+    }
+
+    /// Translates a single-span `ResourceSpans` with the given resource attributes, encodes the trace, and returns
+    /// the decoded string-valued tracer payload attributes and span attributes.
+    fn encode_translated_trace(
+        ignore_missing_fields: bool, encoder: TraceEndpointEncoder, resource_attrs: &[(&str, &str)],
+    ) -> (HashMap<String, String>, Vec<HashMap<String, String>>) {
+        use datadog_agent_apm::semantics::SemanticRegistryProvider;
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+
+        use crate::common::otlp::origin::OtlpOriginTagResolver;
+        use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesSettings, OtlpTracesTranslator};
+        use crate::common::otlp::Metrics;
+
+        let kv = |(key, value): (&str, &str)| KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+        };
+        let resource_spans = ResourceSpans {
+            resource: Some(Resource {
+                attributes: resource_attrs.iter().map(|pair| kv(*pair)).collect(),
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans: vec![OtlpSpan {
+                    trace_id: vec![1; 16],
+                    span_id: vec![1; 8],
+                    name: "span".to_owned(),
+                    end_time_unix_nano: 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let settings = OtlpTracesSettings {
+            ignore_missing_datadog_fields: ignore_missing_fields,
+            ..traces_settings()
+        };
+        let mut translator = OtlpTracesTranslator::new(
+            settings,
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let traces: Vec<Trace> = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .filter_map(Event::try_into_trace)
+            .collect();
+        assert_eq!(traces.len(), 1);
+
+        let mut buf = Vec::new();
+        let mut encoder = encoder;
+        encoder.encode(&traces[0], &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+
+        let payload_attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
+        let span_attrs = tracer_payload
+            .chunks()
+            .iter()
+            .flat_map(|chunk| chunk.spans().iter())
+            .map(|span| string_attrs(span.attributes(), tracer_payload.strings()))
+            .collect();
+        (payload_attrs, span_attrs)
+    }
+
+    #[test]
+    fn consumed_resource_keys_reach_the_payload_container_tags_with_explicit_tags() {
+        // An explicit `datadog.container_tags` on the resource emits that string, and the resolved container tags
+        // are appended instead of replacing it. Neither reaches span meta.
+        let (payload_attrs, span_attrs) = encode_translated_trace(
+            false,
+            make_encoder(false),
+            &[("datadog.container_tags", "team:core"), ("kube_namespace", "payments")],
+        );
+
+        let container_tags = &payload_attrs[CONTAINER_TAGS_META_KEY];
+        assert_eq!(container_tags, "team:core,kube_namespace:payments");
+        assert!(span_attrs
+            .iter()
+            .all(|attrs| !attrs.contains_key("kube_namespace") && !attrs.contains_key("datadog.container_tags")));
+    }
+
+    #[test]
+    fn consumed_resource_keys_reach_the_payload_container_tags_when_ignoring_missing_fields() {
+        // Container tags are resolved even when missing Datadog fields are ignored, as the trace agent's receiver
+        // does: the setting does not gate extraction there.
+        let encoder = TraceEndpointEncoder::new(
+            MetaString::from("test-host"),
+            "0.0.0".to_string(),
+            "none".to_string(),
+            DEFAULT_TARGET_TPS,
+            DEFAULT_ERRORS_PER_SECOND,
+            false,
+            true,
+        );
+        let (payload_attrs, span_attrs) = encode_translated_trace(true, encoder, &[("kube_namespace", "payments")]);
+
+        assert_eq!(payload_attrs[CONTAINER_TAGS_META_KEY], "kube_namespace:payments");
+        assert!(span_attrs.iter().all(|attrs| !attrs.contains_key("kube_namespace")));
+    }
+
+    #[test]
+    fn otlp_image_tags_array_reaches_the_encoded_payload_container_tags() {
+        use datadog_agent_apm::semantics::SemanticRegistryProvider;
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+        use saluki_core::data_model::event::Event;
+
+        use crate::common::otlp::origin::OtlpOriginTagResolver;
+        use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesTranslator};
+        use crate::common::otlp::Metrics;
+
+        let string_value = |value: &str| AnyValue {
+            value: Some(Value::StringValue(value.to_string())),
+        };
+        let resource_spans = ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![
+                    KeyValue {
+                        key: "container.image.tags".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::ArrayValue(ArrayValue {
+                                values: vec![string_value("v1"), string_value("latest")],
+                            })),
+                        }),
+                    },
+                    KeyValue {
+                        key: "container.name".to_string(),
+                        value: Some(string_value("web")),
+                    },
+                ],
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans: vec![OtlpSpan {
+                    trace_id: vec![1; 16],
+                    span_id: vec![2; 8],
+                    name: "span".to_string(),
+                    end_time_unix_nano: 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut translator = OtlpTracesTranslator::new(
+            traces_settings(),
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let trace = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .find_map(Event::try_into_trace)
+            .expect("the span should translate into a trace");
+
+        let mut buf = Vec::new();
+        make_encoder(false)
+            .encode(&trace, &mut buf)
+            .expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+        let attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
+        let container_tags = attrs
+            .get(CONTAINER_TAGS_META_KEY)
+            .expect("container tags should be emitted");
+        assert_eq!(
+            BTreeSet::from(["container_name:web", "image_tag:v1"]),
+            container_tags.split(',').collect::<BTreeSet<_>>()
+        );
+    }
+
+    /// `ignore_missing_datadog_fields` is an OTLP setting, so a Datadog trace encodes the same either way.
+    #[test]
+    fn ignore_missing_datadog_fields_does_not_change_datadog_traces() {
         let encode = |ingest_info, ignore_missing_datadog_fields| {
             let mut encoder = TraceEndpointEncoder::new(
                 MetaString::from("test-host"),
@@ -1657,27 +1830,13 @@ mod tests {
                 false,
                 ignore_missing_datadog_fields,
             );
-            let mut trace = make_trace(ingest_info);
-            Arc::make_mut(&mut trace.attributes).insert(
-                MetaString::from("container.name"),
-                AttributeValue::String(MetaString::from("web")),
-            );
             let mut buf = Vec::new();
-            encoder.encode(&trace, &mut buf).expect("encode should succeed");
+            encoder
+                .encode(&make_trace(ingest_info), &mut buf)
+                .expect("encode should succeed");
             buf
         };
 
-        let otlp = TraceIngestInfo::Otlp {
-            receiver_sampling_rate: 1.0,
-        };
-        let container_tags = |buf: &[u8]| decode_etp_payload_metadata(buf).1.remove("_dd.tags.container");
-        assert_eq!(container_tags(&encode(otlp, true)), None);
-        assert_eq!(
-            container_tags(&encode(otlp, false)).as_deref(),
-            Some("container_name:web")
-        );
-
-        // Datadog traces encode the same either way.
         assert_eq!(
             encode(TraceIngestInfo::Datadog, true),
             encode(TraceIngestInfo::Datadog, false)
@@ -1815,16 +1974,35 @@ mod tests {
         trace
     }
 
+    /// Builds the key of a payload telemetry metric, with the labels that `make_payload_telemetry` uses.
+    fn payload_metric_key(name: &'static str) -> metrics::Key {
+        metrics::Key::from_parts(
+            name,
+            vec![
+                metrics::Label::new("component_id", "dd_traces_encode"),
+                metrics::Label::new("component_type", "encoder"),
+            ],
+        )
+    }
+
+    fn make_payload_telemetry() -> TracePayloadTelemetry {
+        TracePayloadTelemetry::new("dd_traces_encode", "encoder")
+    }
+
     #[test]
     fn largest_payload_gauge_only_moves_up() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let mut telemetry = TracePayloadTelemetry::from_builder(&MetricsBuilder::default());
+        let telemetry = make_payload_telemetry();
+        assert_eq!(
+            TracePayloadTelemetry::payload_size_bytes_max_name(),
+            "component_payload_size_bytes_max"
+        );
 
         for (body_len, expected_largest) in [(100_000, 100_000.0), (3_000_000, 3_000_000.0), (50_000, 3_000_000.0)] {
             telemetry.track_payload(body_len, body_len);
             assert_eq!(
-                recorder.gauge("component_payload_size_max_bytes"),
+                recorder.gauge(payload_metric_key("component_payload_size_bytes_max")),
                 Some(expected_largest)
             );
         }
@@ -1881,7 +2059,7 @@ mod tests {
         run_request_builder(
             request_builder,
             ComponentTelemetry::from_builder(&metrics_builder),
-            TracePayloadTelemetry::from_builder(&metrics_builder),
+            make_payload_telemetry(),
             events_rx,
             payloads_tx,
             Duration::from_millis(1),
@@ -1897,16 +2075,28 @@ mod tests {
         }
         assert_eq!(body_lens.len(), 1);
         assert_eq!(
-            recorder.histogram("component_payload_size_bytes"),
+            recorder.histogram(payload_metric_key("component_payload_size_bytes")),
             Some(body_lens.clone())
         );
-        assert_eq!(recorder.gauge("component_payload_size_max_bytes"), Some(body_lens[0]));
-
-        assert_eq!(recorder.counter("component_traces_encoded_total"), Some(3));
-        assert_eq!(recorder.counter("component_spans_encoded_total"), Some(3));
-        assert_eq!(recorder.counter("component_trace_events_encoded_total"), Some(1));
         assert_eq!(
-            recorder.counter("component_bytes_uncompressed_total"),
+            recorder.gauge(payload_metric_key("component_payload_size_bytes_max")),
+            Some(body_lens[0])
+        );
+
+        assert_eq!(
+            recorder.counter(payload_metric_key("component_traces_encoded_total")),
+            Some(3)
+        );
+        assert_eq!(
+            recorder.counter(payload_metric_key("component_spans_encoded_total")),
+            Some(3)
+        );
+        assert_eq!(
+            recorder.counter(payload_metric_key("component_trace_events_encoded_total")),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter(payload_metric_key("component_bytes_uncompressed_total")),
             Some(expected_uncompressed_len)
         );
     }

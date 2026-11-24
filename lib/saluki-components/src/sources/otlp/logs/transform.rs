@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use chrono::DateTime;
 use otlp_common::any_value::Value::StringValue as OtlpStringValue;
 use otlp_common::any_value::Value::{ArrayValue, BoolValue, BytesValue, DoubleValue, IntValue, KvlistValue};
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+use saluki_common::time::{Timestamp, TimestampFormat};
 use saluki_core::data_model::{event::log::Log, tags::TagSet};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
@@ -396,10 +396,12 @@ pub fn transform_log_record(
             JsonValue::String(nanos.to_string()),
         );
         // Match the Go layout `2006-01-02T15:04:05.000Z07:00`, in UTC.
-        let formatted = DateTime::from_timestamp_nanos(nanos)
-            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-            .to_string();
-        additional_properties.insert(MetaString::from_static("@timestamp"), JsonValue::String(formatted));
+        let instant = Timestamp::from_unix_nanos(i128::from(nanos))
+            .expect("any signed 64-bit count of nanoseconds should be a valid timestamp");
+        additional_properties.insert(
+            MetaString::from_static("@timestamp"),
+            JsonValue::String(instant.format(TimestampFormat::Rfc3339UtcMillis).to_string()),
+        );
     }
 
     // The event name overwrites an `otel.event_name` attribute from any source.
@@ -704,6 +706,28 @@ mod tests {
         }
     }
 
+    proptest::proptest! {
+        #[test]
+        fn property_test_timestamps_are_utc_milliseconds_rounded_down(time_unix_nano in 1u64..) {
+            let lr = LogRecord {
+                time_unix_nano,
+                ..Default::default()
+            };
+            let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+            let formatted = log.additional_properties()["@timestamp"]
+                .as_str()
+                .expect("@timestamp should be a string")
+                .to_string();
+
+            // Nanoseconds are read as signed, and every signed value is within the years 1677 to 2262.
+            let nanos = i128::from(time_unix_nano as i64);
+            let parsed = formatted.parse::<Timestamp>().expect("@timestamp should be RFC 3339");
+            proptest::prop_assert_eq!(formatted.len(), 24);
+            proptest::prop_assert!(formatted.ends_with('Z'));
+            proptest::prop_assert_eq!(parsed.as_unix_nanos(), nanos.div_euclid(1_000_000) * 1_000_000);
+        }
+    }
+
     #[test]
     fn timestamps_fall_back_to_the_observed_timestamp() {
         // (timestamp, observed timestamp, `otel.timestamp`, `@timestamp`)
@@ -737,6 +761,41 @@ mod tests {
                 Some("1677-09-21T00:12:43.145Z"),
             ),
             (0, u64::MAX, Some("-1"), Some("1969-12-31T23:59:59.999Z")),
+            // Milliseconds are truncated, never rounded, and a whole second still has three fraction digits.
+            (1, 0, Some("1"), Some("1970-01-01T00:00:00.000Z")),
+            (999_999, 0, Some("999999"), Some("1970-01-01T00:00:00.000Z")),
+            (1_000_000, 0, Some("1000000"), Some("1970-01-01T00:00:00.001Z")),
+            (
+                1_700_499_303_999_999_999,
+                0,
+                Some("1700499303999999999"),
+                Some("2023-11-20T16:55:03.999Z"),
+            ),
+            (
+                1_700_499_303_000_000_000,
+                0,
+                Some("1700499303000000000"),
+                Some("2023-11-20T16:55:03.000Z"),
+            ),
+            // The ends of the signed range, and times before 1970 round down to the earlier millisecond.
+            (
+                i64::MAX as u64,
+                0,
+                Some("9223372036854775807"),
+                Some("2262-04-11T23:47:16.854Z"),
+            ),
+            (
+                u64::MAX - 999_999,
+                0,
+                Some("-1000000"),
+                Some("1969-12-31T23:59:59.999Z"),
+            ),
+            (
+                u64::MAX - 999_999_998,
+                0,
+                Some("-999999999"),
+                Some("1969-12-31T23:59:59.000Z"),
+            ),
         ];
 
         for (time_unix_nano, observed_time_unix_nano, otel_timestamp, timestamp) in cases {

@@ -30,39 +30,4 @@ impl Deadline {
             budget,
         }
     }
-
-    /// Returns the earlier of this deadline and a new `budget` lasting `duration`.
-    ///
-    /// On a tie, the new budget wins: a step receiving its full allowance is limited by its own budget.
-    pub(crate) fn narrow(self, budget: Budget, duration: Duration) -> Self {
-        let narrowed = Self::after(budget, duration);
-        if self.at < narrowed.at {
-            self
-        } else {
-            narrowed
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test(start_paused = true)]
-    async fn narrowing_keeps_the_earlier_deadline_and_its_budget() {
-        let start = Instant::now();
-        let case = Deadline::after(Budget::Case, Duration::from_secs(10));
-
-        let tighter = case.narrow(Budget::Step, Duration::from_secs(5));
-        assert_eq!(
-            (tighter.budget, tighter.at),
-            (Budget::Step, start + Duration::from_secs(5))
-        );
-
-        let tie = case.narrow(Budget::Step, Duration::from_secs(10));
-        assert_eq!((tie.budget, tie.at), (Budget::Step, case.at));
-
-        let clamped = case.narrow(Budget::Step, Duration::from_secs(20));
-        assert_eq!((clamped.budget, clamped.at), (Budget::Case, case.at));
-    }
 }

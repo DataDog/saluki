@@ -1,0 +1,5 @@
+error: `derived(...)` cannot be combined with `mapped(...)`
+ --> tests/macros/15_derived_with_mapped.rs:5:30
+  |
+5 |     #[metric(mapped(reason), derived(max))]
+  |                              ^^^^^^^

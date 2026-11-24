@@ -46,7 +46,7 @@ use super::{
     graph::Graph,
     EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer, TypedComponentId,
 };
-use crate::health::{Health, HealthRegistry};
+use crate::health::{Health, HealthRegistry, LivenessResponder};
 use crate::runtime::state::DataspaceRegistry;
 use crate::runtime::{
     self, ChildSpecification, FnWorker, RestartMode, RestartStrategy, Supervisor, UnadoptedScope, WorkerSpec,
@@ -221,7 +221,7 @@ impl BuiltTopology {
         // Build our sources.
         for (component_context, (component, component_registry)) in self.sources {
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
-            let health_handle = build_health_handle(health_registry, &component_context)?;
+            let (health_handle, liveness) = build_health_handle(health_registry, &component_context)?;
 
             let component = component_child(
                 &component_context,
@@ -229,6 +229,7 @@ impl BuiltTopology {
                 shutdown_timeout,
                 || SourceRunnable {
                     component,
+                    liveness,
                     context: SourceContext::new(
                         &topology_context,
                         &component_context,
@@ -244,7 +245,7 @@ impl BuiltTopology {
         // Build our relays.
         for (component_context, (component, component_registry)) in self.relays {
             let dispatcher = interconnects.take_payloads_dispatcher(&component_context)?;
-            let health_handle = build_health_handle(health_registry, &component_context)?;
+            let (health_handle, liveness) = build_health_handle(health_registry, &component_context)?;
 
             let component = component_child(
                 &component_context,
@@ -252,6 +253,7 @@ impl BuiltTopology {
                 shutdown_timeout,
                 || RelayRunnable {
                     component,
+                    liveness,
                     context: RelayContext::new(
                         &topology_context,
                         &component_context,
@@ -268,7 +270,7 @@ impl BuiltTopology {
         for (component_context, (component, component_registry)) in self.decoders {
             let consumer = interconnects.take_payloads_consumer(&component_context)?;
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
-            let health_handle = build_health_handle(health_registry, &component_context)?;
+            let (health_handle, liveness) = build_health_handle(health_registry, &component_context)?;
 
             let component = component_child(
                 &component_context,
@@ -276,6 +278,7 @@ impl BuiltTopology {
                 shutdown_timeout,
                 || DecoderRunnable {
                     component,
+                    liveness,
                     context: DecoderContext::new(
                         &topology_context,
                         &component_context,
@@ -293,7 +296,7 @@ impl BuiltTopology {
         for (component_context, (component, component_registry)) in self.transforms {
             let consumer = interconnects.take_events_consumer(&component_context)?;
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
-            let health_handle = build_health_handle(health_registry, &component_context)?;
+            let (health_handle, liveness) = build_health_handle(health_registry, &component_context)?;
 
             let component = component_child(
                 &component_context,
@@ -301,6 +304,7 @@ impl BuiltTopology {
                 shutdown_timeout,
                 || TransformRunnable {
                     component,
+                    liveness,
                     context: TransformContext::new(
                         &topology_context,
                         &component_context,
@@ -317,7 +321,7 @@ impl BuiltTopology {
         // Build our destinations.
         for (component_context, (component, component_registry)) in self.destinations {
             let consumer = interconnects.take_events_consumer(&component_context)?;
-            let health_handle = build_health_handle(health_registry, &component_context)?;
+            let (health_handle, liveness) = build_health_handle(health_registry, &component_context)?;
 
             let component = component_child(
                 &component_context,
@@ -325,6 +329,7 @@ impl BuiltTopology {
                 shutdown_timeout,
                 || DestinationRunnable {
                     component,
+                    liveness,
                     context: DestinationContext::new(
                         &topology_context,
                         &component_context,
@@ -341,7 +346,7 @@ impl BuiltTopology {
         for (component_context, (component, component_registry)) in self.encoders {
             let consumer = interconnects.take_events_consumer(&component_context)?;
             let dispatcher = interconnects.take_payloads_dispatcher(&component_context)?;
-            let health_handle = build_health_handle(health_registry, &component_context)?;
+            let (health_handle, liveness) = build_health_handle(health_registry, &component_context)?;
 
             let component = component_child(
                 &component_context,
@@ -349,6 +354,7 @@ impl BuiltTopology {
                 shutdown_timeout,
                 || EncoderRunnable {
                     component,
+                    liveness,
                     context: EncoderContext::new(
                         &topology_context,
                         &component_context,
@@ -365,7 +371,7 @@ impl BuiltTopology {
         // Build our forwarders.
         for (component_context, (component, component_registry)) in self.forwarders {
             let consumer = interconnects.take_payloads_consumer(&component_context)?;
-            let health_handle = build_health_handle(health_registry, &component_context)?;
+            let (health_handle, liveness) = build_health_handle(health_registry, &component_context)?;
 
             let component = component_child(
                 &component_context,
@@ -373,6 +379,7 @@ impl BuiltTopology {
                 shutdown_timeout,
                 || ForwarderRunnable {
                     component,
+                    liveness,
                     context: ForwarderContext::new(
                         &topology_context,
                         &component_context,
@@ -647,16 +654,26 @@ where
     component_worker.build()
 }
 
+/// Registers the component with the health registry.
+///
+/// Returns the health handle of the component, and the responder that answers its liveness probes. The responder is
+/// taken out of the handle, so the topology answers probes for the component around its whole run future. Thus, a
+/// component that waits on backpressure stays live.
 fn build_health_handle(
     health_registry: &HealthRegistry, component_context: &ComponentContext,
-) -> Result<Health, GenericError> {
+) -> Result<(Health, LivenessResponder), GenericError> {
     // Register under the component's canonical identity, so the health registry name is byte-identical to the
     // resource-accounting and process-tree names for the same component. `TopologyReady` derives its match prefix
     // from the same `topology_root` that the identity is built from, so the two stay in sync.
     let maybe_handle = health_registry.register_component(&component_context.identity());
 
     match maybe_handle {
-        Some(handle) => Ok(handle),
+        Some(mut handle) => {
+            let liveness = handle
+                .take_liveness_responder()
+                .expect("a newly registered health handle always has a liveness responder");
+            Ok((handle, liveness))
+        }
         None => Err(generic_error!(
             "duplicate {} component ID in health registry: {}",
             component_context.component_type().as_str(),

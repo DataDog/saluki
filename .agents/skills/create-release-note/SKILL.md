@@ -33,7 +33,8 @@ guessing.
 ## Step 2: Choose the section and draft the content
 
 Propose a section and a draft entry from the diff, then confirm both with the user before writing
-the file.
+the file. Word the entry in the ASD-STE100 style that "Writing style" in
+`docs/development/style-guide.md` describes.
 
 ## Step 3: Create the file with Reno
 

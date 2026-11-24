@@ -112,6 +112,11 @@ pub struct PayloadFields {
     pub hostname: MetaString,
     /// Application version string.
     pub app_version: MetaString,
+    /// Container tags resolved from the payload's source, as `key:value` tags.
+    ///
+    /// `None` when the source resolved none, in which case consumers derive them from [`Trace::attributes`]. A thin
+    /// pointer keeps this field to a single word, because `Trace` sizes every `Event`.
+    pub container_tags: Option<Arc<Vec<MetaString>>>,
     /// Metadata the receiver supplied alongside the payload. `None` means every field has its default.
     ///
     /// Shared by every trace of a payload, so it costs one pointer per trace. Read it through
@@ -120,6 +125,11 @@ pub struct PayloadFields {
 }
 
 impl PayloadFields {
+    /// Returns the container tags the payload's source resolved, as `key:value` tags.
+    pub fn resolved_container_tags(&self) -> &[MetaString] {
+        self.container_tags.as_deref().map_or(&[], Vec::as_slice)
+    }
+
     /// Returns the receiver-supplied metadata, or the defaults when there is none.
     pub fn receiver(&self) -> &ReceiverMetadata {
         static DEFAULT: ReceiverMetadata = ReceiverMetadata::new();
@@ -142,8 +152,8 @@ pub struct ReceiverMetadata {
     pub client_computed_top_level: bool,
     /// Comma-separated container tags (`_dd.tags.container`) resolved for the payload's container ID.
     ///
-    /// Only Datadog traces use this field. For OTLP traces, the encoder derives container tags from the resource
-    /// attributes instead.
+    /// Only Datadog traces use this field. OTLP traces carry theirs in [`PayloadFields::container_tags`] and the
+    /// resource attributes instead.
     pub container_tags: MetaString,
     /// Comma-separated process tags (`_dd.tags.process`) describing the instrumented process.
     pub process_tags: MetaString,
