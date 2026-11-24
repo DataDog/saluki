@@ -1,6 +1,6 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/common/datadog/config.rs`."><title>config.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/common/datadog/</div>config.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::{collections::HashMap, sync::Arc, time::Duration};
 <a href=#2 id=2 data-nosnippet>2</a>
-<a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_error::GenericError;
+<a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_error::{generic_error, GenericError};
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>tracing::warn;
 <a href=#6 id=6 data-nosnippet>6</a>
@@ -356,445 +356,483 @@
 <a href=#356 id=356 data-nosnippet>356</a>    /// intake delivers for the primary target, because it replaces the primary endpoint for metrics.
 <a href=#357 id=357 data-nosnippet>357</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>build_routable_endpoints(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;RoutableEndpoint&gt;, GenericError&gt; {
 <a href=#358 id=358 data-nosnippet>358</a>        <span class="kw">let </span><span class="kw-2">mut </span>endpoints = <span class="self">self</span>.build_unlabeled_endpoints()<span class="question-mark">?</span>;
-<a href=#359 id=359 data-nosnippet>359</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(catalog) = <span class="kw-2">&amp;</span><span class="self">self</span>.routing_targets {
-<a href=#360 id=360 data-nosnippet>360</a>            endpoints = endpoints
-<a href=#361 id=361 data-nosnippet>361</a>                .into_iter()
-<a href=#362 id=362 data-nosnippet>362</a>                .map(|endpoint| {
-<a href=#363 id=363 data-nosnippet>363</a>                    <span class="kw">let </span>target = <span class="kw">match </span>endpoint.route() {
-<a href=#364 id=364 data-nosnippet>364</a>                        EndpointRoute::Primary | EndpointRoute::MetricsPrimary =&gt; <span class="prelude-val">Some</span>(catalog.primary()),
-<a href=#365 id=365 data-nosnippet>365</a>                        EndpointRoute::Additional =&gt; endpoint
-<a href=#366 id=366 data-nosnippet>366</a>                            .endpoint()
-<a href=#367 id=367 data-nosnippet>367</a>                            .additional_endpoint_queue_key()
-<a href=#368 id=368 data-nosnippet>368</a>                            .and_then(|(url, index)| catalog.find_additional(url, index)),
-<a href=#369 id=369 data-nosnippet>369</a>                    };
-<a href=#370 id=370 data-nosnippet>370</a>                    endpoint.with_target(target)
-<a href=#371 id=371 data-nosnippet>371</a>                })
-<a href=#372 id=372 data-nosnippet>372</a>                .collect();
-<a href=#373 id=373 data-nosnippet>373</a>        }
-<a href=#374 id=374 data-nosnippet>374</a>
-<a href=#375 id=375 data-nosnippet>375</a>        <span class="prelude-val">Ok</span>(endpoints)
-<a href=#376 id=376 data-nosnippet>376</a>    }
-<a href=#377 id=377 data-nosnippet>377</a>
-<a href=#378 id=378 data-nosnippet>378</a>    <span class="kw">fn </span>build_unlabeled_endpoints(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;RoutableEndpoint&gt;, GenericError&gt; {
-<a href=#379 id=379 data-nosnippet>379</a>        <span class="comment">// Label each endpoint so the I/O loop can route metrics to OPW and non-metrics to the normal primary.
-<a href=#380 id=380 data-nosnippet>380</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>endpoints = Vec::new();
-<a href=#381 id=381 data-nosnippet>381</a>        endpoints.push(RoutableEndpoint::new(
-<a href=#382 id=382 data-nosnippet>382</a>            EndpointRoute::Primary,
-<a href=#383 id=383 data-nosnippet>383</a>            <span class="self">self</span>.endpoint.build_primary_endpoint()<span class="question-mark">?</span>,
-<a href=#384 id=384 data-nosnippet>384</a>        ));
-<a href=#385 id=385 data-nosnippet>385</a>
-<a href=#386 id=386 data-nosnippet>386</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(selected) = <span class="self">self</span>.opw_metrics.selected_endpoint() {
-<a href=#387 id=387 data-nosnippet>387</a>            <span class="kw">let </span>trimmed_url = selected.url.trim();
-<a href=#388 id=388 data-nosnippet>388</a>            <span class="kw">if </span>trimmed_url.is_empty() {
-<a href=#389 id=389 data-nosnippet>389</a>                <span class="macro">warn!</span>(
-<a href=#390 id=390 data-nosnippet>390</a>                    enabled_key = selected.enabled_key,
-<a href=#391 id=391 data-nosnippet>391</a>                    url_key = selected.url_key,
-<a href=#392 id=392 data-nosnippet>392</a>                    <span class="string">"OPW/Vector metrics override is enabled, but no override URL was provided: override will be \
-<a href=#393 id=393 data-nosnippet>393</a>                     disabled. Continuing."</span>,
-<a href=#394 id=394 data-nosnippet>394</a>                );
-<a href=#395 id=395 data-nosnippet>395</a>            } <span class="kw">else </span>{
-<a href=#396 id=396 data-nosnippet>396</a>                <span class="kw">match </span><span class="self">self</span>.endpoint.build_primary_endpoint_override(trimmed_url) {
-<a href=#397 id=397 data-nosnippet>397</a>                    <span class="prelude-val">Ok</span>(endpoint) =&gt; {
-<a href=#398 id=398 data-nosnippet>398</a>                        endpoints.push(RoutableEndpoint::new(EndpointRoute::MetricsPrimary, endpoint));
-<a href=#399 id=399 data-nosnippet>399</a>                    }
-<a href=#400 id=400 data-nosnippet>400</a>                    <span class="prelude-val">Err</span>(e) =&gt; {
-<a href=#401 id=401 data-nosnippet>401</a>                        <span class="macro">warn!</span>(
-<a href=#402 id=402 data-nosnippet>402</a>                            enabled_key = selected.enabled_key,
-<a href=#403 id=403 data-nosnippet>403</a>                            url_key = selected.url_key,
-<a href=#404 id=404 data-nosnippet>404</a>                            url = trimmed_url,
-<a href=#405 id=405 data-nosnippet>405</a>                            error = %e,
-<a href=#406 id=406 data-nosnippet>406</a>                            <span class="string">"Failed to configure OPW/Vector metrics override URL: override will be disabled. Continuing."</span>,
-<a href=#407 id=407 data-nosnippet>407</a>                        );
-<a href=#408 id=408 data-nosnippet>408</a>                    }
-<a href=#409 id=409 data-nosnippet>409</a>                }
-<a href=#410 id=410 data-nosnippet>410</a>            }
-<a href=#411 id=411 data-nosnippet>411</a>        }
-<a href=#412 id=412 data-nosnippet>412</a>
-<a href=#413 id=413 data-nosnippet>413</a>        endpoints.extend(
-<a href=#414 id=414 data-nosnippet>414</a>            <span class="self">self</span>.endpoint
-<a href=#415 id=415 data-nosnippet>415</a>                .build_additional_endpoints()<span class="question-mark">?
-<a href=#416 id=416 data-nosnippet>416</a>                </span>.into_iter()
-<a href=#417 id=417 data-nosnippet>417</a>                .map(|endpoint| RoutableEndpoint::new(EndpointRoute::Additional, endpoint)),
-<a href=#418 id=418 data-nosnippet>418</a>        );
+<a href=#359 id=359 data-nosnippet>359</a>        <span class="kw">if </span>endpoints.is_empty() {
+<a href=#360 id=360 data-nosnippet>360</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(
+<a href=#361 id=361 data-nosnippet>361</a>                <span class="string">"No endpoint to send to: the primary endpoint is skipped and no additional endpoint has an API key."
+<a href=#362 id=362 data-nosnippet>362</a>            </span>));
+<a href=#363 id=363 data-nosnippet>363</a>        }
+<a href=#364 id=364 data-nosnippet>364</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(catalog) = <span class="kw-2">&amp;</span><span class="self">self</span>.routing_targets {
+<a href=#365 id=365 data-nosnippet>365</a>            endpoints = endpoints
+<a href=#366 id=366 data-nosnippet>366</a>                .into_iter()
+<a href=#367 id=367 data-nosnippet>367</a>                .map(|endpoint| {
+<a href=#368 id=368 data-nosnippet>368</a>                    <span class="kw">let </span>target = <span class="kw">match </span>endpoint.route() {
+<a href=#369 id=369 data-nosnippet>369</a>                        EndpointRoute::Primary | EndpointRoute::MetricsPrimary =&gt; <span class="prelude-val">Some</span>(catalog.primary()),
+<a href=#370 id=370 data-nosnippet>370</a>                        EndpointRoute::Additional =&gt; endpoint
+<a href=#371 id=371 data-nosnippet>371</a>                            .endpoint()
+<a href=#372 id=372 data-nosnippet>372</a>                            .additional_endpoint_queue_key()
+<a href=#373 id=373 data-nosnippet>373</a>                            .and_then(|(url, index)| catalog.find_additional(url, index)),
+<a href=#374 id=374 data-nosnippet>374</a>                    };
+<a href=#375 id=375 data-nosnippet>375</a>                    endpoint.with_target(target)
+<a href=#376 id=376 data-nosnippet>376</a>                })
+<a href=#377 id=377 data-nosnippet>377</a>                .collect();
+<a href=#378 id=378 data-nosnippet>378</a>        }
+<a href=#379 id=379 data-nosnippet>379</a>
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="prelude-val">Ok</span>(endpoints)
+<a href=#381 id=381 data-nosnippet>381</a>    }
+<a href=#382 id=382 data-nosnippet>382</a>
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="kw">fn </span>build_unlabeled_endpoints(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;RoutableEndpoint&gt;, GenericError&gt; {
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="comment">// Label each endpoint so the I/O loop can route metrics to OPW and non-metrics to the normal primary.
+<a href=#385 id=385 data-nosnippet>385</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>endpoints = Vec::new();
+<a href=#386 id=386 data-nosnippet>386</a>        <span class="kw">if </span><span class="self">self</span>.endpoint.sends_to_primary() {
+<a href=#387 id=387 data-nosnippet>387</a>            endpoints.push(RoutableEndpoint::new(
+<a href=#388 id=388 data-nosnippet>388</a>                EndpointRoute::Primary,
+<a href=#389 id=389 data-nosnippet>389</a>                <span class="self">self</span>.endpoint.build_primary_endpoint()<span class="question-mark">?</span>,
+<a href=#390 id=390 data-nosnippet>390</a>            ));
+<a href=#391 id=391 data-nosnippet>391</a>        }
+<a href=#392 id=392 data-nosnippet>392</a>
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(selected) = <span class="self">self</span>.opw_metrics.selected_endpoint() {
+<a href=#394 id=394 data-nosnippet>394</a>            <span class="kw">let </span>trimmed_url = selected.url.trim();
+<a href=#395 id=395 data-nosnippet>395</a>            <span class="kw">if </span>trimmed_url.is_empty() {
+<a href=#396 id=396 data-nosnippet>396</a>                <span class="macro">warn!</span>(
+<a href=#397 id=397 data-nosnippet>397</a>                    enabled_key = selected.enabled_key,
+<a href=#398 id=398 data-nosnippet>398</a>                    url_key = selected.url_key,
+<a href=#399 id=399 data-nosnippet>399</a>                    <span class="string">"OPW/Vector metrics override is enabled, but no override URL was provided: override will be \
+<a href=#400 id=400 data-nosnippet>400</a>                     disabled. Continuing."</span>,
+<a href=#401 id=401 data-nosnippet>401</a>                );
+<a href=#402 id=402 data-nosnippet>402</a>            } <span class="kw">else </span>{
+<a href=#403 id=403 data-nosnippet>403</a>                <span class="kw">match </span><span class="self">self</span>.endpoint.build_primary_endpoint_override(trimmed_url) {
+<a href=#404 id=404 data-nosnippet>404</a>                    <span class="prelude-val">Ok</span>(endpoint) =&gt; {
+<a href=#405 id=405 data-nosnippet>405</a>                        endpoints.push(RoutableEndpoint::new(EndpointRoute::MetricsPrimary, endpoint));
+<a href=#406 id=406 data-nosnippet>406</a>                    }
+<a href=#407 id=407 data-nosnippet>407</a>                    <span class="prelude-val">Err</span>(e) =&gt; {
+<a href=#408 id=408 data-nosnippet>408</a>                        <span class="macro">warn!</span>(
+<a href=#409 id=409 data-nosnippet>409</a>                            enabled_key = selected.enabled_key,
+<a href=#410 id=410 data-nosnippet>410</a>                            url_key = selected.url_key,
+<a href=#411 id=411 data-nosnippet>411</a>                            url = trimmed_url,
+<a href=#412 id=412 data-nosnippet>412</a>                            error = %e,
+<a href=#413 id=413 data-nosnippet>413</a>                            <span class="string">"Failed to configure OPW/Vector metrics override URL: override will be disabled. Continuing."</span>,
+<a href=#414 id=414 data-nosnippet>414</a>                        );
+<a href=#415 id=415 data-nosnippet>415</a>                    }
+<a href=#416 id=416 data-nosnippet>416</a>                }
+<a href=#417 id=417 data-nosnippet>417</a>            }
+<a href=#418 id=418 data-nosnippet>418</a>        }
 <a href=#419 id=419 data-nosnippet>419</a>
-<a href=#420 id=420 data-nosnippet>420</a>        <span class="prelude-val">Ok</span>(endpoints)
-<a href=#421 id=421 data-nosnippet>421</a>    }
-<a href=#422 id=422 data-nosnippet>422</a>
-<a href=#423 id=423 data-nosnippet>423</a>    <span class="doccomment">/// Returns the connection reset interval.
-<a href=#424 id=424 data-nosnippet>424</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const fn </span>connection_reset_interval(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; Duration {
-<a href=#425 id=425 data-nosnippet>425</a>        Duration::from_secs(<span class="self">self</span>.connection_reset_interval_secs)
-<a href=#426 id=426 data-nosnippet>426</a>    }
-<a href=#427 id=427 data-nosnippet>427</a>
-<a href=#428 id=428 data-nosnippet>428</a>    <span class="doccomment">/// Returns the OPW/Vector V3 series override for metrics-primary routing, if configured.
-<a href=#429 id=429 data-nosnippet>429</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>opw_metrics_v3_series_override(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;bool&gt; {
-<a href=#430 id=430 data-nosnippet>430</a>        <span class="self">self</span>.opw_metrics
-<a href=#431 id=431 data-nosnippet>431</a>            .selected_endpoint()
-<a href=#432 id=432 data-nosnippet>432</a>            .map(|selected| selected.use_v3_series)
+<a href=#420 id=420 data-nosnippet>420</a>        endpoints.extend(
+<a href=#421 id=421 data-nosnippet>421</a>            <span class="self">self</span>.endpoint
+<a href=#422 id=422 data-nosnippet>422</a>                .build_additional_endpoints()<span class="question-mark">?
+<a href=#423 id=423 data-nosnippet>423</a>                </span>.into_iter()
+<a href=#424 id=424 data-nosnippet>424</a>                .map(|endpoint| RoutableEndpoint::new(EndpointRoute::Additional, endpoint)),
+<a href=#425 id=425 data-nosnippet>425</a>        );
+<a href=#426 id=426 data-nosnippet>426</a>
+<a href=#427 id=427 data-nosnippet>427</a>        <span class="prelude-val">Ok</span>(endpoints)
+<a href=#428 id=428 data-nosnippet>428</a>    }
+<a href=#429 id=429 data-nosnippet>429</a>
+<a href=#430 id=430 data-nosnippet>430</a>    <span class="doccomment">/// Returns the connection reset interval.
+<a href=#431 id=431 data-nosnippet>431</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const fn </span>connection_reset_interval(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; Duration {
+<a href=#432 id=432 data-nosnippet>432</a>        Duration::from_secs(<span class="self">self</span>.connection_reset_interval_secs)
 <a href=#433 id=433 data-nosnippet>433</a>    }
 <a href=#434 id=434 data-nosnippet>434</a>
-<a href=#435 id=435 data-nosnippet>435</a>    <span class="doccomment">/// Returns whether this metrics destination needs a sketch shadow worker.
-<a href=#436 id=436 data-nosnippet>436</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>endpoint_supports_sketch_shadow(
-<a href=#437 id=437 data-nosnippet>437</a>        <span class="kw-2">&amp;</span><span class="self">self</span>, endpoint: <span class="kw-2">&amp;</span>RoutableEndpoint, has_metrics_primary: bool,
-<a href=#438 id=438 data-nosnippet>438</a>    ) -&gt; bool {
-<a href=#439 id=439 data-nosnippet>439</a>        <span class="comment">// An alternate metrics intake replaces the normal primary for all metric traffic.
-<a href=#440 id=440 data-nosnippet>440</a>        </span><span class="kw">if </span><span class="self">self</span>.compressor_disables_metrics_v3() || (has_metrics_primary &amp;&amp; endpoint.route() == EndpointRoute::Primary)
-<a href=#441 id=441 data-nosnippet>441</a>        {
-<a href=#442 id=442 data-nosnippet>442</a>            <span class="kw">return </span><span class="bool-val">false</span>;
-<a href=#443 id=443 data-nosnippet>443</a>        }
-<a href=#444 id=444 data-nosnippet>444</a>        sketch_shadow_eligible(endpoint.endpoint(), <span class="kw-2">&amp;</span><span class="self">self</span>.v3_api.sketches)
-<a href=#445 id=445 data-nosnippet>445</a>    }
-<a href=#446 id=446 data-nosnippet>446</a>
-<a href=#447 id=447 data-nosnippet>447</a>    <span class="doccomment">/// Returns whether the configured metrics compressor is incompatible with Metrics V3.
-<a href=#448 id=448 data-nosnippet>448</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>compressor_disables_metrics_v3(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
-<a href=#449 id=449 data-nosnippet>449</a>        <span class="self">self</span>.serializer_compressor_kind.trim().eq_ignore_ascii_case(<span class="string">"zlib"</span>)
-<a href=#450 id=450 data-nosnippet>450</a>    }
-<a href=#451 id=451 data-nosnippet>451</a>
-<a href=#452 id=452 data-nosnippet>452</a>    <span class="doccomment">/// Returns the TLS key log file path, if configured.
-<a href=#453 id=453 data-nosnippet>453</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>ssl_key_log_file_path(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
-<a href=#454 id=454 data-nosnippet>454</a>        <span class="kw">let </span>trimmed = <span class="self">self</span>.sslkeylogfile.trim();
-<a href=#455 id=455 data-nosnippet>455</a>        (!trimmed.is_empty()).then_some(trimmed)
-<a href=#456 id=456 data-nosnippet>456</a>    }
-<a href=#457 id=457 data-nosnippet>457</a>
-<a href=#458 id=458 data-nosnippet>458</a>    <span class="doccomment">/// Returns the minimum TLS protocol version for Datadog intake forwarding, warning if it is unsupported.
-<a href=#459 id=459 data-nosnippet>459</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>effective_min_tls_version(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; TlsMinimumVersion {
-<a href=#460 id=460 data-nosnippet>460</a>        min_tls_version_from_config_value(<span class="kw-2">&amp;</span><span class="self">self</span>.min_tls_version)
-<a href=#461 id=461 data-nosnippet>461</a>    }
-<a href=#462 id=462 data-nosnippet>462</a>
-<a href=#463 id=463 data-nosnippet>463</a>    <span class="doccomment">/// Returns the API key validation interval, warning if the configured interval is not positive.
-<a href=#464 id=464 data-nosnippet>464</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>effective_api_key_validation_interval(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; Duration {
-<a href=#465 id=465 data-nosnippet>465</a>        api_key_validation_interval(<span class="self">self</span>.api_key_validation_interval_mins)
-<a href=#466 id=466 data-nosnippet>466</a>    }
-<a href=#467 id=467 data-nosnippet>467</a>}
-<a href=#468 id=468 data-nosnippet>468</a>
-<a href=#469 id=469 data-nosnippet>469</a><span class="attr">#[cfg(test)]
-<a href=#470 id=470 data-nosnippet>470</a></span><span class="kw">mod </span>tests {
-<a href=#471 id=471 data-nosnippet>471</a>    <span class="kw">use </span>std::collections::HashMap;
-<a href=#472 id=472 data-nosnippet>472</a>
-<a href=#473 id=473 data-nosnippet>473</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#474 id=474 data-nosnippet>474</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{
-<a href=#475 id=475 data-nosnippet>475</a>        config::OpwMetricsSettings,
-<a href=#476 id=476 data-nosnippet>476</a>        test_util::{forwarder_configuration, TEST_API_KEY},
-<a href=#477 id=477 data-nosnippet>477</a>    };
-<a href=#478 id=478 data-nosnippet>478</a>
-<a href=#479 id=479 data-nosnippet>479</a>    <span class="kw">const </span>DATADOG_URL: <span class="kw-2">&amp;</span>str = <span class="string">"http://datadog.example.com"</span>;
-<a href=#480 id=480 data-nosnippet>480</a>    <span class="kw">const </span>DATADOG_URI: <span class="kw-2">&amp;</span>str = <span class="string">"http://datadog.example.com/"</span>;
-<a href=#481 id=481 data-nosnippet>481</a>    <span class="kw">const </span>OPW_URL: <span class="kw-2">&amp;</span>str = <span class="string">"http://opw.example.com:8080"</span>;
-<a href=#482 id=482 data-nosnippet>482</a>    <span class="kw">const </span>OPW_URI: <span class="kw-2">&amp;</span>str = <span class="string">"http://opw.example.com:8080/"</span>;
-<a href=#483 id=483 data-nosnippet>483</a>    <span class="kw">const </span>VECTOR_URL: <span class="kw-2">&amp;</span>str = <span class="string">"http://vector.example.com:8080"</span>;
-<a href=#484 id=484 data-nosnippet>484</a>    <span class="kw">const </span>VECTOR_URI: <span class="kw-2">&amp;</span>str = <span class="string">"http://vector.example.com:8080/"</span>;
-<a href=#485 id=485 data-nosnippet>485</a>    <span class="kw">const </span>ADDITIONAL_URL: <span class="kw-2">&amp;</span>str = <span class="string">"http://additional.example.com"</span>;
-<a href=#486 id=486 data-nosnippet>486</a>    <span class="kw">const </span>ADDITIONAL_URI: <span class="kw-2">&amp;</span>str = <span class="string">"http://additional.example.com/"</span>;
-<a href=#487 id=487 data-nosnippet>487</a>    <span class="kw">const </span>SSL_KEY_LOG_FILE_PATH: <span class="kw-2">&amp;</span>str = <span class="string">"/tmp/saluki-sslkeylogfile"</span>;
-<a href=#488 id=488 data-nosnippet>488</a>
-<a href=#489 id=489 data-nosnippet>489</a>    <span class="doccomment">/// Returns a forwarder configuration whose primary endpoint is `primary_endpoint`.
-<a href=#490 id=490 data-nosnippet>490</a>    </span><span class="kw">fn </span>forwarder_config_for(
-<a href=#491 id=491 data-nosnippet>491</a>        primary_endpoint: <span class="kw-2">&amp;</span>str, additional_endpoints: HashMap&lt;String, Vec&lt;String&gt;&gt;,
-<a href=#492 id=492 data-nosnippet>492</a>    ) -&gt; ForwarderConfiguration {
-<a href=#493 id=493 data-nosnippet>493</a>        ForwarderConfiguration {
-<a href=#494 id=494 data-nosnippet>494</a>            endpoint: EndpointConfiguration::new(
-<a href=#495 id=495 data-nosnippet>495</a>                TEST_API_KEY.to_string(),
-<a href=#496 id=496 data-nosnippet>496</a>                primary_endpoint.to_string(),
-<a href=#497 id=497 data-nosnippet>497</a>                additional_endpoints,
-<a href=#498 id=498 data-nosnippet>498</a>            ),
-<a href=#499 id=499 data-nosnippet>499</a>            ..forwarder_configuration()
-<a href=#500 id=500 data-nosnippet>500</a>        }
-<a href=#501 id=501 data-nosnippet>501</a>    }
-<a href=#502 id=502 data-nosnippet>502</a>
-<a href=#503 id=503 data-nosnippet>503</a>    <span class="kw">fn </span>alternate_intake(enabled: bool, url: <span class="kw-2">&amp;</span>str, use_v3_series: bool) -&gt; OpwMetricsSettings {
-<a href=#504 id=504 data-nosnippet>504</a>        OpwMetricsSettings {
-<a href=#505 id=505 data-nosnippet>505</a>            enabled,
-<a href=#506 id=506 data-nosnippet>506</a>            url: url.to_string(),
-<a href=#507 id=507 data-nosnippet>507</a>            use_v3_series,
-<a href=#508 id=508 data-nosnippet>508</a>        }
-<a href=#509 id=509 data-nosnippet>509</a>    }
-<a href=#510 id=510 data-nosnippet>510</a>
-<a href=#511 id=511 data-nosnippet>511</a>    <span class="kw">fn </span>endpoint_urls_by_route(config: <span class="kw-2">&amp;</span>ForwarderConfiguration, route: EndpointRoute) -&gt; Vec&lt;String&gt; {
-<a href=#512 id=512 data-nosnippet>512</a>        config
-<a href=#513 id=513 data-nosnippet>513</a>            .build_routable_endpoints()
-<a href=#514 id=514 data-nosnippet>514</a>            .expect(<span class="string">"endpoints should resolve"</span>)
-<a href=#515 id=515 data-nosnippet>515</a>            .into_iter()
-<a href=#516 id=516 data-nosnippet>516</a>            .filter_map(|endpoint| {
-<a href=#517 id=517 data-nosnippet>517</a>                <span class="kw">let </span>(endpoint_route, endpoint, <span class="kw">_</span>) = endpoint.into_parts();
-<a href=#518 id=518 data-nosnippet>518</a>                (endpoint_route == route).then(|| endpoint.endpoint().to_string())
-<a href=#519 id=519 data-nosnippet>519</a>            })
-<a href=#520 id=520 data-nosnippet>520</a>            .collect()
-<a href=#521 id=521 data-nosnippet>521</a>    }
-<a href=#522 id=522 data-nosnippet>522</a>
-<a href=#523 id=523 data-nosnippet>523</a>    <span class="attr">#[test]
-<a href=#524 id=524 data-nosnippet>524</a>    </span><span class="kw">fn </span>forwarder_http_protocol_maps_to_the_client_protocol() {
-<a href=#525 id=525 data-nosnippet>525</a>        <span class="macro">assert_eq!</span>(HttpProtocol::Auto, ForwarderHttpProtocol::Auto.into());
-<a href=#526 id=526 data-nosnippet>526</a>        <span class="macro">assert_eq!</span>(HttpProtocol::Http1, ForwarderHttpProtocol::Http1.into());
-<a href=#527 id=527 data-nosnippet>527</a>    }
-<a href=#528 id=528 data-nosnippet>528</a>
-<a href=#529 id=529 data-nosnippet>529</a>    <span class="attr">#[test]
-<a href=#530 id=530 data-nosnippet>530</a>    </span><span class="kw">fn </span>endpoint_concurrency_multiplies_and_clamps_zero_values_to_one() {
-<a href=#531 id=531 data-nosnippet>531</a>        <span class="comment">// `endpoint_concurrency` multiplies the base concurrency by the multiplier, but a documented zero
-<a href=#532 id=532 data-nosnippet>532</a>        // for either field is clamped to 1 first (a zero multiplier "is treated as 1", a zero base
-<a href=#533 id=533 data-nosnippet>533</a>        // concurrency "is clamped to 1").
-<a href=#534 id=534 data-nosnippet>534</a>        </span><span class="kw">let </span>cases = [
-<a href=#535 id=535 data-nosnippet>535</a>            (<span class="string">"both configured"</span>, <span class="number">3usize</span>, <span class="number">4usize</span>, <span class="number">12usize</span>),
-<a href=#536 id=536 data-nosnippet>536</a>            (<span class="string">"zero base concurrency clamps to one"</span>, <span class="number">0</span>, <span class="number">5</span>, <span class="number">5</span>),
-<a href=#537 id=537 data-nosnippet>537</a>            (<span class="string">"zero multiplier clamps to one"</span>, <span class="number">10</span>, <span class="number">0</span>, <span class="number">10</span>),
-<a href=#538 id=538 data-nosnippet>538</a>            (<span class="string">"both zero clamp to one"</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>),
-<a href=#539 id=539 data-nosnippet>539</a>        ];
-<a href=#540 id=540 data-nosnippet>540</a>
-<a href=#541 id=541 data-nosnippet>541</a>        <span class="kw">for </span>(name, concurrency, multiplier, expected) <span class="kw">in </span>cases {
-<a href=#542 id=542 data-nosnippet>542</a>            <span class="kw">let </span>config = ForwarderConfiguration {
-<a href=#543 id=543 data-nosnippet>543</a>                endpoint_concurrency: concurrency,
-<a href=#544 id=544 data-nosnippet>544</a>                endpoint_concurrency_multiplier: multiplier,
-<a href=#545 id=545 data-nosnippet>545</a>                ..forwarder_configuration()
-<a href=#546 id=546 data-nosnippet>546</a>            };
+<a href=#435 id=435 data-nosnippet>435</a>    <span class="doccomment">/// Returns the OPW/Vector V3 series override for metrics-primary routing, if configured.
+<a href=#436 id=436 data-nosnippet>436</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>opw_metrics_v3_series_override(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;bool&gt; {
+<a href=#437 id=437 data-nosnippet>437</a>        <span class="self">self</span>.opw_metrics
+<a href=#438 id=438 data-nosnippet>438</a>            .selected_endpoint()
+<a href=#439 id=439 data-nosnippet>439</a>            .map(|selected| selected.use_v3_series)
+<a href=#440 id=440 data-nosnippet>440</a>    }
+<a href=#441 id=441 data-nosnippet>441</a>
+<a href=#442 id=442 data-nosnippet>442</a>    <span class="doccomment">/// Returns whether this metrics destination needs a sketch shadow worker.
+<a href=#443 id=443 data-nosnippet>443</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>endpoint_supports_sketch_shadow(
+<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw-2">&amp;</span><span class="self">self</span>, endpoint: <span class="kw-2">&amp;</span>RoutableEndpoint, has_metrics_primary: bool,
+<a href=#445 id=445 data-nosnippet>445</a>    ) -&gt; bool {
+<a href=#446 id=446 data-nosnippet>446</a>        <span class="comment">// An alternate metrics intake replaces the normal primary for all metric traffic.
+<a href=#447 id=447 data-nosnippet>447</a>        </span><span class="kw">if </span><span class="self">self</span>.compressor_disables_metrics_v3() || (has_metrics_primary &amp;&amp; endpoint.route() == EndpointRoute::Primary)
+<a href=#448 id=448 data-nosnippet>448</a>        {
+<a href=#449 id=449 data-nosnippet>449</a>            <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#450 id=450 data-nosnippet>450</a>        }
+<a href=#451 id=451 data-nosnippet>451</a>        sketch_shadow_eligible(endpoint.endpoint(), <span class="kw-2">&amp;</span><span class="self">self</span>.v3_api.sketches)
+<a href=#452 id=452 data-nosnippet>452</a>    }
+<a href=#453 id=453 data-nosnippet>453</a>
+<a href=#454 id=454 data-nosnippet>454</a>    <span class="doccomment">/// Returns whether the configured metrics compressor is incompatible with Metrics V3.
+<a href=#455 id=455 data-nosnippet>455</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>compressor_disables_metrics_v3(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#456 id=456 data-nosnippet>456</a>        <span class="self">self</span>.serializer_compressor_kind.trim().eq_ignore_ascii_case(<span class="string">"zlib"</span>)
+<a href=#457 id=457 data-nosnippet>457</a>    }
+<a href=#458 id=458 data-nosnippet>458</a>
+<a href=#459 id=459 data-nosnippet>459</a>    <span class="doccomment">/// Returns the TLS key log file path, if configured.
+<a href=#460 id=460 data-nosnippet>460</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>ssl_key_log_file_path(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
+<a href=#461 id=461 data-nosnippet>461</a>        <span class="kw">let </span>trimmed = <span class="self">self</span>.sslkeylogfile.trim();
+<a href=#462 id=462 data-nosnippet>462</a>        (!trimmed.is_empty()).then_some(trimmed)
+<a href=#463 id=463 data-nosnippet>463</a>    }
+<a href=#464 id=464 data-nosnippet>464</a>
+<a href=#465 id=465 data-nosnippet>465</a>    <span class="doccomment">/// Returns the minimum TLS protocol version for Datadog intake forwarding, warning if it is unsupported.
+<a href=#466 id=466 data-nosnippet>466</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>effective_min_tls_version(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; TlsMinimumVersion {
+<a href=#467 id=467 data-nosnippet>467</a>        min_tls_version_from_config_value(<span class="kw-2">&amp;</span><span class="self">self</span>.min_tls_version)
+<a href=#468 id=468 data-nosnippet>468</a>    }
+<a href=#469 id=469 data-nosnippet>469</a>
+<a href=#470 id=470 data-nosnippet>470</a>    <span class="doccomment">/// Returns the API key validation interval, warning if the configured interval is not positive.
+<a href=#471 id=471 data-nosnippet>471</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>effective_api_key_validation_interval(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; Duration {
+<a href=#472 id=472 data-nosnippet>472</a>        api_key_validation_interval(<span class="self">self</span>.api_key_validation_interval_mins)
+<a href=#473 id=473 data-nosnippet>473</a>    }
+<a href=#474 id=474 data-nosnippet>474</a>}
+<a href=#475 id=475 data-nosnippet>475</a>
+<a href=#476 id=476 data-nosnippet>476</a><span class="attr">#[cfg(test)]
+<a href=#477 id=477 data-nosnippet>477</a></span><span class="kw">mod </span>tests {
+<a href=#478 id=478 data-nosnippet>478</a>    <span class="kw">use </span>std::collections::HashMap;
+<a href=#479 id=479 data-nosnippet>479</a>
+<a href=#480 id=480 data-nosnippet>480</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#481 id=481 data-nosnippet>481</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{
+<a href=#482 id=482 data-nosnippet>482</a>        config::OpwMetricsSettings,
+<a href=#483 id=483 data-nosnippet>483</a>        test_util::{forwarder_configuration, TEST_API_KEY},
+<a href=#484 id=484 data-nosnippet>484</a>    };
+<a href=#485 id=485 data-nosnippet>485</a>
+<a href=#486 id=486 data-nosnippet>486</a>    <span class="kw">const </span>DATADOG_URL: <span class="kw-2">&amp;</span>str = <span class="string">"http://datadog.example.com"</span>;
+<a href=#487 id=487 data-nosnippet>487</a>    <span class="kw">const </span>DATADOG_URI: <span class="kw-2">&amp;</span>str = <span class="string">"http://datadog.example.com/"</span>;
+<a href=#488 id=488 data-nosnippet>488</a>    <span class="kw">const </span>OPW_URL: <span class="kw-2">&amp;</span>str = <span class="string">"http://opw.example.com:8080"</span>;
+<a href=#489 id=489 data-nosnippet>489</a>    <span class="kw">const </span>OPW_URI: <span class="kw-2">&amp;</span>str = <span class="string">"http://opw.example.com:8080/"</span>;
+<a href=#490 id=490 data-nosnippet>490</a>    <span class="kw">const </span>VECTOR_URL: <span class="kw-2">&amp;</span>str = <span class="string">"http://vector.example.com:8080"</span>;
+<a href=#491 id=491 data-nosnippet>491</a>    <span class="kw">const </span>VECTOR_URI: <span class="kw-2">&amp;</span>str = <span class="string">"http://vector.example.com:8080/"</span>;
+<a href=#492 id=492 data-nosnippet>492</a>    <span class="kw">const </span>ADDITIONAL_URL: <span class="kw-2">&amp;</span>str = <span class="string">"http://additional.example.com"</span>;
+<a href=#493 id=493 data-nosnippet>493</a>    <span class="kw">const </span>ADDITIONAL_URI: <span class="kw-2">&amp;</span>str = <span class="string">"http://additional.example.com/"</span>;
+<a href=#494 id=494 data-nosnippet>494</a>    <span class="kw">const </span>SSL_KEY_LOG_FILE_PATH: <span class="kw-2">&amp;</span>str = <span class="string">"/tmp/saluki-sslkeylogfile"</span>;
+<a href=#495 id=495 data-nosnippet>495</a>
+<a href=#496 id=496 data-nosnippet>496</a>    <span class="doccomment">/// Returns a forwarder configuration whose primary endpoint is `primary_endpoint`.
+<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">fn </span>forwarder_config_for(
+<a href=#498 id=498 data-nosnippet>498</a>        primary_endpoint: <span class="kw-2">&amp;</span>str, additional_endpoints: HashMap&lt;String, Vec&lt;String&gt;&gt;,
+<a href=#499 id=499 data-nosnippet>499</a>    ) -&gt; ForwarderConfiguration {
+<a href=#500 id=500 data-nosnippet>500</a>        ForwarderConfiguration {
+<a href=#501 id=501 data-nosnippet>501</a>            endpoint: EndpointConfiguration::new(
+<a href=#502 id=502 data-nosnippet>502</a>                TEST_API_KEY.to_string(),
+<a href=#503 id=503 data-nosnippet>503</a>                primary_endpoint.to_string(),
+<a href=#504 id=504 data-nosnippet>504</a>                additional_endpoints,
+<a href=#505 id=505 data-nosnippet>505</a>            ),
+<a href=#506 id=506 data-nosnippet>506</a>            ..forwarder_configuration()
+<a href=#507 id=507 data-nosnippet>507</a>        }
+<a href=#508 id=508 data-nosnippet>508</a>    }
+<a href=#509 id=509 data-nosnippet>509</a>
+<a href=#510 id=510 data-nosnippet>510</a>    <span class="kw">fn </span>alternate_intake(enabled: bool, url: <span class="kw-2">&amp;</span>str, use_v3_series: bool) -&gt; OpwMetricsSettings {
+<a href=#511 id=511 data-nosnippet>511</a>        OpwMetricsSettings {
+<a href=#512 id=512 data-nosnippet>512</a>            enabled,
+<a href=#513 id=513 data-nosnippet>513</a>            url: url.to_string(),
+<a href=#514 id=514 data-nosnippet>514</a>            use_v3_series,
+<a href=#515 id=515 data-nosnippet>515</a>        }
+<a href=#516 id=516 data-nosnippet>516</a>    }
+<a href=#517 id=517 data-nosnippet>517</a>
+<a href=#518 id=518 data-nosnippet>518</a>    <span class="kw">fn </span>endpoint_urls_by_route(config: <span class="kw-2">&amp;</span>ForwarderConfiguration, route: EndpointRoute) -&gt; Vec&lt;String&gt; {
+<a href=#519 id=519 data-nosnippet>519</a>        config
+<a href=#520 id=520 data-nosnippet>520</a>            .build_routable_endpoints()
+<a href=#521 id=521 data-nosnippet>521</a>            .expect(<span class="string">"endpoints should resolve"</span>)
+<a href=#522 id=522 data-nosnippet>522</a>            .into_iter()
+<a href=#523 id=523 data-nosnippet>523</a>            .filter_map(|endpoint| {
+<a href=#524 id=524 data-nosnippet>524</a>                <span class="kw">let </span>(endpoint_route, endpoint, <span class="kw">_</span>) = endpoint.into_parts();
+<a href=#525 id=525 data-nosnippet>525</a>                (endpoint_route == route).then(|| endpoint.endpoint().to_string())
+<a href=#526 id=526 data-nosnippet>526</a>            })
+<a href=#527 id=527 data-nosnippet>527</a>            .collect()
+<a href=#528 id=528 data-nosnippet>528</a>    }
+<a href=#529 id=529 data-nosnippet>529</a>
+<a href=#530 id=530 data-nosnippet>530</a>    <span class="attr">#[test]
+<a href=#531 id=531 data-nosnippet>531</a>    </span><span class="kw">fn </span>forwarder_http_protocol_maps_to_the_client_protocol() {
+<a href=#532 id=532 data-nosnippet>532</a>        <span class="macro">assert_eq!</span>(HttpProtocol::Auto, ForwarderHttpProtocol::Auto.into());
+<a href=#533 id=533 data-nosnippet>533</a>        <span class="macro">assert_eq!</span>(HttpProtocol::Http1, ForwarderHttpProtocol::Http1.into());
+<a href=#534 id=534 data-nosnippet>534</a>    }
+<a href=#535 id=535 data-nosnippet>535</a>
+<a href=#536 id=536 data-nosnippet>536</a>    <span class="attr">#[test]
+<a href=#537 id=537 data-nosnippet>537</a>    </span><span class="kw">fn </span>endpoint_concurrency_multiplies_and_clamps_zero_values_to_one() {
+<a href=#538 id=538 data-nosnippet>538</a>        <span class="comment">// `endpoint_concurrency` multiplies the base concurrency by the multiplier, but a documented zero
+<a href=#539 id=539 data-nosnippet>539</a>        // for either field is clamped to 1 first (a zero multiplier "is treated as 1", a zero base
+<a href=#540 id=540 data-nosnippet>540</a>        // concurrency "is clamped to 1").
+<a href=#541 id=541 data-nosnippet>541</a>        </span><span class="kw">let </span>cases = [
+<a href=#542 id=542 data-nosnippet>542</a>            (<span class="string">"both configured"</span>, <span class="number">3usize</span>, <span class="number">4usize</span>, <span class="number">12usize</span>),
+<a href=#543 id=543 data-nosnippet>543</a>            (<span class="string">"zero base concurrency clamps to one"</span>, <span class="number">0</span>, <span class="number">5</span>, <span class="number">5</span>),
+<a href=#544 id=544 data-nosnippet>544</a>            (<span class="string">"zero multiplier clamps to one"</span>, <span class="number">10</span>, <span class="number">0</span>, <span class="number">10</span>),
+<a href=#545 id=545 data-nosnippet>545</a>            (<span class="string">"both zero clamp to one"</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>),
+<a href=#546 id=546 data-nosnippet>546</a>        ];
 <a href=#547 id=547 data-nosnippet>547</a>
-<a href=#548 id=548 data-nosnippet>548</a>            <span class="macro">assert_eq!</span>(expected, config.effective_endpoint_concurrency(), <span class="string">"{name}"</span>);
-<a href=#549 id=549 data-nosnippet>549</a>        }
-<a href=#550 id=550 data-nosnippet>550</a>    }
-<a href=#551 id=551 data-nosnippet>551</a>
-<a href=#552 id=552 data-nosnippet>552</a>    <span class="attr">#[test]
-<a href=#553 id=553 data-nosnippet>553</a>    </span><span class="kw">fn </span>api_key_validation_interval_falls_back_for_non_positive_values() {
-<a href=#554 id=554 data-nosnippet>554</a>        <span class="kw">let </span>cases = [
-<a href=#555 id=555 data-nosnippet>555</a>            (<span class="string">"positive"</span>, <span class="number">5i64</span>, Duration::from_mins(<span class="number">5</span>)),
-<a href=#556 id=556 data-nosnippet>556</a>            (<span class="string">"zero"</span>, <span class="number">0</span>, Duration::from_mins(<span class="number">60</span>)),
-<a href=#557 id=557 data-nosnippet>557</a>            (<span class="string">"negative"</span>, -<span class="number">1</span>, Duration::from_mins(<span class="number">60</span>)),
-<a href=#558 id=558 data-nosnippet>558</a>        ];
-<a href=#559 id=559 data-nosnippet>559</a>
-<a href=#560 id=560 data-nosnippet>560</a>        <span class="kw">for </span>(name, configured, expected) <span class="kw">in </span>cases {
-<a href=#561 id=561 data-nosnippet>561</a>            <span class="kw">let </span>config = ForwarderConfiguration {
-<a href=#562 id=562 data-nosnippet>562</a>                api_key_validation_interval_mins: configured,
-<a href=#563 id=563 data-nosnippet>563</a>                ..forwarder_configuration()
-<a href=#564 id=564 data-nosnippet>564</a>            };
-<a href=#565 id=565 data-nosnippet>565</a>
-<a href=#566 id=566 data-nosnippet>566</a>            <span class="macro">assert_eq!</span>(expected, config.effective_api_key_validation_interval(), <span class="string">"{name}"</span>);
-<a href=#567 id=567 data-nosnippet>567</a>        }
-<a href=#568 id=568 data-nosnippet>568</a>    }
-<a href=#569 id=569 data-nosnippet>569</a>
-<a href=#570 id=570 data-nosnippet>570</a>    <span class="attr">#[test]
-<a href=#571 id=571 data-nosnippet>571</a>    </span><span class="kw">fn </span>min_tls_version_maps_configured_value() {
-<a href=#572 id=572 data-nosnippet>572</a>        <span class="comment">// Documented mapping (see `min_tls_version_from_config_value`): an explicit tlsv1.2 maps to
-<a href=#573 id=573 data-nosnippet>573</a>        // TLS 1.2; tlsv1.3 maps to TLS 1.3 (case-insensitively); tlsv1.0/tlsv1.1 clamp up to TLS 1.2
-<a href=#574 id=574 data-nosnippet>574</a>        // because rustls has no older support; and an empty string or any unrecognized value falls
-<a href=#575 id=575 data-nosnippet>575</a>        // back to TLS 1.2.
-<a href=#576 id=576 data-nosnippet>576</a>        </span><span class="kw">let </span>cases = [
-<a href=#577 id=577 data-nosnippet>577</a>            (<span class="string">"explicit tlsv1.2"</span>, <span class="string">"tlsv1.2"</span>, TlsMinimumVersion::Tls12),
-<a href=#578 id=578 data-nosnippet>578</a>            (<span class="string">"tlsv1.3"</span>, <span class="string">"tlsv1.3"</span>, TlsMinimumVersion::Tls13),
-<a href=#579 id=579 data-nosnippet>579</a>            (<span class="string">"case-insensitive tlsv1.3"</span>, <span class="string">"TlSv1.3"</span>, TlsMinimumVersion::Tls13),
-<a href=#580 id=580 data-nosnippet>580</a>            (<span class="string">"tlsv1.0 clamps up"</span>, <span class="string">"tlsv1.0"</span>, TlsMinimumVersion::Tls12),
-<a href=#581 id=581 data-nosnippet>581</a>            (<span class="string">"tlsv1.1 clamps up"</span>, <span class="string">"tlsv1.1"</span>, TlsMinimumVersion::Tls12),
-<a href=#582 id=582 data-nosnippet>582</a>            (<span class="string">"empty string falls back"</span>, <span class="string">""</span>, TlsMinimumVersion::Tls12),
-<a href=#583 id=583 data-nosnippet>583</a>            (<span class="string">"unrecognized value falls back"</span>, <span class="string">"tlsv1.9"</span>, TlsMinimumVersion::Tls12),
-<a href=#584 id=584 data-nosnippet>584</a>        ];
-<a href=#585 id=585 data-nosnippet>585</a>
-<a href=#586 id=586 data-nosnippet>586</a>        <span class="kw">for </span>(name, value, expected) <span class="kw">in </span>cases {
-<a href=#587 id=587 data-nosnippet>587</a>            <span class="kw">let </span>config = ForwarderConfiguration {
-<a href=#588 id=588 data-nosnippet>588</a>                min_tls_version: value.to_string(),
-<a href=#589 id=589 data-nosnippet>589</a>                ..forwarder_configuration()
-<a href=#590 id=590 data-nosnippet>590</a>            };
-<a href=#591 id=591 data-nosnippet>591</a>
-<a href=#592 id=592 data-nosnippet>592</a>            <span class="macro">assert_eq!</span>(expected, config.effective_min_tls_version(), <span class="string">"{name}"</span>);
-<a href=#593 id=593 data-nosnippet>593</a>        }
-<a href=#594 id=594 data-nosnippet>594</a>    }
-<a href=#595 id=595 data-nosnippet>595</a>
-<a href=#596 id=596 data-nosnippet>596</a>    <span class="attr">#[test]
-<a href=#597 id=597 data-nosnippet>597</a>    </span><span class="kw">fn </span>sslkeylogfile_is_trimmed_and_whitespace_only_is_treated_as_unset() {
-<a href=#598 id=598 data-nosnippet>598</a>        <span class="comment">// `ssl_key_log_file_path` trims the configured value, so a whitespace-only path is reported as unset.
-<a href=#599 id=599 data-nosnippet>599</a>        </span><span class="kw">let </span>config = ForwarderConfiguration {
-<a href=#600 id=600 data-nosnippet>600</a>            sslkeylogfile: <span class="macro">format!</span>(<span class="string">" {SSL_KEY_LOG_FILE_PATH} "</span>),
-<a href=#601 id=601 data-nosnippet>601</a>            ..forwarder_configuration()
-<a href=#602 id=602 data-nosnippet>602</a>        };
-<a href=#603 id=603 data-nosnippet>603</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(SSL_KEY_LOG_FILE_PATH), config.ssl_key_log_file_path());
-<a href=#604 id=604 data-nosnippet>604</a>
-<a href=#605 id=605 data-nosnippet>605</a>        <span class="kw">let </span>config = ForwarderConfiguration {
-<a href=#606 id=606 data-nosnippet>606</a>            sslkeylogfile: <span class="string">"   "</span>.to_string(),
-<a href=#607 id=607 data-nosnippet>607</a>            ..forwarder_configuration()
-<a href=#608 id=608 data-nosnippet>608</a>        };
-<a href=#609 id=609 data-nosnippet>609</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, config.ssl_key_log_file_path());
-<a href=#610 id=610 data-nosnippet>610</a>    }
+<a href=#548 id=548 data-nosnippet>548</a>        <span class="kw">for </span>(name, concurrency, multiplier, expected) <span class="kw">in </span>cases {
+<a href=#549 id=549 data-nosnippet>549</a>            <span class="kw">let </span>config = ForwarderConfiguration {
+<a href=#550 id=550 data-nosnippet>550</a>                endpoint_concurrency: concurrency,
+<a href=#551 id=551 data-nosnippet>551</a>                endpoint_concurrency_multiplier: multiplier,
+<a href=#552 id=552 data-nosnippet>552</a>                ..forwarder_configuration()
+<a href=#553 id=553 data-nosnippet>553</a>            };
+<a href=#554 id=554 data-nosnippet>554</a>
+<a href=#555 id=555 data-nosnippet>555</a>            <span class="macro">assert_eq!</span>(expected, config.effective_endpoint_concurrency(), <span class="string">"{name}"</span>);
+<a href=#556 id=556 data-nosnippet>556</a>        }
+<a href=#557 id=557 data-nosnippet>557</a>    }
+<a href=#558 id=558 data-nosnippet>558</a>
+<a href=#559 id=559 data-nosnippet>559</a>    <span class="attr">#[test]
+<a href=#560 id=560 data-nosnippet>560</a>    </span><span class="kw">fn </span>api_key_validation_interval_falls_back_for_non_positive_values() {
+<a href=#561 id=561 data-nosnippet>561</a>        <span class="kw">let </span>cases = [
+<a href=#562 id=562 data-nosnippet>562</a>            (<span class="string">"positive"</span>, <span class="number">5i64</span>, Duration::from_mins(<span class="number">5</span>)),
+<a href=#563 id=563 data-nosnippet>563</a>            (<span class="string">"zero"</span>, <span class="number">0</span>, Duration::from_mins(<span class="number">60</span>)),
+<a href=#564 id=564 data-nosnippet>564</a>            (<span class="string">"negative"</span>, -<span class="number">1</span>, Duration::from_mins(<span class="number">60</span>)),
+<a href=#565 id=565 data-nosnippet>565</a>        ];
+<a href=#566 id=566 data-nosnippet>566</a>
+<a href=#567 id=567 data-nosnippet>567</a>        <span class="kw">for </span>(name, configured, expected) <span class="kw">in </span>cases {
+<a href=#568 id=568 data-nosnippet>568</a>            <span class="kw">let </span>config = ForwarderConfiguration {
+<a href=#569 id=569 data-nosnippet>569</a>                api_key_validation_interval_mins: configured,
+<a href=#570 id=570 data-nosnippet>570</a>                ..forwarder_configuration()
+<a href=#571 id=571 data-nosnippet>571</a>            };
+<a href=#572 id=572 data-nosnippet>572</a>
+<a href=#573 id=573 data-nosnippet>573</a>            <span class="macro">assert_eq!</span>(expected, config.effective_api_key_validation_interval(), <span class="string">"{name}"</span>);
+<a href=#574 id=574 data-nosnippet>574</a>        }
+<a href=#575 id=575 data-nosnippet>575</a>    }
+<a href=#576 id=576 data-nosnippet>576</a>
+<a href=#577 id=577 data-nosnippet>577</a>    <span class="attr">#[test]
+<a href=#578 id=578 data-nosnippet>578</a>    </span><span class="kw">fn </span>min_tls_version_maps_configured_value() {
+<a href=#579 id=579 data-nosnippet>579</a>        <span class="comment">// Documented mapping (see `min_tls_version_from_config_value`): an explicit tlsv1.2 maps to
+<a href=#580 id=580 data-nosnippet>580</a>        // TLS 1.2; tlsv1.3 maps to TLS 1.3 (case-insensitively); tlsv1.0/tlsv1.1 clamp up to TLS 1.2
+<a href=#581 id=581 data-nosnippet>581</a>        // because rustls has no older support; and an empty string or any unrecognized value falls
+<a href=#582 id=582 data-nosnippet>582</a>        // back to TLS 1.2.
+<a href=#583 id=583 data-nosnippet>583</a>        </span><span class="kw">let </span>cases = [
+<a href=#584 id=584 data-nosnippet>584</a>            (<span class="string">"explicit tlsv1.2"</span>, <span class="string">"tlsv1.2"</span>, TlsMinimumVersion::Tls12),
+<a href=#585 id=585 data-nosnippet>585</a>            (<span class="string">"tlsv1.3"</span>, <span class="string">"tlsv1.3"</span>, TlsMinimumVersion::Tls13),
+<a href=#586 id=586 data-nosnippet>586</a>            (<span class="string">"case-insensitive tlsv1.3"</span>, <span class="string">"TlSv1.3"</span>, TlsMinimumVersion::Tls13),
+<a href=#587 id=587 data-nosnippet>587</a>            (<span class="string">"tlsv1.0 clamps up"</span>, <span class="string">"tlsv1.0"</span>, TlsMinimumVersion::Tls12),
+<a href=#588 id=588 data-nosnippet>588</a>            (<span class="string">"tlsv1.1 clamps up"</span>, <span class="string">"tlsv1.1"</span>, TlsMinimumVersion::Tls12),
+<a href=#589 id=589 data-nosnippet>589</a>            (<span class="string">"empty string falls back"</span>, <span class="string">""</span>, TlsMinimumVersion::Tls12),
+<a href=#590 id=590 data-nosnippet>590</a>            (<span class="string">"unrecognized value falls back"</span>, <span class="string">"tlsv1.9"</span>, TlsMinimumVersion::Tls12),
+<a href=#591 id=591 data-nosnippet>591</a>        ];
+<a href=#592 id=592 data-nosnippet>592</a>
+<a href=#593 id=593 data-nosnippet>593</a>        <span class="kw">for </span>(name, value, expected) <span class="kw">in </span>cases {
+<a href=#594 id=594 data-nosnippet>594</a>            <span class="kw">let </span>config = ForwarderConfiguration {
+<a href=#595 id=595 data-nosnippet>595</a>                min_tls_version: value.to_string(),
+<a href=#596 id=596 data-nosnippet>596</a>                ..forwarder_configuration()
+<a href=#597 id=597 data-nosnippet>597</a>            };
+<a href=#598 id=598 data-nosnippet>598</a>
+<a href=#599 id=599 data-nosnippet>599</a>            <span class="macro">assert_eq!</span>(expected, config.effective_min_tls_version(), <span class="string">"{name}"</span>);
+<a href=#600 id=600 data-nosnippet>600</a>        }
+<a href=#601 id=601 data-nosnippet>601</a>    }
+<a href=#602 id=602 data-nosnippet>602</a>
+<a href=#603 id=603 data-nosnippet>603</a>    <span class="attr">#[test]
+<a href=#604 id=604 data-nosnippet>604</a>    </span><span class="kw">fn </span>sslkeylogfile_is_trimmed_and_whitespace_only_is_treated_as_unset() {
+<a href=#605 id=605 data-nosnippet>605</a>        <span class="comment">// `ssl_key_log_file_path` trims the configured value, so a whitespace-only path is reported as unset.
+<a href=#606 id=606 data-nosnippet>606</a>        </span><span class="kw">let </span>config = ForwarderConfiguration {
+<a href=#607 id=607 data-nosnippet>607</a>            sslkeylogfile: <span class="macro">format!</span>(<span class="string">" {SSL_KEY_LOG_FILE_PATH} "</span>),
+<a href=#608 id=608 data-nosnippet>608</a>            ..forwarder_configuration()
+<a href=#609 id=609 data-nosnippet>609</a>        };
+<a href=#610 id=610 data-nosnippet>610</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(SSL_KEY_LOG_FILE_PATH), config.ssl_key_log_file_path());
 <a href=#611 id=611 data-nosnippet>611</a>
-<a href=#612 id=612 data-nosnippet>612</a>    <span class="attr">#[test]
-<a href=#613 id=613 data-nosnippet>613</a>    </span><span class="kw">fn </span>opw_metrics_endpoint_overrides_metric_primary() {
-<a href=#614 id=614 data-nosnippet>614</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_config_for(DATADOG_URL, HashMap::new());
-<a href=#615 id=615 data-nosnippet>615</a>        config.opw_metrics.observability_pipelines_worker = alternate_intake(<span class="bool-val">true</span>, OPW_URL, <span class="bool-val">false</span>);
-<a href=#616 id=616 data-nosnippet>616</a>
-<a href=#617 id=617 data-nosnippet>617</a>        <span class="macro">assert_eq!</span>(
-<a href=#618 id=618 data-nosnippet>618</a>            <span class="macro">vec!</span>[DATADOG_URI],
-<a href=#619 id=619 data-nosnippet>619</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::Primary)
-<a href=#620 id=620 data-nosnippet>620</a>        );
-<a href=#621 id=621 data-nosnippet>621</a>        <span class="macro">assert_eq!</span>(
-<a href=#622 id=622 data-nosnippet>622</a>            <span class="macro">vec!</span>[OPW_URI],
-<a href=#623 id=623 data-nosnippet>623</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary)
-<a href=#624 id=624 data-nosnippet>624</a>        );
-<a href=#625 id=625 data-nosnippet>625</a>    }
-<a href=#626 id=626 data-nosnippet>626</a>
-<a href=#627 id=627 data-nosnippet>627</a>    <span class="attr">#[test]
-<a href=#628 id=628 data-nosnippet>628</a>    </span><span class="kw">fn </span>a_disabled_alternate_intake_does_not_override_metric_primary() {
-<a href=#629 id=629 data-nosnippet>629</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_config_for(DATADOG_URL, HashMap::new());
-<a href=#630 id=630 data-nosnippet>630</a>        config.opw_metrics = OpwMetricsConfiguration {
-<a href=#631 id=631 data-nosnippet>631</a>            observability_pipelines_worker: alternate_intake(<span class="bool-val">false</span>, OPW_URL, <span class="bool-val">false</span>),
-<a href=#632 id=632 data-nosnippet>632</a>            vector: alternate_intake(<span class="bool-val">false</span>, VECTOR_URL, <span class="bool-val">false</span>),
-<a href=#633 id=633 data-nosnippet>633</a>        };
-<a href=#634 id=634 data-nosnippet>634</a>
-<a href=#635 id=635 data-nosnippet>635</a>        <span class="macro">assert_eq!</span>(
-<a href=#636 id=636 data-nosnippet>636</a>            <span class="macro">vec!</span>[DATADOG_URI],
-<a href=#637 id=637 data-nosnippet>637</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::Primary)
-<a href=#638 id=638 data-nosnippet>638</a>        );
-<a href=#639 id=639 data-nosnippet>639</a>        <span class="macro">assert!</span>(endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary).is_empty());
-<a href=#640 id=640 data-nosnippet>640</a>    }
+<a href=#612 id=612 data-nosnippet>612</a>        <span class="kw">let </span>config = ForwarderConfiguration {
+<a href=#613 id=613 data-nosnippet>613</a>            sslkeylogfile: <span class="string">"   "</span>.to_string(),
+<a href=#614 id=614 data-nosnippet>614</a>            ..forwarder_configuration()
+<a href=#615 id=615 data-nosnippet>615</a>        };
+<a href=#616 id=616 data-nosnippet>616</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, config.ssl_key_log_file_path());
+<a href=#617 id=617 data-nosnippet>617</a>    }
+<a href=#618 id=618 data-nosnippet>618</a>
+<a href=#619 id=619 data-nosnippet>619</a>    <span class="attr">#[test]
+<a href=#620 id=620 data-nosnippet>620</a>    </span><span class="kw">fn </span>opw_metrics_endpoint_overrides_metric_primary() {
+<a href=#621 id=621 data-nosnippet>621</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_config_for(DATADOG_URL, HashMap::new());
+<a href=#622 id=622 data-nosnippet>622</a>        config.opw_metrics.observability_pipelines_worker = alternate_intake(<span class="bool-val">true</span>, OPW_URL, <span class="bool-val">false</span>);
+<a href=#623 id=623 data-nosnippet>623</a>
+<a href=#624 id=624 data-nosnippet>624</a>        <span class="macro">assert_eq!</span>(
+<a href=#625 id=625 data-nosnippet>625</a>            <span class="macro">vec!</span>[DATADOG_URI],
+<a href=#626 id=626 data-nosnippet>626</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::Primary)
+<a href=#627 id=627 data-nosnippet>627</a>        );
+<a href=#628 id=628 data-nosnippet>628</a>        <span class="macro">assert_eq!</span>(
+<a href=#629 id=629 data-nosnippet>629</a>            <span class="macro">vec!</span>[OPW_URI],
+<a href=#630 id=630 data-nosnippet>630</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary)
+<a href=#631 id=631 data-nosnippet>631</a>        );
+<a href=#632 id=632 data-nosnippet>632</a>    }
+<a href=#633 id=633 data-nosnippet>633</a>
+<a href=#634 id=634 data-nosnippet>634</a>    <span class="attr">#[test]
+<a href=#635 id=635 data-nosnippet>635</a>    </span><span class="kw">fn </span>a_disabled_alternate_intake_does_not_override_metric_primary() {
+<a href=#636 id=636 data-nosnippet>636</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_config_for(DATADOG_URL, HashMap::new());
+<a href=#637 id=637 data-nosnippet>637</a>        config.opw_metrics = OpwMetricsConfiguration {
+<a href=#638 id=638 data-nosnippet>638</a>            observability_pipelines_worker: alternate_intake(<span class="bool-val">false</span>, OPW_URL, <span class="bool-val">false</span>),
+<a href=#639 id=639 data-nosnippet>639</a>            vector: alternate_intake(<span class="bool-val">false</span>, VECTOR_URL, <span class="bool-val">false</span>),
+<a href=#640 id=640 data-nosnippet>640</a>        };
 <a href=#641 id=641 data-nosnippet>641</a>
-<a href=#642 id=642 data-nosnippet>642</a>    <span class="attr">#[test]
-<a href=#643 id=643 data-nosnippet>643</a>    </span><span class="kw">fn </span>the_vector_intake_is_a_legacy_fallback() {
-<a href=#644 id=644 data-nosnippet>644</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
-<a href=#645 id=645 data-nosnippet>645</a>        config.opw_metrics.vector = alternate_intake(<span class="bool-val">true</span>, VECTOR_URL, <span class="bool-val">false</span>);
-<a href=#646 id=646 data-nosnippet>646</a>
-<a href=#647 id=647 data-nosnippet>647</a>        <span class="macro">assert_eq!</span>(
-<a href=#648 id=648 data-nosnippet>648</a>            <span class="macro">vec!</span>[VECTOR_URI],
-<a href=#649 id=649 data-nosnippet>649</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary)
-<a href=#650 id=650 data-nosnippet>650</a>        );
-<a href=#651 id=651 data-nosnippet>651</a>
-<a href=#652 id=652 data-nosnippet>652</a>        <span class="comment">// The Observability Pipelines Worker takes precedence when both are enabled.
-<a href=#653 id=653 data-nosnippet>653</a>        </span>config.opw_metrics.observability_pipelines_worker = alternate_intake(<span class="bool-val">true</span>, OPW_URL, <span class="bool-val">false</span>);
-<a href=#654 id=654 data-nosnippet>654</a>
-<a href=#655 id=655 data-nosnippet>655</a>        <span class="macro">assert_eq!</span>(
-<a href=#656 id=656 data-nosnippet>656</a>            <span class="macro">vec!</span>[OPW_URI],
-<a href=#657 id=657 data-nosnippet>657</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary)
-<a href=#658 id=658 data-nosnippet>658</a>        );
-<a href=#659 id=659 data-nosnippet>659</a>    }
-<a href=#660 id=660 data-nosnippet>660</a>
-<a href=#661 id=661 data-nosnippet>661</a>    <span class="attr">#[test]
-<a href=#662 id=662 data-nosnippet>662</a>    </span><span class="kw">fn </span>an_alternate_intake_without_a_usable_url_is_disabled() {
-<a href=#663 id=663 data-nosnippet>663</a>        <span class="kw">let </span>cases = [(<span class="string">"empty url"</span>, <span class="string">""</span>), (<span class="string">"invalid url"</span>, <span class="string">"http://[::1"</span>)];
-<a href=#664 id=664 data-nosnippet>664</a>
-<a href=#665 id=665 data-nosnippet>665</a>        <span class="kw">for </span>(name, url) <span class="kw">in </span>cases {
-<a href=#666 id=666 data-nosnippet>666</a>            <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
-<a href=#667 id=667 data-nosnippet>667</a>            config.opw_metrics = OpwMetricsConfiguration {
-<a href=#668 id=668 data-nosnippet>668</a>                observability_pipelines_worker: alternate_intake(<span class="bool-val">true</span>, url, <span class="bool-val">false</span>),
-<a href=#669 id=669 data-nosnippet>669</a>                <span class="comment">// The Vector intake is not a fallback for an unusable Worker URL.
-<a href=#670 id=670 data-nosnippet>670</a>                </span>vector: alternate_intake(<span class="bool-val">true</span>, VECTOR_URL, <span class="bool-val">false</span>),
-<a href=#671 id=671 data-nosnippet>671</a>            };
-<a href=#672 id=672 data-nosnippet>672</a>
-<a href=#673 id=673 data-nosnippet>673</a>            <span class="macro">assert!</span>(
-<a href=#674 id=674 data-nosnippet>674</a>                endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary).is_empty(),
-<a href=#675 id=675 data-nosnippet>675</a>                <span class="string">"{name}"
-<a href=#676 id=676 data-nosnippet>676</a>            </span>);
-<a href=#677 id=677 data-nosnippet>677</a>        }
-<a href=#678 id=678 data-nosnippet>678</a>    }
+<a href=#642 id=642 data-nosnippet>642</a>        <span class="macro">assert_eq!</span>(
+<a href=#643 id=643 data-nosnippet>643</a>            <span class="macro">vec!</span>[DATADOG_URI],
+<a href=#644 id=644 data-nosnippet>644</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::Primary)
+<a href=#645 id=645 data-nosnippet>645</a>        );
+<a href=#646 id=646 data-nosnippet>646</a>        <span class="macro">assert!</span>(endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary).is_empty());
+<a href=#647 id=647 data-nosnippet>647</a>    }
+<a href=#648 id=648 data-nosnippet>648</a>
+<a href=#649 id=649 data-nosnippet>649</a>    <span class="attr">#[test]
+<a href=#650 id=650 data-nosnippet>650</a>    </span><span class="kw">fn </span>the_vector_intake_is_a_legacy_fallback() {
+<a href=#651 id=651 data-nosnippet>651</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
+<a href=#652 id=652 data-nosnippet>652</a>        config.opw_metrics.vector = alternate_intake(<span class="bool-val">true</span>, VECTOR_URL, <span class="bool-val">false</span>);
+<a href=#653 id=653 data-nosnippet>653</a>
+<a href=#654 id=654 data-nosnippet>654</a>        <span class="macro">assert_eq!</span>(
+<a href=#655 id=655 data-nosnippet>655</a>            <span class="macro">vec!</span>[VECTOR_URI],
+<a href=#656 id=656 data-nosnippet>656</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary)
+<a href=#657 id=657 data-nosnippet>657</a>        );
+<a href=#658 id=658 data-nosnippet>658</a>
+<a href=#659 id=659 data-nosnippet>659</a>        <span class="comment">// The Observability Pipelines Worker takes precedence when both are enabled.
+<a href=#660 id=660 data-nosnippet>660</a>        </span>config.opw_metrics.observability_pipelines_worker = alternate_intake(<span class="bool-val">true</span>, OPW_URL, <span class="bool-val">false</span>);
+<a href=#661 id=661 data-nosnippet>661</a>
+<a href=#662 id=662 data-nosnippet>662</a>        <span class="macro">assert_eq!</span>(
+<a href=#663 id=663 data-nosnippet>663</a>            <span class="macro">vec!</span>[OPW_URI],
+<a href=#664 id=664 data-nosnippet>664</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary)
+<a href=#665 id=665 data-nosnippet>665</a>        );
+<a href=#666 id=666 data-nosnippet>666</a>    }
+<a href=#667 id=667 data-nosnippet>667</a>
+<a href=#668 id=668 data-nosnippet>668</a>    <span class="attr">#[test]
+<a href=#669 id=669 data-nosnippet>669</a>    </span><span class="kw">fn </span>an_alternate_intake_without_a_usable_url_is_disabled() {
+<a href=#670 id=670 data-nosnippet>670</a>        <span class="kw">let </span>cases = [(<span class="string">"empty url"</span>, <span class="string">""</span>), (<span class="string">"invalid url"</span>, <span class="string">"http://[::1"</span>)];
+<a href=#671 id=671 data-nosnippet>671</a>
+<a href=#672 id=672 data-nosnippet>672</a>        <span class="kw">for </span>(name, url) <span class="kw">in </span>cases {
+<a href=#673 id=673 data-nosnippet>673</a>            <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
+<a href=#674 id=674 data-nosnippet>674</a>            config.opw_metrics = OpwMetricsConfiguration {
+<a href=#675 id=675 data-nosnippet>675</a>                observability_pipelines_worker: alternate_intake(<span class="bool-val">true</span>, url, <span class="bool-val">false</span>),
+<a href=#676 id=676 data-nosnippet>676</a>                <span class="comment">// The Vector intake is not a fallback for an unusable Worker URL.
+<a href=#677 id=677 data-nosnippet>677</a>                </span>vector: alternate_intake(<span class="bool-val">true</span>, VECTOR_URL, <span class="bool-val">false</span>),
+<a href=#678 id=678 data-nosnippet>678</a>            };
 <a href=#679 id=679 data-nosnippet>679</a>
-<a href=#680 id=680 data-nosnippet>680</a>    <span class="attr">#[test]
-<a href=#681 id=681 data-nosnippet>681</a>    </span><span class="kw">fn </span>the_selected_alternate_intake_supplies_the_v3_series_override() {
-<a href=#682 id=682 data-nosnippet>682</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
-<a href=#683 id=683 data-nosnippet>683</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, config.opw_metrics_v3_series_override());
-<a href=#684 id=684 data-nosnippet>684</a>
-<a href=#685 id=685 data-nosnippet>685</a>        config.opw_metrics.vector = alternate_intake(<span class="bool-val">true</span>, VECTOR_URL, <span class="bool-val">false</span>);
-<a href=#686 id=686 data-nosnippet>686</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(<span class="bool-val">false</span>), config.opw_metrics_v3_series_override());
-<a href=#687 id=687 data-nosnippet>687</a>
-<a href=#688 id=688 data-nosnippet>688</a>        config.opw_metrics.observability_pipelines_worker = alternate_intake(<span class="bool-val">true</span>, OPW_URL, <span class="bool-val">true</span>);
-<a href=#689 id=689 data-nosnippet>689</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(<span class="bool-val">true</span>), config.opw_metrics_v3_series_override());
-<a href=#690 id=690 data-nosnippet>690</a>    }
+<a href=#680 id=680 data-nosnippet>680</a>            <span class="macro">assert!</span>(
+<a href=#681 id=681 data-nosnippet>681</a>                endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::MetricsPrimary).is_empty(),
+<a href=#682 id=682 data-nosnippet>682</a>                <span class="string">"{name}"
+<a href=#683 id=683 data-nosnippet>683</a>            </span>);
+<a href=#684 id=684 data-nosnippet>684</a>        }
+<a href=#685 id=685 data-nosnippet>685</a>    }
+<a href=#686 id=686 data-nosnippet>686</a>
+<a href=#687 id=687 data-nosnippet>687</a>    <span class="attr">#[test]
+<a href=#688 id=688 data-nosnippet>688</a>    </span><span class="kw">fn </span>the_selected_alternate_intake_supplies_the_v3_series_override() {
+<a href=#689 id=689 data-nosnippet>689</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
+<a href=#690 id=690 data-nosnippet>690</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, config.opw_metrics_v3_series_override());
 <a href=#691 id=691 data-nosnippet>691</a>
-<a href=#692 id=692 data-nosnippet>692</a>    <span class="attr">#[test]
-<a href=#693 id=693 data-nosnippet>693</a>    </span><span class="kw">fn </span>serializer_compressor_kind_zlib_disables_metrics_v3() {
-<a href=#694 id=694 data-nosnippet>694</a>        <span class="kw">for </span>(kind, expected) <span class="kw">in </span>[(<span class="string">"zstd"</span>, <span class="bool-val">false</span>), (<span class="string">"zlib"</span>, <span class="bool-val">true</span>), (<span class="string">" ZLIB "</span>, <span class="bool-val">true</span>)] {
-<a href=#695 id=695 data-nosnippet>695</a>            <span class="kw">let </span>config = ForwarderConfiguration {
-<a href=#696 id=696 data-nosnippet>696</a>                serializer_compressor_kind: kind.to_string(),
-<a href=#697 id=697 data-nosnippet>697</a>                ..forwarder_configuration()
-<a href=#698 id=698 data-nosnippet>698</a>            };
-<a href=#699 id=699 data-nosnippet>699</a>
-<a href=#700 id=700 data-nosnippet>700</a>            <span class="macro">assert_eq!</span>(expected, config.compressor_disables_metrics_v3(), <span class="string">"{kind}"</span>);
-<a href=#701 id=701 data-nosnippet>701</a>        }
-<a href=#702 id=702 data-nosnippet>702</a>    }
-<a href=#703 id=703 data-nosnippet>703</a>
-<a href=#704 id=704 data-nosnippet>704</a>    <span class="attr">#[test]
-<a href=#705 id=705 data-nosnippet>705</a>    </span><span class="kw">fn </span>additional_endpoints_are_dual_shipped_alongside_the_primary() {
-<a href=#706 id=706 data-nosnippet>706</a>        <span class="kw">let </span>config = forwarder_config_for(
-<a href=#707 id=707 data-nosnippet>707</a>            DATADOG_URL,
-<a href=#708 id=708 data-nosnippet>708</a>            HashMap::from([(ADDITIONAL_URL.to_string(), <span class="macro">vec!</span>[<span class="string">"extra-api-key"</span>.to_string()])]),
-<a href=#709 id=709 data-nosnippet>709</a>        );
+<a href=#692 id=692 data-nosnippet>692</a>        config.opw_metrics.vector = alternate_intake(<span class="bool-val">true</span>, VECTOR_URL, <span class="bool-val">false</span>);
+<a href=#693 id=693 data-nosnippet>693</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(<span class="bool-val">false</span>), config.opw_metrics_v3_series_override());
+<a href=#694 id=694 data-nosnippet>694</a>
+<a href=#695 id=695 data-nosnippet>695</a>        config.opw_metrics.observability_pipelines_worker = alternate_intake(<span class="bool-val">true</span>, OPW_URL, <span class="bool-val">true</span>);
+<a href=#696 id=696 data-nosnippet>696</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(<span class="bool-val">true</span>), config.opw_metrics_v3_series_override());
+<a href=#697 id=697 data-nosnippet>697</a>    }
+<a href=#698 id=698 data-nosnippet>698</a>
+<a href=#699 id=699 data-nosnippet>699</a>    <span class="attr">#[test]
+<a href=#700 id=700 data-nosnippet>700</a>    </span><span class="kw">fn </span>serializer_compressor_kind_zlib_disables_metrics_v3() {
+<a href=#701 id=701 data-nosnippet>701</a>        <span class="kw">for </span>(kind, expected) <span class="kw">in </span>[(<span class="string">"zstd"</span>, <span class="bool-val">false</span>), (<span class="string">"zlib"</span>, <span class="bool-val">true</span>), (<span class="string">" ZLIB "</span>, <span class="bool-val">true</span>)] {
+<a href=#702 id=702 data-nosnippet>702</a>            <span class="kw">let </span>config = ForwarderConfiguration {
+<a href=#703 id=703 data-nosnippet>703</a>                serializer_compressor_kind: kind.to_string(),
+<a href=#704 id=704 data-nosnippet>704</a>                ..forwarder_configuration()
+<a href=#705 id=705 data-nosnippet>705</a>            };
+<a href=#706 id=706 data-nosnippet>706</a>
+<a href=#707 id=707 data-nosnippet>707</a>            <span class="macro">assert_eq!</span>(expected, config.compressor_disables_metrics_v3(), <span class="string">"{kind}"</span>);
+<a href=#708 id=708 data-nosnippet>708</a>        }
+<a href=#709 id=709 data-nosnippet>709</a>    }
 <a href=#710 id=710 data-nosnippet>710</a>
-<a href=#711 id=711 data-nosnippet>711</a>        <span class="macro">assert_eq!</span>(
-<a href=#712 id=712 data-nosnippet>712</a>            <span class="macro">vec!</span>[ADDITIONAL_URI],
-<a href=#713 id=713 data-nosnippet>713</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::Additional)
-<a href=#714 id=714 data-nosnippet>714</a>        );
-<a href=#715 id=715 data-nosnippet>715</a>    }
-<a href=#716 id=716 data-nosnippet>716</a>
-<a href=#717 id=717 data-nosnippet>717</a>    <span class="attr">#[test]
-<a href=#718 id=718 data-nosnippet>718</a>    </span><span class="kw">fn </span>a_single_destination_replaces_every_configured_endpoint() {
-<a href=#719 id=719 data-nosnippet>719</a>        <span class="comment">// A destination override must survive construction: the configured primary endpoint, the
-<a href=#720 id=720 data-nosnippet>720</a>        // additional endpoints, and the alternate metrics intake all conflict with it here.
-<a href=#721 id=721 data-nosnippet>721</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_config_for(
-<a href=#722 id=722 data-nosnippet>722</a>            DATADOG_URL,
-<a href=#723 id=723 data-nosnippet>723</a>            HashMap::from([(ADDITIONAL_URL.to_string(), <span class="macro">vec!</span>[<span class="string">"extra-api-key"</span>.to_string()])]),
-<a href=#724 id=724 data-nosnippet>724</a>        );
-<a href=#725 id=725 data-nosnippet>725</a>        config.opw_metrics.observability_pipelines_worker = alternate_intake(<span class="bool-val">true</span>, OPW_URL, <span class="bool-val">true</span>);
-<a href=#726 id=726 data-nosnippet>726</a>        config.use_v3_api.series = UseV3ApiSeriesConfig {
-<a href=#727 id=727 data-nosnippet>727</a>            enabled: V3SeriesMode::Enabled,
-<a href=#728 id=728 data-nosnippet>728</a>            endpoints: HashMap::from([(DATADOG_URL.to_string(), V3SeriesMode::Enabled)]),
-<a href=#729 id=729 data-nosnippet>729</a>        };
-<a href=#730 id=730 data-nosnippet>730</a>
-<a href=#731 id=731 data-nosnippet>731</a>        <span class="kw">let </span>destination = SingleDestination {
-<a href=#732 id=732 data-nosnippet>732</a>            url: <span class="string">"https://only.example.com"</span>.to_string(),
-<a href=#733 id=733 data-nosnippet>733</a>            api_key: <span class="string">"destination-api-key"</span>.to_string(),
-<a href=#734 id=734 data-nosnippet>734</a>            accepts_v3_series: <span class="bool-val">false</span>,
-<a href=#735 id=735 data-nosnippet>735</a>        };
-<a href=#736 id=736 data-nosnippet>736</a>        <span class="kw">let </span>config = config.for_single_destination(<span class="kw-2">&amp;</span>destination);
-<a href=#737 id=737 data-nosnippet>737</a>
-<a href=#738 id=738 data-nosnippet>738</a>        <span class="kw">let </span>endpoints = config.build_routable_endpoints().expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#739 id=739 data-nosnippet>739</a>        <span class="macro">assert_eq!</span>(<span class="number">1</span>, endpoints.len());
-<a href=#740 id=740 data-nosnippet>740</a>        <span class="macro">assert_eq!</span>(EndpointRoute::Primary, endpoints[<span class="number">0</span>].route());
-<a href=#741 id=741 data-nosnippet>741</a>        <span class="macro">assert_eq!</span>(<span class="string">"https://only.example.com/"</span>, endpoints[<span class="number">0</span>].endpoint().endpoint().as_str());
-<a href=#742 id=742 data-nosnippet>742</a>        <span class="macro">assert_eq!</span>(<span class="string">"destination-api-key"</span>, <span class="kw-2">&amp;*</span>endpoints[<span class="number">0</span>].endpoint().api_key());
-<a href=#743 id=743 data-nosnippet>743</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, config.opw_metrics_v3_series_override());
-<a href=#744 id=744 data-nosnippet>744</a>
-<a href=#745 id=745 data-nosnippet>745</a>        <span class="comment">// A destination that does not accept V3 series payloads gets none of the configured V3 routing.
-<a href=#746 id=746 data-nosnippet>746</a>        </span><span class="macro">assert_eq!</span>(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
-<a href=#747 id=747 data-nosnippet>747</a>        <span class="macro">assert!</span>(config.use_v3_api.series.endpoints.is_empty());
-<a href=#748 id=748 data-nosnippet>748</a>    }
-<a href=#749 id=749 data-nosnippet>749</a>
-<a href=#750 id=750 data-nosnippet>750</a>    <span class="attr">#[test]
-<a href=#751 id=751 data-nosnippet>751</a>    </span><span class="kw">fn </span>a_single_destination_keeps_configured_v3_series_routing_when_it_accepts_v3() {
-<a href=#752 id=752 data-nosnippet>752</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
-<a href=#753 id=753 data-nosnippet>753</a>        config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
-<a href=#754 id=754 data-nosnippet>754</a>        config.v3_api.sketches.shadow_sample_rate = <span class="number">1.0</span>;
-<a href=#755 id=755 data-nosnippet>755</a>        <span class="kw">let </span>destination = SingleDestination {
-<a href=#756 id=756 data-nosnippet>756</a>            url: <span class="string">"https://mrf.example.com"</span>.to_string(),
-<a href=#757 id=757 data-nosnippet>757</a>            api_key: <span class="string">"mrf-api-key"</span>.to_string(),
-<a href=#758 id=758 data-nosnippet>758</a>            accepts_v3_series: <span class="bool-val">true</span>,
-<a href=#759 id=759 data-nosnippet>759</a>        };
-<a href=#760 id=760 data-nosnippet>760</a>        <span class="kw">let </span>config = config.for_single_destination(<span class="kw-2">&amp;</span>destination);
-<a href=#761 id=761 data-nosnippet>761</a>
-<a href=#762 id=762 data-nosnippet>762</a>        <span class="macro">assert_eq!</span>(V3SeriesMode::Enabled, config.use_v3_api.series.enabled);
-<a href=#763 id=763 data-nosnippet>763</a>        <span class="macro">assert_eq!</span>(<span class="number">0.0</span>, config.v3_api.sketches.shadow_sample_rate);
-<a href=#764 id=764 data-nosnippet>764</a>    }
-<a href=#765 id=765 data-nosnippet>765</a>
-<a href=#766 id=766 data-nosnippet>766</a>    <span class="attr">#[test]
-<a href=#767 id=767 data-nosnippet>767</a>    </span><span class="kw">fn </span>sketch_shadow_caps_resources_and_disables_persistence() {
-<a href=#768 id=768 data-nosnippet>768</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
-<a href=#769 id=769 data-nosnippet>769</a>        config.endpoint_concurrency = <span class="number">10</span>;
-<a href=#770 id=770 data-nosnippet>770</a>        config.endpoint_concurrency_multiplier = <span class="number">3</span>;
-<a href=#771 id=771 data-nosnippet>771</a>        config.endpoint_buffer_size = <span class="number">100</span>;
-<a href=#772 id=772 data-nosnippet>772</a>        config.retry.queue_max_size_bytes = <span class="number">15 </span>* <span class="number">1024 </span>* <span class="number">1024</span>;
-<a href=#773 id=773 data-nosnippet>773</a>        config.retry.storage_max_size_bytes = <span class="number">1024</span>;
-<a href=#774 id=774 data-nosnippet>774</a>        config.stop_wait_for_inflight = <span class="bool-val">true</span>;
+<a href=#711 id=711 data-nosnippet>711</a>    <span class="attr">#[test]
+<a href=#712 id=712 data-nosnippet>712</a>    </span><span class="kw">fn </span>additional_endpoints_are_dual_shipped_alongside_the_primary() {
+<a href=#713 id=713 data-nosnippet>713</a>        <span class="kw">let </span>config = forwarder_config_for(
+<a href=#714 id=714 data-nosnippet>714</a>            DATADOG_URL,
+<a href=#715 id=715 data-nosnippet>715</a>            HashMap::from([(ADDITIONAL_URL.to_string(), <span class="macro">vec!</span>[<span class="string">"extra-api-key"</span>.to_string()])]),
+<a href=#716 id=716 data-nosnippet>716</a>        );
+<a href=#717 id=717 data-nosnippet>717</a>
+<a href=#718 id=718 data-nosnippet>718</a>        <span class="macro">assert_eq!</span>(
+<a href=#719 id=719 data-nosnippet>719</a>            <span class="macro">vec!</span>[ADDITIONAL_URI],
+<a href=#720 id=720 data-nosnippet>720</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::Additional)
+<a href=#721 id=721 data-nosnippet>721</a>        );
+<a href=#722 id=722 data-nosnippet>722</a>    }
+<a href=#723 id=723 data-nosnippet>723</a>
+<a href=#724 id=724 data-nosnippet>724</a>    <span class="attr">#[test]
+<a href=#725 id=725 data-nosnippet>725</a>    </span><span class="kw">fn </span>the_primary_endpoint_can_be_skipped() {
+<a href=#726 id=726 data-nosnippet>726</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_config_for(
+<a href=#727 id=727 data-nosnippet>727</a>            DATADOG_URL,
+<a href=#728 id=728 data-nosnippet>728</a>            HashMap::from([(ADDITIONAL_URL.to_string(), <span class="macro">vec!</span>[<span class="string">"extra-api-key"</span>.to_string()])]),
+<a href=#729 id=729 data-nosnippet>729</a>        );
+<a href=#730 id=730 data-nosnippet>730</a>        config.endpoint = config.endpoint.without_primary();
+<a href=#731 id=731 data-nosnippet>731</a>
+<a href=#732 id=732 data-nosnippet>732</a>        <span class="macro">assert!</span>(endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::Primary).is_empty());
+<a href=#733 id=733 data-nosnippet>733</a>        <span class="macro">assert_eq!</span>(
+<a href=#734 id=734 data-nosnippet>734</a>            <span class="macro">vec!</span>[ADDITIONAL_URI],
+<a href=#735 id=735 data-nosnippet>735</a>            endpoint_urls_by_route(<span class="kw-2">&amp;</span>config, EndpointRoute::Additional)
+<a href=#736 id=736 data-nosnippet>736</a>        );
+<a href=#737 id=737 data-nosnippet>737</a>    }
+<a href=#738 id=738 data-nosnippet>738</a>
+<a href=#739 id=739 data-nosnippet>739</a>    <span class="attr">#[test]
+<a href=#740 id=740 data-nosnippet>740</a>    </span><span class="kw">fn </span>skipping_the_primary_endpoint_without_an_additional_one_fails_closed() {
+<a href=#741 id=741 data-nosnippet>741</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_config_for(DATADOG_URL, HashMap::new());
+<a href=#742 id=742 data-nosnippet>742</a>        config.endpoint = config.endpoint.without_primary();
+<a href=#743 id=743 data-nosnippet>743</a>
+<a href=#744 id=744 data-nosnippet>744</a>        <span class="macro">assert!</span>(config.build_routable_endpoints().is_err());
+<a href=#745 id=745 data-nosnippet>745</a>
+<a href=#746 id=746 data-nosnippet>746</a>        config.endpoint = EndpointConfiguration::new(
+<a href=#747 id=747 data-nosnippet>747</a>            <span class="string">"api-key"</span>.to_string(),
+<a href=#748 id=748 data-nosnippet>748</a>            DATADOG_URL.to_string(),
+<a href=#749 id=749 data-nosnippet>749</a>            HashMap::from([(ADDITIONAL_URL.to_string(), <span class="macro">vec!</span>[<span class="string">" "</span>.to_string()])]),
+<a href=#750 id=750 data-nosnippet>750</a>        )
+<a href=#751 id=751 data-nosnippet>751</a>        .without_primary();
+<a href=#752 id=752 data-nosnippet>752</a>        <span class="macro">assert!</span>(config.build_routable_endpoints().is_err());
+<a href=#753 id=753 data-nosnippet>753</a>    }
+<a href=#754 id=754 data-nosnippet>754</a>
+<a href=#755 id=755 data-nosnippet>755</a>    <span class="attr">#[test]
+<a href=#756 id=756 data-nosnippet>756</a>    </span><span class="kw">fn </span>a_single_destination_replaces_every_configured_endpoint() {
+<a href=#757 id=757 data-nosnippet>757</a>        <span class="comment">// A destination override must survive construction: the configured primary endpoint, the
+<a href=#758 id=758 data-nosnippet>758</a>        // additional endpoints, and the alternate metrics intake all conflict with it here.
+<a href=#759 id=759 data-nosnippet>759</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_config_for(
+<a href=#760 id=760 data-nosnippet>760</a>            DATADOG_URL,
+<a href=#761 id=761 data-nosnippet>761</a>            HashMap::from([(ADDITIONAL_URL.to_string(), <span class="macro">vec!</span>[<span class="string">"extra-api-key"</span>.to_string()])]),
+<a href=#762 id=762 data-nosnippet>762</a>        );
+<a href=#763 id=763 data-nosnippet>763</a>        config.opw_metrics.observability_pipelines_worker = alternate_intake(<span class="bool-val">true</span>, OPW_URL, <span class="bool-val">true</span>);
+<a href=#764 id=764 data-nosnippet>764</a>        config.use_v3_api.series = UseV3ApiSeriesConfig {
+<a href=#765 id=765 data-nosnippet>765</a>            enabled: V3SeriesMode::Enabled,
+<a href=#766 id=766 data-nosnippet>766</a>            endpoints: HashMap::from([(DATADOG_URL.to_string(), V3SeriesMode::Enabled)]),
+<a href=#767 id=767 data-nosnippet>767</a>        };
+<a href=#768 id=768 data-nosnippet>768</a>
+<a href=#769 id=769 data-nosnippet>769</a>        <span class="kw">let </span>destination = SingleDestination {
+<a href=#770 id=770 data-nosnippet>770</a>            url: <span class="string">"https://only.example.com"</span>.to_string(),
+<a href=#771 id=771 data-nosnippet>771</a>            api_key: <span class="string">"destination-api-key"</span>.to_string(),
+<a href=#772 id=772 data-nosnippet>772</a>            accepts_v3_series: <span class="bool-val">false</span>,
+<a href=#773 id=773 data-nosnippet>773</a>        };
+<a href=#774 id=774 data-nosnippet>774</a>        <span class="kw">let </span>config = config.for_single_destination(<span class="kw-2">&amp;</span>destination);
 <a href=#775 id=775 data-nosnippet>775</a>
-<a href=#776 id=776 data-nosnippet>776</a>        <span class="kw">let </span>shadow = config.for_sketch_shadow();
-<a href=#777 id=777 data-nosnippet>777</a>        <span class="macro">assert_eq!</span>(
-<a href=#778 id=778 data-nosnippet>778</a>            SKETCH_SHADOW_ENDPOINT_CONCURRENCY,
-<a href=#779 id=779 data-nosnippet>779</a>            shadow.effective_endpoint_concurrency()
-<a href=#780 id=780 data-nosnippet>780</a>        );
-<a href=#781 id=781 data-nosnippet>781</a>        <span class="macro">assert_eq!</span>(SKETCH_SHADOW_ENDPOINT_BUFFER_SIZE, shadow.endpoint_buffer_size);
-<a href=#782 id=782 data-nosnippet>782</a>        <span class="macro">assert_eq!</span>(
-<a href=#783 id=783 data-nosnippet>783</a>            SKETCH_SHADOW_RETRY_QUEUE_MAX_SIZE_BYTES,
-<a href=#784 id=784 data-nosnippet>784</a>            shadow.retry.queue_max_size_bytes
-<a href=#785 id=785 data-nosnippet>785</a>        );
-<a href=#786 id=786 data-nosnippet>786</a>        <span class="macro">assert_eq!</span>(<span class="number">0</span>, shadow.retry.storage_max_size_bytes);
-<a href=#787 id=787 data-nosnippet>787</a>        <span class="macro">assert!</span>(!shadow.stop_wait_for_inflight);
-<a href=#788 id=788 data-nosnippet>788</a>
-<a href=#789 id=789 data-nosnippet>789</a>        <span class="comment">// Smaller configured limits are kept.
-<a href=#790 id=790 data-nosnippet>790</a>        </span>config.endpoint_concurrency = <span class="number">0</span>;
-<a href=#791 id=791 data-nosnippet>791</a>        config.endpoint_concurrency_multiplier = <span class="number">0</span>;
-<a href=#792 id=792 data-nosnippet>792</a>        config.endpoint_buffer_size = <span class="number">1</span>;
-<a href=#793 id=793 data-nosnippet>793</a>        config.retry.queue_max_size_bytes = <span class="number">1024</span>;
-<a href=#794 id=794 data-nosnippet>794</a>        <span class="kw">let </span>shadow = config.for_sketch_shadow();
-<a href=#795 id=795 data-nosnippet>795</a>        <span class="macro">assert_eq!</span>(<span class="number">1</span>, shadow.effective_endpoint_concurrency());
-<a href=#796 id=796 data-nosnippet>796</a>        <span class="macro">assert_eq!</span>(<span class="number">1</span>, shadow.endpoint_buffer_size);
-<a href=#797 id=797 data-nosnippet>797</a>        <span class="macro">assert_eq!</span>(<span class="number">1024</span>, shadow.retry.queue_max_size_bytes);
-<a href=#798 id=798 data-nosnippet>798</a>    }
-<a href=#799 id=799 data-nosnippet>799</a>}
+<a href=#776 id=776 data-nosnippet>776</a>        <span class="kw">let </span>endpoints = config.build_routable_endpoints().expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#777 id=777 data-nosnippet>777</a>        <span class="macro">assert_eq!</span>(<span class="number">1</span>, endpoints.len());
+<a href=#778 id=778 data-nosnippet>778</a>        <span class="macro">assert_eq!</span>(EndpointRoute::Primary, endpoints[<span class="number">0</span>].route());
+<a href=#779 id=779 data-nosnippet>779</a>        <span class="macro">assert_eq!</span>(<span class="string">"https://only.example.com/"</span>, endpoints[<span class="number">0</span>].endpoint().endpoint().as_str());
+<a href=#780 id=780 data-nosnippet>780</a>        <span class="macro">assert_eq!</span>(<span class="string">"destination-api-key"</span>, <span class="kw-2">&amp;*</span>endpoints[<span class="number">0</span>].endpoint().api_key());
+<a href=#781 id=781 data-nosnippet>781</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, config.opw_metrics_v3_series_override());
+<a href=#782 id=782 data-nosnippet>782</a>
+<a href=#783 id=783 data-nosnippet>783</a>        <span class="comment">// A destination that does not accept V3 series payloads gets none of the configured V3 routing.
+<a href=#784 id=784 data-nosnippet>784</a>        </span><span class="macro">assert_eq!</span>(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
+<a href=#785 id=785 data-nosnippet>785</a>        <span class="macro">assert!</span>(config.use_v3_api.series.endpoints.is_empty());
+<a href=#786 id=786 data-nosnippet>786</a>    }
+<a href=#787 id=787 data-nosnippet>787</a>
+<a href=#788 id=788 data-nosnippet>788</a>    <span class="attr">#[test]
+<a href=#789 id=789 data-nosnippet>789</a>    </span><span class="kw">fn </span>a_single_destination_keeps_configured_v3_series_routing_when_it_accepts_v3() {
+<a href=#790 id=790 data-nosnippet>790</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
+<a href=#791 id=791 data-nosnippet>791</a>        config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
+<a href=#792 id=792 data-nosnippet>792</a>        config.v3_api.sketches.shadow_sample_rate = <span class="number">1.0</span>;
+<a href=#793 id=793 data-nosnippet>793</a>        <span class="kw">let </span>destination = SingleDestination {
+<a href=#794 id=794 data-nosnippet>794</a>            url: <span class="string">"https://mrf.example.com"</span>.to_string(),
+<a href=#795 id=795 data-nosnippet>795</a>            api_key: <span class="string">"mrf-api-key"</span>.to_string(),
+<a href=#796 id=796 data-nosnippet>796</a>            accepts_v3_series: <span class="bool-val">true</span>,
+<a href=#797 id=797 data-nosnippet>797</a>        };
+<a href=#798 id=798 data-nosnippet>798</a>        <span class="kw">let </span>config = config.for_single_destination(<span class="kw-2">&amp;</span>destination);
+<a href=#799 id=799 data-nosnippet>799</a>
+<a href=#800 id=800 data-nosnippet>800</a>        <span class="macro">assert_eq!</span>(V3SeriesMode::Enabled, config.use_v3_api.series.enabled);
+<a href=#801 id=801 data-nosnippet>801</a>        <span class="macro">assert_eq!</span>(<span class="number">0.0</span>, config.v3_api.sketches.shadow_sample_rate);
+<a href=#802 id=802 data-nosnippet>802</a>    }
+<a href=#803 id=803 data-nosnippet>803</a>
+<a href=#804 id=804 data-nosnippet>804</a>    <span class="attr">#[test]
+<a href=#805 id=805 data-nosnippet>805</a>    </span><span class="kw">fn </span>sketch_shadow_caps_resources_and_disables_persistence() {
+<a href=#806 id=806 data-nosnippet>806</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = forwarder_configuration();
+<a href=#807 id=807 data-nosnippet>807</a>        config.endpoint_concurrency = <span class="number">10</span>;
+<a href=#808 id=808 data-nosnippet>808</a>        config.endpoint_concurrency_multiplier = <span class="number">3</span>;
+<a href=#809 id=809 data-nosnippet>809</a>        config.endpoint_buffer_size = <span class="number">100</span>;
+<a href=#810 id=810 data-nosnippet>810</a>        config.retry.queue_max_size_bytes = <span class="number">15 </span>* <span class="number">1024 </span>* <span class="number">1024</span>;
+<a href=#811 id=811 data-nosnippet>811</a>        config.retry.storage_max_size_bytes = <span class="number">1024</span>;
+<a href=#812 id=812 data-nosnippet>812</a>        config.stop_wait_for_inflight = <span class="bool-val">true</span>;
+<a href=#813 id=813 data-nosnippet>813</a>
+<a href=#814 id=814 data-nosnippet>814</a>        <span class="kw">let </span>shadow = config.for_sketch_shadow();
+<a href=#815 id=815 data-nosnippet>815</a>        <span class="macro">assert_eq!</span>(
+<a href=#816 id=816 data-nosnippet>816</a>            SKETCH_SHADOW_ENDPOINT_CONCURRENCY,
+<a href=#817 id=817 data-nosnippet>817</a>            shadow.effective_endpoint_concurrency()
+<a href=#818 id=818 data-nosnippet>818</a>        );
+<a href=#819 id=819 data-nosnippet>819</a>        <span class="macro">assert_eq!</span>(SKETCH_SHADOW_ENDPOINT_BUFFER_SIZE, shadow.endpoint_buffer_size);
+<a href=#820 id=820 data-nosnippet>820</a>        <span class="macro">assert_eq!</span>(
+<a href=#821 id=821 data-nosnippet>821</a>            SKETCH_SHADOW_RETRY_QUEUE_MAX_SIZE_BYTES,
+<a href=#822 id=822 data-nosnippet>822</a>            shadow.retry.queue_max_size_bytes
+<a href=#823 id=823 data-nosnippet>823</a>        );
+<a href=#824 id=824 data-nosnippet>824</a>        <span class="macro">assert_eq!</span>(<span class="number">0</span>, shadow.retry.storage_max_size_bytes);
+<a href=#825 id=825 data-nosnippet>825</a>        <span class="macro">assert!</span>(!shadow.stop_wait_for_inflight);
+<a href=#826 id=826 data-nosnippet>826</a>
+<a href=#827 id=827 data-nosnippet>827</a>        <span class="comment">// Smaller configured limits are kept.
+<a href=#828 id=828 data-nosnippet>828</a>        </span>config.endpoint_concurrency = <span class="number">0</span>;
+<a href=#829 id=829 data-nosnippet>829</a>        config.endpoint_concurrency_multiplier = <span class="number">0</span>;
+<a href=#830 id=830 data-nosnippet>830</a>        config.endpoint_buffer_size = <span class="number">1</span>;
+<a href=#831 id=831 data-nosnippet>831</a>        config.retry.queue_max_size_bytes = <span class="number">1024</span>;
+<a href=#832 id=832 data-nosnippet>832</a>        <span class="kw">let </span>shadow = config.for_sketch_shadow();
+<a href=#833 id=833 data-nosnippet>833</a>        <span class="macro">assert_eq!</span>(<span class="number">1</span>, shadow.effective_endpoint_concurrency());
+<a href=#834 id=834 data-nosnippet>834</a>        <span class="macro">assert_eq!</span>(<span class="number">1</span>, shadow.endpoint_buffer_size);
+<a href=#835 id=835 data-nosnippet>835</a>        <span class="macro">assert_eq!</span>(<span class="number">1024</span>, shadow.retry.queue_max_size_bytes);
+<a href=#836 id=836 data-nosnippet>836</a>    }
+<a href=#837 id=837 data-nosnippet>837</a>}
 </code></pre></div></section></main></body></html>
