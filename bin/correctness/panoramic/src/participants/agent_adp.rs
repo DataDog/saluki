@@ -69,7 +69,7 @@ const LISTENERS: &[Listener] = &[
         address: ListenAt::Port(46317),
         on: EVERY_OS,
         opt_in: Some((
-            "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY",
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT",
             "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}",
         )),
     },
@@ -79,7 +79,7 @@ const LISTENERS: &[Listener] = &[
         address: ListenAt::Port(46318),
         on: EVERY_OS,
         opt_in: Some((
-            "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY",
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT",
             "0.0.0.0:{{ self.endpoints.otlp_http.port }}",
         )),
     },

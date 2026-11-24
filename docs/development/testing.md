@@ -103,6 +103,13 @@ The `test-correctness` target handles building all of the necessary prerequisite
 
 Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
 
+### OTLP receiver endpoints
+
+A correctness case that sends OTLP to ADP and to the Agent leaves `otlp_config.receiver.protocols.*.endpoint` unset in
+`datadog.yaml`. The `adp` participant's environment sets `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_{GRPC,HTTP}_ENDPOINT`, and
+ADP and the Agent in its container read the same value. The `agent` participant takes the harness default, which
+setting the key in `datadog.yaml` would withdraw.
+
 ### Static fixtures
 
 Some cases send a fixed request through a `static_base64` payload in a sender config, such as a correctness case's
