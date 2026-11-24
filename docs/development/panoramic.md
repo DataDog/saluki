@@ -604,6 +604,12 @@ See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching r
   `when` reads the baseline log's fields. A request header belongs to no log, so a rule with `when` cannot cover it.
   A log or stats entry without `when` applies to every record of that kind.
 
+- `known_differences`: series whose type differs between the sides because of an open gap. An entry has `gap`,
+  `issue`, `paths: [type]`, `when: {name: [...]}`, `kinds` (optional, only `value`) and `reason`. A series of a
+  listed name that each side holds with a different type is left out of the comparison on both sides, and the other
+  series are still compared by value. A series on one side only does not stop the comparison of the values of the
+  other series. A difference that no entry covers fails the step, and so does an entry that matches no series.
+
 ### When a metric has a different type
 
 In `test/correctness/cases/otlp-metrics-cumulative-monotonic/config.yaml`, the Agent sends

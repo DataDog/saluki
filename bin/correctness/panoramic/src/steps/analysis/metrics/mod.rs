@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -157,23 +157,16 @@ impl MetricsAnalyzer {
             .unwrap_or_default();
         let mut ratchet = Ratchet::new(&known_differences);
         remove_known_type_differences(&mut baseline_metrics, &mut comparison_metrics, &mut ratchet);
-        let stale = ratchet.stale_entries();
 
-        // Make sure both the baseline and comparison targets emitted the same unique set of metrics.
-        //
-        // We don't yet care about the _values_ of those metrics, just that both sides are emitting the same contexts.
-        // We check both context and type, so metrics with the same name but different types (for example, Count vs Rate) are
-        // treated as different.
-        let compared = compare_metric_contexts(&baseline_metrics, &comparison_metrics).and_then(|()| {
-            info!(
-                "Baseline and comparison both emitted the same set of {} unique metrics. Continuing...",
-                baseline_metrics.len()
-            );
-            compare_metric_values(&baseline_metrics, &comparison_metrics)
-        });
-
-        // A known difference that matched nothing is stale: its gap is fixed, or the entry is wrong.
-        join_failures([unmet, fail_on_stale(compared, stale).err()])
+        // Every difference is reported: an unmet expectation, or a series on one side only, does not stop the
+        // comparison of the values of the series that both sides hold. A known difference that matched nothing is
+        // stale: its gap is fixed, or the entry is wrong.
+        join_failures([
+            unmet,
+            compare_metric_contexts(&baseline_metrics, &comparison_metrics).err(),
+            compare_metric_values(&baseline_metrics, &comparison_metrics).err(),
+            stale_failure(ratchet.stale_entries()),
+        ])
     }
 }
 
@@ -223,27 +216,18 @@ fn remove_known_type_differences(
     comparison_metrics.remove_matching(|metric| known.contains(metric.context()));
 }
 
-/// Fails `compared` when `stale` lists a known difference that matched nothing, adding the stale entries to its
-/// details.
-fn fail_on_stale(
-    compared: Result<(), (GenericError, Vec<String>)>, stale: Vec<String>,
-) -> Result<(), (GenericError, Vec<String>)> {
+/// Returns a failure that lists the `stale` known differences, if there are any.
+fn stale_failure(stale: Vec<String>) -> Option<(GenericError, Vec<String>)> {
     if stale.is_empty() {
-        return compared;
+        return None;
     }
     for line in &stale {
         error!("{}", line);
     }
-    match compared {
-        Ok(()) => Err((
-            generic_error!("{} known difference path(s) no longer occur.", stale.len()),
-            stale,
-        )),
-        Err((error, mut details)) => {
-            details.extend(stale);
-            Err((error, details))
-        }
-    }
+    Some((
+        generic_error!("{} known difference path(s) no longer occur.", stale.len()),
+        stale,
+    ))
 }
 
 const SAMPLE_MISMATCH_LIMIT: usize = 5;
@@ -347,13 +331,18 @@ fn compare_metric_values(
     let mut samples: Vec<String> = Vec::new();
     let mut all_details: Vec<String> = Vec::new();
 
-    // We can safely assume that the metrics are sorted and deduplicated at this point, so we can simply iterate over
-    // them in lockstep.
-    for (baseline_metric, comparison_metric) in baseline_metrics
+    // Only the series that both sides hold are compared by value. `compare_metric_contexts` reports the others.
+    let comparison_by_pair = comparison_metrics
         .metrics()
         .iter()
-        .zip(comparison_metrics.metrics().iter())
-    {
+        .map(|metric| ((metric.context(), metric.value_type()), metric))
+        .collect::<HashMap<_, _>>();
+    for baseline_metric in baseline_metrics.metrics() {
+        let Some(comparison_metric) =
+            comparison_by_pair.get(&(baseline_metric.context(), baseline_metric.value_type()))
+        else {
+            continue;
+        };
         let baseline_value = baseline_metric.normalized_value();
         let comparison_value = comparison_metric.normalized_value();
 
@@ -597,7 +586,10 @@ mod tests {
         // A series that one side lost is not a type difference: the entry is stale, and the loss still fails.
         let lost = valued(&[("value.series", &[], "Count", 15.0)]);
         let (error, details) = analyze(baseline(), lost, KNOWN_TYPE_DIFFERENCE).unwrap_err();
-        assert_eq!(error, "Mismatch in metrics pairs between baseline and comparison.");
+        assert_eq!(
+            error,
+            "Mismatch in metrics pairs between baseline and comparison.\n1 known difference path(s) no longer occur."
+        );
         assert!(
             details.contains(&"  - known.series (type: count)".to_string()),
             "{:?}",
@@ -605,6 +597,45 @@ mod tests {
         );
         assert!(
             details.iter().any(|line| line.contains("gap/as-gauge (#1)")),
+            "{:?}",
+            details
+        );
+    }
+
+    #[test]
+    fn a_series_on_one_side_only_leaves_the_other_series_compared() {
+        let baseline = valued(&[
+            ("known.series", &[], "Count", 30.0),
+            ("lost.series", &[], "Count", 1.0),
+            ("value.series", &[], "Count", 15.0),
+        ]);
+        let comparison = valued(&[
+            ("extra.series", &[], "Count", 1.0),
+            ("known.series", &[], "Gauge", 3.0),
+            ("value.series", &[], "Count", 16.0),
+        ]);
+
+        let (error, details) = analyze(baseline, comparison, KNOWN_TYPE_DIFFERENCE).unwrap_err();
+        assert!(
+            error.starts_with(
+                "Mismatch in metrics pairs between baseline and comparison.\n1 metrics from baseline and comparison \
+                 did not match."
+            ),
+            "{}",
+            error
+        );
+        for expected in ["  - lost.series (type: count)", "  - extra.series (type: count)"] {
+            assert!(details.contains(&expected.to_string()), "{:?}", details);
+        }
+        assert!(
+            details
+                .iter()
+                .any(|line| line.contains("value.series") && line.contains("comparison:  count(16)")),
+            "{:?}",
+            details
+        );
+        assert!(
+            !details.iter().any(|line| line.contains("known.series")),
             "{:?}",
             details
         );
