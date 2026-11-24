@@ -6,6 +6,7 @@
 use saluki_common::collections::FastHashMap;
 use saluki_core::components::test_util::TestComponentDriver;
 use saluki_core::data_model::event::metric::MetricValues;
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::data_model::event::trace::{SpanLink, TraceIngestInfo};
 use saluki_core::data_model::event::Event;
 

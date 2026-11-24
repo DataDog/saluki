@@ -21,7 +21,7 @@ use otlp_protos::opentelemetry::proto::trace::v1::{
 };
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, SpanEvent, SpanLink};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt, Span as DdSpan, SpanEvent, SpanLink};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use stringtheory::interning::{GenericMapInterner, Interner};
 use stringtheory::MetaString;
@@ -842,7 +842,7 @@ impl<'a> SpanV1<'a> {
                 return;
             }
             _ => {
-                if self.attrs.get(key).is_none_or(|existing| existing.as_num().is_none()) {
+                if self.attrs.get(key).is_none_or(|existing| existing.as_f64().is_none()) {
                     self.attrs.insert(
                         MetaString::from_interner(key, self.interner),
                         AttributeValue::String(MetaString::from_interner(value, self.interner)),
@@ -2221,7 +2221,7 @@ fn get_first_from_attrs(attrs: &FastHashMap<MetaString, AttributeValue>, keys: &
             }
             // `http.status_code` is emitted as a numeric (Float/Int) value; format it as an
             // integer string so the error-message fallback can parse it as a status code.
-            if let Some(n) = value.as_num() {
+            if let Some(n) = value.as_f64() {
                 return Some(MetaString::from((n as i64).to_string()));
             }
         }
@@ -2863,7 +2863,7 @@ mod tests {
         let sampling_attr = kv_int("sampling.priority", 2);
         map_attribute_generic(&sampling_attr, &mut attrs, false, &interner, &mut string_builder);
         assert_eq!(
-            attrs.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_num),
+            attrs.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_f64),
             Some(2.0)
         );
 
@@ -4604,7 +4604,7 @@ mod tests {
             .attributes
             .get(HTTP_STATUS_CODE_KEY)
             .expect("http.status_code should be present");
-        assert_eq!(status_code.as_num(), Some(200.0), "http.status_code must be numeric");
+        assert_eq!(status_code.as_f64(), Some(200.0), "http.status_code must be numeric");
         assert!(
             status_code.as_string().is_none(),
             "http.status_code must not be a string reference"
@@ -4675,7 +4675,7 @@ mod tests {
             .get(SAMPLE_RATE_KEY)
             .expect("_sample_rate should be set");
         assert!(matches!(rate, AttributeValue::Float(_)), "_sample_rate must be a float");
-        assert_eq!(rate.as_num(), Some(0.5));
+        assert_eq!(rate.as_f64(), Some(0.5));
         assert_eq!(
             dd_span
                 .attributes
@@ -4691,7 +4691,7 @@ mod tests {
     fn sample_rate_is_set_from_tracestate_power_of_two() {
         let dd_span = dd_span_with_tracestate(vec![], "ot=p:4;r:4");
         assert_eq!(
-            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_num),
+            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_f64),
             Some(0.0625)
         );
     }
@@ -4711,7 +4711,7 @@ mod tests {
     fn explicit_sample_rate_attribute_wins_over_tracestate() {
         let dd_span = dd_span_with_tracestate(vec![kv_double(SAMPLE_RATE_KEY, 0.25)], "ot=th:8");
         assert_eq!(
-            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_num),
+            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_f64),
             Some(0.25)
         );
 
@@ -4721,14 +4721,14 @@ mod tests {
             .get(SAMPLE_RATE_KEY)
             .expect("_sample_rate should be set");
         assert!(matches!(rate, AttributeValue::Float(_)), "_sample_rate must be a float");
-        assert_eq!(rate.as_num(), Some(1.0));
+        assert_eq!(rate.as_f64(), Some(1.0));
     }
 
     #[test]
     fn explicit_sample_rate_attribute_is_kept_without_tracestate() {
         let dd_span = dd_span_with_tracestate(vec![kv_double(SAMPLE_RATE_KEY, 0.25)], "");
         assert_eq!(
-            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_num),
+            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_f64),
             Some(0.25)
         );
     }
@@ -4737,7 +4737,7 @@ mod tests {
     fn non_numeric_sample_rate_attribute_does_not_block_tracestate() {
         let dd_span = dd_span_with_tracestate(vec![kv_str(SAMPLE_RATE_KEY, "0.25")], "ot=th:8");
         assert_eq!(
-            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_num),
+            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_f64),
             Some(0.5)
         );
     }

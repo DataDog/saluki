@@ -13,6 +13,7 @@ use std::sync::LazyLock;
 use async_trait::async_trait;
 use saluki_common::{collections::FastHashSet, strings::StringBuilder};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
