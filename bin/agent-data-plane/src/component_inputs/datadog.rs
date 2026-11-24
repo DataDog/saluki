@@ -97,6 +97,9 @@ pub(crate) fn traces_forwarder_configuration(shared: &SharedConfiguration) -> Fo
         opw_metrics: OpwMetricsConfiguration::default(),
         ..forwarder_configuration(shared)
     };
+    // The trace-agent resets its connections on `apm_config.connection_reset_interval` alone, so the shared
+    // `forwarder_connection_reset_interval` doesn't apply to traces.
+    config.connection_reset_interval_secs = endpoints.traces.connection_reset_interval.as_secs();
     // Sketch shadowing validates metrics payloads, which never reach this forwarder. Its workers would only add to the
     // forwarder's declared memory bounds.
     config.v3_api.sketches.shadow_sample_rate = 0.0;
@@ -280,6 +283,7 @@ mod tests {
                         url: "https://traces-vector.example.com".to_string(),
                     },
                     skip_main_endpoint: false,
+                    connection_reset_interval: Duration::from_secs(57),
                 },
             },
             metrics_encoding: MetricsEncoding {
@@ -422,6 +426,10 @@ mod tests {
             forwarder_configuration(&shared).v3_api.sketches.shadow_sample_rate
         );
         assert!(config.routing_targets.is_none());
+
+        // Traces reset connections on their own interval, not the shared forwarder's.
+        assert_eq!(57, config.connection_reset_interval_secs);
+        assert_eq!(23, forwarder_configuration(&shared).connection_reset_interval_secs);
 
         // Everything else is the shared forwarder configuration.
         let expected = forwarder_configuration(&shared);

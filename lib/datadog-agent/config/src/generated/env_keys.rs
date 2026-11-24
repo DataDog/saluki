@@ -68,6 +68,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_APM_CONNECTION_RESET_INTERVAL"],
+        path: &["apm_config", "connection_reset_interval"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_DECODER_TIMEOUT"],
         path: &["apm_config", "decoder_timeout"],
         decode: EnvDecode::Integer,
