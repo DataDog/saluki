@@ -3,32 +3,9 @@ use std::time::Duration;
 
 use colored::Colorize as _;
 
-use crate::assertions::AssertionResult;
-use crate::core::record::{StepResult, StepStatus};
-use crate::core::result::{PhaseTiming, TestResult};
+use crate::core::record::StepStatus;
+use crate::core::result::TestResult;
 use crate::machine_output::{InterruptReason, RunReport, RunState, RUN_REPORT_FILE_NAME};
-
-impl TestResult {
-    /// Creates a result from sequential assertions, assigning step indices in order.
-    pub fn from_assertions(
-        name: impl Into<String>, duration: Duration, assertion_results: Vec<AssertionResult>,
-        phase_timings: Vec<PhaseTiming>,
-    ) -> Self {
-        let steps = assertion_results
-            .into_iter()
-            .enumerate()
-            .map(|(step, result)| StepResult {
-                step,
-                member: None,
-                name: result.name,
-                status: result.status.into(),
-                message: result.message,
-                duration: result.duration,
-            })
-            .collect();
-        Self::from_steps(name, duration, steps, phase_timings)
-    }
-}
 
 /// Output format for test results.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
@@ -66,16 +43,16 @@ impl Reporter {
 
     /// The text lines [`Reporter::report_test_result`] prints for one test.
     pub fn test_result_lines(&self, result: &TestResult, log_dir: &Path) -> Vec<String> {
-        let label = if result.outcome.is_passed() {
-            result.label().green().bold()
-        } else {
+        let label = if result.outcome.is_failure() {
             result.label().red().bold()
+        } else {
+            result.label().green().bold()
         };
 
         let mut lines = vec![format!("{} {} ({:.2?})", label, result.name, result.duration)];
         lines.extend(result.cause_lines().into_iter().map(|line| format!("  {}", line)));
 
-        if !result.outcome.is_passed() || self.verbose {
+        if result.outcome.is_failure() || self.verbose {
             let ran = result
                 .assertion_results
                 .iter()
@@ -122,11 +99,11 @@ impl Reporter {
                 };
                 println!("{}: {}", status, run_counts(report));
 
-                if report.tests.iter().any(|test| !test.outcome.is_passed()) {
+                if report.tests.iter().any(|test| test.outcome.is_failure()) {
                     println!();
                     println!("{}", "Failed tests:".red().bold());
                     for test in &report.tests {
-                        if !test.outcome.is_passed() {
+                        if test.outcome.is_failure() {
                             println!("  - {} (outcome={})", test.name, test.outcome);
                         }
                     }
@@ -156,9 +133,10 @@ impl Reporter {
 /// Status label of a run whose tests all passed.
 pub const RUN_PASSED_LABEL: &str = "PASSED";
 
-/// The run's one-word status: `PASSED`, `FAILED`, or `INCOMPLETE` for an interrupted run.
+/// The run's one-word status: `PASSED`, `FAILED`, or `INCOMPLETE` for an interrupted run. A skipped test does not fail
+/// the run.
 pub fn run_status_label(report: &RunReport) -> &'static str {
-    let all_passed = report.tests.iter().all(|test| test.outcome.is_passed())
+    let all_passed = report.tests.iter().all(|test| !test.outcome.is_failure())
         && report.running.is_empty()
         && report.not_run.is_empty();
 
@@ -173,7 +151,7 @@ pub fn run_status_label(report: &RunReport) -> &'static str {
 
 /// Formats outcome counts, the selected-test total, and elapsed time.
 ///
-/// Timed-out, running, and not-run counts appear only when nonzero.
+/// Timed-out, skipped, running, and not-run counts appear only when nonzero.
 pub fn run_counts(report: &RunReport) -> String {
     let totals = &report.totals;
     let mut counts = format!(
@@ -182,6 +160,9 @@ pub fn run_counts(report: &RunReport) -> String {
     );
     if totals.timed_out > 0 {
         counts.push_str(&format!(" ({} timed out)", totals.timed_out));
+    }
+    if totals.skipped > 0 {
+        counts.push_str(&format!(", {} skipped", totals.skipped));
     }
     if !report.running.is_empty() {
         counts.push_str(&format!(", {} running", report.running.len()));
@@ -221,6 +202,7 @@ pub fn run_unfinished_lines(report: &RunReport) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use crate::core::record::StepResult;
     use crate::core::result::{ErrorKind, Issue, IssueKind, StopCause, StoppedBy, TimeoutAttribution};
 
     /// Expected cause line for the timeout result in [`each_outcome`].
@@ -302,7 +284,6 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{each_outcome, step, NOT_RUN_KIND, PASS_ISSUE, TIMEOUT_CAUSE};
     use super::*;
-    use crate::assertions::AssertionStatus;
     use crate::collector::RunCollector;
     use crate::core::record::ActiveStep;
     use crate::core::result::{ErrorKind, Issue, IssueKind, StopCause, StoppedBy, TimeoutAttribution};
@@ -354,14 +335,6 @@ mod tests {
             TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(121), Vec::new())
                 .with_timeout_attribution(attribution)
         };
-        let assertions = |status| {
-            vec![AssertionResult {
-                name: "log_contains".to_string(),
-                status,
-                message: "message".to_string(),
-                duration: Duration::from_millis(1),
-            }]
-        };
         let cases = [
             (
                 timed_out(TimeoutAttribution::test_deadline(
@@ -402,19 +375,19 @@ mod tests {
                 vec!["Error: Failed to start container.", "No such image."],
             ),
             (
-                TestResult::from_assertions(
+                TestResult::from_steps(
                     "f",
                     Duration::from_secs(1),
-                    assertions(AssertionStatus::Failed),
+                    vec![step(0, "log_contains", StepStatus::Failed)],
                     Vec::new(),
                 ),
                 vec![],
             ),
             (
-                TestResult::from_assertions(
+                TestResult::from_steps(
                     "p",
                     Duration::from_secs(1),
-                    assertions(AssertionStatus::Passed),
+                    vec![step(0, "log_contains", StepStatus::Passed)],
                     Vec::new(),
                 ),
                 vec![],

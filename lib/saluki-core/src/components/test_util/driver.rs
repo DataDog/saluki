@@ -24,7 +24,7 @@ use crate::components::{
     transforms::{SynchronousTransform, SynchronousTransformBuilder, Transform, TransformBuilder, TransformContext},
     BuildContext, ComponentContext, ComponentType,
 };
-use crate::health::{Health, HealthRegistry};
+use crate::health::{Health, HealthRegistry, LivenessResponder};
 use crate::runtime::state::{DataspaceRegistry, ResourceRegistry, CURRENT_DATASPACE};
 use crate::runtime::test_util::{TestSupervisor, TEST_WORKER_TIMEOUT};
 use crate::runtime::{self, ExitObserver, SupervisorFuture};
@@ -312,16 +312,27 @@ impl DriverOptions {
         let component = harness.build(builder.build(harness.build_context())).await?;
         drop(builder);
 
+        let (health, liveness) = harness.register_health_with_responder();
+
         let context = SourceContext::new(
             &harness.topology_context,
             &harness.component_context,
             harness.component_registry.clone(),
-            harness.register_health(),
+            health,
             dispatcher,
         );
 
         let outputs = Outputs::new(harness.identity.clone(), outputs);
-        let control = harness.spawn(SourceRunnable { component, context }, None).await;
+        let control = harness
+            .spawn(
+                SourceRunnable {
+                    component,
+                    liveness,
+                    context,
+                },
+                None,
+            )
+            .await;
         Ok((control, outputs))
     }
 
@@ -348,16 +359,27 @@ impl DriverOptions {
         let component = harness.build(builder.build(harness.build_context())).await?;
         drop(builder);
 
+        let (health, liveness) = harness.register_health_with_responder();
+
         let context = RelayContext::new(
             &harness.topology_context,
             &harness.component_context,
             harness.component_registry.clone(),
-            harness.register_health(),
+            health,
             dispatcher,
         );
 
         let outputs = Outputs::new(harness.identity.clone(), outputs);
-        let control = harness.spawn(RelayRunnable { component, context }, None).await;
+        let control = harness
+            .spawn(
+                RelayRunnable {
+                    component,
+                    liveness,
+                    context,
+                },
+                None,
+            )
+            .await;
         Ok((control, outputs))
     }
 
@@ -383,16 +405,26 @@ impl DriverOptions {
 
         let (dispatcher, output) = harness.default_output();
         let (input, consumer) = harness.input();
+        let (health, liveness) = harness.register_health_with_responder();
         let context = DecoderContext::new(
             &harness.topology_context,
             &harness.component_context,
             harness.component_registry.clone(),
-            harness.register_health(),
+            health,
             dispatcher,
             consumer,
         );
 
-        let control = harness.spawn(DecoderRunnable { component, context }, Some(input)).await;
+        let control = harness
+            .spawn(
+                DecoderRunnable {
+                    component,
+                    liveness,
+                    context,
+                },
+                Some(input),
+            )
+            .await;
         Ok((control, output))
     }
 
@@ -418,18 +450,26 @@ impl DriverOptions {
         drop(builder);
 
         let (input, consumer) = harness.input();
+        let (health, liveness) = harness.register_health_with_responder();
         let context = TransformContext::new(
             &harness.topology_context,
             &harness.component_context,
             harness.component_registry.clone(),
-            harness.register_health(),
+            health,
             dispatcher,
             consumer,
         );
 
         let outputs = Outputs::new(harness.identity.clone(), outputs);
         let control = harness
-            .spawn(TransformRunnable { component, context }, Some(input))
+            .spawn(
+                TransformRunnable {
+                    component,
+                    liveness,
+                    context,
+                },
+                Some(input),
+            )
             .await;
         Ok((control, outputs))
     }
@@ -459,18 +499,26 @@ impl DriverOptions {
 
         let (dispatcher, output) = harness.default_output();
         let (input, consumer) = harness.input();
+        let (health, liveness) = harness.register_health_with_responder();
         let context = TransformContext::new(
             &harness.topology_context,
             &harness.component_context,
             harness.component_registry.clone(),
-            harness.register_health(),
+            health,
             dispatcher,
             consumer,
         );
 
         let component = Box::new(SynchronousTransformRunner { transform });
         let control = harness
-            .spawn(TransformRunnable { component, context }, Some(input))
+            .spawn(
+                TransformRunnable {
+                    component,
+                    liveness,
+                    context,
+                },
+                Some(input),
+            )
             .await;
         Ok((control, output))
     }
@@ -497,16 +545,26 @@ impl DriverOptions {
 
         let (dispatcher, output) = harness.default_output();
         let (input, consumer) = harness.input();
+        let (health, liveness) = harness.register_health_with_responder();
         let context = EncoderContext::new(
             &harness.topology_context,
             &harness.component_context,
             harness.component_registry.clone(),
-            harness.register_health(),
+            health,
             dispatcher,
             consumer,
         );
 
-        let control = harness.spawn(EncoderRunnable { component, context }, Some(input)).await;
+        let control = harness
+            .spawn(
+                EncoderRunnable {
+                    component,
+                    liveness,
+                    context,
+                },
+                Some(input),
+            )
+            .await;
         Ok((control, output))
     }
 
@@ -529,16 +587,24 @@ impl DriverOptions {
         drop(builder);
 
         let (input, consumer) = harness.input();
+        let (health, liveness) = harness.register_health_with_responder();
         let context = ForwarderContext::new(
             &harness.topology_context,
             &harness.component_context,
             harness.component_registry.clone(),
-            harness.register_health(),
+            health,
             consumer,
         );
 
         Ok(harness
-            .spawn(ForwarderRunnable { component, context }, Some(input))
+            .spawn(
+                ForwarderRunnable {
+                    component,
+                    liveness,
+                    context,
+                },
+                Some(input),
+            )
             .await)
     }
 
@@ -561,16 +627,24 @@ impl DriverOptions {
         drop(builder);
 
         let (input, consumer) = harness.input();
+        let (health, liveness) = harness.register_health_with_responder();
         let context = DestinationContext::new(
             &harness.topology_context,
             &harness.component_context,
             harness.component_registry.clone(),
-            harness.register_health(),
+            health,
             consumer,
         );
 
         Ok(harness
-            .spawn(DestinationRunnable { component, context }, Some(input))
+            .spawn(
+                DestinationRunnable {
+                    component,
+                    liveness,
+                    context,
+                },
+                Some(input),
+            )
             .await)
     }
 }
@@ -644,6 +718,15 @@ impl Harness {
             .health_registry()
             .register_component(&self.identity)
             .expect("the component under test should be the only one in its health registry")
+    }
+
+    /// Registers the component's health and takes its liveness responder out, as the topology does.
+    pub(super) fn register_health_with_responder(&self) -> (Health, LivenessResponder) {
+        let mut health = self.register_health();
+        let liveness = health
+            .take_liveness_responder()
+            .expect("a newly registered health handle always has a liveness responder");
+        (health, liveness)
     }
 
     /// Creates a dispatcher with one channel per output definition, returning the receiving ends as [`Output`]s.

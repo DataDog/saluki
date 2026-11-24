@@ -1,0 +1,1 @@
+target: "{{ self.connections.comparison_target.url }}"

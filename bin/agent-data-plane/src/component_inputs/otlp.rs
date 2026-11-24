@@ -3,8 +3,8 @@
 use agent_data_plane_config::domains::{otlp, traces::ApmFeature};
 use saluki_components::sources::{
     ContainerTagPromotion, CorsConfiguration, CumulativeMonotonicMode, GrpcTransport, HistogramMode,
-    InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive,
-    OtlpMetricsSettings, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings, SummaryMode,
+    InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpDebugVerbosity, OtlpGrpcReceiver, OtlpHttpReceiver,
+    OtlpKeepalive, OtlpMetricsSettings, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings, SummaryMode,
 };
 
 use super::origin_tag_cardinality;
@@ -110,6 +110,16 @@ pub(crate) fn otlp_context_settings(contexts: &otlp::Contexts) -> OtlpContextSet
     }
 }
 
+/// Builds the verbosity of the OTLP debug logging.
+pub(crate) fn otlp_debug_verbosity(debug: &otlp::DebugOutput) -> OtlpDebugVerbosity {
+    match debug.verbosity {
+        otlp::DebugVerbosity::None => OtlpDebugVerbosity::None,
+        otlp::DebugVerbosity::Basic => OtlpDebugVerbosity::Basic,
+        otlp::DebugVerbosity::Normal => OtlpDebugVerbosity::Normal,
+        otlp::DebugVerbosity::Detailed => OtlpDebugVerbosity::Detailed,
+    }
+}
+
 fn receiver_tls(tls: &otlp::Tls) -> OtlpReceiverTls {
     OtlpReceiverTls {
         cert_file: tls.cert_file.clone(),
@@ -161,6 +171,7 @@ mod tests {
                     timeout: Duration::from_secs(16),
                 },
                 tls: tls("grpc"),
+                tls_configured: false,
             },
             http: otlp::HttpReceiver {
                 endpoint: "0.0.0.0:4318".to_string(),
@@ -172,6 +183,7 @@ mod tests {
                     max_age: 17,
                 },
                 tls: tls("http"),
+                tls_configured: false,
                 max_request_body_size: 18,
             },
         };
@@ -401,5 +413,19 @@ mod tests {
             },
             otlp_context_settings(&contexts)
         );
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_comes_from_resolved_configuration() {
+        for (configured, expected) in [
+            (otlp::DebugVerbosity::None, OtlpDebugVerbosity::None),
+            (otlp::DebugVerbosity::Basic, OtlpDebugVerbosity::Basic),
+            (otlp::DebugVerbosity::Normal, OtlpDebugVerbosity::Normal),
+            (otlp::DebugVerbosity::Detailed, OtlpDebugVerbosity::Detailed),
+        ] {
+            let debug = otlp::DebugOutput { verbosity: configured };
+
+            assert_eq!(otlp_debug_verbosity(&debug), expected);
+        }
     }
 }

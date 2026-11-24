@@ -36,6 +36,9 @@ use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
 };
+use crate::common::otlp::value::{
+    otlp_scalar_as_string, otlp_value_as_string, otlp_value_to_json_value, otlp_value_to_string,
+};
 use crate::common::otlp::Metrics;
 use crate::common::traces::normalize::{
     is_normalized_tag_value, is_structured_meta_key, needs_name_normalization, normalize_name,
@@ -119,10 +122,9 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 // eliminated. Add further version-gated toggles here as the Agent's output evolves.
 
 // From 7.87 the Agent sends the links and events of an OTLP span as span links and span events. Before that it wrote
-// them as the `_dd.span_links` and `events` JSON tags, the legacy form. Regular CI builds ADP against the last Agent
-// release and nightly CI against the nightly Agent, so ADP follows whichever it is paired with.
-// TODO(#3069): remove this gate, the legacy tag path, and `marshal_links`/`marshal_events` once regular CI's
-// `PUBLIC_DD_AGENT_VERSION` reaches 7.87.
+// them as the `_dd.span_links` and `events` JSON tags, the legacy form. ADP follows the Agent version it was built
+// against.
+// TODO(#3069): remove this gate, the legacy tag path, and `marshal_links`/`marshal_events`.
 const LEGACY_TAG_LINKS_AND_EVENTS: bool = !datadog_agent_commons::agent_version::meets(7, 87, 0);
 
 /// How OTLP spans are converted, fixed for the life of a translator.
@@ -1682,16 +1684,6 @@ fn first_present_attribute<'a>(attributes: &'a [KeyValue], keys: &[&str]) -> Cow
         })
 }
 
-/// Renders an OTLP value the way `pcommon.Value.AsString` does. Arrays and maps become JSON.
-fn otlp_value_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
-    match value {
-        Some(value @ (OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_))) => {
-            otlp_value_to_string(value).map_or(Cow::Borrowed(""), Cow::Owned)
-        }
-        scalar => otlp_scalar_as_string(scalar),
-    }
-}
-
 fn get_otel_span_type(
     otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
@@ -1970,42 +1962,6 @@ fn flatten_link_attribute(
             );
         }
     }
-}
-
-/// Renders a scalar OTLP value the way `pcommon.Value.AsString` does. An absent value is the empty string.
-fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
-    match value {
-        Some(OtlpValue::StringValue(value)) => Cow::Borrowed(value.as_str()),
-        Some(OtlpValue::BoolValue(value)) => Cow::Borrowed(if *value { "true" } else { "false" }),
-        Some(OtlpValue::IntValue(value)) => Cow::Owned(value.to_string()),
-        Some(OtlpValue::DoubleValue(value)) => Cow::Owned(float64_as_string(*value)),
-        Some(OtlpValue::BytesValue(value)) => Cow::Owned(general_purpose::STANDARD.encode(value)),
-        // Callers flatten arrays and maps, so they never reach this point.
-        Some(OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_)) | None => Cow::Borrowed(""),
-    }
-}
-
-/// Renders a double like `pcommon`'s `float64AsString` in `pdata` v1.70.0, the version the Agent pins: ES6
-/// number-to-string, which is decimal from 1e-6 up to 1e21 and exponent form outside that range, with `NaN`,
-/// `Infinity`, and `-Infinity` spelled out.
-fn float64_as_string(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".to_string();
-    }
-    if value.is_infinite() {
-        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
-    }
-
-    let magnitude = value.abs();
-    if magnitude != 0.0 && !(1e-6..1e21).contains(&magnitude) {
-        // Rust writes `1e21` and `1.5e-7`; ES6 writes a sign on positive exponents, as in `1e+21`.
-        let exponent_form = format!("{value:e}");
-        return match exponent_form.split_once('e') {
-            Some((mantissa, exponent)) if !exponent.starts_with('-') => format!("{mantissa}e+{exponent}"),
-            _ => exponent_form,
-        };
-    }
-    value.to_string()
 }
 
 /// Converts OTLP span events into [`SpanEvent`]s.
@@ -2293,52 +2249,6 @@ fn key_values_to_json_object(attributes: &[KeyValue]) -> Option<JsonMap<String, 
         None
     } else {
         Some(map)
-    }
-}
-
-fn otlp_value_to_json_value(value: &OtlpValue) -> Option<JsonValue> {
-    match value {
-        OtlpValue::StringValue(v) => Some(JsonValue::String(v.clone())),
-        OtlpValue::BoolValue(v) => Some(JsonValue::Bool(*v)),
-        OtlpValue::IntValue(v) => Some(JsonValue::Number((*v).into())),
-        OtlpValue::DoubleValue(v) => serde_json::Number::from_f64(*v).map(JsonValue::Number),
-        OtlpValue::BytesValue(bytes) => Some(JsonValue::String(general_purpose::STANDARD.encode(bytes))),
-        OtlpValue::ArrayValue(array) => {
-            let mut arr = Vec::with_capacity(array.values.len());
-            for item in &array.values {
-                if let Some(inner) = item.value.as_ref().and_then(otlp_value_to_json_value) {
-                    arr.push(inner);
-                }
-            }
-            Some(JsonValue::Array(arr))
-        }
-        OtlpValue::KvlistValue(kvlist) => {
-            let mut obj = JsonMap::new();
-            for kv in &kvlist.values {
-                if let Some(inner) = kv
-                    .value
-                    .as_ref()
-                    .and_then(|wrapper| wrapper.value.as_ref())
-                    .and_then(otlp_value_to_json_value)
-                {
-                    obj.insert(kv.key.clone(), inner);
-                }
-            }
-            Some(JsonValue::Object(obj))
-        }
-    }
-}
-
-pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
-    match value {
-        OtlpValue::StringValue(v) => Some(v.clone()),
-        OtlpValue::BoolValue(v) => Some(if *v { "true" } else { "false" }.to_string()),
-        OtlpValue::IntValue(v) => Some(v.to_string()),
-        OtlpValue::DoubleValue(v) => Some(v.to_string()),
-        OtlpValue::BytesValue(bytes) => Some(format!("<{} bytes>", bytes.len())),
-        OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_) => {
-            otlp_value_to_json_value(value).map(|json| json.to_string())
-        }
     }
 }
 
@@ -2727,7 +2637,7 @@ fn grpc_status_code_name_from_str(s: &str) -> &'static str {
     grpc_code_to_canonical_name(code)
 }
 
-pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
+pub(crate) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }
@@ -4304,30 +4214,6 @@ mod tests {
                 ("s", "text"),
             ])
         );
-    }
-
-    #[test]
-    fn float64_as_string_matches_pcommon() {
-        for (value, expected) in [
-            (0.0, "0"),
-            (-0.0, "-0"),
-            (1.0, "1"),
-            (1.5, "1.5"),
-            (-2.25, "-2.25"),
-            (1e-6, "0.000001"),
-            (1e-7, "1e-7"),
-            (1.5e-7, "1.5e-7"),
-            (1e-10, "1e-10"),
-            (1e20, "100000000000000000000"),
-            (1e21, "1e+21"),
-            (1.5e300, "1.5e+300"),
-            (-1e21, "-1e+21"),
-            (f64::NAN, "NaN"),
-            (f64::INFINITY, "Infinity"),
-            (f64::NEG_INFINITY, "-Infinity"),
-        ] {
-            assert_eq!(float64_as_string(value), expected, "{value:?}");
-        }
     }
 
     #[test]

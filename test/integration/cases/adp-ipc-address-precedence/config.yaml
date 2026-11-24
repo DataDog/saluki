@@ -6,40 +6,48 @@
 # Here `cmd_host` is `127.0.0.2` and `ipc_address` is `::1`, so the Core Agent listens on `[::1]` and never binds
 # `127.0.0.2`. ADP must connect to `[::1]` to register.
 
-type: integration
-name: "adp-ipc-address-precedence"
 description: "Verifies ADP prefers an explicitly set ipc_address over cmd_host"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-ipc-address-precedence"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-  DD_CMD_HOST: "127.0.0.2"
-  DD_IPC_ADDRESS: "::1"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-ipc-address-precedence"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+      DD_CMD_HOST: "127.0.0.2"
+      DD_IPC_ADDRESS: "::1"
 
 procedure:
   # The Core Agent should start its CMD API server on the `ipc_address` host, not the `cmd_host` one.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Started HTTP server 'CMD API Server' on \\[::1\\]:\\d+"
     regex: true
     timeout: 60s
   # ADP should successfully register with the Core Agent there.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Successfully registered with the Datadog Agent."
     timeout: 60s
   # ADP should become healthy and stay up.
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
+        process: adp
         duration: 10s
-      - assertion: log_contains
+      - step: log_contains
+        on: adp
         pattern: "Topology healthy"
         timeout: 60s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

@@ -83,11 +83,13 @@ A key in the Datadog schema is a Datadog key; a key absent from the overlay is S
 
 ## Datadog inventory and generated code
 
+<!-- review:config-schema -->
 The vendored schema and overlay have different jobs:
 
 - `schema/core/*.yaml` defines Datadog keys. It **MUST** stay a pristine upstream copy, never edited by hand. Raise
   any proposed or existing hand edits with the change's author.
 - `schema_overlay.yaml` classifies every schema leaf for ADP. ADP defines its shape.
+<!-- /review -->
 
 Code generated in-tree from the schema and overlay carries `@generated` and `DO NOT EDIT` warnings. Regenerate it with:
 
@@ -120,8 +122,10 @@ The Datadog Agent doesn't derive a variable's name from its key path: `DD_PROXY_
 environment through the generated tables, and Saluki-only keys are derived through a serde workaround. The environment
 is read by `apply_datadog_env_vars` and by the Saluki-only reader.
 
+<!-- review:config-env-shape -->
 **A modeled key arrives in the Agent's canonical shape.** A source model **MUST** read that shape: don't add a
 `#[serde(rename)]` or `#[serde(alias)]`. Unmodeled environment variables aren't read.
+<!-- /review -->
 
 ## Deprecated key names
 
@@ -208,6 +212,9 @@ keeps the last-known-good model and leaves the sources as they were.
 
 ## Workflows
 
+For changes to the configuration system, read `docs/development/configuration-system.md` and
+`.agents/skills/config-system/SKILL.md` as reference, and apply the "Review checklist" in that page.
+
 ### Add or change a witnessed key
 
 1. Confirm its `schema_overlay.yaml` classification. If support becomes `full` or `partial`, provide the required
@@ -281,6 +288,7 @@ Use the `config-schema-update` skill, which walks through comparing, vendoring, 
 
 ## Review checklist
 
+<!-- review:config-review-checklist -->
 For any configuration change, check the risks:
 
 - **Reachability**: every formerly configurable value still has a path from source to model to consumer.
@@ -289,13 +297,12 @@ For any configuration change, check the risks:
 - **Model boundary**: components receive component-owned values, never model slices.
 - **Dynamic behavior**: startup and update paths construct the same reactive state from typed input.
 - **Test preservation**: deleting legacy deserialization coverage didn't delete behavioral coverage.
-
-- **Replay coverage:** a change to a deserializer, the environment reader, translation, or a key's
-  support runs the replay tests,
-  `cargo nextest run --lib -p agent-data-plane-config-system corpus_replay`. A failing check means a
+- **Replay coverage:** a change to a deserializer, the environment reader, translation, or a key's support runs the
+  replay tests, `cargo nextest run --lib -p agent-data-plane-config-system corpus_replay`. A failing check means a
   recorded outcome changed. Update production code, or the matching typed expectation in
-  `src/corpus_replay/` deliberately, in the same change; never regenerate the corpus to make an
-  agent-data-plane change pass.
+  `lib/agent-data-plane-config-system/src/corpus_replay/` deliberately, in the same change; never regenerate the corpus
+  to make an agent-data-plane change pass.
+<!-- /review -->
 
 ## Check your work
 
