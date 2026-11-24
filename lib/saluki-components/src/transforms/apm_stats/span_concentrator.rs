@@ -4,7 +4,7 @@ use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::{
     event::{
-        trace::{AttributeValue, Span},
+        trace::{AttributeValue, Span, TraceIngestInfo},
         trace_stats::{ClientStatsBucket, ClientStatsPayload},
     },
     tags::TagSet,
@@ -131,8 +131,9 @@ impl SpanConcentrator {
         }
     }
 
-    pub fn new_stat_span_from_span(&self, span: &Span) -> Option<StatSpan> {
-        self.new_stat_span(span)
+    /// Builds the stat span of `span`, of a trace ingested through `ingest_info`, if it is eligible for stats.
+    pub fn new_stat_span_from_span(&self, span: &Span, ingest_info: TraceIngestInfo) -> Option<StatSpan> {
+        self.new_stat_span(span, span_kind(span, ingest_info))
     }
 
     pub fn add_span(
@@ -206,7 +207,7 @@ impl SpanConcentrator {
         sb
     }
 
-    fn is_span_eligible(&self, span: &Span) -> bool {
+    fn is_span_eligible(&self, span: &Span, span_kind: Option<&str>) -> bool {
         if span
             .attributes
             .get(METRIC_TOP_LEVEL)
@@ -224,15 +225,15 @@ impl SpanConcentrator {
             return true;
         }
         if self.compute_stats_by_span_kind {
-            if let Some(kind) = span.attributes.get(TAG_SPAN_KIND).and_then(AttributeValue::as_string) {
+            if let Some(kind) = span_kind {
                 return compute_stats_for_span_kind(kind);
             }
         }
         false
     }
 
-    fn new_stat_span(&self, span: &Span) -> Option<StatSpan> {
-        if !self.is_span_eligible(span) {
+    fn new_stat_span(&self, span: &Span, span_kind: Option<MetaString>) -> Option<StatSpan> {
+        if !self.is_span_eligible(span, span_kind.as_deref()) {
             return None;
         }
 
@@ -240,12 +241,7 @@ impl SpanConcentrator {
             return None;
         }
 
-        let span_kind = span
-            .attributes
-            .get(TAG_SPAN_KIND)
-            .and_then(AttributeValue::as_string)
-            .cloned()
-            .unwrap_or_default();
+        let span_kind = span_kind.unwrap_or_default();
         let status_code = get_status_code(&span.attributes);
         let grpc_status_code = get_grpc_status_code(&span.attributes).to_metastring();
         let is_top_level = span
@@ -348,6 +344,29 @@ fn align_ts(ts: u64, bsize: u64) -> u64 {
     ts - ts % bsize
 }
 
+/// Returns the kind of a span, of a trace ingested through `ingest_info`.
+///
+/// Datadog traces use the span's kind field only, as the trace-agent does: an unspecified or unrecognized kind is
+/// `unknown`, which no kind-based rule selects. OTLP spans carry their kind as the `span.kind` attribute.
+fn span_kind(span: &Span, ingest_info: TraceIngestInfo) -> Option<MetaString> {
+    if let TraceIngestInfo::Otlp { .. } = ingest_info {
+        return span
+            .attributes
+            .get(TAG_SPAN_KIND)
+            .and_then(AttributeValue::as_string)
+            .cloned();
+    }
+    let name = match span.kind {
+        1 => "internal",
+        2 => "server",
+        3 => "client",
+        4 => "producer",
+        5 => "consumer",
+        _ => "unknown",
+    };
+    Some(MetaString::from_static(name))
+}
+
 pub const fn compute_stats_for_span_kind(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("server")
         || kind.eq_ignore_ascii_case("client")
@@ -368,10 +387,74 @@ fn is_partial_snapshot(span: &Span) -> bool {
 
 #[cfg(test)]
 mod tests {
+    const OTLP: TraceIngestInfo = TraceIngestInfo::Otlp {
+        receiver_sampling_rate: 1.0,
+    };
+
     use datadog_agent_apm::semantics::test_util::TestRegistryPublisher;
     use datadog_agent_apm::semantics::{test_util::registry_json, Registry};
 
     use super::*;
+
+    #[test]
+    fn datadog_spans_use_the_kind_field_and_otlp_spans_the_attribute() {
+        let mut attrs = FastHashMap::default();
+        attrs.insert(
+            MetaString::from(TAG_SPAN_KIND),
+            AttributeValue::String(MetaString::from("client")),
+        );
+        let span = Span::default().with_attributes(attrs);
+        let datadog = TraceIngestInfo::Datadog;
+
+        // The attribute is ignored on a Datadog span: an unspecified kind is `unknown`.
+        assert_eq!(span_kind(&span, datadog).as_deref(), Some("unknown"));
+        assert_eq!(
+            span_kind(&span.clone().with_kind(2), datadog).as_deref(),
+            Some("server")
+        );
+        assert_eq!(
+            span_kind(&Span::default().with_kind(9), datadog).as_deref(),
+            Some("unknown")
+        );
+
+        // OTLP spans are unchanged: the attribute, whatever the field.
+        assert_eq!(span_kind(&span.clone().with_kind(2), OTLP).as_deref(), Some("client"));
+        assert_eq!(span_kind(&Span::default(), OTLP), None);
+    }
+
+    #[test]
+    fn a_datadog_span_of_unspecified_kind_is_not_selected_by_kind() {
+        let concentrator = SpanConcentrator::new(true, true, &[], Default::default(), 0);
+        let mut attrs = FastHashMap::default();
+        attrs.insert(
+            MetaString::from(TAG_SPAN_KIND),
+            AttributeValue::String(MetaString::from("client")),
+        );
+        let span = Span::default().with_attributes(attrs);
+
+        assert!(concentrator
+            .new_stat_span_from_span(&span, TraceIngestInfo::Datadog)
+            .is_none());
+        let otlp = concentrator
+            .new_stat_span_from_span(&span, OTLP)
+            .expect("eligible by kind");
+        assert_eq!(otlp.span_kind, "client");
+
+        let top_level = {
+            let mut span = span.clone();
+            span.attributes
+                .insert(MetaString::from(METRIC_TOP_LEVEL), AttributeValue::Float(1.0));
+            span
+        };
+        let datadog = concentrator
+            .new_stat_span_from_span(&top_level, TraceIngestInfo::Datadog)
+            .expect("eligible as top-level");
+        assert_eq!(datadog.span_kind, "unknown");
+        assert_eq!(
+            super::super::aggregation::SpanKind::from_str(&datadog.span_kind).to_metastring(),
+            "unknown"
+        );
+    }
 
     #[test]
     fn refresh_registry_rebuilds_peer_tag_keys_after_registry_change() {
@@ -431,7 +514,7 @@ mod tests {
                 Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 0, now, 75, 0).with_attributes(attrs);
 
             let stat_span = concentrator
-                .new_stat_span_from_span(&span)
+                .new_stat_span_from_span(&span, OTLP)
                 .expect("client span with peer tags should produce stats");
             concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
         }

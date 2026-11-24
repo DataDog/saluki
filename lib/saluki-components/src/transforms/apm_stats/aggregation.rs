@@ -39,6 +39,9 @@ pub enum SpanKind {
 
     /// Consumer span (receiving message from queue/topic).
     Consumer = 5,
+
+    /// Unrecognized span kind of a Datadog span, as the trace-agent names it.
+    Unknown = 6,
 }
 
 impl SpanKind {
@@ -56,6 +59,8 @@ impl SpanKind {
             Self::Consumer
         } else if s.eq_ignore_ascii_case("internal") {
             Self::Internal
+        } else if s.eq_ignore_ascii_case("unknown") {
+            Self::Unknown
         } else {
             Self::Unspecified
         }
@@ -70,6 +75,7 @@ impl SpanKind {
             Self::Client => MetaString::from_static("client"),
             Self::Producer => MetaString::from_static("producer"),
             Self::Consumer => MetaString::from_static("consumer"),
+            Self::Unknown => MetaString::from_static("unknown"),
         }
     }
 }
@@ -508,6 +514,12 @@ pub fn get_grpc_status_code(attributes: &FastHashMap<MetaString, AttributeValue>
 
 #[cfg(test)]
 mod tests {
+    use saluki_core::data_model::event::trace::TraceIngestInfo;
+
+    const OTLP: TraceIngestInfo = TraceIngestInfo::Otlp {
+        receiver_sampling_rate: 1.0,
+    };
+
     use saluki_core::data_model::event::trace::{AttributeValue as AV, Span};
 
     use super::*;
@@ -639,7 +651,7 @@ mod tests {
             let concentrator = SpanConcentrator::new(true, false, &[], Default::default(), 0);
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("", FastHashMap::default(), metrics);
-            let stat_span = concentrator.new_stat_span_from_span(&span);
+            let stat_span = concentrator.new_stat_span_from_span(&span, OTLP);
             assert!(
                 stat_span.is_none() || {
                     let s = stat_span.unwrap();
@@ -658,7 +670,7 @@ mod tests {
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("a", meta, metrics);
             let stat_span = concentrator
-                .new_stat_span_from_span(&span)
+                .new_stat_span_from_span(&span, OTLP)
                 .expect("measured span should always produce a stat span");
             let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
             assert_eq!(agg.bucket_key.service.as_ref(), "a");
@@ -680,7 +692,7 @@ mod tests {
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("a", meta, metrics);
             let stat_span = concentrator
-                .new_stat_span_from_span(&span)
+                .new_stat_span_from_span(&span, OTLP)
                 .expect("measured span should always produce a stat span");
             let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
             assert_eq!(agg.bucket_key.service.as_ref(), "a");
@@ -702,7 +714,7 @@ mod tests {
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("a", meta, metrics);
             let stat_span = concentrator
-                .new_stat_span_from_span(&span)
+                .new_stat_span_from_span(&span, OTLP)
                 .expect("measured span should always produce a stat span");
             let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
             assert_eq!(agg.bucket_key.service.as_ref(), "a");
@@ -726,7 +738,7 @@ mod tests {
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("a", meta, metrics);
             let stat_span = concentrator
-                .new_stat_span_from_span(&span)
+                .new_stat_span_from_span(&span, OTLP)
                 .expect("measured span should always produce a stat span");
             let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
             assert_eq!(agg.bucket_key.service.as_ref(), "a");
@@ -769,7 +781,7 @@ mod tests {
         for (span_kind, should_have_peer_tags) in cases {
             let span = make_span_with_kind(span_kind);
             let stat_span = concentrator
-                .new_stat_span_from_span(&span)
+                .new_stat_span_from_span(&span, OTLP)
                 .expect("measured span should always produce a stat span");
             assert_eq!(
                 !stat_span.matching_peer_tags.is_empty(),
@@ -791,7 +803,7 @@ mod tests {
             attrs.insert(MetaString::from("_dd.measured"), AV::Float(1.0));
             let span = Span::default().with_parent_id(0).with_attributes(attrs);
             let stat_span = concentrator
-                .new_stat_span_from_span(&span)
+                .new_stat_span_from_span(&span, OTLP)
                 .expect("measured span should always produce a stat span");
             let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
             assert_eq!(agg.bucket_key.is_trace_root, Some(true));
@@ -803,7 +815,7 @@ mod tests {
             attrs.insert(MetaString::from("_dd.measured"), AV::Float(1.0));
             let span = Span::default().with_parent_id(123).with_attributes(attrs);
             let stat_span = concentrator
-                .new_stat_span_from_span(&span)
+                .new_stat_span_from_span(&span, OTLP)
                 .expect("measured span should always produce a stat span");
             let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
             assert_eq!(agg.bucket_key.is_trace_root, Some(false));
