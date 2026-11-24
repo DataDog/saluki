@@ -37,6 +37,9 @@
 #   delete it before those jobs pull it.
 # - Every pipeline that runs this script can push a keyed tag, which other pipelines then reuse.
 #   This adds no new access: the same pipelines can already push any image to this repository.
+#   But a bad image under a keyed tag, for example from a changed copy of this script that keeps
+#   the key of `main`, affects every PR and nightly run that reuses it, until it is older than the
+#   age limit. Set `SMP_IMAGE_REUSE=false` to stop reuse while you remove such an image.
 #
 # Many pipelines can use one keyed image. So the labels on a keyed image identify the ADP commit and
 # the key, and not the pipeline that built the image. An image under a pipeline-scoped tag also gets
