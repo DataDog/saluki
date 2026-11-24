@@ -1,0 +1,30 @@
+---
+fixes:
+  - |
+    ``metric_tag_filterlist`` now matches metric names and tag keys the way
+    Datadog stores them, so rules written with the names and tag keys shown in
+    Datadog apply to metrics submitted in other forms. For example, a rule for
+    ``my_metric`` with the tag key ``pod_name`` now applies to the tag
+    ``Pod Name:web`` on ``my-metric``. Metric names keep their case, so
+    ``My_Metric`` does not match ``my_metric``, while tag keys are lowercased.
+    As a result:
+
+    - Existing rules can match more tags than before, such as ``ENV:prod`` for
+      the key ``env``: ``exclude`` rules can remove more tags, and ``include``
+      rules can keep more, which can increase the number of tags sent.
+    - Entries whose metric names normalize to the same name are merged. If they
+      configure both ``include`` and ``exclude``, only the ``exclude`` entries
+      are kept, and ADP logs a warning.
+    - Entries for metric names Datadog never stores, such as ``123``, and tag
+      keys containing ``:``, are ignored with a warning.
+  - |
+    ``metric_tag_value_allowlist`` rules now match ``tag_name`` the way Datadog
+    stores tag keys. Values and metric prefixes are still matched exactly. As a
+    result:
+
+    - Replacement tags use the normalized tag name, so ``tag_name: Customer ID``
+      produces ``customer_id:other``, and whitespace in a tag name becomes ``_``.
+    - A rule whose tag name normalizes to the same key as an earlier rule for
+      the same metric prefix, such as ``Customer ID`` after ``customer_id``, is
+      ignored with a warning, as is a tag name too long to be stored with a
+      value.

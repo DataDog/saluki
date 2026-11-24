@@ -3019,6 +3019,19 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Per-metric tag allow/deny filter list"
+    documentation: |-
+      ADP matches `metric_tag_filterlist` rules against metric names and tag keys as Datadog stores
+      them, which is what you see in Datadog. Both the configured strings and incoming metrics are
+      normalized for comparison, so a rule for `my-service.requests` with the tag key `Env` applies to
+      the metric `my_service.requests` and removes tags such as `env:prod` and `ENV:Prod`. Rules whose
+      metric names normalize to the same name are merged; if they configure both `include` and
+      `exclude`, ADP keeps only the `exclude` rules and logs a warning. ADP ignores, with a warning,
+      a rule whose metric name Datadog never stores, such as `123`. It also ignores any tag key
+      containing `:`, since tag keys can't contain one: list the key only, such as `env`.
+      Whitespace in a tag key is normalized like any other character, so `"env "` becomes `env_`
+      and no longer matches `env`. Tags that are kept are sent unchanged. See
+      `SPEC.md` in the `datadog-agent-tag-normalization` crate (`lib/datadog-agent/tag-normalization/`)
+      for the rules.
 
   min_tls_version:
     support: partial
