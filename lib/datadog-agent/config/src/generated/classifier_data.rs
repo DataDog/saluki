@@ -5,13 +5,6 @@ use crate::classifier::*;
 
 pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
     ClassifierEntry {
-        yaml_path: "dogstatsd_metrics_stats_enable",
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("false"),
-        presence_matters: false,
-    },
-    ClassifierEntry {
         yaml_path: "forwarder_num_workers",
         support_level: SupportLevel::Partial,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -72,13 +65,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("\"\""),
-        presence_matters: false,
-    },
-    ClassifierEntry {
-        yaml_path: "data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
-        default: DefaultValue::Json("\"127.0.0.1:4320\""),
         presence_matters: false,
     },
     ClassifierEntry {
@@ -849,13 +835,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
         default: DefaultValue::Json("\"\""),
-        presence_matters: false,
-    },
-    ClassifierEntry {
-        yaml_path: "otlp_config.debug.verbosity",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
-        default: DefaultValue::Json("\"basic\""),
         presence_matters: false,
     },
     ClassifierEntry {

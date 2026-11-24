@@ -366,7 +366,6 @@ mod tests {
             timestamp_ns,
             payload: payload.to_vec(),
             pid: Some(pid),
-            ancillary: Vec::new(),
             container_id: Some(format!("container_id://container-{}", pid)),
         }
     }

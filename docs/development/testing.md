@@ -103,12 +103,27 @@ The `test-correctness` target handles building all of the necessary prerequisite
 
 Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
 
+### OTLP receiver endpoints
+
+A correctness case that sends OTLP to ADP and to the Agent leaves `otlp_config.receiver.protocols.*.endpoint` unset in
+`datadog.yaml`. The `adp` participant's environment sets `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_{GRPC,HTTP}_ENDPOINT`, and
+ADP and the Agent in its container read the same value. The `agent` participant takes the harness default, which
+setting the key in `datadog.yaml` would withdraw.
+
 ### Static fixtures
 
-Some cases send a fixed request through a `static_base64` payload in their `millstone.yaml`.
-`bin/correctness/otlp-fixtures` builds that request, with a module for each OTLP signal that has static payloads: edit
-the fixture there, then run `make generate-correctness-fixtures` to rewrite the payloads. Don't edit the payloads by
-hand. The `check-correctness-fixtures` CI job runs the same target and fails if it changes any committed payload.
+Some cases send a fixed request through a `static_base64` payload in a sender config, such as a correctness case's
+`millstone.yaml`. `bin/correctness/otlp-fixtures` builds that request, with a module for each OTLP signal that has
+static payloads: edit the fixture there, then run `make generate-correctness-fixtures` to rewrite the payloads. Don't
+edit the payloads by hand. To add a fixture, create the sender config with a `static_base64: ""` placeholder, then add
+a table entry in `main.rs` with the config's path from the repository root. The `check-correctness-fixtures` CI job
+runs the same target and fails if it changes any committed payload.
+
+Name every sender config that `otlp-fixtures` writes `millstone*.yaml`, such as `millstone.yaml` or
+`millstone-traces-grpc.yaml`. Millstone's `every_test_case_config_parses` test only checks files with that name, so a
+differently named config skips the parse and validation check. `otlp-fixtures` refuses a target with another name.
+The trace builder in `traces.rs` takes a seed for the trace and span IDs: give each fixture that can reach the same
+destination its own seed, such as one per protocol.
 
 ## Integration tests (panoramic)
 

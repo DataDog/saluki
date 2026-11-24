@@ -144,7 +144,7 @@ and `adp` tells its OTLP receiver where to listen by referring to the endpoint.
     subject: true
     env:
       DD_DATA_PLANE_OTLP_ENABLED: "true"
-      DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
   gen:
     image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:<tag>
     args:
@@ -757,18 +757,13 @@ cases today. That is a named change, shown by the configuration diff.
 | `api` | `http` | 45100 | every realization | default, `DD_DATA_PLANE_API_LISTEN_ADDRESS` |
 | `agent_otlp_grpc` | `grpc` | 44317 | every realization | default, `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT` |
 | `agent_otlp_http` | `http` | 44318 | every realization | default, `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT` |
-| `otlp_grpc` | `grpc` | 46317 | every realization | opt-in, `DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY` |
-| `otlp_http` | `http` | 46318 | every realization | opt-in, `DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY` |
+| `otlp_grpc` | `grpc` | 46317 | every realization | opt-in, `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT` |
+| `otlp_http` | `http` | 46318 | every realization | opt-in, `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT` |
 | `dogstatsd_tcp` | `tcp` | 9126 | every realization | opt-in, `DD_DOGSTATSD_TCP_PORT` |
 | `dogstatsd_uds` | `unix_datagram` | `{{ self.dir }}/dogstatsd_uds.sock` | not Windows | opt-in, `DD_DOGSTATSD_SOCKET` |
 | `dogstatsd_uds_stream` | `unix_stream` | `{{ self.dir }}/dogstatsd_uds_stream.sock` | not Windows | opt-in, `DD_DOGSTATSD_STREAM_SOCKET` |
 | `apm_uds` | `unix_stream` | `{{ self.dir }}/apm_uds.sock` | Linux only | opt-in, `DD_APM_RECEIVER_SOCKET` |
 | `dogstatsd_pipe` | `named_pipe` | `panoramic-dogstatsd` | Windows only | opt-in, `DD_DOGSTATSD_PIPE_NAME` |
-
-When a case sets `DD_DATA_PLANE_ENABLED` and `DD_DATA_PLANE_OTLP_ENABLED` to `true`, the image's
-`cont-init.d` script moves the Agent's OTLP listeners to `127.0.0.1:14317` and `127.0.0.1:14318`, so
-`agent_otlp_grpc` and `agent_otlp_http` are unwired whatever the case writes: connecting to one or waiting
-on it is a plan error.
 
 For an opt-in endpoint the key is the case's choice. `ADP_DD_<key>` in a Linux container reaches ADP
 only, and the `datadog.yaml` spelling works wherever the case supplies that file.

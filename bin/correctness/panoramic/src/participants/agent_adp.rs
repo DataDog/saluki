@@ -69,7 +69,7 @@ const LISTENERS: &[Listener] = &[
         address: ListenAt::Port(46317),
         on: EVERY_OS,
         opt_in: Some((
-            "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY",
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT",
             "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}",
         )),
     },
@@ -79,7 +79,7 @@ const LISTENERS: &[Listener] = &[
         address: ListenAt::Port(46318),
         on: EVERY_OS,
         opt_in: Some((
-            "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY",
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT",
             "0.0.0.0:{{ self.endpoints.otlp_http.port }}",
         )),
     },
@@ -199,14 +199,14 @@ impl ParticipantType for AgentAdp {
         datadog_agent::set_defaults(cx, true, &mut spec)?;
         let enabled = |key| cx.case.env.get(key).is_some_and(|value| value.text() == "true");
         if enabled("DD_DATA_PLANE_ENABLED") && enabled("DD_DATA_PLANE_OTLP_ENABLED") {
-            // The image's cont-init script moves the Agent's OTLP listeners to loopback ports of its own.
+            // With ADP's OTLP on, the Agent moves its OTLP listeners or starts none.
             for endpoint in ["agent_otlp_grpc", "agent_otlp_http"] {
                 let wiring = Wiring {
                     withdrawn: None,
                     write: "DD_DATA_PLANE_OTLP_ENABLED: \"false\"".to_string(),
                     overridden: Some(
-                        "With DD_DATA_PLANE_OTLP_ENABLED set, the image moves the Agent's OTLP listeners to 127.0.0.1, \
-                         ports 14317 and 14318, where no other participant reaches them."
+                        "With DD_DATA_PLANE_OTLP_ENABLED set, the Agent moves its OTLP listeners off these ports or \
+                         starts none, so no other participant reaches them."
                             .to_string(),
                     ),
                 };
