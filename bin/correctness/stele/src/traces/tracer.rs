@@ -173,6 +173,16 @@ impl Span {
         &self.service
     }
 
+    /// Returns the operation name of this span.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the resource name of this span.
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+
     /// Returns the value of the metadata entry of the given key, if it exists.
     pub fn get_meta_field(&self, meta_key: &str) -> Option<&str> {
         self.meta.get(meta_key).map(|s| &**s)
