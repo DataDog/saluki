@@ -3,9 +3,6 @@ description: >-
   the same spans and APM stats.
 timeout: 8m
 subject_os: [linux]
-# TODO(#2723): Re-enable once Saluki main pins an Agent with datadog-agent#56608 (7.85+)
-# and ADP's span concentrator clamps future span buckets the same way.
-disabled: true
 participants:
   adp:
     type: agent-adp
