@@ -9,6 +9,9 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+ddsketch = { workspace = true }
+foldhash = { workspace = true }
+hashbrown = { workspace = true }
 regex = { workspace = true, features = ["std", "unicode-perl"] }
 saluki-antithesis = { workspace = true }
 saluki-common = { workspace = true }
@@ -16,5 +19,6 @@ saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 simdutf8 = { workspace = true }
+smallvec = { workspace = true }
 stringtheory = { workspace = true }
 tracing = { workspace = true }

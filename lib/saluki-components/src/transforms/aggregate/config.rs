@@ -1,1 +1,1 @@
-pub use saluki_metric_kernels::histogram::{HistogramConfiguration, HistogramStatistic};
+pub use saluki_metric_kernels::histogram::HistogramConfiguration;

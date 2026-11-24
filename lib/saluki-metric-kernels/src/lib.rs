@@ -7,6 +7,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+pub mod aggregate;
 pub mod filterlist;
 pub mod histogram;
 pub mod host_tags;
