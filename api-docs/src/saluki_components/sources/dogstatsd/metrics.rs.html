@@ -301,155 +301,149 @@
 <a href=#301 id=301 data-nosnippet>301</a>) -&gt; Metrics {
 <a href=#302 id=302 data-nosnippet>302</a>    <span class="kw">let </span>builder = MetricsBuilder::from_component_context(component_context);
 <a href=#303 id=303 data-nosnippet>303</a>
-<a href=#304 id=304 data-nosnippet>304</a>    <span class="kw">let </span>listener_type = <span class="kw">match </span>listen_addr {
-<a href=#305 id=305 data-nosnippet>305</a>        ListenAddress::Tcp(<span class="kw">_</span>) =&gt; <span class="string">"tcp"</span>,
-<a href=#306 id=306 data-nosnippet>306</a>        ListenAddress::Udp(<span class="kw">_</span>) =&gt; <span class="string">"udp"</span>,
-<a href=#307 id=307 data-nosnippet>307</a>        ListenAddress::Unix(<span class="kw">_</span>) =&gt; <span class="string">"unix"</span>,
-<a href=#308 id=308 data-nosnippet>308</a>        ListenAddress::Unixgram(<span class="kw">_</span>) =&gt; <span class="string">"unixgram"</span>,
-<a href=#309 id=309 data-nosnippet>309</a>        ListenAddress::NamedPipe { .. } =&gt; <span class="string">"named_pipe"</span>,
-<a href=#310 id=310 data-nosnippet>310</a>    };
-<a href=#311 id=311 data-nosnippet>311</a>
-<a href=#312 id=312 data-nosnippet>312</a>    Metrics {
-<a href=#313 id=313 data-nosnippet>313</a>        metrics_received: builder.register_counter_with_tags(
-<a href=#314 id=314 data-nosnippet>314</a>            METRIC_EVENTS_RECEIVED_TOTAL,
-<a href=#315 id=315 data-nosnippet>315</a>            event_tags(MESSAGE_TYPE_METRICS, listener_type, origin_telemetry_enabled),
-<a href=#316 id=316 data-nosnippet>316</a>        ),
-<a href=#317 id=317 data-nosnippet>317</a>        events_received: builder.register_counter_with_tags(
-<a href=#318 id=318 data-nosnippet>318</a>            METRIC_EVENTS_RECEIVED_TOTAL,
-<a href=#319 id=319 data-nosnippet>319</a>            event_tags(MESSAGE_TYPE_EVENTS, listener_type, origin_telemetry_enabled),
-<a href=#320 id=320 data-nosnippet>320</a>        ),
-<a href=#321 id=321 data-nosnippet>321</a>        service_checks_received: builder.register_counter_with_tags(
-<a href=#322 id=322 data-nosnippet>322</a>            METRIC_EVENTS_RECEIVED_TOTAL,
-<a href=#323 id=323 data-nosnippet>323</a>            event_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
-<a href=#324 id=324 data-nosnippet>324</a>        ),
-<a href=#325 id=325 data-nosnippet>325</a>        bytes_received: builder
-<a href=#326 id=326 data-nosnippet>326</a>            .register_counter_with_tags(<span class="string">"component_bytes_received_total"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
-<a href=#327 id=327 data-nosnippet>327</a>        bytes_received_size: builder
-<a href=#328 id=328 data-nosnippet>328</a>            .register_trace_histogram_with_tags(<span class="string">"component_bytes_received_size"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
-<a href=#329 id=329 data-nosnippet>329</a>        framing_errors: builder.register_counter_with_tags(
-<a href=#330 id=330 data-nosnippet>330</a>            <span class="string">"component_errors_total"</span>,
-<a href=#331 id=331 data-nosnippet>331</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"error_type"</span>, <span class="string">"framing"</span>)],
-<a href=#332 id=332 data-nosnippet>332</a>        ),
-<a href=#333 id=333 data-nosnippet>333</a>        metric_decoder_errors: builder.register_counter_with_tags(
-<a href=#334 id=334 data-nosnippet>334</a>            METRIC_ERRORS_TOTAL,
-<a href=#335 id=335 data-nosnippet>335</a>            error_tags(MESSAGE_TYPE_METRICS, listener_type, origin_telemetry_enabled),
-<a href=#336 id=336 data-nosnippet>336</a>        ),
-<a href=#337 id=337 data-nosnippet>337</a>        event_decoder_errors: builder.register_counter_with_tags(
-<a href=#338 id=338 data-nosnippet>338</a>            METRIC_ERRORS_TOTAL,
-<a href=#339 id=339 data-nosnippet>339</a>            error_tags(MESSAGE_TYPE_EVENTS, listener_type, origin_telemetry_enabled),
-<a href=#340 id=340 data-nosnippet>340</a>        ),
-<a href=#341 id=341 data-nosnippet>341</a>        service_check_decoder_errors: builder.register_counter_with_tags(
-<a href=#342 id=342 data-nosnippet>342</a>            METRIC_ERRORS_TOTAL,
-<a href=#343 id=343 data-nosnippet>343</a>            error_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
-<a href=#344 id=344 data-nosnippet>344</a>        ),
-<a href=#345 id=345 data-nosnippet>345</a>        origin_detection_invalid_credentials_errors: builder.register_counter_with_tags(
-<a href=#346 id=346 data-nosnippet>346</a>            METRIC_ERRORS_TOTAL,
-<a href=#347 id=347 data-nosnippet>347</a>            [
-<a href=#348 id=348 data-nosnippet>348</a>                (<span class="string">"error_type"</span>, ERROR_TYPE_ORIGIN_DETECTION),
-<a href=#349 id=349 data-nosnippet>349</a>                (<span class="string">"reason"</span>, <span class="string">"invalid_credentials"</span>),
-<a href=#350 id=350 data-nosnippet>350</a>            ],
-<a href=#351 id=351 data-nosnippet>351</a>        ),
-<a href=#352 id=352 data-nosnippet>352</a>        origin_detection_zero_pid_errors: builder.register_counter_with_tags(
-<a href=#353 id=353 data-nosnippet>353</a>            METRIC_ERRORS_TOTAL,
-<a href=#354 id=354 data-nosnippet>354</a>            [(<span class="string">"error_type"</span>, ERROR_TYPE_ORIGIN_DETECTION), (<span class="string">"reason"</span>, <span class="string">"zero_pid"</span>)],
+<a href=#304 id=304 data-nosnippet>304</a>    <span class="kw">let </span>listener_type = listen_addr.listener_type();
+<a href=#305 id=305 data-nosnippet>305</a>
+<a href=#306 id=306 data-nosnippet>306</a>    Metrics {
+<a href=#307 id=307 data-nosnippet>307</a>        metrics_received: builder.register_counter_with_tags(
+<a href=#308 id=308 data-nosnippet>308</a>            METRIC_EVENTS_RECEIVED_TOTAL,
+<a href=#309 id=309 data-nosnippet>309</a>            event_tags(MESSAGE_TYPE_METRICS, listener_type, origin_telemetry_enabled),
+<a href=#310 id=310 data-nosnippet>310</a>        ),
+<a href=#311 id=311 data-nosnippet>311</a>        events_received: builder.register_counter_with_tags(
+<a href=#312 id=312 data-nosnippet>312</a>            METRIC_EVENTS_RECEIVED_TOTAL,
+<a href=#313 id=313 data-nosnippet>313</a>            event_tags(MESSAGE_TYPE_EVENTS, listener_type, origin_telemetry_enabled),
+<a href=#314 id=314 data-nosnippet>314</a>        ),
+<a href=#315 id=315 data-nosnippet>315</a>        service_checks_received: builder.register_counter_with_tags(
+<a href=#316 id=316 data-nosnippet>316</a>            METRIC_EVENTS_RECEIVED_TOTAL,
+<a href=#317 id=317 data-nosnippet>317</a>            event_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
+<a href=#318 id=318 data-nosnippet>318</a>        ),
+<a href=#319 id=319 data-nosnippet>319</a>        bytes_received: builder
+<a href=#320 id=320 data-nosnippet>320</a>            .register_counter_with_tags(<span class="string">"component_bytes_received_total"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
+<a href=#321 id=321 data-nosnippet>321</a>        bytes_received_size: builder
+<a href=#322 id=322 data-nosnippet>322</a>            .register_trace_histogram_with_tags(<span class="string">"component_bytes_received_size"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
+<a href=#323 id=323 data-nosnippet>323</a>        framing_errors: builder.register_counter_with_tags(
+<a href=#324 id=324 data-nosnippet>324</a>            <span class="string">"component_errors_total"</span>,
+<a href=#325 id=325 data-nosnippet>325</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"error_type"</span>, <span class="string">"framing"</span>)],
+<a href=#326 id=326 data-nosnippet>326</a>        ),
+<a href=#327 id=327 data-nosnippet>327</a>        metric_decoder_errors: builder.register_counter_with_tags(
+<a href=#328 id=328 data-nosnippet>328</a>            METRIC_ERRORS_TOTAL,
+<a href=#329 id=329 data-nosnippet>329</a>            error_tags(MESSAGE_TYPE_METRICS, listener_type, origin_telemetry_enabled),
+<a href=#330 id=330 data-nosnippet>330</a>        ),
+<a href=#331 id=331 data-nosnippet>331</a>        event_decoder_errors: builder.register_counter_with_tags(
+<a href=#332 id=332 data-nosnippet>332</a>            METRIC_ERRORS_TOTAL,
+<a href=#333 id=333 data-nosnippet>333</a>            error_tags(MESSAGE_TYPE_EVENTS, listener_type, origin_telemetry_enabled),
+<a href=#334 id=334 data-nosnippet>334</a>        ),
+<a href=#335 id=335 data-nosnippet>335</a>        service_check_decoder_errors: builder.register_counter_with_tags(
+<a href=#336 id=336 data-nosnippet>336</a>            METRIC_ERRORS_TOTAL,
+<a href=#337 id=337 data-nosnippet>337</a>            error_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
+<a href=#338 id=338 data-nosnippet>338</a>        ),
+<a href=#339 id=339 data-nosnippet>339</a>        origin_detection_invalid_credentials_errors: builder.register_counter_with_tags(
+<a href=#340 id=340 data-nosnippet>340</a>            METRIC_ERRORS_TOTAL,
+<a href=#341 id=341 data-nosnippet>341</a>            [
+<a href=#342 id=342 data-nosnippet>342</a>                (<span class="string">"error_type"</span>, ERROR_TYPE_ORIGIN_DETECTION),
+<a href=#343 id=343 data-nosnippet>343</a>                (<span class="string">"reason"</span>, <span class="string">"invalid_credentials"</span>),
+<a href=#344 id=344 data-nosnippet>344</a>            ],
+<a href=#345 id=345 data-nosnippet>345</a>        ),
+<a href=#346 id=346 data-nosnippet>346</a>        origin_detection_zero_pid_errors: builder.register_counter_with_tags(
+<a href=#347 id=347 data-nosnippet>347</a>            METRIC_ERRORS_TOTAL,
+<a href=#348 id=348 data-nosnippet>348</a>            [(<span class="string">"error_type"</span>, ERROR_TYPE_ORIGIN_DETECTION), (<span class="string">"reason"</span>, <span class="string">"zero_pid"</span>)],
+<a href=#349 id=349 data-nosnippet>349</a>        ),
+<a href=#350 id=350 data-nosnippet>350</a>        connections_active: builder
+<a href=#351 id=351 data-nosnippet>351</a>            .register_gauge_with_tags(<span class="string">"component_connections_active"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
+<a href=#352 id=352 data-nosnippet>352</a>        packet_receive_success: builder.register_counter_with_tags(
+<a href=#353 id=353 data-nosnippet>353</a>            <span class="string">"component_packets_received_total"</span>,
+<a href=#354 id=354 data-nosnippet>354</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"ok"</span>)],
 <a href=#355 id=355 data-nosnippet>355</a>        ),
-<a href=#356 id=356 data-nosnippet>356</a>        connections_active: builder
-<a href=#357 id=357 data-nosnippet>357</a>            .register_gauge_with_tags(<span class="string">"component_connections_active"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
-<a href=#358 id=358 data-nosnippet>358</a>        packet_receive_success: builder.register_counter_with_tags(
-<a href=#359 id=359 data-nosnippet>359</a>            <span class="string">"component_packets_received_total"</span>,
-<a href=#360 id=360 data-nosnippet>360</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"ok"</span>)],
-<a href=#361 id=361 data-nosnippet>361</a>        ),
-<a href=#362 id=362 data-nosnippet>362</a>        packet_receive_failure: builder.register_counter_with_tags(
-<a href=#363 id=363 data-nosnippet>363</a>            <span class="string">"component_packets_received_total"</span>,
-<a href=#364 id=364 data-nosnippet>364</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"error"</span>)],
-<a href=#365 id=365 data-nosnippet>365</a>        ),
-<a href=#366 id=366 data-nosnippet>366</a>        failed_context_resolve_total: builder.register_counter(<span class="string">"component_failed_context_resolve_total"</span>),
-<a href=#367 id=367 data-nosnippet>367</a>        origin_metric_recorder: origin_telemetry_enabled
-<a href=#368 id=368 data-nosnippet>368</a>            .then(|| OriginMetricRecorder::new(builder, component_context, listener_type)),
-<a href=#369 id=369 data-nosnippet>369</a>    }
-<a href=#370 id=370 data-nosnippet>370</a>}
-<a href=#371 id=371 data-nosnippet>371</a>
-<a href=#372 id=372 data-nosnippet>372</a><span class="kw">fn </span>event_tags(
-<a href=#373 id=373 data-nosnippet>373</a>    message_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, listener_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, origin_telemetry_enabled: bool,
-<a href=#374 id=374 data-nosnippet>374</a>) -&gt; Vec&lt;(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
-<a href=#375 id=375 data-nosnippet>375</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = <span class="macro">vec!</span>[(<span class="string">"message_type"</span>, message_type), (<span class="string">"listener_type"</span>, listener_type)];
-<a href=#376 id=376 data-nosnippet>376</a>    <span class="kw">if </span>origin_telemetry_enabled {
-<a href=#377 id=377 data-nosnippet>377</a>        tags.push((<span class="string">"origin"</span>, <span class="string">""</span>));
-<a href=#378 id=378 data-nosnippet>378</a>    }
-<a href=#379 id=379 data-nosnippet>379</a>    tags
-<a href=#380 id=380 data-nosnippet>380</a>}
-<a href=#381 id=381 data-nosnippet>381</a>
-<a href=#382 id=382 data-nosnippet>382</a><span class="kw">fn </span>error_tags(
-<a href=#383 id=383 data-nosnippet>383</a>    message_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, listener_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, origin_telemetry_enabled: bool,
-<a href=#384 id=384 data-nosnippet>384</a>) -&gt; Vec&lt;(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
-<a href=#385 id=385 data-nosnippet>385</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = <span class="macro">vec!</span>[
-<a href=#386 id=386 data-nosnippet>386</a>        (<span class="string">"listener_type"</span>, listener_type),
-<a href=#387 id=387 data-nosnippet>387</a>        (<span class="string">"error_type"</span>, <span class="string">"decode"</span>),
-<a href=#388 id=388 data-nosnippet>388</a>        (<span class="string">"message_type"</span>, message_type),
-<a href=#389 id=389 data-nosnippet>389</a>    ];
-<a href=#390 id=390 data-nosnippet>390</a>    <span class="kw">if </span>origin_telemetry_enabled {
-<a href=#391 id=391 data-nosnippet>391</a>        tags.push((<span class="string">"origin"</span>, <span class="string">""</span>));
-<a href=#392 id=392 data-nosnippet>392</a>    }
-<a href=#393 id=393 data-nosnippet>393</a>    tags
-<a href=#394 id=394 data-nosnippet>394</a>}
-<a href=#395 id=395 data-nosnippet>395</a>
-<a href=#396 id=396 data-nosnippet>396</a><span class="attr">#[cfg(test)]
-<a href=#397 id=397 data-nosnippet>397</a></span><span class="kw">mod </span>tests {
-<a href=#398 id=398 data-nosnippet>398</a>    <span class="kw">use </span>saluki_core::components::ComponentContext;
-<a href=#399 id=399 data-nosnippet>399</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
+<a href=#356 id=356 data-nosnippet>356</a>        packet_receive_failure: builder.register_counter_with_tags(
+<a href=#357 id=357 data-nosnippet>357</a>            <span class="string">"component_packets_received_total"</span>,
+<a href=#358 id=358 data-nosnippet>358</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"error"</span>)],
+<a href=#359 id=359 data-nosnippet>359</a>        ),
+<a href=#360 id=360 data-nosnippet>360</a>        failed_context_resolve_total: builder.register_counter(<span class="string">"component_failed_context_resolve_total"</span>),
+<a href=#361 id=361 data-nosnippet>361</a>        origin_metric_recorder: origin_telemetry_enabled
+<a href=#362 id=362 data-nosnippet>362</a>            .then(|| OriginMetricRecorder::new(builder, component_context, listener_type)),
+<a href=#363 id=363 data-nosnippet>363</a>    }
+<a href=#364 id=364 data-nosnippet>364</a>}
+<a href=#365 id=365 data-nosnippet>365</a>
+<a href=#366 id=366 data-nosnippet>366</a><span class="kw">fn </span>event_tags(
+<a href=#367 id=367 data-nosnippet>367</a>    message_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, listener_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, origin_telemetry_enabled: bool,
+<a href=#368 id=368 data-nosnippet>368</a>) -&gt; Vec&lt;(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
+<a href=#369 id=369 data-nosnippet>369</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = <span class="macro">vec!</span>[(<span class="string">"message_type"</span>, message_type), (<span class="string">"listener_type"</span>, listener_type)];
+<a href=#370 id=370 data-nosnippet>370</a>    <span class="kw">if </span>origin_telemetry_enabled {
+<a href=#371 id=371 data-nosnippet>371</a>        tags.push((<span class="string">"origin"</span>, <span class="string">""</span>));
+<a href=#372 id=372 data-nosnippet>372</a>    }
+<a href=#373 id=373 data-nosnippet>373</a>    tags
+<a href=#374 id=374 data-nosnippet>374</a>}
+<a href=#375 id=375 data-nosnippet>375</a>
+<a href=#376 id=376 data-nosnippet>376</a><span class="kw">fn </span>error_tags(
+<a href=#377 id=377 data-nosnippet>377</a>    message_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, listener_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, origin_telemetry_enabled: bool,
+<a href=#378 id=378 data-nosnippet>378</a>) -&gt; Vec&lt;(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
+<a href=#379 id=379 data-nosnippet>379</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = <span class="macro">vec!</span>[
+<a href=#380 id=380 data-nosnippet>380</a>        (<span class="string">"listener_type"</span>, listener_type),
+<a href=#381 id=381 data-nosnippet>381</a>        (<span class="string">"error_type"</span>, <span class="string">"decode"</span>),
+<a href=#382 id=382 data-nosnippet>382</a>        (<span class="string">"message_type"</span>, message_type),
+<a href=#383 id=383 data-nosnippet>383</a>    ];
+<a href=#384 id=384 data-nosnippet>384</a>    <span class="kw">if </span>origin_telemetry_enabled {
+<a href=#385 id=385 data-nosnippet>385</a>        tags.push((<span class="string">"origin"</span>, <span class="string">""</span>));
+<a href=#386 id=386 data-nosnippet>386</a>    }
+<a href=#387 id=387 data-nosnippet>387</a>    tags
+<a href=#388 id=388 data-nosnippet>388</a>}
+<a href=#389 id=389 data-nosnippet>389</a>
+<a href=#390 id=390 data-nosnippet>390</a><span class="attr">#[cfg(test)]
+<a href=#391 id=391 data-nosnippet>391</a></span><span class="kw">mod </span>tests {
+<a href=#392 id=392 data-nosnippet>392</a>    <span class="kw">use </span>saluki_core::components::ComponentContext;
+<a href=#393 id=393 data-nosnippet>393</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
+<a href=#394 id=394 data-nosnippet>394</a>
+<a href=#395 id=395 data-nosnippet>395</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#396 id=396 data-nosnippet>396</a>
+<a href=#397 id=397 data-nosnippet>397</a>    <span class="kw">fn </span>test_context() -&gt; ComponentContext {
+<a href=#398 id=398 data-nosnippet>398</a>        ComponentContext::test_source(<span class="string">"dogstatsd_test"</span>)
+<a href=#399 id=399 data-nosnippet>399</a>    }
 <a href=#400 id=400 data-nosnippet>400</a>
-<a href=#401 id=401 data-nosnippet>401</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#402 id=402 data-nosnippet>402</a>
-<a href=#403 id=403 data-nosnippet>403</a>    <span class="kw">fn </span>test_context() -&gt; ComponentContext {
-<a href=#404 id=404 data-nosnippet>404</a>        ComponentContext::test_source(<span class="string">"dogstatsd_test"</span>)
-<a href=#405 id=405 data-nosnippet>405</a>    }
-<a href=#406 id=406 data-nosnippet>406</a>
-<a href=#407 id=407 data-nosnippet>407</a>    <span class="kw">fn </span>udp_listen_addr() -&gt; ListenAddress {
-<a href=#408 id=408 data-nosnippet>408</a>        ListenAddress::udp_loopback(<span class="number">8125</span>)
-<a href=#409 id=409 data-nosnippet>409</a>    }
-<a href=#410 id=410 data-nosnippet>410</a>
-<a href=#411 id=411 data-nosnippet>411</a>    <span class="attr">#[test]
-<a href=#412 id=412 data-nosnippet>412</a>    </span><span class="kw">fn </span>origin_metric_recorder_evicts_oldest_origin_when_cache_is_full() {
-<a href=#413 id=413 data-nosnippet>413</a>        <span class="comment">// The recorder keeps at most MAX_ORIGIN_COUNTERS per-origin counters, evicting the oldest when full. Eviction
-<a href=#414 id=414 data-nosnippet>414</a>        // also deletes the underlying counters from the metrics registry (via `internal_metrics::delete_counter`) to
-<a href=#415 id=415 data-nosnippet>415</a>        // bound cardinality. That registry deletion, however, operates on the process-global metrics registry --
-<a href=#416 id=416 data-nosnippet>416</a>        // populated only by `MetricsRecorder::install` -- which a `TestRecorder`-based unit test can't observe: a
-<a href=#417 id=417 data-nosnippet>417</a>        // `TestRecorder` records registrations but never removes them, so a deleted counter still reads back here.
-<a href=#418 id=418 data-nosnippet>418</a>        // We therefore assert (a) the recorder's own eviction bookkeeping and (b) that recording actually registered
-<a href=#419 id=419 data-nosnippet>419</a>        // and incremented a retained origin's counter in the registry. `delete_counter`'s registry-deletion behavior
-<a href=#420 id=420 data-nosnippet>420</a>        // itself is covered by saluki-core's `delete_counter_from_state` tests.
-<a href=#421 id=421 data-nosnippet>421</a>        </span><span class="kw">let </span>recorder = TestRecorder::default();
-<a href=#422 id=422 data-nosnippet>422</a>        <span class="kw">let </span>_recorder_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
-<a href=#423 id=423 data-nosnippet>423</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>udp_listen_addr(), <span class="kw-2">&amp;</span>test_context(), <span class="bool-val">true</span>);
-<a href=#424 id=424 data-nosnippet>424</a>
-<a href=#425 id=425 data-nosnippet>425</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..=MAX_ORIGIN_COUNTERS {
-<a href=#426 id=426 data-nosnippet>426</a>            metrics.record_metrics_received(<span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"container_id://test-container-{index}"</span>)));
-<a href=#427 id=427 data-nosnippet>427</a>        }
-<a href=#428 id=428 data-nosnippet>428</a>
-<a href=#429 id=429 data-nosnippet>429</a>        <span class="kw">let </span>origin_recorder = metrics
-<a href=#430 id=430 data-nosnippet>430</a>            .origin_metric_recorder
-<a href=#431 id=431 data-nosnippet>431</a>            .as_ref()
-<a href=#432 id=432 data-nosnippet>432</a>            .expect(<span class="string">"origin metric recorder should be enabled"</span>);
-<a href=#433 id=433 data-nosnippet>433</a>        <span class="macro">assert_eq!</span>(origin_recorder.cached_origin_count(), MAX_ORIGIN_COUNTERS);
-<a href=#434 id=434 data-nosnippet>434</a>        <span class="macro">assert!</span>(!origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-0"</span>));
-<a href=#435 id=435 data-nosnippet>435</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-1"</span>));
-<a href=#436 id=436 data-nosnippet>436</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-200"</span>));
-<a href=#437 id=437 data-nosnippet>437</a>
-<a href=#438 id=438 data-nosnippet>438</a>        <span class="comment">// A retained origin's per-origin counter was actually registered and incremented once in the registry.
-<a href=#439 id=439 data-nosnippet>439</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#440 id=440 data-nosnippet>440</a>            recorder.counter((
-<a href=#441 id=441 data-nosnippet>441</a>                METRIC_EVENTS_RECEIVED_TOTAL,
-<a href=#442 id=442 data-nosnippet>442</a>                <span class="kw-2">&amp;</span>[
-<a href=#443 id=443 data-nosnippet>443</a>                    (<span class="string">"component_id"</span>, <span class="string">"dogstatsd_test"</span>),
-<a href=#444 id=444 data-nosnippet>444</a>                    (<span class="string">"component_type"</span>, <span class="string">"source"</span>),
-<a href=#445 id=445 data-nosnippet>445</a>                    (<span class="string">"message_type"</span>, MESSAGE_TYPE_METRICS),
-<a href=#446 id=446 data-nosnippet>446</a>                    (<span class="string">"listener_type"</span>, <span class="string">"udp"</span>),
-<a href=#447 id=447 data-nosnippet>447</a>                    (<span class="string">"origin"</span>, <span class="string">"container_id://test-container-1"</span>),
-<a href=#448 id=448 data-nosnippet>448</a>                ],
-<a href=#449 id=449 data-nosnippet>449</a>            )),
-<a href=#450 id=450 data-nosnippet>450</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>),
-<a href=#451 id=451 data-nosnippet>451</a>            <span class="string">"a retained origin's counter should reflect its single recorded metric"
-<a href=#452 id=452 data-nosnippet>452</a>        </span>);
-<a href=#453 id=453 data-nosnippet>453</a>    }
-<a href=#454 id=454 data-nosnippet>454</a>}
+<a href=#401 id=401 data-nosnippet>401</a>    <span class="kw">fn </span>udp_listen_addr() -&gt; ListenAddress {
+<a href=#402 id=402 data-nosnippet>402</a>        ListenAddress::udp_loopback(<span class="number">8125</span>)
+<a href=#403 id=403 data-nosnippet>403</a>    }
+<a href=#404 id=404 data-nosnippet>404</a>
+<a href=#405 id=405 data-nosnippet>405</a>    <span class="attr">#[test]
+<a href=#406 id=406 data-nosnippet>406</a>    </span><span class="kw">fn </span>origin_metric_recorder_evicts_oldest_origin_when_cache_is_full() {
+<a href=#407 id=407 data-nosnippet>407</a>        <span class="comment">// The recorder keeps at most MAX_ORIGIN_COUNTERS per-origin counters, evicting the oldest when full. Eviction
+<a href=#408 id=408 data-nosnippet>408</a>        // also deletes the underlying counters from the metrics registry (via `internal_metrics::delete_counter`) to
+<a href=#409 id=409 data-nosnippet>409</a>        // bound cardinality. That registry deletion, however, operates on the process-global metrics registry --
+<a href=#410 id=410 data-nosnippet>410</a>        // populated only by `MetricsRecorder::install` -- which a `TestRecorder`-based unit test can't observe: a
+<a href=#411 id=411 data-nosnippet>411</a>        // `TestRecorder` records registrations but never removes them, so a deleted counter still reads back here.
+<a href=#412 id=412 data-nosnippet>412</a>        // We therefore assert (a) the recorder's own eviction bookkeeping and (b) that recording actually registered
+<a href=#413 id=413 data-nosnippet>413</a>        // and incremented a retained origin's counter in the registry. `delete_counter`'s registry-deletion behavior
+<a href=#414 id=414 data-nosnippet>414</a>        // itself is covered by saluki-core's `delete_counter_from_state` tests.
+<a href=#415 id=415 data-nosnippet>415</a>        </span><span class="kw">let </span>recorder = TestRecorder::default();
+<a href=#416 id=416 data-nosnippet>416</a>        <span class="kw">let </span>_recorder_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
+<a href=#417 id=417 data-nosnippet>417</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>udp_listen_addr(), <span class="kw-2">&amp;</span>test_context(), <span class="bool-val">true</span>);
+<a href=#418 id=418 data-nosnippet>418</a>
+<a href=#419 id=419 data-nosnippet>419</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..=MAX_ORIGIN_COUNTERS {
+<a href=#420 id=420 data-nosnippet>420</a>            metrics.record_metrics_received(<span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"container_id://test-container-{index}"</span>)));
+<a href=#421 id=421 data-nosnippet>421</a>        }
+<a href=#422 id=422 data-nosnippet>422</a>
+<a href=#423 id=423 data-nosnippet>423</a>        <span class="kw">let </span>origin_recorder = metrics
+<a href=#424 id=424 data-nosnippet>424</a>            .origin_metric_recorder
+<a href=#425 id=425 data-nosnippet>425</a>            .as_ref()
+<a href=#426 id=426 data-nosnippet>426</a>            .expect(<span class="string">"origin metric recorder should be enabled"</span>);
+<a href=#427 id=427 data-nosnippet>427</a>        <span class="macro">assert_eq!</span>(origin_recorder.cached_origin_count(), MAX_ORIGIN_COUNTERS);
+<a href=#428 id=428 data-nosnippet>428</a>        <span class="macro">assert!</span>(!origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-0"</span>));
+<a href=#429 id=429 data-nosnippet>429</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-1"</span>));
+<a href=#430 id=430 data-nosnippet>430</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-200"</span>));
+<a href=#431 id=431 data-nosnippet>431</a>
+<a href=#432 id=432 data-nosnippet>432</a>        <span class="comment">// A retained origin's per-origin counter was actually registered and incremented once in the registry.
+<a href=#433 id=433 data-nosnippet>433</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#434 id=434 data-nosnippet>434</a>            recorder.counter((
+<a href=#435 id=435 data-nosnippet>435</a>                METRIC_EVENTS_RECEIVED_TOTAL,
+<a href=#436 id=436 data-nosnippet>436</a>                <span class="kw-2">&amp;</span>[
+<a href=#437 id=437 data-nosnippet>437</a>                    (<span class="string">"component_id"</span>, <span class="string">"dogstatsd_test"</span>),
+<a href=#438 id=438 data-nosnippet>438</a>                    (<span class="string">"component_type"</span>, <span class="string">"source"</span>),
+<a href=#439 id=439 data-nosnippet>439</a>                    (<span class="string">"message_type"</span>, MESSAGE_TYPE_METRICS),
+<a href=#440 id=440 data-nosnippet>440</a>                    (<span class="string">"listener_type"</span>, <span class="string">"udp"</span>),
+<a href=#441 id=441 data-nosnippet>441</a>                    (<span class="string">"origin"</span>, <span class="string">"container_id://test-container-1"</span>),
+<a href=#442 id=442 data-nosnippet>442</a>                ],
+<a href=#443 id=443 data-nosnippet>443</a>            )),
+<a href=#444 id=444 data-nosnippet>444</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>),
+<a href=#445 id=445 data-nosnippet>445</a>            <span class="string">"a retained origin's counter should reflect its single recorded metric"
+<a href=#446 id=446 data-nosnippet>446</a>        </span>);
+<a href=#447 id=447 data-nosnippet>447</a>    }
+<a href=#448 id=448 data-nosnippet>448</a>}
 </code></pre></div></section></main></body></html>
