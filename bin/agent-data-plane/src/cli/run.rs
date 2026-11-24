@@ -48,9 +48,10 @@ use saluki_components::{
         OriginEnrichmentConfiguration, OtlpConfiguration,
     },
     transforms::{
-        aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
-        ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
-        HistogramConfiguration, HostEnrichmentConfiguration, TraceObfuscationConfiguration,
+        aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
+        AggregateContextSnapshotReceiver, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
+        DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
+        HostEnrichmentConfiguration, TraceObfuscationConfiguration,
     },
 };
 use saluki_core::{
@@ -62,7 +63,9 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use saluki_metric_kernels::host_tags::filter_metric_host_tags;
 use saluki_metric_plan::{
-    lowering::{HOST_TAGS_BINDING, TARGET_AUTOSCALING_FAILOVER, TARGET_CLIENT_TELEMETRY, TARGET_MRF},
+    lowering::{
+        HOST_TAGS_BINDING, MRF_SIGNAL_BINDING, TARGET_AUTOSCALING_FAILOVER, TARGET_CLIENT_TELEMETRY, TARGET_MRF,
+    },
     RuntimeBindings,
 };
 use stringtheory::MetaString;
@@ -90,7 +93,7 @@ use crate::{
         create_control_plane_supervisor, logging::get_logging_translator, AdpLocalConfig, AgentDataPlane,
         DogStatsDAPIWorker,
     },
-    metric_plan::build_metric_region_configuration,
+    metric_plan::{build_metric_region_configuration, lower_from_saluki_config},
     remote_config::{self, RemoteConfigSubscriptions},
 };
 
@@ -219,9 +222,21 @@ async fn create_topology(
         routing_targets = Some(catalog);
     }
 
+    let (dsd_context_snapshot_handle, mut dsd_context_snapshot_receiver) = if dp.dogstatsd_enabled() {
+        let (handle, receiver) = aggregate_context_snapshot_channel();
+        (Some(handle), Some(receiver))
+    } else {
+        (None, None)
+    };
+
     if dp.metrics_pipeline_required() {
         let routing_targets =
             routing_targets.ok_or_else(|| generic_error!("The metrics pipeline requires the Datadog forwarder."))?;
+        let region_snapshot_receiver = if dp.programmable_metrics_enabled() {
+            dsd_context_snapshot_receiver.take()
+        } else {
+            None
+        };
         add_baseline_metrics_pipeline_to_blueprint(
             &mut blueprint,
             config_system,
@@ -229,6 +244,7 @@ async fn create_topology(
             &shared,
             &routing_targets,
             env_provider,
+            region_snapshot_receiver,
         )
         .await?;
     }
@@ -277,7 +293,16 @@ async fn create_topology(
     }
 
     let dogstatsd_api = if dp.dogstatsd_enabled() {
-        Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?)
+        Some(
+            add_dsd_pipeline_to_blueprint(
+                &mut blueprint,
+                config_system,
+                env_provider,
+                dsd_context_snapshot_handle.expect("handle created when dogstatsd is enabled"),
+                dsd_context_snapshot_receiver,
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -352,6 +377,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
     routing_targets: &Arc<RoutingTargetCatalog>, env_provider: &RemoteAgentEnvironmentProvider,
+    context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -364,6 +390,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
             remote_agent_client_config,
             shared,
             routing_targets,
+            context_snapshot_receiver,
         )
         .await;
     }
@@ -402,21 +429,42 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
 async fn add_programmable_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
-    routing_targets: &Arc<RoutingTargetCatalog>,
+    routing_targets: &Arc<RoutingTargetCatalog>, context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
 
     let mut bindings = RuntimeBindings::default();
-    if !dp.standalone_mode() && !shared.tags.expected_tags_duration.is_zero() {
+    let host_tags_expiry = if !dp.standalone_mode() && !shared.tags.expected_tags_duration.is_zero() {
         let client_config = remote_agent_client_config
             .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
         let client = RemoteAgentClient::connect(client_config).await?;
         let host_tags_reply = client.get_host_tags().await?.into_inner();
         bindings = bindings.with_host_tags(HOST_TAGS_BINDING, filter_metric_host_tags(host_tags_reply.system));
+        Some(shared.tags.expected_tags_duration)
+    } else {
+        None
+    };
+
+    let (mut region_config, initial_plan) = build_metric_region_configuration(&config, bindings)?;
+    if let Some(duration) = host_tags_expiry {
+        region_config = region_config.with_host_tags_expiry(HOST_TAGS_BINDING, duration);
+    }
+    if let Some(receiver) = context_snapshot_receiver {
+        region_config = region_config.with_context_snapshot_receiver(receiver);
     }
 
-    let region_config = build_metric_region_configuration(&config, bindings)?;
+    let fallback_plan = initial_plan;
+    let live_plans = config_system
+        .live(|cfg| cfg)
+        .map(move |cfg| lower_from_saluki_config(cfg).unwrap_or_else(|_| fallback_plan.clone()));
+    let live_mirroring = config_system
+        .live(|cfg| &cfg.domains.multi_region_failover.metric_mirroring)
+        .map(metric_mirroring);
+
+    let region_config = region_config
+        .with_live_plans(live_plans)
+        .with_live_mirroring(MRF_SIGNAL_BINDING, live_mirroring);
     blueprint.add_transform(PROGRAMMABLE_METRICS_REGION, region_config)?;
 
     // Primary and endpoint-routed encoders connect directly to the region's outputs.
@@ -906,7 +954,8 @@ fn dogstatsd_source_configuration(
 
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
-    env_provider: &RemoteAgentEnvironmentProvider,
+    env_provider: &RemoteAgentEnvironmentProvider, dsd_context_snapshot_handle: AggregateContextSnapshotHandle,
+    dsd_context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
 ) -> Result<DogStatsDAPIWorker, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -1004,17 +1053,6 @@ async fn add_dsd_pipeline_to_blueprint(
         histogram.copy_to_distribution,
         histogram.copy_to_distribution_prefix.clone(),
     );
-    let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
-    let dsd_agg_config = AggregateConfiguration {
-        window_duration_seconds: aggregation.window_duration_seconds,
-        primary_flush_interval: aggregation.flush_interval,
-        context_limit: aggregation.context_limit,
-        flush_open_windows: aggregation.flush_open_windows,
-        counter_expiry_seconds: aggregation.counter_expiry_seconds,
-        hist_config: dsd_hist_config,
-        origin_telemetry_enabled: typed.domains.dogstatsd.telemetry.origin_breakdown,
-        context_snapshot_receiver: dsd_context_snapshot_receiver,
-    };
     let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(aggregation.passthrough_idle_flush_timeout);
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
         config_system
@@ -1092,6 +1130,17 @@ async fn add_dsd_pipeline_to_blueprint(
             .connect_components("dsd_in.metrics", PROGRAMMABLE_METRICS_REGION)?
             .connect_components(client_telemetry_out.as_str(), "dsd_client_telemetry_out")?;
     } else {
+        let dsd_agg_config = AggregateConfiguration {
+            window_duration_seconds: aggregation.window_duration_seconds,
+            primary_flush_interval: aggregation.flush_interval,
+            context_limit: aggregation.context_limit,
+            flush_open_windows: aggregation.flush_open_windows,
+            counter_expiry_seconds: aggregation.counter_expiry_seconds,
+            hist_config: dsd_hist_config,
+            origin_telemetry_enabled: typed.domains.dogstatsd.telemetry.origin_breakdown,
+            context_snapshot_receiver: dsd_context_snapshot_receiver
+                .expect("snapshot receiver is present in native dogstatsd mode"),
+        };
         blueprint
             .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
             .add_transform("dsd_enrich", dsd_enrich_config)?

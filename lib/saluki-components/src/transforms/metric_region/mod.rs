@@ -1,37 +1,59 @@
-//! Single-region fused metric execution transform.
+//! Single-region fused metric execution transform with live generation switching.
 //!
-//! Hosts a compiled [`FusedMetricEngine`] inside one Saluki [`Transform`] task with zero intermediate channels
-//! between metric operators. Supports 0, 1, or N stateful aggregate operators natively inside the single region
-//! driver and exposes one topology output per terminal `Emit` target in the plan.
+//! Hosts a [`GenerationManager`] inside one Saluki [`Transform`] task with zero intermediate channels between metric
+//! operators. Supports 0, 1, or N stateful aggregate operators natively, atomic stateless generation reloads with
+//! live state transfer, exact bucket-boundary cuts for stateful changes, and live runtime-binding updates.
 
 use std::{collections::BTreeMap, future::pending, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use saluki_common::time::get_unix_timestamp;
+use saluki_common::{sync::live::Live, time::get_unix_timestamp};
 use saluki_core::{
-    accounting::{MemoryBounds, MemoryBoundsBuilder},
+    accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{metric::Metric, Event, EventType},
+    data_model::event::{
+        metric::{context::Context, Metric},
+        Event, EventType,
+    },
     topology::{EventsBuffer, EventsDispatcher, OutputDefinition, OutputName},
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_metric_plan::{lowering::TARGET_PRIMARY, FusedMetricEngine, Op, RuntimeBindings, ValidatedPlan};
-use tokio::{select, time::interval_at};
-use tracing::{debug, error, trace};
+use saluki_metric_kernels::{
+    aggregate::{AggregateContextSnapshotEntry, AggregatedMetric},
+    routing_filter::MetricMirroring,
+};
+use saluki_metric_plan::{
+    lowering::TARGET_PRIMARY, validate_plan, GenerationManager, InstallOutcome, MetricPlan, Op, RuntimeBindings,
+    ValidatedPlan,
+};
+use tokio::{
+    select,
+    time::{interval_at, sleep_until, Instant},
+};
+use tracing::{debug, error, info, trace, warn};
+
+use crate::transforms::aggregate::{
+    send_context_snapshot_if_open, AggregateContextSnapshotReceiver, AggregateContextSnapshotRequest,
+    AggregateContextSnapshotRequestReceiver,
+};
 
 /// Classifier mapping an incoming metric to a logical plan source stream name.
 pub type StreamClassifier = Arc<dyn Fn(&Metric) -> &'static str + Send + Sync>;
 
-/// Configuration for [`MetricRegion`], a single fused transform running a compiled [`saluki_metric_plan::MetricPlan`].
+/// Configuration for [`MetricRegion`], a single fused transform running compiled [`MetricPlan`] generations.
 pub struct MetricRegionConfiguration {
     plan: ValidatedPlan,
     default_stream: String,
     stream_classifier: Option<StreamClassifier>,
     flush_interval: Duration,
     initial_bindings: RuntimeBindings,
+    live_plans: Option<Live<MetricPlan>>,
+    live_mirroring: Option<(String, Live<MetricMirroring>)>,
+    host_tags_expiry: Option<(String, Duration)>,
+    context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
     outputs: Vec<OutputDefinition<EventType>>,
 }
 
@@ -59,6 +81,10 @@ impl MetricRegionConfiguration {
             stream_classifier: None,
             flush_interval,
             initial_bindings: RuntimeBindings::default(),
+            live_plans: None,
+            live_mirroring: None,
+            host_tags_expiry: None,
+            context_snapshot_receiver: None,
             outputs,
         }
     }
@@ -74,6 +100,31 @@ impl MetricRegionConfiguration {
         self.stream_classifier = Some(classifier);
         self
     }
+
+    /// Attaches a live stream of whole [`MetricPlan`] updates for atomic generation reloads and bucket-boundary cuts.
+    pub fn with_live_plans(mut self, live_plans: Live<MetricPlan>) -> Self {
+        self.live_plans = Some(live_plans);
+        self
+    }
+
+    /// Attaches a live mirroring signal bound to `binding_name` inside the active plan.
+    pub fn with_live_mirroring(mut self, binding_name: impl Into<String>, signal: Live<MetricMirroring>) -> Self {
+        self.live_mirroring = Some((binding_name.into(), signal));
+        self
+    }
+
+    /// Clears `binding_name` from runtime host-tags bindings after `duration` elapses from region startup.
+    pub fn with_host_tags_expiry(mut self, binding_name: impl Into<String>, duration: Duration) -> Self {
+        self.host_tags_expiry = Some((binding_name.into(), duration));
+        self
+    }
+
+    /// Attaches a retained-context snapshot receiver so diagnostics (such as `dogstatsd top`) can query stateful
+    /// contexts inside this region.
+    pub fn with_context_snapshot_receiver(mut self, receiver: AggregateContextSnapshotReceiver) -> Self {
+        self.context_snapshot_receiver = Some(receiver);
+        self
+    }
 }
 
 #[async_trait]
@@ -87,29 +138,50 @@ impl TransformBuilder for MetricRegionConfiguration {
     }
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let engine = FusedMetricEngine::compile(&self.plan, self.initial_bindings.clone())?;
-        let default_stream_idx = engine
-            .stream_index(&self.default_stream)
-            .ok_or_else(|| generic_error!("plan does not declare default stream `{}`", self.default_stream))?;
+        let mut bindings = self.initial_bindings.clone();
+        if let Some((binding_name, signal)) = &self.live_mirroring {
+            bindings
+                .mirroring_signals
+                .insert(binding_name.clone(), (**signal).clone());
+        }
 
-        let target_outputs: Vec<OutputName> = engine
-            .target_names()
-            .iter()
-            .map(|name| {
-                if name == TARGET_PRIMARY {
+        let generations = GenerationManager::new(self.plan.clone(), bindings.clone())?;
+        if generations.active_engine().stream_index(&self.default_stream).is_none() {
+            return Err(generic_error!(
+                "plan does not declare default stream `{}`",
+                self.default_stream
+            ));
+        }
+
+        let mut target_to_output = BTreeMap::new();
+        for node in &self.plan.plan().nodes {
+            if let Op::Emit { target } = &node.op {
+                let output = if target == TARGET_PRIMARY {
                     OutputName::Default
                 } else {
-                    OutputName::Given(name.clone().into())
-                }
-            })
-            .collect();
+                    OutputName::Given(target.clone().into())
+                };
+                target_to_output.insert(target.clone(), output);
+            }
+        }
+
+        let context_snapshot_requests = self
+            .context_snapshot_receiver
+            .as_ref()
+            .map(AggregateContextSnapshotReceiver::take_receiver)
+            .transpose()?;
 
         Ok(Box::new(MetricRegion {
-            engine,
-            default_stream_idx,
+            generations,
+            bindings,
+            default_stream: self.default_stream.clone(),
             stream_classifier: self.stream_classifier.clone(),
             flush_interval: self.flush_interval,
-            target_outputs,
+            live_plans: self.live_plans.clone(),
+            live_mirroring: self.live_mirroring.clone(),
+            host_tags_expiry: self.host_tags_expiry.clone(),
+            context_snapshot_requests,
+            target_to_output,
         }))
     }
 }
@@ -117,26 +189,56 @@ impl TransformBuilder for MetricRegionConfiguration {
 impl MemoryBounds for MetricRegionConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<MetricRegion>("component struct");
+
+        for node in &self.plan.plan().nodes {
+            if let Op::Aggregate { context_limit, .. } = node.op {
+                builder
+                    .firm()
+                    .with_expr(UsageExpr::product(
+                        "aggregation state map",
+                        UsageExpr::sum(
+                            "context map entry",
+                            UsageExpr::struct_size::<Context>("context"),
+                            UsageExpr::struct_size::<AggregatedMetric<()>>("aggregated metric"),
+                        ),
+                        UsageExpr::config("aggregate_context_limit", context_limit),
+                    ))
+                    .with_expr(UsageExpr::product(
+                        "retained context snapshot",
+                        UsageExpr::struct_size::<AggregateContextSnapshotEntry>("snapshot entry"),
+                        UsageExpr::config("aggregate_context_limit", context_limit),
+                    ));
+            }
+        }
     }
 }
 
 struct MetricRegion {
-    engine: FusedMetricEngine,
-    default_stream_idx: usize,
+    generations: GenerationManager,
+    bindings: RuntimeBindings,
+    default_stream: String,
     stream_classifier: Option<StreamClassifier>,
     flush_interval: Duration,
-    target_outputs: Vec<OutputName>,
+    live_plans: Option<Live<MetricPlan>>,
+    live_mirroring: Option<(String, Live<MetricMirroring>)>,
+    host_tags_expiry: Option<(String, Duration)>,
+    context_snapshot_requests: Option<AggregateContextSnapshotRequestReceiver>,
+    target_to_output: BTreeMap<String, OutputName>,
 }
 
 impl MetricRegion {
     async fn dispatch_emitted(
-        &self, target_buffers: &mut [Vec<Metric>], dispatcher: &EventsDispatcher,
+        &self, emitted: &mut BTreeMap<String, Vec<Metric>>, dispatcher: &EventsDispatcher,
     ) -> Result<(), GenericError> {
-        for (target_idx, metrics) in target_buffers.iter_mut().enumerate() {
+        for (target, metrics) in emitted.iter_mut() {
             if metrics.is_empty() {
                 continue;
             }
-            let output_name = &self.target_outputs[target_idx];
+            let Some(output_name) = self.target_to_output.get(target) else {
+                warn!(target = %target, count = metrics.len(), "Dropping metrics for undeclared region emit target.");
+                metrics.clear();
+                continue;
+            };
             let mut buffered = match output_name {
                 OutputName::Default => dispatcher.buffered()?,
                 OutputName::Given(name) => dispatcher.buffered_named(name.as_ref())?,
@@ -149,25 +251,73 @@ impl MetricRegion {
         Ok(())
     }
 
-    fn ingest_buffer(&mut self, events: EventsBuffer, now: u64, target_buffers: &mut [Vec<Metric>]) {
+    fn ingest_buffer(&mut self, events: EventsBuffer, now: u64, emitted: &mut BTreeMap<String, Vec<Metric>>) {
         if let Some(classifier) = self.stream_classifier.clone() {
-            let mut by_stream: BTreeMap<usize, Vec<Metric>> = BTreeMap::new();
+            let mut by_stream: BTreeMap<&'static str, Vec<Metric>> = BTreeMap::new();
             for metric in events.into_events::<Metric>() {
                 let stream_name = classifier(&metric);
-                let stream_idx = self.engine.stream_index(stream_name).unwrap_or(self.default_stream_idx);
-                by_stream.entry(stream_idx).or_default().push(metric);
+                by_stream.entry(stream_name).or_default().push(metric);
             }
-            for (stream_idx, batch) in by_stream {
-                self.engine.ingest(stream_idx, now, batch, |target_idx, metric| {
-                    target_buffers[target_idx].push(metric);
-                });
+            for (stream_name, batch) in by_stream {
+                let effective_stream = if self.generations.active_engine().stream_index(stream_name).is_some() {
+                    stream_name
+                } else {
+                    self.default_stream.as_str()
+                };
+                if let Err(e) = self.generations.ingest(effective_stream, now, batch, |target, metric| {
+                    emitted.entry(target.to_string()).or_default().push(metric);
+                }) {
+                    error!(stream = effective_stream, error = %e, "Failed to ingest metrics into region.");
+                }
             }
         } else {
-            let stream_idx = self.default_stream_idx;
-            self.engine
-                .ingest(stream_idx, now, events.into_events::<Metric>(), |target_idx, metric| {
-                    target_buffers[target_idx].push(metric);
-                });
+            let stream = self.default_stream.clone();
+            if let Err(e) = self
+                .generations
+                .ingest(&stream, now, events.into_events::<Metric>(), |target, metric| {
+                    emitted.entry(target.to_string()).or_default().push(metric);
+                })
+            {
+                error!(stream = %stream, error = %e, "Failed to ingest metrics into region.");
+            }
+        }
+    }
+
+    fn handle_plan_update(&mut self, candidate: MetricPlan, now: u64) {
+        let validated = match validate_plan(&candidate) {
+            Ok(validated) => validated,
+            Err(errors) => {
+                error!(
+                    error_count = errors.len(),
+                    first_error = %errors[0],
+                    "Rejected invalid live metric plan update; keeping active generation."
+                );
+                return;
+            }
+        };
+
+        match self.generations.install(validated, now) {
+            Ok(InstallOutcome::SwitchedImmediately {
+                generation,
+                reused_stateful_nodes,
+            }) => {
+                info!(
+                    generation = generation.0,
+                    reused_stateful_nodes, "Installed live metric plan generation atomically."
+                );
+            }
+            Ok(InstallOutcome::ScheduledCut {
+                generation,
+                cut_timestamp_secs,
+            }) => {
+                info!(
+                    generation = generation.0,
+                    cut_timestamp_secs, "Scheduled stateful metric plan cut at shared bucket boundary."
+                );
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to compile live metric plan update; keeping active generation.");
+            }
         }
     }
 }
@@ -176,17 +326,23 @@ impl MetricRegion {
 impl Transform for MetricRegion {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
-        let has_stateful = self.engine.stateful_count() > 0;
-        let mut flush_timer =
-            has_stateful.then(|| interval_at(tokio::time::Instant::now() + self.flush_interval, self.flush_interval));
+        let mut flush_timer = self
+            .generations
+            .has_stateful_operators()
+            .then(|| interval_at(tokio::time::Instant::now() + self.flush_interval, self.flush_interval));
+        let mut host_tags_deadline = self
+            .host_tags_expiry
+            .take()
+            .map(|(binding, duration)| (binding, Instant::now() + duration));
         let mut final_flush = false;
-        let mut target_buffers: Vec<Vec<Metric>> = (0..self.target_outputs.len()).map(|_| Vec::new()).collect();
+        let mut emitted: BTreeMap<String, Vec<Metric>> = BTreeMap::new();
 
         health.mark_ready();
         debug!(
-            steps = self.engine.step_count(),
-            stateful = self.engine.stateful_count(),
-            targets = self.target_outputs.len(),
+            generation = self.generations.active_generation().0,
+            steps = self.generations.active_engine().step_count(),
+            stateful = self.generations.active_engine().stateful_count(),
+            targets = self.target_to_output.len(),
             "Metric region transform started."
         );
 
@@ -194,12 +350,12 @@ impl Transform for MetricRegion {
             select! {
                 _ = health.live() => continue,
                 _ = next_flush_tick(&mut flush_timer) => {
-                    if self.engine.has_buffered_state() {
+                    if self.generations.has_buffered_state() || self.generations.pending_cut_timestamp().is_some() {
                         let now = get_unix_timestamp();
-                        self.engine.flush(now, final_flush, |target_idx, metric| {
-                            target_buffers[target_idx].push(metric);
+                        self.generations.flush(now, final_flush, |target, metric| {
+                            emitted.entry(target.to_string()).or_default().push(metric);
                         });
-                        if let Err(e) = self.dispatch_emitted(&mut target_buffers, context.dispatcher()).await {
+                        if let Err(e) = self.dispatch_emitted(&mut emitted, context.dispatcher()).await {
                             error!(error = %e, "Failed to dispatch flushed metrics from region.");
                         }
                     }
@@ -208,20 +364,55 @@ impl Transform for MetricRegion {
                         break;
                     }
                 },
+                expired_binding = next_host_tags_expiry(&mut host_tags_deadline) => {
+                    if let Some(binding) = expired_binding {
+                        self.bindings.host_tags.remove(&binding);
+                        self.generations.set_bindings(self.bindings.clone());
+                        debug!(binding = %binding, "Host tags enrichment duration elapsed; cleared host tags binding.");
+                    }
+                },
+                snapshot_request = receive_context_snapshot_request(&mut self.context_snapshot_requests) => {
+                    match snapshot_request {
+                        Some(response) => {
+                            send_context_snapshot_if_open(response, || self.generations.snapshot_contexts());
+                        }
+                        None => self.context_snapshot_requests = None,
+                    }
+                },
+                maybe_plan = next_live_plan(&mut self.live_plans), if !final_flush => {
+                    if let Some(candidate) = maybe_plan {
+                        self.handle_plan_update(candidate, get_unix_timestamp());
+                        if flush_timer.is_none() && self.generations.has_stateful_operators() {
+                            flush_timer = Some(interval_at(
+                                tokio::time::Instant::now() + self.flush_interval,
+                                self.flush_interval,
+                            ));
+                        }
+                    }
+                },
+                maybe_mirroring = next_live_mirroring(&mut self.live_mirroring), if !final_flush => {
+                    if let Some((binding_name, mirroring)) = maybe_mirroring {
+                        self.bindings.mirroring_signals.insert(binding_name, mirroring);
+                        self.generations.set_bindings(self.bindings.clone());
+                        debug!("Updated live mirroring signal on metric region.");
+                    }
+                },
                 maybe_events = context.events().next(), if !final_flush => match maybe_events {
                     Some(events) => {
                         trace!(events_len = events.len(), "Metric region received events.");
                         let now = get_unix_timestamp();
-                        self.ingest_buffer(events, now, &mut target_buffers);
-                        if let Err(e) = self.dispatch_emitted(&mut target_buffers, context.dispatcher()).await {
+                        self.ingest_buffer(events, now, &mut emitted);
+                        if let Err(e) = self.dispatch_emitted(&mut emitted, context.dispatcher()).await {
                             error!(error = %e, "Failed to dispatch metrics from region.");
                         }
                     }
                     None => {
-                        if has_stateful {
+                        if self.generations.has_stateful_operators() || self.generations.has_buffered_state() {
                             final_flush = true;
                             if let Some(timer) = flush_timer.as_mut() {
                                 timer.reset_immediately();
+                            } else {
+                                flush_timer = Some(interval_at(tokio::time::Instant::now(), self.flush_interval));
                             }
                         } else {
                             break;
@@ -245,10 +436,46 @@ async fn next_flush_tick(timer: &mut Option<tokio::time::Interval>) {
     }
 }
 
+async fn next_live_plan(plans: &mut Option<Live<MetricPlan>>) -> Option<MetricPlan> {
+    match plans {
+        Some(live) => Some(live.changed().await),
+        None => pending().await,
+    }
+}
+
+async fn next_live_mirroring(
+    mirroring: &mut Option<(String, Live<MetricMirroring>)>,
+) -> Option<(String, MetricMirroring)> {
+    match mirroring {
+        Some((name, live)) => Some((name.clone(), live.changed().await)),
+        None => pending().await,
+    }
+}
+
+async fn next_host_tags_expiry(deadline: &mut Option<(String, Instant)>) -> Option<String> {
+    match deadline {
+        Some((_, at)) => {
+            sleep_until(*at).await;
+            deadline.take().map(|(binding, _)| binding)
+        }
+        None => pending().await,
+    }
+}
+
+async fn receive_context_snapshot_request(
+    receiver: &mut Option<AggregateContextSnapshotRequestReceiver>,
+) -> Option<AggregateContextSnapshotRequest> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => pending().await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU64;
 
+    use saluki_common::sync::live;
     use saluki_core::{
         components::test_util::TestComponentDriver,
         data_model::event::{
@@ -258,12 +485,15 @@ mod tests {
         topology::EventsBuffer,
     };
     use saluki_metric_kernels::{
+        filterlist::MetricNameFilter,
         histogram::HistogramConfiguration,
         routing_filter::MetricMirroring,
         tag_filter::{FilterAction, MetricTagFilterEntry},
     };
     use saluki_metric_plan::{
-        lowering::{lower_native_pipeline, NativePipelineConfig, RoutingPolicySpec, STREAM_DOGSTATSD},
+        lowering::{
+            lower_native_pipeline, NativePipelineConfig, RoutingPolicySpec, MRF_SIGNAL_BINDING, STREAM_DOGSTATSD,
+        },
         validate_plan, MetricPlan, Op,
     };
 
@@ -419,5 +649,167 @@ mod tests {
             .collect();
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].context().name(), "temp");
+    }
+
+    #[tokio::test]
+    async fn live_plan_reload_preserves_state_and_live_mirroring_toggles_mrf() {
+        let base_config = NativePipelineConfig {
+            dogstatsd_enabled: true,
+            aggregate_flush_open_windows: true,
+            aggregate_counter_expiry_secs: 0,
+            mrf_branch_configured: true,
+            mrf_enabled: true,
+            mrf_mirroring: MetricMirroring {
+                enabled: false,
+                allowlist: vec![],
+            },
+            ..NativePipelineConfig::default()
+        };
+        let initial_plan = lower_native_pipeline(&base_config);
+        let validated = validate_plan(&initial_plan).unwrap();
+
+        let (mut plan_publisher, plan_source) = live::channel(initial_plan);
+        let (mut mrf_publisher, mrf_source) = live::channel(MetricMirroring {
+            enabled: false,
+            allowlist: vec![],
+        });
+
+        let region_cfg = MetricRegionConfiguration::new(validated, STREAM_DOGSTATSD, Duration::from_secs(60))
+            .with_live_plans(plan_source.live(|p| p))
+            .with_live_mirroring(MRF_SIGNAL_BINDING, mrf_source.live(|m| m));
+
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_component_id("live_region")
+            .transform(region_cfg)
+            .await
+            .expect("region should build");
+
+        // 1. Send a counter before any reload (retained in AggregateCore).
+        control.send(events_from(vec![Metric::counter("keep.me", 4.0)])).await;
+        control.wait_until_input_drained().await;
+
+        // 2. Publish a live filterlist update dropping `block.me`, and enable live MRF mirroring!
+        let mut updated_config = base_config;
+        updated_config.metric_filter = MetricNameFilter {
+            values: vec!["block.me".to_string()],
+            match_prefix: false,
+            prefix_rules: vec![],
+        };
+        plan_publisher.publish(lower_native_pipeline(&updated_config));
+        mrf_publisher.publish(MetricMirroring {
+            enabled: true,
+            allowlist: vec!["keep.me".to_string()],
+        });
+
+        // Yield briefly so the region task processes both live updates before admitting the next batch.
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        // 3. Admit another `keep.me` sample (must merge with pre-reload 4.0 -> 10.0) and a now-blocked `block.me`.
+        control
+            .send(events_from(vec![
+                Metric::counter("keep.me", 6.0),
+                Metric::counter("block.me", 99.0),
+            ]))
+            .await;
+        control.shutdown().await.expect("shutdown");
+
+        let primary: Vec<Metric> = outputs
+            .default_output()
+            .collect_events()
+            .await
+            .into_iter()
+            .filter_map(Event::try_into_metric)
+            .collect();
+        let mrf: Vec<Metric> = outputs
+            .named_output("mrf")
+            .collect_events()
+            .await
+            .into_iter()
+            .filter_map(Event::try_into_metric)
+            .collect();
+
+        assert_eq!(primary.len(), 1);
+        assert_eq!(primary[0].context().name(), "keep.me");
+        let total: f64 = match primary[0].values() {
+            MetricValues::Rate(points, _) => points.into_iter().map(|(_, v)| v).sum(),
+            other => panic!("expected rate, got {other:?}"),
+        };
+        assert_eq!(total, 10.0, "pre-reload and post-reload samples must both be preserved");
+
+        // MRF received `keep.me` after live mirroring was enabled.
+        assert_eq!(mrf.len(), 1);
+        assert_eq!(mrf[0].context().name(), "keep.me");
+    }
+
+    #[tokio::test]
+    async fn region_serves_context_snapshots_and_expires_host_tags() {
+        use saluki_core::data_model::tags::{SharedTagSet, Tag};
+        use saluki_metric_plan::lowering::HOST_TAGS_BINDING;
+
+        use crate::transforms::aggregate_context_snapshot_channel;
+
+        let config = NativePipelineConfig {
+            dogstatsd_enabled: true,
+            host_tags_enabled: true,
+            aggregate_flush_open_windows: true,
+            aggregate_counter_expiry_secs: 0,
+            ..NativePipelineConfig::default()
+        };
+        let validated = validate_plan(&lower_native_pipeline(&config)).unwrap();
+        let (snapshot_handle, snapshot_rx) = aggregate_context_snapshot_channel();
+        let bindings = RuntimeBindings::default()
+            .with_host_tags(HOST_TAGS_BINDING, SharedTagSet::from_iter([Tag::from("host_tag:v1")]));
+
+        let region_cfg = MetricRegionConfiguration::new(validated, STREAM_DOGSTATSD, Duration::from_secs(60))
+            .with_bindings(bindings)
+            .with_host_tags_expiry(HOST_TAGS_BINDING, Duration::from_millis(40))
+            .with_context_snapshot_receiver(snapshot_rx);
+
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_component_id("snapshot_and_expiry_region")
+            .transform(region_cfg)
+            .await
+            .expect("region should build");
+
+        // Send a non-timestamped metric (retained in AggregateCore) and a timestamped gauge (emitted immediately with host tags).
+        control
+            .send(events_from(vec![
+                Metric::counter("retained.counter", 1.0),
+                Metric::gauge("before.expiry", (1000, 1.0)),
+            ]))
+            .await;
+        control.wait_until_input_drained().await;
+
+        // Context snapshot must return the retained counter context.
+        let snapshot = snapshot_handle.snapshot().await.expect("snapshot succeeds");
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].context().name(), "retained.counter");
+
+        // Wait past `expected_tags_duration` and send another timestamped gauge; it must NOT get `host_tag:v1`.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        control
+            .send(events_from(vec![Metric::gauge("after.expiry", (1001, 2.0))]))
+            .await;
+        control.shutdown().await.expect("shutdown");
+
+        let emitted: Vec<Metric> = outputs
+            .default_output()
+            .collect_events()
+            .await
+            .into_iter()
+            .filter_map(Event::try_into_metric)
+            .collect();
+
+        let before = emitted
+            .iter()
+            .find(|m| m.context().name() == "before.expiry")
+            .expect("before.expiry emitted");
+        assert!(before.context().tags().has_tag(Tag::from("host_tag:v1")));
+
+        let after = emitted
+            .iter()
+            .find(|m| m.context().name() == "after.expiry")
+            .expect("after.expiry emitted");
+        assert!(!after.context().tags().has_tag(Tag::from("host_tag:v1")));
     }
 }

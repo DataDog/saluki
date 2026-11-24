@@ -9,6 +9,7 @@ use saluki_components::{
 };
 use saluki_core::data_model::event::metric::{Metric, MetricOrigin};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_metric_kernels::mapper::MapperKernel;
 use saluki_metric_plan::{
     explain_plan,
     lowering::{
@@ -17,6 +18,7 @@ use saluki_metric_plan::{
     },
     validate_plan, MetricPlan, RuntimeBindings, TelemetryContract,
 };
+use tracing::warn;
 
 use crate::{
     component_inputs::{
@@ -47,7 +49,7 @@ pub fn native_pipeline_config(config: &SalukiConfiguration) -> Result<NativePipe
         passthrough_streams.push(STREAM_TRACE_SAMPLER.to_string());
     }
 
-    let mapper_profiles = dsd
+    let mapper_profiles: Vec<DogStatsDMapperProfile> = dsd
         .mapper
         .profiles
         .iter()
@@ -66,6 +68,20 @@ pub fn native_pipeline_config(config: &SalukiConfiguration) -> Result<NativePipe
                 .collect(),
         })
         .collect();
+
+    // Like the Datadog Agent and native `DogStatsDMapperConfiguration`, an invalid profile or mapping disables metric
+    // mapping rather than failing ADP startup.
+    let mapper_profiles = if !mapper_profiles.is_empty() {
+        match MapperKernel::compile(&mapper_profiles) {
+            Ok(_) => mapper_profiles,
+            Err(e) => {
+                warn!("Could not create metric mapper: {}", e);
+                Vec::new()
+            }
+        }
+    } else {
+        mapper_profiles
+    };
 
     let endpoint_routing = MetricsEndpointRoutingConfiguration::new(
         &config.domains.metrics_endpoint_routing.metric_allowlists,
@@ -146,10 +162,11 @@ pub fn render_plan_explanation(config: &SalukiConfiguration, as_json: bool) -> R
     }
 }
 
-/// Lowers and validates `config` into a boot-time [`MetricRegionConfiguration`] hosting the single fused region.
+/// Lowers and validates `config` into a boot-time [`MetricRegionConfiguration`] hosting the single fused region,
+/// alongside the lowered [`MetricPlan`] (for reuse as a fallback during live reloads).
 pub fn build_metric_region_configuration(
     config: &SalukiConfiguration, bindings: RuntimeBindings,
-) -> Result<MetricRegionConfiguration, GenericError> {
+) -> Result<(MetricRegionConfiguration, MetricPlan), GenericError> {
     let native = native_pipeline_config(config)?;
     let plan = lower_native_pipeline(&native);
     let validated = validate_plan(&plan).map_err(|errors| {
@@ -178,7 +195,8 @@ pub fn build_metric_region_configuration(
     .with_bindings(bindings);
 
     // When both DogStatsD and passthrough sources (OTLP, checks, liveness, trace sampler) feed the single fused
-    // region, route DogStatsD-origin metrics into the aggregation branch and all other metrics into the shared
+    // region, route DogStatsD-emitted metrics (both DogStatsD and JMX-over-DogStatsD, which are the only metrics
+    // carrying `MetricOrigin::OriginMetadata`) into the aggregation branch and all other metrics into the shared
     // passthrough enrichment branch.
     if native.dogstatsd_enabled && !native.passthrough_streams.is_empty() {
         let passthrough_stream: &'static str = match native.passthrough_streams[0].as_str() {
@@ -189,7 +207,7 @@ pub fn build_metric_region_configuration(
             _ => STREAM_DOGSTATSD,
         };
         region = region.with_stream_classifier(Arc::new(move |metric: &Metric| {
-            if metric.metadata().origin().is_some_and(MetricOrigin::is_dogstatsd) {
+            if matches!(metric.metadata().origin(), Some(MetricOrigin::OriginMetadata { .. })) {
                 STREAM_DOGSTATSD
             } else {
                 passthrough_stream
@@ -197,7 +215,7 @@ pub fn build_metric_region_configuration(
         }));
     }
 
-    Ok(region)
+    Ok((region, plan))
 }
 
 #[cfg(test)]
@@ -244,9 +262,7 @@ mod tests {
     /// Runs a batch of metrics through the native DogStatsD transform components (`dsd_mapper` -> `dsd_prefix_filter`
     /// -> optional `dsd_no_agg_split` -> `dsd_tag_filterlist` -> `dsd_agg` -> `dsd_post_agg_filter`) and collects
     /// emitted metrics after flushing.
-    async fn run_native_dogstatsd_chain(
-        config: &SalukiConfiguration, input: Vec<Metric>,
-    ) -> Vec<(String, Vec<String>, String)> {
+    async fn run_native_dogstatsd_chain(config: &SalukiConfiguration, input: Vec<Metric>) -> Vec<CanonicalMetric> {
         let dsd = &config.domains.dogstatsd;
         let histogram = &config.shared.metrics_encoding.histogram;
 
@@ -392,32 +408,129 @@ mod tests {
             .collect()
     }
 
-    fn canonicalize_metrics(metrics: Vec<Metric>) -> Vec<(String, Vec<String>, String)> {
-        let mut rows: Vec<(String, Vec<String>, String)> = metrics
+    #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+    struct CanonicalMetric {
+        name: String,
+        host: Option<String>,
+        tags: Vec<String>,
+        unit: String,
+        origin: Option<String>,
+        values: String,
+    }
+
+    fn canonicalize_metrics(metrics: Vec<Metric>) -> Vec<CanonicalMetric> {
+        let mut rows: Vec<CanonicalMetric> = metrics
             .into_iter()
             .map(|m| {
                 let name = m.context().name().to_string();
+                let host = m.context().host().map(ToString::to_string);
                 let mut tags: Vec<String> = m.context().tags().into_iter().map(|t| t.as_str().to_string()).collect();
                 tags.sort();
-                let kind = match m.values() {
-                    MetricValues::Counter(_) => "counter",
-                    MetricValues::Rate(_, _) => "rate",
-                    MetricValues::Gauge(_) => "gauge",
-                    MetricValues::Set(_) => "set",
-                    MetricValues::Histogram(_) => "histogram",
-                    MetricValues::Distribution(_) => "distribution",
+                let unit = m.metadata().unit.to_string();
+                let origin = m.metadata().origin().map(ToString::to_string);
+                // Compare exact numeric values and intervals, ignoring wall-clock bucket timestamps that differ
+                // between separate async runs.
+                let values = match m.values() {
+                    MetricValues::Counter(pts) => {
+                        let vals: Vec<u64> = pts.into_iter().map(|(_, v)| v.to_bits()).collect();
+                        format!("counter({vals:?})")
+                    }
+                    MetricValues::Rate(pts, interval) => {
+                        let vals: Vec<u64> = pts.into_iter().map(|(_, v)| v.to_bits()).collect();
+                        format!("rate({vals:?},{}s)", interval.as_secs())
+                    }
+                    MetricValues::Gauge(pts) => {
+                        let vals: Vec<u64> = pts.into_iter().map(|(_, v)| v.to_bits()).collect();
+                        format!("gauge({vals:?})")
+                    }
+                    MetricValues::Set(pts) => {
+                        let vals: Vec<u64> = pts.into_iter().map(|(_, v)| v.to_bits()).collect();
+                        format!("set({vals:?})")
+                    }
+                    MetricValues::Histogram(pts) => {
+                        let counts: Vec<usize> = pts.into_iter().map(|(_, h)| h.samples().len()).collect();
+                        format!("histogram({counts:?})")
+                    }
+                    MetricValues::Distribution(pts) => {
+                        let summaries: Vec<(u64, u64, u64, u64)> = pts
+                            .into_iter()
+                            .map(|(_, s)| {
+                                (
+                                    s.count(),
+                                    s.min().unwrap_or(0.0).to_bits(),
+                                    s.max().unwrap_or(0.0).to_bits(),
+                                    s.sum().unwrap_or(0.0).to_bits(),
+                                )
+                            })
+                            .collect();
+                        format!("distribution({summaries:?})")
+                    }
+                };
+                CanonicalMetric {
+                    name,
+                    host,
+                    tags,
+                    unit,
+                    origin,
+                    values,
                 }
-                .to_string();
-                (name, tags, kind)
             })
             .collect();
         rows.sort();
         rows
     }
 
-    /// Differential test: lowered `SalukiConfiguration` executed on `ReferenceInterpreter` matches the native
-    /// DogStatsD transform chain across mapper, namespace prefix, filterlist (with histogram exception), timestamp
-    /// split, tag filterlist, tag value allowlist, aggregation, and post-aggregate filtering.
+    async fn assert_three_way_parity(config: &SalukiConfiguration, input: Vec<Metric>) {
+        // 1. Native 6-transform DogStatsD chain.
+        let native_out = run_native_dogstatsd_chain(config, input.clone()).await;
+
+        // 2. Lowered plan on deterministic `ReferenceInterpreter`.
+        let plan = lower_from_saluki_config(config).expect("lowering should succeed");
+        let validated = validate_plan(&plan).expect("lowered plan must validate");
+        let mut interp = ReferenceInterpreter::new(&validated, RuntimeBindings::default()).expect("interpreter init");
+
+        let mut plan_metrics = Vec::new();
+        let immediate = interp
+            .ingest(STREAM_DOGSTATSD, 1_700_000_012, input.clone())
+            .expect("ingest should succeed");
+        if let Some(m) = immediate.get(TARGET_PRIMARY) {
+            plan_metrics.extend(m.iter().cloned());
+        }
+        let flushed = interp.flush(1_700_000_012, true);
+        if let Some(m) = flushed.get(TARGET_PRIMARY) {
+            plan_metrics.extend(m.iter().cloned());
+        }
+        let plan_out = canonicalize_metrics(plan_metrics);
+
+        assert_eq!(
+            plan_out, native_out,
+            "lowered MetricPlan on ReferenceInterpreter must match native DogStatsD transform chain (values + metadata)"
+        );
+
+        // 3. Single-task `MetricRegionTransform` hosting compiled `FusedMetricEngine`.
+        let mut standalone_config = config.clone();
+        standalone_config.control.standalone_mode = true;
+        let (region_cfg, _) = build_metric_region_configuration(&standalone_config, RuntimeBindings::default())
+            .expect("metric region config");
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_component_id("metrics_region")
+            .transform(region_cfg)
+            .await
+            .expect("region driver");
+        control.send(buffer_from_metrics(input)).await;
+        control.shutdown().await.expect("region shutdown");
+        let region_metrics = collect_all_metrics(outputs.default_output()).await;
+        let region_out = canonicalize_metrics(region_metrics);
+
+        assert_eq!(
+            region_out, native_out,
+            "single-region MetricRegionTransform must match native DogStatsD transform chain (values + metadata)"
+        );
+    }
+
+    /// Differential test: lowered `SalukiConfiguration` executed on `ReferenceInterpreter` and `MetricRegionTransform`
+    /// matches the native DogStatsD transform chain across mapper, namespace prefix, filterlist (with histogram
+    /// exception), timestamp split, tag filterlist, tag value allowlist, aggregation, and post-aggregate filtering.
     #[tokio::test]
     async fn differential_lowered_plan_matches_native_dogstatsd_chain() {
         let mut config = SalukiConfiguration::default();
@@ -481,56 +594,106 @@ mod tests {
             ),
         ];
 
-        let input_for_region = input.clone();
+        assert_three_way_parity(&config, input).await;
+    }
 
-        // 1. Run native component chain.
-        let native_out = run_native_dogstatsd_chain(&config, input.clone()).await;
+    #[tokio::test]
+    async fn differential_matrix_covers_no_agg_disabled_histogram_copy_and_invalid_mapper() {
+        // Case 1: no_aggregation_pipeline disabled + copy_to_distribution + percentiles + unit clearing on `.count`.
+        let mut config = SalukiConfiguration::default();
+        config.control.dogstatsd = true;
+        config.domains.dogstatsd.aggregation.no_aggregation_pipeline = false;
+        config.domains.dogstatsd.aggregation.flush_open_windows = true;
+        config.domains.dogstatsd.aggregation.counter_expiry_seconds = None;
+        config.shared.metrics_encoding.histogram.aggregates =
+            vec!["count".to_string(), "avg".to_string(), "max".to_string()];
+        config.shared.metrics_encoding.histogram.percentiles = vec!["0.95".to_string()];
+        config.shared.metrics_encoding.histogram.copy_to_distribution = true;
+        config.shared.metrics_encoding.histogram.copy_to_distribution_prefix = "dist.".to_string();
 
-        // 2. Lower `SalukiConfiguration` -> `MetricPlan` and run via `ReferenceInterpreter`.
-        let plan = lower_from_saluki_config(&config).expect("lowering should succeed");
-        let validated = validate_plan(&plan).expect("lowered plan must validate");
-        let mut interp = ReferenceInterpreter::new(&validated, RuntimeBindings::default()).expect("interpreter init");
-
-        let mut plan_metrics = Vec::new();
-        let immediate = interp
-            .ingest(STREAM_DOGSTATSD, 1_700_000_012, input)
-            .expect("ingest should succeed");
-        if let Some(m) = immediate.get(TARGET_PRIMARY) {
-            plan_metrics.extend(m.iter().cloned());
-        }
-        let flushed = interp.flush(1_700_000_012, true);
-        if let Some(m) = flushed.get(TARGET_PRIMARY) {
-            plan_metrics.extend(m.iter().cloned());
-        }
-        let plan_out = canonicalize_metrics(plan_metrics);
-
-        assert_eq!(
-            plan_out, native_out,
-            "lowered MetricPlan on ReferenceInterpreter must match native DogStatsD transform chain"
+        let hist_with_unit = Metric::from_parts(
+            Context::from_static_parts("req.duration", &["env:prod"]),
+            MetricValues::histogram([5.0, 15.0, 25.0]),
+            saluki_core::data_model::event::metric::MetricMetadata::default()
+                .with_unit(stringtheory::MetaString::from_static("millisecond")),
         );
-        // Sanity check that non-trivial behaviors happened (histogram descendant exception, tag rewrite, etc.).
-        assert!(plan_out.iter().any(|(n, _, _)| n == "acme.hist.latency.avg"));
-        assert!(!plan_out.iter().any(|(n, _, _)| n == "acme.hist.latency.max"));
-        assert!(!plan_out.iter().any(|(n, _, _)| n == "acme.blocked"));
-        // 3. Also run the exact same lowered plan through `MetricRegionTransform` (single fused Tokio task).
-        let mut standalone_config = config.clone();
-        standalone_config.control.standalone_mode = true;
-        let region_cfg = build_metric_region_configuration(&standalone_config, RuntimeBindings::default())
-            .expect("metric region config");
+        let input = vec![
+            hist_with_unit,
+            Metric::counter(Context::from_static_parts("req.count", &["env:prod"]), 3.0),
+            Metric::counter(Context::from_static_parts("req.count", &["env:prod"]), 7.0),
+            Metric::set("unique.users", "alice"),
+            Metric::set("unique.users", "bob"),
+        ];
+        assert_three_way_parity(&config, input).await;
+
+        // Case 2: Invalid mapper profile degrades gracefully to pass-through (matching Datadog Agent / native ADP).
+        let mut invalid_mapper_cfg = SalukiConfiguration::default();
+        invalid_mapper_cfg.control.dogstatsd = true;
+        invalid_mapper_cfg.domains.dogstatsd.aggregation.flush_open_windows = true;
+        invalid_mapper_cfg.domains.dogstatsd.aggregation.counter_expiry_seconds = None;
+        invalid_mapper_cfg.domains.dogstatsd.mapper.profiles = vec![MapperProfile {
+            name: "bad".to_string(),
+            prefix: "x.".to_string(),
+            mappings: vec![MetricMapping {
+                metric_match: "x.**.y".to_string(),
+                match_type: "wildcard".to_string(),
+                name: "x.y".to_string(),
+                tags: HashMap::new(),
+            }],
+        }];
+        assert_three_way_parity(&invalid_mapper_cfg, vec![Metric::gauge("x.a.b.y", 42.0)]).await;
+    }
+
+    #[tokio::test]
+    async fn mixed_region_routes_jmx_dogstatsd_to_aggregation_and_otlp_to_passthrough() {
+        let mut config = SalukiConfiguration::default();
+        config.control.dogstatsd = true;
+        config.control.otlp = true;
+        config.control.standalone_mode = true;
+        config.domains.otlp.receiver.metrics_enabled = true;
+        config.domains.dogstatsd.prefix_filter.metric_namespace = "dsd".to_string();
+        config.domains.dogstatsd.aggregation.flush_open_windows = true;
+        config.domains.dogstatsd.aggregation.counter_expiry_seconds = None;
+
+        let (region_cfg, _) =
+            build_metric_region_configuration(&config, RuntimeBindings::default()).expect("mixed region config");
         let (control, mut outputs) = TestComponentDriver::options()
-            .with_component_id("metrics_region")
+            .with_component_id("mixed_region")
             .transform(region_cfg)
             .await
             .expect("region driver");
-        control.send(buffer_from_metrics(input_for_region)).await;
-        control.shutdown().await.expect("region shutdown");
-        let region_metrics = collect_all_metrics(outputs.default_output()).await;
-        let region_out = canonicalize_metrics(region_metrics);
 
-        assert_eq!(
-            region_out, native_out,
-            "single-region MetricRegionTransform must match native DogStatsD transform chain"
+        let jmx_counter = Metric::from_parts(
+            Context::from_static_name("jvm.gc"),
+            MetricValues::counter(5.0),
+            saluki_core::data_model::event::metric::MetricMetadata::default()
+                .with_origin(Some(MetricOrigin::jmx_check("cassandra"))),
         );
+        let otlp_counter = Metric::from_parts(
+            Context::from_static_name("otel.requests"),
+            MetricValues::counter(9.0),
+            saluki_core::data_model::event::metric::MetricMetadata::default(),
+        );
+
+        control.send(buffer_from_metrics(vec![jmx_counter, otlp_counter])).await;
+        control.shutdown().await.expect("shutdown");
+
+        let emitted = collect_all_metrics(outputs.default_output()).await;
+        assert_eq!(emitted.len(), 2);
+
+        // JMX-over-DogStatsD metric went through DogStatsD prefixing & aggregation (counter -> rate).
+        let jmx = emitted
+            .iter()
+            .find(|m| m.context().name() == "dsd.jvm.gc")
+            .expect("JMX metric must receive DogStatsD prefix and aggregation");
+        assert!(matches!(jmx.values(), MetricValues::Rate(_, _)));
+
+        // OTLP metric bypassed DogStatsD prefixing and aggregation (remains a counter with original name).
+        let otlp = emitted
+            .iter()
+            .find(|m| m.context().name() == "otel.requests")
+            .expect("OTLP metric must stay unprefixed");
+        assert!(matches!(otlp.values(), MetricValues::Counter(_)));
     }
 
     #[test]
