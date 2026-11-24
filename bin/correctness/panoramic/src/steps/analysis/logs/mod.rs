@@ -11,7 +11,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt,
     ops::RangeInclusive,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -24,12 +23,10 @@ use tracing::{error, info};
 
 pub use self::headers::HeaderRule;
 use self::headers::{compare_headers, default_header_rules};
-pub use self::ratchet::KnownDifference;
-use self::ratchet::Ratchet;
+use super::ratchet::{DiffKind, FieldDiff, KnownDifference, Ratchet};
 use crate::steps::intake::CollectedData;
 
 mod headers;
-mod ratchet;
 
 /// Envelope fields held as raw values, in the order they're compared.
 const RAW_ENVELOPE_FIELDS: &[&str] = &["message", "status", "hostname", "service", "ddsource", "timestamp"];
@@ -87,6 +84,9 @@ pub struct LogsAnalysisOptions {
     ///
     /// A matching difference doesn't fail the case, but an entry path that matches nothing does, so that fixing a
     /// gap requires removing its entries.
+    ///
+    /// The view that `when` matches is the baseline log's semantic view (see `stele::Log::semantic_view`). An entry
+    /// with a `when` never covers a request header difference, since those belong to no log.
     pub known_differences: Vec<KnownDifference>,
 }
 
@@ -120,53 +120,6 @@ impl FieldLocation {
             Self::EnvelopeProperties => "envelope_properties",
             Self::Content => "content",
         }
-    }
-}
-
-/// The kind of a difference between two paired logs.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum DiffKind {
-    /// Both sides have the field, with different values.
-    Value,
-
-    /// Only the baseline has the field.
-    Missing,
-
-    /// Only the comparison has the field.
-    Extra,
-
-    /// The field is in a different location on each side. The path uses the baseline's location.
-    Location,
-}
-
-/// A single difference between two paired logs.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FieldDiff {
-    /// Location-qualified path of the field, such as `envelope.status` or `content.otel.trace_id`.
-    pub path: String,
-
-    /// The kind of difference.
-    pub kind: DiffKind,
-
-    /// The baseline value, if present.
-    pub baseline: Option<Value>,
-
-    /// The comparison value, if present.
-    pub comparison: Option<Value>,
-}
-
-impl fmt::Display for FieldDiff {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let show = |value: &Option<Value>| value.as_ref().map_or_else(|| "<absent>".to_string(), Value::to_string);
-        write!(
-            f,
-            "{}: {:?} (baseline: {}, comparison: {})",
-            self.path,
-            self.kind,
-            show(&self.baseline),
-            show(&self.comparison)
-        )
     }
 }
 
