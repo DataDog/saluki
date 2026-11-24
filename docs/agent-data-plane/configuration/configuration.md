@@ -1080,8 +1080,8 @@ leaves the output off and logs a warning. A configured `otlp_config.debug` secti
 doesn't turn it on in ADP. ADP writes the output to its log at the `info` level, so a higher log level hides it.
 The format of the lines is ADP's own. `detailed` prints trace and span IDs as lists of numbers. Support is
 partial because of this format, and because ADP doesn't read the section's other settings, such as log sampling.
-In OTLP proxy mode, ADP doesn't honor this key, including for the traces it decodes itself when `proxy_traces` is
-false. Issue #3281 tracks this.
+ADP doesn't honor this key for an OTLP signal that it proxies to the core Agent, because it doesn't decode that
+signal. Issue #3281 tracks this.
 
 ### `otlp_config.logs.enabled`
 
