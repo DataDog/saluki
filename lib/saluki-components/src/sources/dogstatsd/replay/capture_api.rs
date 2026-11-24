@@ -14,15 +14,18 @@ use serde::{Deserialize, Serialize};
 
 use super::DogStatsDCaptureControl;
 
+/// Route for starting a capture (`POST`).
+pub const CAPTURE_TRIGGER_ROUTE: &str = "/dogstatsd/capture/trigger";
+
 /// Request body for `POST /dogstatsd/capture/trigger`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CaptureTriggerBody {
     /// Duration of the capture, parsed by `parse_duration` (for example, `"10s"`, `"500ms"`).
     pub duration: String,
 
     /// Optional override for the capture output directory. When omitted, the source's
     /// configured default directory is used.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
     /// Whether the capture file should be zstd-compressed.
@@ -31,7 +34,7 @@ pub struct CaptureTriggerBody {
 }
 
 /// Response body for `POST /dogstatsd/capture/trigger`.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CaptureTriggerResponseBody {
     /// Absolute path the capture is being written to.
     pub path: String,
@@ -73,7 +76,7 @@ impl APIHandler for DogStatsDCaptureAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().route("/dogstatsd/capture/trigger", post(Self::trigger_handler))
+        Router::new().route(CAPTURE_TRIGGER_ROUTE, post(Self::trigger_handler))
     }
 }
 
@@ -167,5 +170,23 @@ mod tests {
 
         control.stop_capture().expect("stop should succeed");
         wait_until_inactive(|| control.is_ongoing().expect("control should be bound"));
+    }
+
+    #[test]
+    fn trigger_body_wire_format_omits_absent_path() {
+        let mut body = trigger_body("10s");
+        assert_eq!(
+            serde_json::to_string(&body).expect("body should serialize"),
+            r#"{"duration":"10s","compressed":false}"#
+        );
+
+        body.path = Some("/tmp/capture".to_string());
+        body.compressed = true;
+        let json = serde_json::to_string(&body).expect("body should serialize");
+        assert_eq!(json, r#"{"duration":"10s","path":"/tmp/capture","compressed":true}"#);
+
+        let decoded: CaptureTriggerBody = serde_json::from_str(&json).expect("body should deserialize");
+        assert_eq!(decoded.path.as_deref(), Some("/tmp/capture"));
+        assert!(decoded.compressed);
     }
 }
