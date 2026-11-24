@@ -6,7 +6,7 @@ analysis_mode: traces
 # that reach the intake comes from ADP.
 # ADP's SQL obfuscation always sets `sql.query` to the obfuscated resource, where the trace-agent only rewrites a
 # `sql.query`, `db.statement` or `db.query.text` the tracer sent.
-# TODO: Drop once ADP's SQL obfuscation matches the trace-agent's.
+# TODO(#3388): Drop once ADP's SQL obfuscation matches the trace-agent's.
 additional_span_ignore_fields:
   - meta.sql.query
 millstone:
