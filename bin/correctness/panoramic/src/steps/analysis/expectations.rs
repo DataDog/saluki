@@ -24,12 +24,11 @@ pub(super) const COMPARISON: &str = "comparison";
 /// Most series with the expected name, or span names of the expected service, that an unmet expectation lists.
 const MAX_LISTED: usize = 3;
 
-/// What each side must hold of metrics, set in the `metrics` section of a `compare` step.
+/// What each side must hold of metrics. The `metrics` section of a `compare` step sets these fields.
 ///
 /// Every field is optional. A series count is the number of metric contexts, by type, that remain after the
 /// internal-name filter, so internal telemetry never counts toward it.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Clone, Debug, Default)]
 pub struct MetricsExpectations {
     /// Fewest series that each side holds after the internal-name filter.
     pub min_series: Option<NonZeroUsize>,
@@ -40,18 +39,6 @@ pub struct MetricsExpectations {
 }
 
 impl MetricsExpectations {
-    /// Checks that the section sets something to check.
-    ///
-    /// # Errors
-    ///
-    /// If the section is empty, an error is returned.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.min_series.is_none() && self.series.is_empty() {
-            return Err("'metrics' sets no expectation: set 'min_series' or 'series'".to_string());
-        }
-        Ok(())
-    }
-
     /// Checks both sides, which the internal-name filter has already cleaned.
     ///
     /// # Errors

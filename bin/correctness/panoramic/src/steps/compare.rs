@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tokio::time::Instant;
 
 use super::analysis::{
-    AnalysisMode, AnalysisRunner, LogsAnalysisOptions, MetricsExpectations, TracesAnalysisOptions, TracesOptions,
+    AnalysisMode, AnalysisRunner, LogsAnalysisOptions, MetricsOptions, TracesAnalysisOptions, TracesOptions,
 };
 use super::intake::CollectedData;
 use super::stopped;
@@ -123,8 +123,9 @@ struct Fields {
     traces: Option<TracesOptions>,
     /// Logs only: how logs are paired and counted, and the differences expected.
     logs: Option<LogsAnalysisOptions>,
-    /// Metrics only: what each side must hold, checked before the sides are compared.
-    metrics: Option<MetricsExpectations>,
+    /// Metrics only: what each side must hold, checked before the sides are compared, and the series whose type is
+    /// expected to differ, each with the gap and the issue that explain it.
+    metrics: Option<MetricsOptions>,
 }
 
 /// The telemetry compared.
@@ -182,7 +183,7 @@ struct Compare {
     additional_span_ignore_fields: Vec<String>,
     traces: TracesOptions,
     logs: LogsAnalysisOptions,
-    metrics: Option<MetricsExpectations>,
+    metrics: Option<MetricsOptions>,
 }
 
 #[async_trait]
@@ -216,7 +217,7 @@ impl Step for Compare {
             };
             let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, Some(traces))
                 .with_logs_options(self.logs.clone())
-                .with_metrics_expectations(self.metrics.clone())
+                .with_metrics_options(self.metrics.clone())
                 .with_dogstatsd_forwarding_requirement(self.require_dogstatsd_forwarded_packets);
             let report = match runner.run_analysis() {
                 Ok(()) => StepReport {

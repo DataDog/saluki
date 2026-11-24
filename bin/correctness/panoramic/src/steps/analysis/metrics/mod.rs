@@ -1,43 +1,116 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::num::NonZeroUsize;
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use serde::Deserialize;
+use serde_json::{json, Value};
 use stele::{Metric, MetricValue};
 use tracing::{error, info, warn};
 
 use super::expectations::MetricsExpectations;
 use super::join_failures;
+use super::ratchet::{DiffKind, FieldDiff, KnownDifference, Ratchet};
 use crate::steps::intake::metrics::{
     get_formatted_metric_value, MetricType, NormalizedMetric, NormalizedMetricContext, NormalizedMetrics,
 };
-use crate::steps::intake::CollectedData;
+use crate::steps::intake::{CollectedData, MetricCriteria};
 
 /// A metric context and type pair, used for comparing metrics between different sets.
 type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
+
+/// The path of a series whose type differs between the sides, the only difference a metrics known difference covers.
+const TYPE_PATH: &str = "type";
+
+/// The field of the view of a series that a metrics known difference must scope its entry to.
+const NAME_FIELD: &str = "name";
+
+/// Options for metrics analysis, set in the `metrics` section of a `compare` step.
+///
+/// The expectations (`min_series` and `series`) say what each side must hold. The step checks them before it compares
+/// the sides, and a known difference never excuses an unmet expectation.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetricsOptions {
+    /// Fewest series that each side holds after the internal-name filter.
+    pub min_series: Option<NonZeroUsize>,
+
+    /// Criteria that one series of each side must meet, one entry for each.
+    pub series: Vec<MetricCriteria>,
+
+    /// Series whose type is expected to differ between the sides, each tagged with the gap and the issue that explain
+    /// it.
+    ///
+    /// A covered series is left out of the comparison on both sides. An entry that matches nothing fails the analysis,
+    /// so that fixing a gap requires removing its entries.
+    pub known_differences: Vec<KnownDifference>,
+}
+
+impl MetricsOptions {
+    /// Checks that the section sets an expectation, and that each known difference names an issue and covers the type
+    /// of named series only.
+    ///
+    /// # Errors
+    ///
+    /// If the section sets no expectation, or if an entry names no issue, has a path other than `type`, or is not scoped
+    /// to series names with `when: {name: [...]}`, an error is returned.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.min_series.is_none() && self.series.is_empty() {
+            return Err("'metrics' sets no expectation: set 'min_series' or 'series'".to_string());
+        }
+        for entry in &self.known_differences {
+            if entry.issue.is_none() {
+                return Err(format!("known difference '{}' names no 'issue'", entry.gap));
+            }
+            if let Some(path) = entry.paths.iter().find(|path| *path != TYPE_PATH) {
+                return Err(format!(
+                    "known difference '{}' has the path '{}': a metrics known difference covers only the '{}' path",
+                    entry.gap, path, TYPE_PATH
+                ));
+            }
+            if entry.when.keys().ne([NAME_FIELD]) {
+                return Err(format!(
+                    "known difference '{}' must name its series with `when: {{{}: [...]}}`, and nothing else",
+                    entry.gap, NAME_FIELD
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns what each side must hold.
+    pub fn expectations(&self) -> MetricsExpectations {
+        MetricsExpectations {
+            min_series: self.min_series,
+            series: self.series.clone(),
+        }
+    }
+}
 
 /// Analyzes metrics for correctness.
 pub struct MetricsAnalyzer {
     baseline_metrics: NormalizedMetrics,
     comparison_metrics: NormalizedMetrics,
-    expectations: Option<MetricsExpectations>,
+    options: Option<MetricsOptions>,
 }
 
 impl MetricsAnalyzer {
     /// Creates a new `MetricsAnalyzer` instance with the given baseline/comparison data.
     ///
-    /// When `expectations` are set, each side must meet them. The sides are compared whether they meet them or not.
+    /// When `options` are set, each side must meet their expectations. The sides are compared whether they meet them or
+    /// not.
     pub fn new(
-        baseline_data: &CollectedData, comparison_data: &CollectedData, expectations: Option<MetricsExpectations>,
+        baseline_data: &CollectedData, comparison_data: &CollectedData, options: Option<MetricsOptions>,
     ) -> Result<Self, GenericError> {
-        let baseline_metrics = normalize(baseline_data.metrics(), expectations.is_some())
+        let baseline_metrics = normalize(baseline_data.metrics(), options.is_some())
             .error_context("Failed to normalize baseline metrics.")?;
 
-        let comparison_metrics = normalize(comparison_data.metrics(), expectations.is_some())
+        let comparison_metrics = normalize(comparison_data.metrics(), options.is_some())
             .error_context("Failed to normalize comparison metrics.")?;
 
         Ok(Self {
             baseline_metrics,
             comparison_metrics,
-            expectations,
+            options,
         })
     }
 
@@ -62,10 +135,22 @@ impl MetricsAnalyzer {
         // Each side must hold what the case expects: two sides that hold only internal telemetry are equal once it's
         // filtered out. An unmet expectation does not stop the comparison, so the failure reports both, with the
         // expectations first.
-        let unmet = self
-            .expectations
-            .as_ref()
-            .and_then(|expectations| expectations.check(&baseline_metrics, &comparison_metrics).err());
+        let unmet = self.options.as_ref().and_then(|options| {
+            options
+                .expectations()
+                .check(&baseline_metrics, &comparison_metrics)
+                .err()
+        });
+
+        // A known difference takes a series whose type differs out of both sides, so that the other series are still
+        // compared by value.
+        let known_differences = self
+            .options
+            .map(|options| options.known_differences)
+            .unwrap_or_default();
+        let mut ratchet = Ratchet::new(&known_differences);
+        remove_known_type_differences(&mut baseline_metrics, &mut comparison_metrics, &mut ratchet);
+        let stale = ratchet.stale_entries();
 
         // Make sure both the baseline and comparison targets emitted the same unique set of metrics.
         //
@@ -80,7 +165,63 @@ impl MetricsAnalyzer {
             compare_metric_values(&baseline_metrics, &comparison_metrics)
         });
 
-        join_failures([unmet, compared.err()])
+        // A known difference that matched nothing is stale: its gap is fixed, or the entry is wrong.
+        join_failures([unmet, fail_on_stale(compared, stale).err()])
+    }
+}
+
+/// Removes from both sides each series whose type differs between them, when a known difference covers it.
+///
+/// A series has a type difference when each side holds its context with another type. The difference is at `type`, of
+/// kind `value`, and the view that an entry's `when` matches holds the series `name`.
+fn remove_known_type_differences(
+    baseline_metrics: &mut NormalizedMetrics, comparison_metrics: &mut NormalizedMetrics, ratchet: &mut Ratchet<'_>,
+) {
+    let (baseline_only_pairs, comparison_only_pairs) = context_differences(baseline_metrics, comparison_metrics);
+    let mut known = HashSet::new();
+    for (context, baseline_type) in &baseline_only_pairs {
+        let view = BTreeMap::from([(NAME_FIELD.to_string(), json!(context.name()))]);
+        for (_, comparison_type) in comparison_only_pairs.iter().filter(|(other, _)| other == context) {
+            let diff = FieldDiff {
+                path: TYPE_PATH.to_string(),
+                kind: DiffKind::Value,
+                baseline: Some(Value::String(baseline_type.to_string())),
+                comparison: Some(Value::String(comparison_type.to_string())),
+            };
+            if ratchet.allows(&diff, &view) {
+                info!(
+                    "Known difference: '{}' is a {} in the baseline and a {} in the comparison.",
+                    context, baseline_type, comparison_type
+                );
+                known.insert((*context).clone());
+            }
+        }
+    }
+
+    baseline_metrics.remove_matching(|metric| known.contains(metric.context()));
+    comparison_metrics.remove_matching(|metric| known.contains(metric.context()));
+}
+
+/// Fails `compared` when `stale` lists a known difference that matched nothing, adding the stale entries to its
+/// details.
+fn fail_on_stale(
+    compared: Result<(), (GenericError, Vec<String>)>, stale: Vec<String>,
+) -> Result<(), (GenericError, Vec<String>)> {
+    if stale.is_empty() {
+        return compared;
+    }
+    for line in &stale {
+        error!("{}", line);
+    }
+    match compared {
+        Ok(()) => Err((
+            generic_error!("{} known difference path(s) no longer occur.", stale.len()),
+            stale,
+        )),
+        Err((error, mut details)) => {
+            details.extend(stale);
+            Err((error, details))
+        }
     }
 }
 
@@ -276,25 +417,164 @@ mod tests {
     use serde_json::json;
     use stele::Metric;
 
-    use super::compare_metric_contexts;
+    use super::{compare_metric_contexts, MetricsAnalyzer, MetricsOptions};
     use crate::steps::intake::metrics::NormalizedMetrics;
 
     fn metrics(entries: &[(&str, &[&str], &str)]) -> NormalizedMetrics {
+        valued(
+            &entries
+                .iter()
+                .map(|(name, tags, mtype)| (*name, *tags, *mtype, 1.0))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn valued(entries: &[(&str, &[&str], &str, f64)]) -> NormalizedMetrics {
         let metrics = entries
             .iter()
-            .map(|(name, tags, mtype)| {
+            .map(|(name, tags, mtype, value)| {
                 serde_json::from_value::<Metric>(json!({
                     "context": {
                         "name": name,
                         "tags": tags,
                     },
-                    "values": [[10, {"mtype": mtype, "value": 1.0}]],
+                    "values": [[10, {"mtype": mtype, "value": value}]],
                 }))
                 .expect("metric should deserialize")
             })
             .collect::<Vec<_>>();
 
         NormalizedMetrics::try_from_stele_metrics(&metrics).expect("metrics should normalize")
+    }
+
+    /// The `metrics` section of a case that expects `known.series` to be a count in the baseline and a gauge in the
+    /// comparison.
+    const KNOWN_TYPE_DIFFERENCE: &str = "{min_series: 1, known_differences: [{gap: gap/as-gauge, issue: 1, \
+        paths: [type], when: {name: [known.series]}, reason: a gauge in the comparison}]}";
+
+    fn analyze(
+        baseline: NormalizedMetrics, comparison: NormalizedMetrics, options: &str,
+    ) -> Result<(), (String, Vec<String>)> {
+        let options = serde_saphyr::from_str::<MetricsOptions>(options).expect("options should parse");
+        options.validate().expect("options should be valid");
+        MetricsAnalyzer {
+            baseline_metrics: baseline,
+            comparison_metrics: comparison,
+            options: Some(options),
+        }
+        .run_analysis()
+        .map_err(|(error, details)| (error.to_string(), details))
+    }
+
+    /// The baseline of the cases below: the series with the known difference as a count, and a second series.
+    fn baseline() -> NormalizedMetrics {
+        valued(&[
+            ("known.series", &[], "Count", 30.0),
+            ("value.series", &[], "Count", 15.0),
+        ])
+    }
+
+    #[test]
+    fn a_known_type_difference_leaves_the_other_series_compared() {
+        let matching = valued(&[
+            ("known.series", &[], "Gauge", 3.0),
+            ("value.series", &[], "Count", 15.0),
+        ]);
+        assert_eq!(analyze(baseline(), matching, KNOWN_TYPE_DIFFERENCE), Ok(()));
+
+        // The second series changes, and the known difference of the first one does not hide it.
+        let regressed = valued(&[
+            ("known.series", &[], "Gauge", 3.0),
+            ("value.series", &[], "Count", 16.0),
+        ]);
+        let (error, details) = analyze(baseline(), regressed, KNOWN_TYPE_DIFFERENCE).unwrap_err();
+        assert!(
+            error.contains("1 metrics from baseline and comparison did not match"),
+            "{}",
+            error
+        );
+        assert_eq!(details.len(), 1, "{:?}", details);
+        assert!(details[0].contains("value.series"), "{}", details[0]);
+        assert!(details[0].contains("baseline:    count(15)"), "{}", details[0]);
+        assert!(details[0].contains("comparison:  count(16)"), "{}", details[0]);
+    }
+
+    #[test]
+    fn a_known_type_difference_covers_only_the_named_series() {
+        let comparison = valued(&[
+            ("known.series", &[], "Gauge", 3.0),
+            ("value.series", &[], "Gauge", 15.0),
+        ]);
+
+        let (error, details) = analyze(baseline(), comparison, KNOWN_TYPE_DIFFERENCE).unwrap_err();
+        assert_eq!(error, "Mismatch in metrics pairs between baseline and comparison.");
+        assert!(
+            details.contains(&"  - value.series (type: count)".to_string()),
+            "{:?}",
+            details
+        );
+        assert!(
+            !details.iter().any(|line| line.contains("known.series")),
+            "{:?}",
+            details
+        );
+    }
+
+    #[test]
+    fn a_known_type_difference_that_no_longer_occurs_is_stale() {
+        let fixed = valued(&[
+            ("known.series", &[], "Count", 30.0),
+            ("value.series", &[], "Count", 15.0),
+        ]);
+        let (error, details) = analyze(baseline(), fixed, KNOWN_TYPE_DIFFERENCE).unwrap_err();
+        assert_eq!(error, "1 known difference path(s) no longer occur.");
+        assert!(details[0].contains("gap/as-gauge (#1)"), "{:?}", details);
+
+        // A series that one side lost is not a type difference: the entry is stale, and the loss still fails.
+        let lost = valued(&[("value.series", &[], "Count", 15.0)]);
+        let (error, details) = analyze(baseline(), lost, KNOWN_TYPE_DIFFERENCE).unwrap_err();
+        assert_eq!(error, "Mismatch in metrics pairs between baseline and comparison.");
+        assert!(
+            details.contains(&"  - known.series (type: count)".to_string()),
+            "{:?}",
+            details
+        );
+        assert!(
+            details.iter().any(|line| line.contains("gap/as-gauge (#1)")),
+            "{:?}",
+            details
+        );
+    }
+
+    #[test]
+    fn metrics_known_differences_name_an_issue_and_a_series() {
+        let validate = |entry: &str| {
+            let options = format!("{{min_series: 1, known_differences: [{}]}}", entry);
+            serde_saphyr::from_str::<MetricsOptions>(&options)
+                .expect("options should parse")
+                .validate()
+        };
+
+        assert!(validate("{gap: g, issue: 1, paths: [type], when: {name: [m]}, reason: r}").is_ok());
+        let cases = [
+            (
+                "{gap: g, paths: [type], when: {name: [m]}, reason: r}",
+                "names no 'issue'",
+            ),
+            (
+                "{gap: g, issue: 1, paths: [value], when: {name: [m]}, reason: r}",
+                "covers only the 'type' path",
+            ),
+            ("{gap: g, issue: 1, paths: [type], reason: r}", "when: {name: [...]}"),
+            (
+                "{gap: g, issue: 1, paths: [type], when: {name: [m], tags: [t]}, reason: r}",
+                "when: {name: [...]}",
+            ),
+        ];
+        for (entry, expected) in cases {
+            let error = validate(entry).unwrap_err();
+            assert!(error.contains(expected), "{}: {}", entry, error);
+        }
     }
 
     #[test]
