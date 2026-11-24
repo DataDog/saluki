@@ -166,7 +166,7 @@ rustls = { version = "0.23", default-features = false, features = [
   "std",
   "tls12",
 ] }
-rustls-cng-crypto = { version = "0.2.0", git = "https://github.com/DataDog/rustls-cng-crypto", rev = "2498c870c949335cb70dc79ed558917b96e4ff72", default-features = false, features = [
+rustls-cng-crypto = { version = "0.3.1", git = "https://github.com/DataDog/rustls-cng-crypto", rev = "5870f3c319130b681f45607eb280ee7f93c24eb6", default-features = false, features = [
   "tls12",
 ] }
 rustls-webpki = { version = "0.103", default-features = false }
