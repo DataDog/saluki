@@ -10,7 +10,7 @@ available.</p>
 <p>Defaults to the time the <code>RemoteAgent</code> was created.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.start" class="method"><a class="src rightside" href="../../src/datadog_agent_runtime/facade/mod.rs.html#104-195">Source</a><h4 class="code-header">pub async fn <a href="#method.start" class="fn">start</a>(
     self,
-    bootstrap_guard: &amp;mut BootstrapGuard,
+    bootstrap_guard: &amp;mut <a class="struct" href="../../saluki_app/bootstrap/struct.BootstrapGuard.html" title="struct saluki_app::bootstrap::BootstrapGuard">BootstrapGuard</a>,
     bootstrap_supervisor: <a class="struct" href="../../saluki_core/runtime/supervisor/struct.Supervisor.html" title="struct saluki_core::runtime::supervisor::Supervisor">Supervisor</a>,
 ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="struct.RemoteAgent.html" title="struct datadog_agent_runtime::facade::RemoteAgent">RemoteAgent</a>&lt;R, <a class="enum" href="stage/enum.Started.html" title="enum datadog_agent_runtime::facade::stage::Started">Started</a>&gt;, GenericError&gt;</h4></section></summary><div class="docblock"><p>Selects the configuration authority and reloads logging to match it.</p>
 <p>In connected mode, this registers with the Datadog Agent and waits for its initial configuration. In standalone
