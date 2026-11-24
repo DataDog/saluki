@@ -1,4 +1,3 @@
-use std::net::ToSocketAddrs as _;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -16,10 +15,10 @@ use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
         sources::{Source, SourceBuilder, SourceContext},
-        BuildContext,
+        BuildContext, ComponentContext,
     },
     data_model::{
-        event::{metric::context::ContextResolver, Event, EventType},
+        event::{Event, EventType},
         tags::{SharedTagSet, TagSet},
     },
     observability::ComponentMetricsExt as _,
@@ -43,7 +42,7 @@ use crate::common::otlp::{
     proxy::{OtlpProxy, OtlpProxyDestinations},
     receiver::OtlpReceiver,
     traces::translator::OtlpTracesSettings,
-    CorsConfiguration, Metrics, OtlpHandler, OtlpRoutes, OtlpServerConfiguration, OtlpTlsConfiguration,
+    CorsConfiguration, Metrics, OtlpHandler, OtlpRoute, OtlpRoutes, OtlpServerConfiguration, OtlpTlsConfiguration,
 };
 
 mod debug_output;
@@ -105,10 +104,9 @@ pub struct OtlpConfiguration {
     pub proxy_destinations: Option<OtlpProxyDestinations>,
 
     /// Metrics translation settings.
+    ///
+    /// The source checks them only when it translates metrics.
     pub metrics: OtlpMetricsSettings,
-
-    /// Whether OTLP traces are accepted.
-    pub traces_enabled: bool,
 
     /// Trace translation settings.
     pub traces: OtlpTracesSettings,
@@ -156,6 +154,26 @@ impl OtlpConfiguration {
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
         metrics::config::OtlpMetricsTranslatorConfig::from_settings(&self.metrics)
     }
+
+    /// Builds the metrics translator.
+    ///
+    /// Fails if the metrics settings are invalid.
+    fn metrics_translator(
+        &self, context: &ComponentContext, origin_tag_resolver: OtlpOriginTagResolver,
+    ) -> Result<OtlpMetricsTranslator, GenericError> {
+        // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
+        // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
+        let context_resolver = build_context_resolver(&self.contexts, context, None)?;
+
+        OtlpMetricsTranslator::new(
+            self.metrics_translator_config(),
+            self.default_hostname.clone(),
+            context_resolver,
+            origin_tag_resolver,
+            parse_configured_metric_tags(&self.metrics.tags),
+            metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context),
+        )
+    }
 }
 
 #[async_trait]
@@ -173,9 +191,9 @@ impl SourceBuilder for OtlpConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if !self.receiver.metrics_enabled && !self.receiver.logs_enabled && !self.traces_enabled {
+        if self.routes == OtlpRoutes::ALL_DISABLED {
             return Err(generic_error!(
-                "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
+                "Every OTLP signal is disabled, so the OTLP source has nothing to serve."
             ));
         }
 
@@ -192,71 +210,45 @@ impl SourceBuilder for OtlpConfiguration {
         };
 
         // An empty endpoint turns its server off.
-        let grpc_endpoint = if self.receiver.grpc.endpoint.is_empty() {
-            None
-        } else {
-            let grpc_listen_str = format!(
-                "{}://{}",
-                self.receiver.grpc.transport.as_str(),
-                self.receiver.grpc.endpoint
-            );
-            let address = ListenAddress::try_from(grpc_listen_str.as_str())
-                .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
-            Some(address)
-        };
+        let grpc_endpoint = self.receiver.grpc.listen_address()?;
+        let http_endpoint = self.receiver.http.listen_address()?;
 
-        let http_endpoint_str = &self.receiver.http.endpoint;
-        let http_endpoint = if http_endpoint_str.is_empty() {
-            None
-        } else {
-            let http_socket_addr = http_endpoint_str
-                .to_socket_addrs()
-                .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
-                .next()
-                .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
-            Some(ListenAddress::Tcp(http_socket_addr))
-        };
-
+        // The source builds a translator only for a signal it translates. A signal that is proxied or disabled has no
+        // translator, so its settings can't stop the source.
         let origin_tag_resolver = OtlpOriginTagResolver::new(Arc::clone(&self.workload_provider));
+        let metrics_translator = if self.routes.metrics == OtlpRoute::Internal {
+            Some(self.metrics_translator(context.component_context(), origin_tag_resolver.clone())?)
+        } else {
+            None
+        };
+        let logs_translator =
+            (self.routes.logs == OtlpRoute::Internal).then(|| OtlpLogsTranslator::new(origin_tag_resolver.clone()));
+        let traces_translator =
+            (self.routes.traces == OtlpRoute::Internal).then(|| self.traces_translator(origin_tag_resolver.clone()));
 
-        // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
-        // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
-        let context_resolver = build_context_resolver(&self.contexts, context.component_context(), None)?;
-        let metrics_translator_config = self.metrics_translator_config();
-
-        let metric_tags = parse_configured_metric_tags(&self.metrics.tags);
-        let traces_translator = self.traces_translator(origin_tag_resolver.clone());
         let grpc_max_recv_msg_size_bytes = self.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let grpc_http2_config = self.receiver.grpc.http2_config();
         let http_max_request_body_size = self.receiver.http.max_request_body_size;
         let cors = self.receiver.http.cors.clone();
         let (http_tls_config, grpc_tls_config) = self.receiver.tls_configurations()?;
         let metrics = build_metrics(context.component_context());
-        let translator_metrics =
-            metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
-        let logs_translator = OtlpLogsTranslator::new(origin_tag_resolver.clone());
         let debug_output = OtlpDebugOutput::new(self.debug_verbosity);
 
         Ok(Box::new(Otlp {
             routes: self.routes,
             proxy,
-            context_resolver,
-            origin_tag_resolver,
             grpc_endpoint,
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_http2_config,
             http_max_request_body_size,
-            metrics_translator_config,
-            metric_tags,
-            default_hostname: self.default_hostname.clone(),
+            metrics_translator,
+            logs_translator,
             traces_translator,
             cors,
             http_tls_config,
             grpc_tls_config,
             metrics,
-            translator_metrics,
-            logs_translator,
             debug_output,
         }))
     }
@@ -276,23 +268,19 @@ impl MemoryBounds for OtlpConfiguration {
 pub struct Otlp {
     routes: OtlpRoutes,
     proxy: Option<OtlpProxy>,
-    context_resolver: ContextResolver,
-    origin_tag_resolver: OtlpOriginTagResolver,
     grpc_endpoint: Option<ListenAddress>,
     http_endpoint: Option<ListenAddress>,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
-    metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
-    metric_tags: SharedTagSet,
-    default_hostname: MetaString,
-    traces_translator: OtlpTracesTranslator,
+    // A translator exists only while its signal's route is internal.
+    metrics_translator: Option<OtlpMetricsTranslator>,
+    logs_translator: Option<OtlpLogsTranslator>,
+    traces_translator: Option<OtlpTracesTranslator>,
     cors: CorsConfiguration,
     http_tls_config: Option<OtlpTlsConfiguration>,
     grpc_tls_config: Option<OtlpTlsConfiguration>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
-    translator_metrics: metrics::telemetry::OtlpMetricsTranslatorMetrics,
-    logs_translator: OtlpLogsTranslator,
     debug_output: OtlpDebugOutput,
 }
 
@@ -302,23 +290,18 @@ impl Source for Otlp {
         let Self {
             routes,
             proxy,
-            context_resolver,
-            origin_tag_resolver,
             grpc_endpoint,
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_http2_config,
             http_max_request_body_size,
-            metrics_translator_config,
-            metric_tags,
-            default_hostname,
+            metrics_translator,
+            logs_translator,
             traces_translator,
             cors,
             http_tls_config,
             grpc_tls_config,
             metrics,
-            translator_metrics,
-            logs_translator,
             debug_output,
         } = *self;
 
@@ -330,15 +313,6 @@ impl Source for Otlp {
 
         // Create the internal channel for decoupling the servers from the converter.
         let (tx, rx) = mpsc::channel::<OtlpSignal>(1024);
-
-        let metrics_translator = OtlpMetricsTranslator::new(
-            metrics_translator_config,
-            default_hostname,
-            context_resolver,
-            origin_tag_resolver,
-            metric_tags,
-            translator_metrics,
-        )?;
 
         // Build our gRPC and HTTP servers and spawn them.
         let handler = SourceHandler::new(tx, metrics.clone(), debug_output);
@@ -373,22 +347,27 @@ impl Source for Otlp {
         // The converter stops once the servers exit and its channel closes, which can take longer than the default
         // timeout of a closure-based child. Thus, it has no timeout of its own, and is halted with the source if the
         // component's shutdown timeout expires.
-        let converter_context = context.clone();
-        runtime::worker(
-            "resource_converter",
-            run_converter(
-                rx,
-                converter_context,
-                metrics_translator,
-                logs_translator,
-                traces_translator,
-                metrics,
-            ),
-        )
-        .on_runtime(context.topology_context().global_thread_pool().clone())
-        .with_shutdown_timeout(Duration::MAX)
-        .needed()
-        .spawn();
+        //
+        // Only the servers' internal routes hold the handler, so without an internal signal the channel closes at once.
+        // There is nothing to convert then, and a needed converter that stopped would stop the source with it.
+        if routes.any_internal() {
+            let converter_context = context.clone();
+            runtime::worker(
+                "resource_converter",
+                run_converter(
+                    rx,
+                    converter_context,
+                    metrics_translator,
+                    logs_translator,
+                    traces_translator,
+                    metrics,
+                ),
+            )
+            .on_runtime(context.topology_context().global_thread_pool().clone())
+            .with_shutdown_timeout(Duration::MAX)
+            .needed()
+            .spawn();
+        }
 
         health.mark_ready();
         debug!("OTLP source started.");
@@ -482,8 +461,8 @@ impl OtlpHandler for SourceHandler {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpSignal>, source_context: SourceContext,
-    mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator,
-    mut traces_translator: OtlpTracesTranslator, metrics: Metrics,
+    mut metrics_translator: Option<OtlpMetricsTranslator>, mut logs_translator: Option<OtlpLogsTranslator>,
+    mut traces_translator: Option<OtlpTracesTranslator>, metrics: Metrics,
 ) {
     debug!("OTLP resource converter task started.");
 
@@ -504,8 +483,13 @@ async fn run_converter(
                     break;
                 };
 
+                // The servers pass a signal to the handler only if its route is internal, and an internal route has a
+                // translator.
                 match otlp_signal {
                     OtlpSignal::Metrics(request) => {
+                        let metrics_translator = metrics_translator
+                            .as_mut()
+                            .expect("metrics translator should exist for internal metrics");
                         let mut detected_languages = FastHashSet::default();
 
                         for resource_metrics in request.resource_metrics {
@@ -545,6 +529,9 @@ async fn run_converter(
                         }
                     }
                     OtlpSignal::Logs(resource_logs) => {
+                        let logs_translator = logs_translator
+                            .as_mut()
+                            .expect("logs translator should exist for internal logs");
                         for log in logs_translator.translate_logs(resource_logs, &metrics) {
                             let dispatcher = logs_dispatcher.get_or_insert_with(|| {
                                 source_context
@@ -558,6 +545,9 @@ async fn run_converter(
                         }
                     }
                     OtlpSignal::Traces(resource_spans) => {
+                        let traces_translator = traces_translator
+                            .as_mut()
+                            .expect("traces translator should exist for internal traces");
                         for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
                             let dispatcher = traces_dispatcher.get_or_insert_with(|| {
                                 source_context
@@ -673,7 +663,6 @@ mod tests {
             routes: OtlpRoutes::ALL_INTERNAL,
             proxy_destinations: None,
             metrics: metrics_settings(),
-            traces_enabled: false,
             traces: traces_settings(),
             contexts: OtlpContextSettings {
                 allow_context_heap_allocs: true,
@@ -972,7 +961,6 @@ mod tests {
     #[tokio::test]
     async fn an_empty_endpoint_leaves_its_server_unbound() {
         let mut config = source_configuration();
-        config.receiver.logs_enabled = true;
         config.receiver.grpc.endpoint = String::new();
         config.receiver.http.endpoint = "127.0.0.1:0".to_string();
 
@@ -1018,7 +1006,6 @@ mod tests {
     async fn an_empty_endpoint_leaves_its_tls_settings_unused() {
         // The server with no endpoint doesn't start, so these settings are neither valid nor readable and don't matter.
         let mut config = source_configuration();
-        config.receiver.logs_enabled = true;
         config.receiver.grpc.endpoint = String::new();
         config.receiver.grpc.tls.cert_file = "/missing/cert.pem".to_string();
         config.receiver.grpc.tls.ca_file = "/missing/ca.pem".to_string();
@@ -1042,8 +1029,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_fails_when_both_endpoints_are_empty() {
-        let mut config = source_configuration();
-        config.receiver.logs_enabled = true;
+        let config = source_configuration();
 
         let error = TestComponentDriver::source(config)
             .await
@@ -1057,6 +1043,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_fails_when_every_signal_is_disabled() {
+        let mut config = source_configuration();
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.routes = OtlpRoutes::ALL_DISABLED;
+
+        let error = TestComponentDriver::source(config)
+            .await
+            .err()
+            .expect("source should fail to build without a signal to serve");
+        assert!(
+            format!("{error:#}").contains("Every OTLP signal is disabled"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
     async fn accepted_logs_are_dispatched_before_the_source_stops() {
         // Many more records than two event buffers hold, so that the converter blocks on the output with most of the
         // requests still queued.
@@ -1064,7 +1066,6 @@ mod tests {
         const RECORDS: usize = 512;
 
         let mut config = source_configuration();
-        config.receiver.logs_enabled = true;
         config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
         config.receiver.grpc.max_recv_msg_size_mib = 4;
         // The configuration translator resolves a zero keepalive to these defaults.
@@ -1125,9 +1126,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_source_without_internal_signals_keeps_its_outputs_open() {
+        // With no internal signal, the topology connects the source to a destination that drops everything. That
+        // destination stops once its input closes, which would stop the topology.
+        let mut config = source_configuration();
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
+        config.routes = OtlpRoutes {
+            metrics: OtlpRoute::Proxied,
+            logs: OtlpRoute::Disabled,
+            traces: OtlpRoute::Proxied,
+        };
+        let destination = |port| Destination::Tcp {
+            host: "127.0.0.1".to_string(),
+            port,
+        };
+        config.proxy_destinations = Some(OtlpProxyDestinations {
+            grpc: Some(destination(4319)),
+            http: Some(destination(4320)),
+        });
+
+        let (control, mut outputs) = TestComponentDriver::source(config).await.expect("source should build");
+        let mut metrics = outputs.take_named_output("metrics");
+        control.wait_until_ready().await;
+
+        let closed = tokio::time::timeout(Duration::from_millis(500), metrics.collect_events()).await;
+        assert!(
+            closed.is_err(),
+            "the metrics output closed while the source was running"
+        );
+        assert!(!control.is_finished(), "the source stopped on its own");
+        control.shutdown().await.expect("source should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn settings_of_disabled_metrics_do_not_stop_the_traces_proxy() {
+        // `nobuckets` without aggregation metrics is invalid, but only for the metrics translator. The source doesn't
+        // translate disabled metrics, so these settings don't matter.
+        let mut config = source_configuration();
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
+        config.routes = OtlpRoutes {
+            metrics: OtlpRoute::Disabled,
+            logs: OtlpRoute::Disabled,
+            traces: OtlpRoute::Proxied,
+        };
+        config.metrics = OtlpMetricsSettings {
+            histogram_mode: HistogramMode::NoBuckets,
+            send_histogram_aggregations: false,
+            ..metrics_settings()
+        };
+        let destination = |port| Destination::Tcp {
+            host: "127.0.0.1".to_string(),
+            port,
+        };
+        config.proxy_destinations = Some(OtlpProxyDestinations {
+            grpc: Some(destination(4319)),
+            http: Some(destination(4320)),
+        });
+
+        let (control, _outputs) = TestComponentDriver::source(config).await.expect("source should build");
+        control.wait_until_ready().await;
+
+        for server in ["http-server-otlp-grpc", "http-server-otlp-http"] {
+            let mut bound = control
+                .supervisor()
+                .dataspace()
+                .subscribe::<BoundListenAddress>(IdentifierFilter::exact(server));
+            match bound.recv().await {
+                Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(_))) => {}
+                update => panic!("expected {server} to bind, got {update:?}"),
+            }
+        }
+
+        control.shutdown().await.expect("source should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn build_fails_when_internal_metrics_have_invalid_settings() {
+        let mut config = source_configuration();
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.metrics = OtlpMetricsSettings {
+            histogram_mode: HistogramMode::NoBuckets,
+            send_histogram_aggregations: false,
+            ..metrics_settings()
+        };
+
+        let error = TestComponentDriver::source(config)
+            .await
+            .err()
+            .expect("source should fail to build with invalid metrics settings");
+        assert!(
+            format!("{error:#}").contains("Failed to validate OTLP metrics translator configuration"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_proxied_signal_needs_proxy_destinations() {
         let mut config = source_configuration();
-        config.receiver.metrics_enabled = true;
         config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
         config.receiver.http.endpoint = "127.0.0.1:0".to_string();
         config.routes = OtlpRoutes {
@@ -1148,8 +1245,8 @@ mod tests {
             port,
         };
         config.proxy_destinations = Some(OtlpProxyDestinations {
-            grpc: destination(4319),
-            http: destination(4320),
+            grpc: Some(destination(4319)),
+            http: Some(destination(4320)),
         });
         if let Err(e) = config.build(BuildContext::test_source("otlp_proxy_destinations")).await {
             panic!("build should succeed with proxy destinations: {e}");

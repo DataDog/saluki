@@ -222,8 +222,7 @@ impl RelayBuilder for ApmRelayConfiguration {
         }
 
         let proxy = TraceAgentProxy::from_destination(&self.proxy_destination)?;
-        if let Some(listener) =
-            listener_reached_by(proxy.destination(), tcp_endpoint.as_ref(), uds_endpoint.as_ref()).await
+        if let Some(listener) = listener_reached_by(proxy.destination(), tcp_endpoint.iter().chain(&uds_endpoint)).await
         {
             return Err(generic_error!(
                 "APM proxy destination `{}` is the relay's own listener `{listener}`, so every request would be proxied back to the relay. Set `data_plane.experimental.apm.proxy_destination` to the trace-agent's address.",

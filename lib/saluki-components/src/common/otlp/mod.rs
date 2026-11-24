@@ -401,6 +401,13 @@ impl OtlpRoutes {
         traces: OtlpRoute::Internal,
     };
 
+    /// Every signal disabled.
+    pub const ALL_DISABLED: Self = Self {
+        metrics: OtlpRoute::Disabled,
+        logs: OtlpRoute::Disabled,
+        traces: OtlpRoute::Disabled,
+    };
+
     const fn get(&self, signal: Signal) -> OtlpRoute {
         match signal {
             Signal::Metrics => self.metrics,
@@ -410,10 +417,17 @@ impl OtlpRoutes {
     }
 
     /// Returns `true` if any signal is proxied.
-    pub(crate) fn any_proxied(&self) -> bool {
+    pub fn any_proxied(&self) -> bool {
         Signal::ALL
             .into_iter()
             .any(|signal| self.get(signal) == OtlpRoute::Proxied)
+    }
+
+    /// Returns `true` if any signal is internal.
+    pub(crate) fn any_internal(&self) -> bool {
+        Signal::ALL
+            .into_iter()
+            .any(|signal| self.get(signal) == OtlpRoute::Internal)
     }
 }
 
@@ -532,7 +546,8 @@ impl OtlpServerConfiguration {
     /// # Errors
     ///
     /// If the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound, the TLS configuration is
-    /// invalid, or a signal is proxied without a proxy, an error is returned.
+    /// invalid, or a signal is proxied without a proxy or without a destination for the protocol it arrives on, an
+    /// error is returned.
     pub async fn build<H: OtlpHandler>(
         self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, worker_pool: &Handle,
     ) -> Result<(), GenericError> {
@@ -587,7 +602,7 @@ impl OtlpServerConfiguration {
                     }
                     (OtlpRoute::Proxied, Some(proxy)) => {
                         let path = format!("/{}/{{*method}}", signal.grpc_service_name());
-                        proxied_grpc_routes = proxied_grpc_routes.route(&path, proxy.grpc_service(signal));
+                        proxied_grpc_routes = proxied_grpc_routes.route(&path, proxy.grpc_service(signal)?);
                     }
                 }
             }
@@ -640,7 +655,7 @@ impl OtlpServerConfiguration {
                         internal_routes = internal_routes.route(signal.http_path(), handler);
                     }
                     (OtlpRoute::Proxied, Some(proxy)) => {
-                        proxied_routes = proxied_routes.route(signal.http_path(), proxy.http_service(signal));
+                        proxied_routes = proxied_routes.route(signal.http_path(), proxy.http_service(signal)?);
                     }
                 }
             }
@@ -920,6 +935,7 @@ mod tests {
     use tokio_rustls::TlsConnector;
     use tower::ServiceExt;
 
+    use super::proxy::OtlpProxyDestinations;
     use super::test_util::{
         bound_port, grpc_ok, http_ok, proxy_to, wait_for_port, FakeUpstream, RecordingHandler, TestClient, TestServers,
     };
@@ -1880,6 +1896,49 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "An OTLP signal is proxied, but no OTLP proxy is set."
+        );
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn build_fails_for_a_proxied_signal_without_a_destination_for_its_protocol() {
+        let upstream = FakeUpstream::tcp(http_ok).await;
+        let proxy = OtlpProxy::new(
+            &OtlpProxyDestinations {
+                grpc: None,
+                http: Some(upstream.destination.clone()),
+            },
+            MetricsBuilder::default(),
+        )
+        .expect("proxy should build");
+
+        let supervisor = TestSupervisor::start("otlp-test").await;
+        let result = supervisor
+            .scope(
+                TestServers::configuration()
+                    .with_server_ids("http-proxied-without-destination", "grpc-proxied-without-destination")
+                    .with_routes(OtlpRoutes {
+                        logs: OtlpRoute::Proxied,
+                        ..OtlpRoutes::ALL_INTERNAL
+                    })
+                    .with_proxy(proxy)
+                    .build(
+                        RecordingHandler::default(),
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
+            .await;
+
+        let error = result.expect_err("build should fail");
+        assert_eq!(
+            error.to_string(),
+            "An OTLP signal is proxied over gRPC, but the OTLP proxy has no gRPC destination."
         );
 
         supervisor

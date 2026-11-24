@@ -45,8 +45,8 @@ const COMPONENT_ID: &str = "otlp_proxy_test";
 /// Set a local metrics recorder before the call to see the proxy's counters.
 async fn start_proxy(id: &str, grpc: &Destination, http: &Destination, connect_timeout: Duration) -> TestServers {
     let destinations = OtlpProxyDestinations {
-        grpc: grpc.clone(),
-        http: http.clone(),
+        grpc: Some(grpc.clone()),
+        http: Some(http.clone()),
     };
     let metrics_builder = MetricsBuilder::from_component_context(&ComponentContext::test_source(COMPONENT_ID));
     let proxy =

@@ -1,11 +1,16 @@
-//! Inputs of the OTLP source, relay, decoder, and forwarder.
+//! Inputs of the OTLP source.
+
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use agent_data_plane_config::domains::{otlp, traces::ApmFeature};
 use saluki_components::sources::{
     ContainerTagPromotion, CorsConfiguration, CumulativeMonotonicMode, GrpcTransport, HistogramMode,
     InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpDebugVerbosity, OtlpGrpcReceiver, OtlpHttpReceiver,
-    OtlpKeepalive, OtlpMetricsSettings, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings, SummaryMode,
+    OtlpKeepalive, OtlpMetricsSettings, OtlpProxyDestinations, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings,
+    ProxyDestination, SummaryMode,
 };
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 use super::origin_tag_cardinality;
 
@@ -15,8 +20,6 @@ pub(crate) fn otlp_receiver(receiver: &otlp::Receiver) -> OtlpReceiver {
     let http = &receiver.http;
 
     OtlpReceiver {
-        logs_enabled: receiver.logs_enabled,
-        metrics_enabled: receiver.metrics_enabled,
         grpc: OtlpGrpcReceiver {
             endpoint: grpc.endpoint.clone(),
             max_recv_msg_size_mib: grpc.max_recv_msg_size_mib,
@@ -46,6 +49,62 @@ pub(crate) fn otlp_receiver(receiver: &otlp::Receiver) -> OtlpReceiver {
             max_request_body_size: http.max_request_body_size,
         },
     }
+}
+
+/// Builds the OTLP proxy destinations, the Agent's relocated OTLP receivers.
+///
+/// Each destination follows the transport of its protocol's receiver: a `host:port` address, or an absolute Unix domain
+/// socket path. A protocol whose receiver has no endpoint has no listener to proxy from, so its destination is left out
+/// and isn't checked.
+///
+/// # Errors
+///
+/// If the destination of a protocol with a listener isn't valid for its transport, an error is returned.
+pub(crate) fn otlp_proxy_destinations(otlp: &otlp::Domain) -> Result<OtlpProxyDestinations, GenericError> {
+    let receiver = &otlp.receiver;
+    Ok(OtlpProxyDestinations {
+        grpc: (!receiver.grpc.endpoint.is_empty())
+            .then(|| {
+                proxy_destination(
+                    &otlp.proxy.grpc_endpoint,
+                    receiver.grpc.transport == otlp::GrpcTransport::Unix,
+                    "data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint",
+                )
+            })
+            .transpose()?,
+        http: (!receiver.http.endpoint.is_empty())
+            .then(|| {
+                proxy_destination(
+                    &otlp.proxy.http_endpoint,
+                    receiver.http.transport == "unix",
+                    "data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint",
+                )
+            })
+            .transpose()?,
+    })
+}
+
+fn proxy_destination(address: &str, unix: bool, key: &str) -> Result<ProxyDestination, GenericError> {
+    if unix {
+        // The default destination is a `host:port` address, which as a path is relative.
+        #[cfg(unix)]
+        {
+            let path = PathBuf::from(address);
+            if !path.is_absolute() {
+                return Err(generic_error!(
+                    "Invalid OTLP proxy destination `{key}` ({address}): the OTLP receiver transport is `unix`, so set \
+                     it to the absolute path of the Agent's relocated OTLP receiver socket."
+                ));
+            }
+            return Ok(ProxyDestination::Unix(path));
+        }
+        #[cfg(not(unix))]
+        return Err(generic_error!(
+            "Invalid OTLP proxy destination `{key}`: Unix domain sockets aren't supported on this platform."
+        ));
+    }
+
+    ProxyDestination::from_tcp_address(address).with_error_context(|| format!("Invalid OTLP proxy destination `{key}`"))
 }
 
 /// Builds the OTLP trace translation settings from the OTLP trace settings and the APM features.
@@ -190,8 +249,6 @@ mod tests {
 
         assert_eq!(
             OtlpReceiver {
-                logs_enabled: true,
-                metrics_enabled: false,
                 grpc: OtlpGrpcReceiver {
                     endpoint: "0.0.0.0:4317".to_string(),
                     max_recv_msg_size_mib: 11,
@@ -233,6 +290,122 @@ mod tests {
 
             assert_eq!(expected, otlp_receiver(&receiver).grpc.transport, "{configured:?}");
         }
+    }
+
+    /// Returns an OTLP configuration whose receivers have an endpoint for each protocol.
+    fn listening_domain() -> otlp::Domain {
+        let mut otlp = otlp::Domain::default();
+        otlp.receiver.grpc.endpoint = "0.0.0.0:4317".to_string();
+        otlp.receiver.http.endpoint = "0.0.0.0:4318".to_string();
+        otlp
+    }
+
+    #[test]
+    fn otlp_proxy_destinations_follow_each_receiver_transport() {
+        let tcp = |host: &str, port| {
+            Some(ProxyDestination::Tcp {
+                host: host.to_string(),
+                port,
+            })
+        };
+        let mut otlp = listening_domain();
+        otlp.receiver.grpc.transport = otlp::GrpcTransport::Tcp;
+        otlp.receiver.http.transport = "tcp".to_string();
+        otlp.proxy.grpc_endpoint = "127.0.0.1:4319".to_string();
+        otlp.proxy.http_endpoint = "localhost:4320".to_string();
+
+        assert_eq!(
+            otlp_proxy_destinations(&otlp).unwrap(),
+            OtlpProxyDestinations {
+                grpc: tcp("127.0.0.1", 4319),
+                http: tcp("localhost", 4320),
+            }
+        );
+
+        otlp.proxy.grpc_endpoint = "4319".to_string();
+        let error = otlp_proxy_destinations(&otlp).unwrap_err();
+        assert!(error.to_string().contains("agent_receiver_grpc_endpoint"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn otlp_proxy_destinations_are_sockets_for_unix_receivers() {
+        let mut otlp = listening_domain();
+        otlp.receiver.grpc.transport = otlp::GrpcTransport::Unix;
+        otlp.receiver.http.transport = "unix".to_string();
+        otlp.proxy.grpc_endpoint = "/run/agent/otlp-grpc.sock".to_string();
+        otlp.proxy.http_endpoint = "/run/agent/otlp-http.sock".to_string();
+
+        assert_eq!(
+            otlp_proxy_destinations(&otlp).unwrap(),
+            OtlpProxyDestinations {
+                grpc: Some(ProxyDestination::Unix(PathBuf::from("/run/agent/otlp-grpc.sock"))),
+                http: Some(ProxyDestination::Unix(PathBuf::from("/run/agent/otlp-http.sock"))),
+            }
+        );
+
+        otlp.proxy.grpc_endpoint = "127.0.0.1:4319".to_string();
+        let error = otlp_proxy_destinations(&otlp).unwrap_err();
+        assert!(error.to_string().contains("agent_receiver_grpc_endpoint"), "{error}");
+    }
+
+    #[test]
+    fn otlp_proxy_destinations_ignore_an_empty_destination_without_a_listener() {
+        // gRPC-only ingest needs no HTTP destination.
+        let mut otlp = listening_domain();
+        otlp.receiver.http.endpoint = String::new();
+        otlp.proxy.grpc_endpoint = "127.0.0.1:4319".to_string();
+        otlp.proxy.http_endpoint = String::new();
+
+        assert_eq!(
+            otlp_proxy_destinations(&otlp).unwrap(),
+            OtlpProxyDestinations {
+                grpc: Some(ProxyDestination::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 4319,
+                }),
+                http: None,
+            }
+        );
+
+        // With an HTTP listener, the empty destination isn't valid.
+        otlp.receiver.http.endpoint = "0.0.0.0:4318".to_string();
+        let error = otlp_proxy_destinations(&otlp).unwrap_err();
+        assert!(error.to_string().contains("agent_receiver_http_endpoint"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn otlp_proxy_destinations_skip_a_protocol_without_a_listener() {
+        // The default gRPC destination is a relative path for a Unix receiver, but nothing is proxied over gRPC.
+        let mut otlp = listening_domain();
+        otlp.receiver.grpc.transport = otlp::GrpcTransport::Unix;
+        otlp.receiver.grpc.endpoint = String::new();
+        otlp.proxy.grpc_endpoint = "127.0.0.1:4319".to_string();
+        otlp.proxy.http_endpoint = "127.0.0.1:4320".to_string();
+
+        assert_eq!(
+            otlp_proxy_destinations(&otlp).unwrap(),
+            OtlpProxyDestinations {
+                grpc: None,
+                http: Some(ProxyDestination::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 4320,
+                }),
+            }
+        );
+
+        // An invalid destination of the protocol that listens still fails.
+        otlp.proxy.http_endpoint = "4320".to_string();
+        let error = otlp_proxy_destinations(&otlp).unwrap_err();
+        assert!(error.to_string().contains("agent_receiver_http_endpoint"), "{error}");
+
+        // Without a listener for either protocol, no destination is needed.
+        otlp.receiver.http.endpoint = String::new();
+        assert_eq!(
+            otlp_proxy_destinations(&otlp).unwrap(),
+            OtlpProxyDestinations { grpc: None, http: None }
+        );
     }
 
     #[test]

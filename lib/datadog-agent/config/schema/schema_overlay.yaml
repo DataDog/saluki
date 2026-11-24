@@ -707,65 +707,113 @@ inventory:
   data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint:
     support: full
     pipelines: [otlp]
-    description: "Agent OTLP/gRPC listener that ADP proxies to"
+    description: "OTLP/gRPC proxy destination"
+    documentation: |-
+      ADP proxies the OTLP/gRPC requests of each proxied signal, traces included, to the Agent's
+      relocated OTLP/gRPC receiver at this address. When `otlp_config.receiver.protocols.grpc.transport` is
+      `unix`, it is a socket path.
+
+      ADP starts no OTLP ingest when a signal is proxied and this address reaches one of ADP's own OTLP
+      listeners, `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`,
+      because ADP would proxy requests to itself.
+
+      The Agent relocates only the receiver protocols configured under `otlp_config.receiver.protocols`.
+      ADP serves both protocols when their endpoints are set, so a proxied request on a protocol that the
+      configuration doesn't list fails: the client gets `502 Bad Gateway` over HTTP, or `UNAVAILABLE` over
+      gRPC.
+
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
 
   data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint:
-    support: none
-    severity: low
-    planned: false
+    support: full
     pipelines: [otlp]
-    description: "Relocated Agent OTLP/HTTP listener"
+    description: "OTLP/HTTP proxy destination"
     documentation: |-
-      ADP proxies every signal to the Agent over gRPC, at
-      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, including signals it receives
-      over HTTP. It never sends to this endpoint. The Agent relocates only the receiver protocols
-      configured under `otlp_config.receiver.protocols`, so without a gRPC receiver, proxied signals
-      have no destination.
+      ADP proxies the OTLP/HTTP requests of each proxied signal, traces included, to the Agent's
+      relocated OTLP/HTTP receiver at this address. When `otlp_config.receiver.protocols.http.transport` is
+      `unix`, it is a socket path.
+
+      ADP starts no OTLP ingest when a signal is proxied and this address reaches one of ADP's own OTLP
+      listeners, `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`,
+      because ADP would proxy requests to itself.
+
+      The Agent relocates only the receiver protocols configured under `otlp_config.receiver.protocols`.
+      ADP serves both protocols when their endpoints are set, so a proxied request on a protocol that the
+      configuration doesn't list fails: the client gets `502 Bad Gateway` over HTTP, or `UNAVAILABLE` over
+      gRPC.
+
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
 
   data_plane.experimental.otlp.proxy.logs:
-    support: partial
+    support: full
     pipelines: [otlp]
     description: "Proxy OTLP logs to the Agent"
     documentation: |-
-      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      When `true`, ADP doesn't process OTLP logs itself. It streams each OTLP logs request to the
+      Agent's relocated OTLP receiver and returns the Agent's response: OTLP/gRPC requests go to
+      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, and OTLP/HTTP requests to
+      `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`. The other signals follow their
+      own settings.
+
+      A disabled signal stays disabled: when OTLP logs aren't enabled, ADP doesn't serve them,
+      whatever this setting says. OTLP logs need `otlp_config.logs.enabled` and `logs_enabled`.
+      Like the Agent, ADP still counts the setting: when any of
       `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-      exactly.
+      `data_plane.experimental.otlp.proxy.traces` is `true`, the Agent relocates its OTLP receiver.
       A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
       from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
       to the Agent.
 
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
+
   data_plane.experimental.otlp.proxy.metrics:
-    support: partial
+    support: full
     pipelines: [otlp]
     description: "Proxy OTLP metrics to the Agent"
     documentation: |-
-      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      When `true`, ADP doesn't process OTLP metrics itself. It streams each OTLP metrics request to the
+      Agent's relocated OTLP receiver and returns the Agent's response: OTLP/gRPC requests go to
+      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, and OTLP/HTTP requests to
+      `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`. The other signals follow their
+      own settings.
+
+      A disabled signal stays disabled: when OTLP metrics aren't enabled, ADP doesn't serve them,
+      whatever this setting says. OTLP metrics need `otlp_config.metrics.enabled`.
+      Like the Agent, ADP still counts the setting: when any of
       `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-      exactly.
+      `data_plane.experimental.otlp.proxy.traces` is `true`, the Agent relocates its OTLP receiver.
       A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
       from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
       to the Agent.
 
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
+
   data_plane.experimental.otlp.proxy.traces:
-    support: partial
+    support: full
     pipelines: [otlp]
     description: "Proxy OTLP traces to the Agent"
     documentation: |-
-      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      When `true`, ADP doesn't process OTLP traces itself. It streams each OTLP traces request to the
+      Agent's relocated OTLP receiver and returns the Agent's response: OTLP/gRPC requests go to
+      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, and OTLP/HTTP requests to
+      `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`. The other signals follow their
+      own settings.
+
+      A disabled signal stays disabled: when OTLP traces aren't enabled, ADP doesn't serve them,
+      whatever this setting says. OTLP traces need `otlp_config.traces.enabled`.
+      Like the Agent, ADP still counts the setting: when any of
       `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-      exactly.
+      `data_plane.experimental.otlp.proxy.traces` is `true`, the Agent relocates its OTLP receiver.
       A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
       from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
       to the Agent.
+
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
 
   data_plane.log_file:
     support: full
@@ -2009,9 +2057,9 @@ inventory:
       runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
       `true`. ADP reads it the same way, but doesn't log the warning.
 
-      ADP doesn't yet act on the result. The core Agent refuses to start its OTLP receiver when
-      `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled. ADP doesn't apply this
-      check, and accepts OTLP logs whatever `logs_enabled` and `log_enabled` say.
+      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. ADP doesn't yet
+      apply the Agent's check that starts no OTLP receiver at all when `otlp_config.logs.enabled` is
+      `true` but the logs agent isn't enabled: ADP still serves OTLP metrics and traces then.
     issue: "#2969"
 
   log_file_max_rolls:
@@ -2786,8 +2834,9 @@ inventory:
       `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
       and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
 
-      ADP reads `logs_enabled`, but doesn't yet apply this check, and accepts OTLP logs whatever
-      `logs_enabled` says.
+      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. It doesn't yet
+      apply the check that starts no OTLP receiver at all: ADP still serves OTLP metrics and traces
+      then.
     issue: "#2969"
 
   metric_filterlist:
@@ -3157,8 +3206,8 @@ inventory:
       doesn't turn it on in ADP. ADP writes the output to its log at the `info` level, so a higher log level hides it.
       The format of the lines is ADP's own. `detailed` prints trace and span IDs as lists of numbers. Support is
       partial because of this format, and because ADP doesn't read the section's other settings, such as log sampling.
-      In OTLP proxy mode, ADP doesn't honor this key, including for the traces it decodes itself when `proxy_traces` is
-      false. Issue #3281 tracks this.
+      ADP doesn't honor this key for an OTLP signal that it proxies to the core Agent, because it doesn't decode that
+      signal. Issue #3281 tracks this.
 
   otlp_config.logs.batch.flush_timeout:
     support: none
@@ -3227,8 +3276,9 @@ inventory:
       When it's `true` but `logs_enabled` isn't, the Agent logs an error and starts no OTLP
       receiver at all.
 
-      ADP reads `otlp_config.logs.enabled`, but doesn't yet gate on it: it accepts OTLP logs whenever
-      any OTLP signal is enabled, natively and in proxy mode.
+      Like the core Agent, ADP serves OTLP logs only when `otlp_config.logs.enabled` and `logs_enabled`
+      are both `true`. ADP doesn't yet apply the Agent's check that starts no OTLP receiver at all when
+      `logs_enabled` isn't `true`: ADP still serves OTLP metrics and traces then.
     issue: "#2969"
 
   otlp_config.logs.infra_attributes.tags_as_ddtags:
@@ -3295,7 +3345,7 @@ inventory:
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.metrics.enabled"
+    description: "Accept OTLP metrics"
 
   otlp_config.metrics.histograms.mode:
     support: full
@@ -3378,7 +3428,8 @@ inventory:
     documentation: |-
       Address that ADP listens on for OTLP gRPC requests. Defaults to `localhost:4317`.
       An empty value in `datadog.yaml` or the Agent configuration stream disables the gRPC receiver. An empty
-      environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
+      environment variable counts as unset. If both receiver endpoints are empty, ADP logs an error and doesn't start
+      OTLP ingest. The other pipelines keep running.
       The Datadog Agent doesn't disable the receiver for an empty value. Its receiver listens on a port that the system
       picks, on all interfaces. ADP doesn't copy this, because clients can't know that port.
 
@@ -3726,7 +3777,8 @@ inventory:
     documentation: |-
       Address that ADP listens on for OTLP HTTP requests. Defaults to `localhost:4318`.
       An empty value in `datadog.yaml` or the Agent configuration stream disables the HTTP receiver. An empty
-      environment variable counts as unset. If both receiver endpoints are empty, ADP exits at startup with an error.
+      environment variable counts as unset. If both receiver endpoints are empty, ADP logs an error and doesn't start
+      OTLP ingest. The other pipelines keep running.
       The Datadog Agent doesn't disable the receiver for an empty value. Its receiver listens on a port that the system
       picks, on all interfaces. ADP doesn't copy this, because clients can't know that port.
 
@@ -3934,7 +3986,7 @@ inventory:
   otlp_config.traces.enabled:
     support: full
     pipelines: [traces]
-    description: "otlp_config.traces.enabled"
+    description: "Accept OTLP traces"
 
   otlp_config.traces.infra_attributes.container_tag_promotion:
     support: full
@@ -3958,7 +4010,7 @@ inventory:
   otlp_config.traces.internal_port:
     support: full
     pipelines: [traces]
-    description: "otlp_config.traces.internal_port"
+    description: "Trace-agent OTLP port"
 
   otlp_config.traces.probabilistic_sampler.sampling_percentage:
     support: full
