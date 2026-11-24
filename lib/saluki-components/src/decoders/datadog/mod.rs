@@ -36,6 +36,9 @@ use crate::common::traces::attribute_as_string;
 /// Plausible minimum average wire size of a trace chunk containing a span list and 16-byte trace ID.
 const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
 
+/// Chunk priority that the trace-agent reads as no priority at all (`PriorityNone`).
+const PRIORITY_NONE: i32 = -128;
+
 /// Plausible minimum average wire size of a span containing a random span ID and epoch-nanosecond start time.
 const MIN_BYTES_PER_SPAN: u32 = 21;
 
@@ -87,7 +90,8 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
         trace.origin = chunk.origin;
         trace.payload = payload_fields.clone();
         trace.attributes = Arc::new(chunk.attributes);
-        trace.priority = Some(chunk.priority);
+        // As the reference's `GetSamplingPriorityV1`, which reads `PriorityNone` as no priority.
+        trace.priority = (chunk.priority != PRIORITY_NONE).then_some(chunk.priority);
         trace.dropped_trace = chunk.dropped_trace;
         trace.sampling_mechanism = chunk.sampling_mechanism;
         traces.push(trace);
