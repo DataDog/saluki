@@ -36,8 +36,8 @@ struct NonFiniteDouble;
 ///
 /// # Errors
 ///
-/// If the value holds a NaN or an infinite double, an error is returned. `json.Encoder` fails on such a value, and
-/// `AsString` ignores the error, so the rendered value is the empty string.
+/// Returns an error if the value holds a NaN or an infinite double. Go's `json.Encoder` rejects such a value. `AsString`
+/// ignores the error and returns the empty string.
 fn write_raw_json(out: &mut String, value: Option<&OtlpValue>) -> Result<(), NonFiniteDouble> {
     match value {
         None => out.push_str("null"),
@@ -155,9 +155,10 @@ pub(crate) fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
     }
 }
 
-/// Renders a double like `pcommon`'s `float64AsString`: ES6 number-to-string, which is decimal from 1e-6 up to 1e21 and
-/// exponent form outside that range, with `NaN`, `Infinity`, and `-Infinity` spelled out. `encoding/json` writes finite
-/// doubles the same way.
+/// Renders a double in the ES6 number-to-string format, as `pcommon`'s `float64AsString` does.
+///
+/// The format is decimal for magnitudes from 1e-6 up to, but not including, 1e21, and exponent form outside that range.
+/// `NaN`, `Infinity`, and `-Infinity` are spelled out. Go's `encoding/json` writes finite doubles in the same format.
 ///
 /// The digits are the shortest that round-trip, as Go's `strconv.FormatFloat` writes them with precision -1. When two
 /// candidates are equally close, Go keeps the even last digit. The `ryu` crate does the same, but Rust's own formatting

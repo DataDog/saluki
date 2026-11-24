@@ -3,5 +3,5 @@ fixes:
   - |
     OTLP array and map attribute values that become strings, such as resource attributes on logs and span tags on
     traces, are now written as the same JSON that the Datadog Agent writes. Numbers such as ``1.0`` are written as
-    ``1``, empty values and empty bytes as ``null``, and U+2028 and U+2029 are escaped. A value that holds a NaN or
-    infinite number becomes an empty string.
+    ``1``, empty values and empty bytes as ``null``, and U+2028 and U+2029 are escaped. An array or map that holds a NaN
+    or infinite number becomes an empty string, as in the Agent.
