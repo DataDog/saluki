@@ -168,6 +168,11 @@ impl Span {
         self.span_id
     }
 
+    /// Returns the name of the service that emitted this span.
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
     /// Returns the value of the metadata entry of the given key, if it exists.
     pub fn get_meta_field(&self, meta_key: &str) -> Option<&str> {
         self.meta.get(meta_key).map(|s| &**s)
