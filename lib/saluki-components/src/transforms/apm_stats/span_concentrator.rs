@@ -338,7 +338,8 @@ impl SpanConcentrator {
     fn add_span_internal(
         &mut self, s: &StatSpan, weight: f64, agg_key: &PayloadAggregationKey, tags: &InfraTags, origin: &str, now: u64,
     ) {
-        let end = s.start + s.duration;
+        // Wrap like the Agent's int64 sum: a span that overflows lands in the oldest open bucket.
+        let end = s.start.wrapping_add(s.duration);
         let mut btime = (end - end % self.bsize).max(self.oldest_ts);
         if btime > now {
             // A future bucket does not flush until the clock reaches it, so use the current bucket, as the Agent does.
@@ -570,6 +571,20 @@ mod tests {
                 (aligned_now, vec!["current".to_string()]),
             ]
         );
+        assert_eq!(concentrator.drain_future_clamps(), 0);
+    }
+
+    #[test]
+    fn a_span_whose_end_overflows_goes_into_the_oldest_open_bucket() {
+        let now = 1_000 * BUCKET_DURATION_NS + 3_000_000_000;
+        let oldest = align_ts(now, BUCKET_DURATION_NS) - 5 * BUCKET_DURATION_NS;
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), oldest);
+
+        // `validate_and_fix_duration` keeps a duration of 100 for a start of `u64::MAX`, so the end wraps to 99.
+        let overflowing = measured_span("overflow", u64::MAX).with_duration(100);
+        let flushed = add_and_flush(&mut concentrator, &[overflowing], now);
+
+        assert_eq!(flushed, vec![(oldest, vec!["overflow".to_string()])]);
         assert_eq!(concentrator.drain_future_clamps(), 0);
     }
 }
