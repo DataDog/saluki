@@ -2702,12 +2702,9 @@ inventory:
       does nothing with them.
 
       Like the Agent, ADP only reads the rules when `logs_enabled` (or its deprecated spelling
-      `log_enabled`) is `true`. Like the Agent's logs agent, ADP validates them when it starts its
-      logs pipeline, which it runs when it handles check logs or OTLP logs natively. Invalid rules
-      then stop ADP from starting, and they don't affect ADP when it runs no logs pipeline. The
-      rules can also be a string that holds a JSON array of rules. Like the Agent, ADP decodes
-      such a string only when it validates the rules, and reads an empty string as no rules.
-      ADP differs in these ways:
+      `log_enabled`) is `true`, and doesn't start when they're invalid. The rules can also be a
+      string that holds a JSON array of rules, and an empty string means no rules. ADP differs in
+      these ways:
 
       - Patterns use the Rust `regex` crate rather than Go's `regexp` package. Their dialects
         differ: for example, `\w`, `\d`, `\s`, and `\b` match Unicode characters in ADP, and only
