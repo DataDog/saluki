@@ -1,5 +1,11 @@
 //! Source implementations.
 
+mod apm;
+pub use self::apm::{
+    ApmConfiguration, InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation, InfoReplaceRule,
+    InfoTagFilter, InfoTagFilters, TracerFlareConfiguration,
+};
+
 mod checks_ipc;
 pub use self::checks_ipc::ChecksIPCConfiguration;
 

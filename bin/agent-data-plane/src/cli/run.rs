@@ -28,7 +28,8 @@ use saluki_components::{
     },
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
-        DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
+        BlackholeConfiguration, DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration,
+        DogStatsDStatisticsConfiguration,
     },
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
@@ -189,15 +190,13 @@ async fn create_topology(
     //
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
     // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
-    // provisions metric and service-check output paths even for proxy-only topologies. The APM relay needs the
-    // forwarder alone, as it has nothing to feed the traces pipeline.
+    // provisions metric and service-check output paths even for proxy-only topologies.
     let mut routing_targets = None;
     if dp.metrics_pipeline_required()
         || dp.logs_pipeline_required()
         || dp.events_pipeline_required()
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
-        || dp.apm_enabled()
     {
         // The forwarder and every metrics encoder that addresses its payloads to specific endpoints share one catalog,
         // so that both sides agree on what each routing target identifier means.
@@ -1024,11 +1023,14 @@ async fn add_apm_pipeline_to_blueprint(
         agent_client.cloned(),
         semantic_registry,
     );
+    // The source keeps its relay component ID, which labels its telemetry.
+    //
+    // shortcut: the source emits no traces yet, but a topology can't hold a component with no connections, so its
+    // traces output goes to a blackhole; connect it to the traces pipeline once the source decodes traces.
     blueprint
-        .add_relay("dd_traces_relay", dd_traces_relay)?
-        // The relay has no output path of its own, but a topology can't hold a component with no connections, so it
-        // connects to the forwarder, which is always created when APM is enabled.
-        .connect_components("dd_traces_relay.traces", "dd_out")?;
+        .add_source("dd_traces_relay", dd_traces_relay)?
+        .add_destination("dd_traces_relay_blackhole", BlackholeConfiguration)?
+        .connect_components("dd_traces_relay.traces", "dd_traces_relay_blackhole")?;
     Ok(())
 }
 
