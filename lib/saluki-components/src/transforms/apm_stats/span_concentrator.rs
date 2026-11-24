@@ -101,6 +101,9 @@ pub struct SpanConcentrator {
     /// Shared registry for aggregation keys.
     /// Keys are stored here and referenced by hash in individual buckets.
     key_registry: AggregationRegistry,
+
+    /// Number of spans placed in the current bucket because they end in a future one, since the last drain.
+    future_clamps: u64,
 }
 
 impl SpanConcentrator {
@@ -128,6 +131,7 @@ impl SpanConcentrator {
             buffer_len: DEFAULT_BUFFER_LEN,
             buckets: FastHashMap::default(),
             key_registry: AggregationRegistry::new(),
+            future_clamps: 0,
         }
     }
 
@@ -135,11 +139,22 @@ impl SpanConcentrator {
         self.new_stat_span(span)
     }
 
+    /// Adds a span to the bucket of its end time.
+    ///
+    /// `now` is the current Unix timestamp in nanoseconds. A span that ends after the bucket of `now` goes into that
+    /// bucket instead, so that a span from a client with a skewed clock does not hold a future bucket until the clock
+    /// reaches it.
     pub fn add_span(
         &mut self, stat_span: &StatSpan, weight: f64, payload_key: &PayloadAggregationKey, infra_tags: &InfraTags,
-        origin: &str,
+        origin: &str, now: u64,
     ) {
-        self.add_span_internal(stat_span, weight, payload_key, infra_tags, origin);
+        self.add_span_internal(stat_span, weight, payload_key, infra_tags, origin, now);
+    }
+
+    /// Returns the number of spans that [`Self::add_span`] placed in the current bucket because they end in a future
+    /// one, and resets it.
+    pub fn drain_future_clamps(&mut self) -> u64 {
+        std::mem::take(&mut self.future_clamps)
     }
 
     /// Updates the peer tag names used to group subsequent spans when the provider's registry changes.
@@ -321,10 +336,16 @@ impl SpanConcentrator {
     }
 
     fn add_span_internal(
-        &mut self, s: &StatSpan, weight: f64, agg_key: &PayloadAggregationKey, tags: &InfraTags, origin: &str,
+        &mut self, s: &StatSpan, weight: f64, agg_key: &PayloadAggregationKey, tags: &InfraTags, origin: &str, now: u64,
     ) {
         let end = s.start + s.duration;
-        let btime = (end - end % self.bsize).max(self.oldest_ts);
+        let mut btime = (end - end % self.bsize).max(self.oldest_ts);
+        if btime > now {
+            // Matches the Agent: a future bucket is not flushed until the clock reaches it, holding its memory until
+            // then.
+            self.future_clamps += 1;
+            btime = align_ts(now, self.bsize).max(self.oldest_ts);
+        }
 
         let b = self
             .buckets
@@ -433,7 +454,7 @@ mod tests {
             let stat_span = concentrator
                 .new_stat_span_from_span(&span)
                 .expect("client span with peer tags should produce stats");
-            concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+            concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
         }
 
         let payloads = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -471,5 +492,85 @@ mod tests {
             "no peer tag may retain the raw IP, got: {:?}",
             peer_tags
         );
+    }
+
+    /// A measured span of `resource` that starts at `start` and lasts one second.
+    fn measured_span(resource: &str, start: u64) -> Span {
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+        Span::new("svc", "op", resource, "web", 1, 0, start, 1_000_000_000, 0).with_attributes(attrs)
+    }
+
+    /// Adds `spans` at `now`, flushes, and returns the start of each flushed bucket with the resources it holds.
+    fn add_and_flush(concentrator: &mut SpanConcentrator, spans: &[Span], now: u64) -> Vec<(u64, Vec<String>)> {
+        let payload_key = PayloadAggregationKey {
+            env: MetaString::from("test"),
+            ..Default::default()
+        };
+        for span in spans {
+            let stat_span = concentrator
+                .new_stat_span_from_span(span)
+                .expect("a measured span should produce stats");
+            concentrator.add_span(&stat_span, 1.0, &payload_key, &InfraTags::default(), "", now);
+        }
+        // A bucket flushes once the clock is `buffer_len` buckets past its start.
+        let mut buckets = concentrator
+            .flush(now + DEFAULT_BUFFER_LEN * BUCKET_DURATION_NS, false)
+            .iter()
+            .flat_map(|payload| payload.stats())
+            .map(|bucket| {
+                let resources = bucket
+                    .stats()
+                    .iter()
+                    .map(|group| group.resource().to_string())
+                    .collect();
+                (bucket.start(), resources)
+            })
+            .collect::<Vec<_>>();
+        buckets.sort();
+        buckets
+    }
+
+    #[test]
+    fn a_span_that_ends_in_a_future_bucket_goes_into_the_current_bucket() {
+        let now = 1_000 * BUCKET_DURATION_NS + 3_000_000_000;
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
+
+        let hour_ahead = now + 3_600 * 1_000_000_000;
+        let flushed = add_and_flush(&mut concentrator, &[measured_span("future", hour_ahead)], now);
+
+        assert_eq!(
+            flushed,
+            vec![(align_ts(now, BUCKET_DURATION_NS), vec!["future".to_string()])]
+        );
+        assert!(concentrator.buckets.is_empty(), "no future bucket may be left behind");
+        assert_eq!(concentrator.drain_future_clamps(), 1);
+        assert_eq!(concentrator.drain_future_clamps(), 0);
+    }
+
+    #[test]
+    fn a_span_that_ends_in_the_current_or_a_past_bucket_keeps_its_bucket() {
+        let now = 1_000 * BUCKET_DURATION_NS + 3_000_000_000;
+        let aligned_now = align_ts(now, BUCKET_DURATION_NS);
+        // Start the concentrator earlier, so that past buckets are still open.
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now - 5 * BUCKET_DURATION_NS);
+
+        let spans = [
+            measured_span("current", aligned_now),
+            measured_span("past", aligned_now - 2 * BUCKET_DURATION_NS),
+            measured_span("too-old", aligned_now - 10 * BUCKET_DURATION_NS),
+        ];
+        let flushed = add_and_flush(&mut concentrator, &spans, now);
+
+        // A span older than the oldest open bucket goes into that bucket, as before.
+        assert_eq!(
+            flushed,
+            vec![
+                (aligned_now - 5 * BUCKET_DURATION_NS, vec!["too-old".to_string()]),
+                (aligned_now - 2 * BUCKET_DURATION_NS, vec!["past".to_string()]),
+                (aligned_now, vec!["current".to_string()]),
+            ]
+        );
+        assert_eq!(concentrator.drain_future_clamps(), 0);
     }
 }
