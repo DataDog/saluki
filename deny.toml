@@ -48,6 +48,12 @@ ignore = [
   { id = "RUSTSEC-2026-0580", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
   { id = "RUSTSEC-2026-0581", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
   { id = "RUSTSEC-2026-0582", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+
+  # rustix 1.1.4 marks unwritten bytes as initialized when its xattr functions get a zero-length buffer. Only `fs4`,
+  # `tempfile`, `crossterm`, `gix-index`, and `gix-prompt` use rustix 1.x, and none of them, nor our own code, calls the
+  # xattr functions. `main` fixes this by upgrading rustix to 1.1.6 (#3146). This release branch keeps 1.1.4, so that
+  # the backport stays small.
+  { id = "RUSTSEC-2026-0486", reason = "xattr functions are unused; fixed on main by #3146, not backported to 1.8.x" },
 ]
 
 [graph]
