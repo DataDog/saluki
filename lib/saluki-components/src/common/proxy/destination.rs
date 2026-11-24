@@ -96,6 +96,9 @@ impl Destination {
 }
 
 /// How long [`listener_reached_by`] waits for a destination's host name to resolve.
+///
+/// The value is arbitrary. Neither ADP nor the Agent has a lookup timeout to match, and the system resolver can retry for
+/// much longer.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Returns the listener in `listeners` that `destination` reaches, if any.
