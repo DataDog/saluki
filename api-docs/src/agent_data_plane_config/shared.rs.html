@@ -84,8 +84,8 @@
 <a href=#84 id=84 data-nosnippet>84</a>    /// Only read in standalone mode, where it is reported verbatim. In connected mode the hostname comes from the
 <a href=#85 id=85 data-nosnippet>85</a>    /// Datadog Agent and this value is ignored.
 <a href=#86 id=86 data-nosnippet>86</a>    ///
-<a href=#87 id=87 data-nosnippet>87</a>    /// Defaults to empty, and a defaulted or empty value is treated as absent. Operators running standalone must set
-<a href=#88 id=88 data-nosnippet>88</a>    /// it explicitly; startup fails otherwise.
+<a href=#87 id=87 data-nosnippet>87</a>    /// Defaults to empty, and a defaulted or empty value is treated as absent. In standalone mode, an absent hostname
+<a href=#88 id=88 data-nosnippet>88</a>    /// means data is sent without a host, as the Datadog Agent does in sidecar deployments such as ECS Fargate.
 <a href=#89 id=89 data-nosnippet>89</a>    </span><span class="kw">pub </span>hostname: ConfigValue&lt;String&gt;,
 <a href=#90 id=90 data-nosnippet>90</a>
 <a href=#91 id=91 data-nosnippet>91</a>    <span class="doccomment">/// containerd runtime discovery and client timeouts.
