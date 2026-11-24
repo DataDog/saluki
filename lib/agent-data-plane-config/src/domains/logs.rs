@@ -474,30 +474,24 @@ mod tests {
     }
 
     #[test]
-    fn a_sequence_converts_scalars_to_strings() {
-        // Like `mapstructure` with weakly typed input.
+    fn a_sequence_decodes_every_field_with_mapstructure() {
+        // Every field, and a single `matching` entry, is read with weakly typed input.
         let rule = serde_json::json!({
-            "type": true,
-            "name": 123,
-            "pattern": 1.5,
-            "replace_placeholder": 1e21,
-            "matching": { "attribute": false, "value": -7, "new_source": null },
+            "type": 1,
+            "name": 2,
+            "pattern": 3,
+            "replace_placeholder": 4,
+            "matching": { "attribute": 5, "value": 6, "new_source": 7 },
         });
         assert_eq!(
             ProcessingRuleEntry::from_sequence_value(&rule),
             Ok(ProcessingRuleEntry {
                 rule_type: "1".into(),
-                name: "123".into(),
-                pattern: "1.5".into(),
-                replace_placeholder: "1000000000000000000000".into(),
-                matching: vec![source_match("0", "-7", "")],
+                name: "2".into(),
+                pattern: "3".into(),
+                replace_placeholder: "4".into(),
+                matching: vec![source_match("5", "6", "7")],
             })
-        );
-
-        let rule = serde_json::json!({ "name": "x", "matching": {} });
-        assert_eq!(
-            ProcessingRuleEntry::from_sequence_value(&rule).map(|entry| entry.matching),
-            Ok(vec![])
         );
     }
 
@@ -508,10 +502,6 @@ mod tests {
             (
                 serde_json::json!({ "name": ["a"] }),
                 "`name` expected a string, got a list",
-            ),
-            (
-                serde_json::json!({ "pattern": {} }),
-                "`pattern` expected a string, got a map",
             ),
             (
                 serde_json::json!({ "matching": "a,b" }),

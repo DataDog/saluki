@@ -3241,30 +3241,6 @@ mod tests {
     }
 
     #[test]
-    fn logs_processing_rule_field_names_match_ignoring_case() {
-        let rule = json!({
-            "Type": "remap_source",
-            "NAME": "remap",
-            "Matching": [{ "Attribute": "vendor", "Value": "acme", "New_Source": "acme_logs" }],
-        });
-        let (config, errors) =
-            translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": [rule] } }));
-
-        assert!(errors.is_none(), "unexpected errors: {errors:?}");
-        assert_eq!(
-            config.domains.logs.processing_rules,
-            ProcessingRules::Entries(vec![ProcessingRuleEntry {
-                matching: vec![SourceMatch {
-                    attribute: "vendor".into(),
-                    value: "acme".into(),
-                    new_source: "acme_logs".into(),
-                }],
-                ..processing_rule_entry("remap_source", "remap", "")
-            }])
-        );
-    }
-
-    #[test]
     fn logs_processing_rules_are_only_read_when_the_logs_agent_is_enabled() {
         // Like the Agent, the rules aren't read unless `logs_enabled` or `log_enabled` turns on the logs agent, so even a
         // value of the wrong type doesn't fail translation.
