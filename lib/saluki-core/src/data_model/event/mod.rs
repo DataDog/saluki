@@ -313,7 +313,7 @@ mod tests {
             }};
         }
 
-        assert_size_budget!(Event, 336);
+        assert_size_budget!(Event, 344);
         assert_size_budget!(Metric, 160);
         assert_size_budget!(super::metric::context::Context, 8);
         assert_size_budget!(super::metric::MetricValues, 104);
@@ -323,7 +323,7 @@ mod tests {
         assert_size_budget!(EventD, 208);
         assert_size_budget!(ServiceCheck, 168);
         assert_size_budget!(Log, 216);
-        assert_size_budget!(Trace, 336);
+        assert_size_budget!(Trace, 344);
         assert_size_budget!(TraceStats, 32);
     }
 

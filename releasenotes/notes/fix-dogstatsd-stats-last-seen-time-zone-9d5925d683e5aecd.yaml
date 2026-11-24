@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    The ``Last Seen`` column of ``agent-data-plane dogstatsd stats`` now picks its time zone the same way as
+    text-format log timestamps: from the ``TZ`` environment variable when it's set, including on Windows, and otherwise
+    from ``/etc/localtime`` or the Windows time zone setting. The time zone is detected once, so a change to the host's
+    time zone takes effect after Agent Data Plane restarts.

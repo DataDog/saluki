@@ -43,7 +43,7 @@ use saluki_components::{
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement,
-        OriginEnrichmentConfiguration, OtlpConfiguration,
+        OriginEnrichmentConfiguration, OtlpConfiguration, OtlpRoutes,
     },
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
@@ -65,9 +65,9 @@ use crate::{
     component_inputs::{
         apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
         metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
-        otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings, ottl_error_mode,
-        resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
-        trace_tag_replacer_configuration,
+        otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
+        ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration,
+        trace_sampler_configuration, trace_tag_replacer_configuration,
     },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -165,6 +165,12 @@ async fn create_topology(
             ingest. Enable at least one of `otlp_config.metrics.enabled`, `otlp_config.logs.enabled`, or \
             `otlp_config.traces.enabled`."
         );
+    }
+
+    // Like the Agent, refuse to proxy OTLP signals from a receiver that sets TLS: the connection to the Agent is
+    // plaintext. The other pipelines keep running.
+    if let Some(message) = dp.otlp_blocked_message() {
+        error!(reason = %message, "ADP won't start OTLP ingest.");
     }
 
     // If no data pipelines are enabled, then there's nothing for us to do.
@@ -1100,10 +1106,13 @@ async fn add_otlp_pipeline_to_blueprint(
         let otlp_config = OtlpConfiguration {
             default_hostname: default_hostname.into(),
             receiver: otlp_receiver(&otlp.receiver),
+            routes: OtlpRoutes::ALL_INTERNAL,
+            proxy_destinations: None,
             metrics: otlp_metrics_settings(&otlp.metrics),
             traces_enabled: otlp.traces.enabled,
             traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),
             contexts: otlp_context_settings(&otlp.contexts),
+            debug_verbosity: otlp_debug_verbosity(&otlp.debug),
             max_resource_len: config.domains.traces.max_resource_len,
             semantic_registry,
             workload_provider: Arc::new(env_provider.workload().clone()),

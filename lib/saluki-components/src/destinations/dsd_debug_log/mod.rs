@@ -1,9 +1,10 @@
 use std::{io::Write, path::PathBuf};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use saluki_common::collections::FastHashMap;
+use saluki_common::logging::RollingFileWriter;
 use saluki_common::sync::live::Live;
+use saluki_common::time::{Timestamp, TimestampFormat};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
@@ -20,7 +21,6 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, warn};
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
-use tracing_rolling_file::{RollingConditionBase, RollingFileAppenderBase};
 
 const DEBUG_LOG_WRITER_BUFFER_LINES: usize = 4096;
 
@@ -108,16 +108,18 @@ impl DogStatsDDebugLog {
         sample.count += 1;
         sample.last_seen = timestamp;
 
-        let writer = self.writer.as_mut().expect("writer should be initialized");
-        writeln!(
-            writer.writer,
-            "Metric Name: {} | Tags: {{{}}} | Count: {} | Last Seen: {}",
+        // Format the line up front: the non-blocking writer forwards each write separately, so writing the line in
+        // pieces could split it across a roll-over, or drop part of it when the writer is full.
+        let line = format!(
+            "Metric Name: {} | Tags: {{{}}} | Count: {} | Last Seen: {}\n",
             context.name(),
             format_tags(context.tags()),
             sample.count,
             format_timestamp(sample.last_seen)
-        )
-        .map_err(|e| {
+        );
+
+        let writer = self.writer.as_mut().expect("writer should be initialized");
+        writer.writer.write_all(line.as_bytes()).map_err(|e| {
             generic_error!(
                 "Failed to write to DogStatsD debug log file '{}': {}",
                 self.log_file.display(),
@@ -131,12 +133,8 @@ impl DogStatsDDebugLog {
             return Ok(());
         }
 
-        let appender = RollingFileAppenderBase::new(
-            &self.log_file,
-            RollingConditionBase::new().max_size(self.log_file_max_size),
-            self.log_file_max_rolls,
-        )
-        .map_err(|e| generic_error!("Failed to open dogstatsd_log_file '{}': {}", self.log_file.display(), e))?;
+        let appender = RollingFileWriter::open(&self.log_file, self.log_file_max_size, self.log_file_max_rolls)
+            .map_err(|e| generic_error!("Failed to open dogstatsd_log_file '{}': {}", self.log_file.display(), e))?;
 
         let (writer, guard) = NonBlockingBuilder::default()
             .thread_name("dsd-dbg-writer")
@@ -215,8 +213,8 @@ fn format_tags(tags: &TagSet) -> String {
 fn format_timestamp(timestamp: u64) -> String {
     i64::try_from(timestamp)
         .ok()
-        .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S +0000 UTC").to_string())
+        .and_then(Timestamp::from_unix_seconds)
+        .map(|ts| ts.format(TimestampFormat::GoUtc).to_string())
         .unwrap_or_else(|| timestamp.to_string())
 }
 
@@ -238,7 +236,7 @@ mod tests {
     };
     use tempfile::tempdir;
 
-    use super::{DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
+    use super::{format_timestamp, DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
 
     fn test_config(log_file: PathBuf, max_size: u64, max_rolls: usize) -> DogStatsDDebugLogConfiguration {
         DogStatsDDebugLogConfiguration {
@@ -273,6 +271,25 @@ mod tests {
     fn tagged_metric() -> Metric {
         let context = Context::from_static_parts("custom.metric", &["env:prod", "service:web"]);
         Metric::counter(context, 1.0)
+    }
+
+    #[test]
+    fn last_seen_timestamps_are_formatted_in_utc() {
+        let cases = [
+            (0, "1970-01-01 00:00:00 +0000 UTC"),
+            (1_700_499_303, "2023-11-20 16:55:03 +0000 UTC"),
+            (253_402_207_200, "9999-12-30 22:00:00 +0000 UTC"),
+            // Timestamps that can't be represented fall back to the raw number of seconds. `Timestamp` stops at
+            // 9999-12-30T22:00:00Z, while chrono, which earlier versions used, could represent dates up to the year
+            // 262142.
+            (253_402_207_201, "253402207201"),
+            (i64::MAX as u64, "9223372036854775807"),
+            (u64::MAX, "18446744073709551615"),
+        ];
+
+        for (timestamp, expected) in cases {
+            assert_eq!(format_timestamp(timestamp), expected, "timestamp {}", timestamp);
+        }
     }
 
     #[tokio::test]
@@ -391,8 +408,21 @@ mod tests {
         assert!(rolled_path(&log_file, 2).exists());
         assert!(!rolled_path(&log_file, 3).exists());
 
-        let output = read_log_files(&log_file, config.log_file_max_rolls);
-        assert!(output.contains("Metric Name: custom.metric"));
+        // Every line is longer than the maximum size, so each file rolls over after one line, and a line that was
+        // written in pieces would end up split across two files.
+        for roll in 0..=config.log_file_max_rolls {
+            let output = fs::read_to_string(rolled_path(&log_file, roll)).expect("debug log file should be readable");
+            let lines = output.lines().collect::<Vec<_>>();
+            assert!(output.ends_with('\n'), "file {} ends mid-line: {:?}", roll, output);
+            assert_eq!(lines.len(), 1, "file {} should hold one line: {:?}", roll, output);
+            assert!(
+                lines[0].starts_with("Metric Name: custom.metric | Tags: {env:prod service:web} | Count: ")
+                    && lines[0].contains(" | Last Seen: "),
+                "file {} holds a partial line: {:?}",
+                roll,
+                lines[0]
+            );
+        }
     }
 
     #[tokio::test]
