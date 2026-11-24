@@ -15,7 +15,7 @@ use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::{
         event::{
-            trace::{AttributeValue, Trace},
+            trace::{AttributeValue, Trace, TraceIngestInfo},
             trace_stats::{ClientStatsBucket, ClientStatsPayload, TraceStats},
             Event, EventType,
         },
@@ -264,9 +264,14 @@ impl ApmStats {
                 }
             });
 
-        let hostname = get_tracer_hostname(trace)
-            .cloned()
-            .unwrap_or_else(|| self.agent_hostname.clone());
+        // OTLP traces use the payload hostname, then the root span's `_dd.hostname`. Datadog traces use only the tracer
+        // payload hostname, as the trace-agent does for v1.0 payloads and as the trace encoder does. Both fall back to
+        // the agent hostname.
+        let tracer_hostname = match trace.ingest_info() {
+            TraceIngestInfo::Otlp { .. } => get_tracer_hostname(trace),
+            TraceIngestInfo::Datadog => Some(&trace.payload.hostname).filter(|hostname| !hostname.is_empty()),
+        };
+        let hostname = tracer_hostname.cloned().unwrap_or_else(|| self.agent_hostname.clone());
 
         // The root span's `version` attribute takes priority: for OTLP traces it already prefers the span's version
         // over the resource's. The payload's version comes next, then the container's `version` tag.
@@ -1974,7 +1979,7 @@ mod tests {
     }
 
     #[test]
-    fn hostname_prefers_payload_then_root_span_then_agent() {
+    fn payload_key_hostname_depends_on_ingest_protocol() {
         let now = now_nanos();
         let transform = ApmStats {
             concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
@@ -1984,7 +1989,7 @@ mod tests {
             workload_provider: None,
             splits: Counter::noop(),
         };
-        let trace_with = |payload_hostname: &str, root_hostname: Option<&str>| {
+        let trace_with = |ingest_info, payload_hostname: &str, root_hostname: Option<&str>| {
             let mut attrs = FastHashMap::default();
             if let Some(root_hostname) = root_hostname {
                 attrs.insert(
@@ -1993,7 +1998,7 @@ mod tests {
                 );
             }
             let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
-            let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
+            let mut trace = Trace::new(vec![root_span], ingest_info);
             trace.payload.hostname = MetaString::from(payload_hostname);
             trace
         };
@@ -2004,10 +2009,24 @@ mod tests {
                 .to_string()
         };
 
-        // The payload hostname beats the root span's `_dd.hostname`.
-        assert_eq!(hostname(&trace_with("payload-host", Some("root-host"))), "payload-host");
-        assert_eq!(hostname(&trace_with("", Some("root-host"))), "root-host");
-        assert_eq!(hostname(&trace_with("", None)), "agent-host");
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
+
+        // OTLP traces fall back to the root span's `_dd.hostname` when the payload has no hostname.
+        assert_eq!(
+            hostname(&trace_with(otlp, "payload-host", Some("root-host"))),
+            "payload-host"
+        );
+        assert_eq!(hostname(&trace_with(otlp, "", Some("root-host"))), "root-host");
+        assert_eq!(hostname(&trace_with(otlp, "", None)), "agent-host");
+        // Datadog traces ignore it, as the trace-agent does for v1.0 payloads.
+        let datadog = TraceIngestInfo::Datadog;
+        assert_eq!(
+            hostname(&trace_with(datadog, "payload-host", Some("root-host"))),
+            "payload-host"
+        );
+        assert_eq!(hostname(&trace_with(datadog, "", Some("root-host"))), "agent-host");
     }
 
     #[test]

@@ -7,7 +7,6 @@
 //!
 //! OTLP traces are normalized by the OTLP translator instead, with an OTLP-specific service fallback.
 
-use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use async_trait::async_trait;
@@ -27,6 +26,7 @@ use tokio::select;
 use tracing::debug;
 
 use self::telemetry::{DropReason, MalformedReason, NormalizerWindow, ReasonCounts, WINDOW};
+use crate::common::traces::attribute_as_string;
 use crate::common::traces::normalize::{
     is_normalized_tag_value, is_valid_status_code, needs_name_normalization, normalize_name_with_reason,
     normalize_peer_service_into, normalize_service_with_lang_into, normalize_tag_value_into_unchecked,
@@ -300,40 +300,6 @@ fn normalize_peer_service_attribute(
         let normalized = AttributeValue::String(MetaString::from(sb.as_str()));
         span.attributes.insert(MetaString::from_static(key), normalized);
     }
-}
-
-/// Formats an attribute value as a string, as the trace-agent does.
-fn attribute_as_string(value: &AttributeValue) -> Cow<'_, str> {
-    match value {
-        AttributeValue::String(s) => Cow::Borrowed(s.as_ref()),
-        AttributeValue::Bool(b) => Cow::Borrowed(if *b { "true" } else { "false" }),
-        AttributeValue::Int(i) => Cow::Owned(i.to_string()),
-        AttributeValue::Float(f) => Cow::Owned(format_float(*f)),
-        // shortcut: invalid UTF-8 is replaced rather than kept byte for byte as the trace-agent does; the result only
-        // feeds validation and name normalization, which discard non-ASCII bytes either way.
-        AttributeValue::Bytes(b) => String::from_utf8_lossy(b),
-        AttributeValue::Array(values) => {
-            let values: Vec<_> = values.iter().map(attribute_as_string).collect();
-            Cow::Owned(format!("[{}]", values.join(",")))
-        }
-        AttributeValue::KeyValueList(entries) => {
-            let entries: Vec<_> = entries
-                .iter()
-                .map(|(key, value)| format!("{}={}", key, attribute_as_string(value)))
-                .collect();
-            Cow::Owned(format!("{{{}}}", entries.join(",")))
-        }
-    }
-}
-
-/// Formats a float as the trace-agent does: the shortest representation that round-trips, never in exponent form.
-fn format_float(f: f64) -> String {
-    if f.is_infinite() {
-        return if f > 0.0 { "+Inf" } else { "-Inf" }.to_string();
-    }
-    // Rust's `Display` already prints the shortest round-tripping form without an exponent, and `NaN` as the
-    // trace-agent does.
-    f.to_string()
 }
 
 #[async_trait]

@@ -9,7 +9,7 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{AttributeValue, ReceiverMetadata, Span as DdSpan, Trace, TraceIngestInfo};
 use saluki_core::data_model::event::Event;
 use saluki_core::data_model::origin::OriginTagCardinality;
 use stringtheory::interning::GenericMapInterner;
@@ -194,6 +194,28 @@ fn resolve_hostname(
         Some(source) if source.kind == SourceKind::Hostname => MetaString::from_interner(&source.identifier, interner),
         Some(_) => MetaString::default(),
         None => default_hostname.clone(),
+    }
+}
+
+/// Resource attribute reporting that APM stats were already computed for the resource's spans.
+const KEY_STATS_COMPUTED: &str = "_dd.stats_computed";
+
+/// Returns whether APM stats were already computed for a resource, as the trace-agent's OTLP receiver decides it.
+///
+/// Any non-empty value other than `false` means computed. The trace-agent falls back to the
+/// `Datadog-Client-Computed-Stats` header when the attribute is absent; the OTLP source doesn't read that header, so
+/// absence means not computed.
+fn resolve_client_computed_stats(attributes: &[otlp_common::KeyValue]) -> bool {
+    let Some(kv) = attributes.iter().find(|kv| kv.key == KEY_STATS_COMPUTED) else {
+        return false;
+    };
+    match kv.value.as_ref().and_then(|v| v.value.as_ref()) {
+        None => false,
+        Some(OtlpValue::StringValue(s)) => !s.is_empty() && !s.eq_ignore_ascii_case("false"),
+        Some(OtlpValue::BoolValue(b)) => *b,
+        Some(OtlpValue::BytesValue(b)) => !b.is_empty(),
+        // Numbers, arrays, and maps always render as a non-empty string.
+        Some(_) => true,
     }
 }
 
@@ -505,6 +527,13 @@ impl OtlpTracesTranslator {
             ingest_info: TraceIngestInfo::Otlp {
                 receiver_sampling_rate: self.receiver_sampling_rate,
             },
+            // The trace-agent's OTLP receiver reports top-level spans as client-computed exactly when it marks them by
+            // span kind.
+            receiver: Arc::new(ReceiverMetadata {
+                client_computed_stats: resolve_client_computed_stats(&resource.attributes),
+                client_computed_top_level: conversion.compute_top_level_by_span_kind,
+                ..ReceiverMetadata::new()
+            }),
             resource_meta,
             entries: traces_by_id.into_iter(),
             metrics: metrics.clone(),
@@ -514,6 +543,7 @@ impl OtlpTracesTranslator {
 
 struct OtlpTraceEventsIter {
     ingest_info: TraceIngestInfo,
+    receiver: Arc<ReceiverMetadata>,
     resource_meta: OtlpResourceMeta,
     entries: IntoIter<u64, TraceEntry>,
     metrics: Metrics,
@@ -555,6 +585,7 @@ impl Iterator for OtlpTraceEventsIter {
             trace.payload.app_version = self.resource_meta.app_version.clone();
             trace.payload.language_name = self.resource_meta.language_name.clone();
             trace.payload.tracer_version = self.resource_meta.tracer_version.clone();
+            trace.payload.receiver = Some(Arc::clone(&self.receiver));
             trace.payload.container_tags = self.resource_meta.container_tags.clone();
             trace.attributes = Arc::clone(&self.resource_meta.attributes);
 
@@ -1425,6 +1456,28 @@ mod tests {
             !tags.iter().any(|tag| tag.starts_with("image_tag:sender")),
             "got {tags:?}"
         );
+    }
+
+    #[test]
+    fn translate_spans_sets_client_computed_flags() {
+        let translate_stats_computed = |attrs: Vec<KeyValue>| {
+            let traces = translate(build_resource_spans(attrs, vec![span([1u8; 16], [1u8; 8], vec![])]));
+            let receiver = traces[0].payload.receiver();
+            assert!(
+                receiver.client_computed_top_level,
+                "top-level follows the span-kind setting"
+            );
+            receiver.client_computed_stats
+        };
+
+        assert!(!translate_stats_computed(vec![]));
+        assert!(translate_stats_computed(vec![string_kv("_dd.stats_computed", "true")]));
+        assert!(translate_stats_computed(vec![int_kv("_dd.stats_computed", 1)]));
+        assert!(!translate_stats_computed(vec![string_kv(
+            "_dd.stats_computed",
+            "False"
+        )]));
+        assert!(!translate_stats_computed(vec![string_kv("_dd.stats_computed", "")]));
     }
 
     /// Returns a provider holding one convention tag and one custom tag for the given container.
