@@ -337,8 +337,9 @@ fn durationize(file: &mut syn::File, durations: &BTreeMap<String, u64>) {
 ///
 /// The Agent's consumer of each of these keys decodes a string value when it reads the key, not when
 /// it loads the configuration, and only when the feature that uses the key runs. Decoding it here
-/// would reject a configuration that the Agent runs with. `env_reader_gen` also keeps an environment
-/// value of these keys as a string when it isn't JSON.
+/// would reject a configuration that the Agent runs with. Every key here has a list default:
+/// `env_reader_gen` decodes an environment value of these keys only when it's a JSON array, as the
+/// Agent does for such a key, and keeps any other value as a string.
 pub(crate) const RAW_KEYS: &[&str] = &["logs_config.processing_rules"];
 
 /// Retype every key in [`RAW_KEYS`] to `serde_json::Value`, with no decoder.

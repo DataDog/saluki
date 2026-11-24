@@ -508,19 +508,18 @@ mod tests {
     }
 
     #[test]
-    fn logs_processing_rules_that_are_not_json_stay_a_string() {
-        // Like the Agent, keep the string, so that the rules are only rejected when the logs pipeline starts.
-        let mut base = json!({});
-        apply_datadog_env_vars(
-            &mut base,
-            vars(&[("DD_LOGS_CONFIG_PROCESSING_RULES", "- type: exclude_at_match")]),
-            true,
-        )
-        .expect("a string that isn't JSON is kept");
-        assert_eq!(
-            base,
-            json!({ "logs_config": { "processing_rules": "- type: exclude_at_match" } })
-        );
+    fn logs_processing_rules_that_are_not_a_json_array_stay_a_string() {
+        // Like the Agent, keep the string, so that the rules are only rejected when the logs pipeline starts. A single
+        // rule as a JSON object is a string too: unlike a single map in YAML, the Agent doesn't read it as a rule.
+        for raw in [
+            "- type: exclude_at_match",
+            r#"{"type": "exclude_truncated", "name": "x"}"#,
+        ] {
+            let mut base = json!({});
+            apply_datadog_env_vars(&mut base, vars(&[("DD_LOGS_CONFIG_PROCESSING_RULES", raw)]), true)
+                .expect("a string that isn't a JSON array is kept");
+            assert_eq!(base, json!({ "logs_config": { "processing_rules": raw } }), "{raw}");
+        }
 
         let mut base = json!({});
         apply_datadog_env_vars(
@@ -528,7 +527,7 @@ mod tests {
             vars(&[("DD_LOGS_CONFIG_PROCESSING_RULES", r#"[{"type": "exclude_truncated"}]"#)]),
             true,
         )
-        .expect("JSON is decoded");
+        .expect("a JSON array is decoded");
         assert_eq!(
             base,
             json!({ "logs_config": { "processing_rules": [{ "type": "exclude_truncated" }] } })

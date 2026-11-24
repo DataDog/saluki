@@ -120,11 +120,11 @@ fn path_literal(key: &str) -> String {
 
 /// The `EnvDecode` token for a field: its named `env_parser` if declared, else its declared type.
 ///
-/// A key whose value the translator reads as written gets `EnvDecode::JsonOrRawString`; see
+/// A key whose value the translator reads as written gets `EnvDecode::JsonArrayOrRawString`; see
 /// `datadog_config_gen::RAW_KEYS`.
 fn decode_token(key: &str, info: Option<&FieldInfo>) -> &'static str {
     if crate::datadog_config_gen::RAW_KEYS.contains(&key) {
-        return "EnvDecode::JsonOrRawString";
+        return "EnvDecode::JsonArrayOrRawString";
     }
     if let Some(parser) = info.and_then(|i| i.env_parser.as_ref()) {
         return match parser {
