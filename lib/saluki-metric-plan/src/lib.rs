@@ -8,11 +8,13 @@
 #![deny(missing_docs)]
 
 pub mod effects;
+pub mod interpreter;
 pub mod ir;
 pub mod telemetry_check;
 pub mod validate;
 
 pub use self::effects::{operator_spec, EffectFlags, OperatorSpec, PortArity};
+pub use self::interpreter::{ReferenceInterpreter, RuntimeBindings};
 pub use self::ir::{Edge, MetricPlan, MetricPlanBuilder, Node, NodeId, Op, RouteFilterKind};
 pub use self::telemetry_check::{analyze_telemetry_contracts, TelemetryContract, TelemetryWarning};
 pub use self::validate::{validate_plan, ValidatedPlan, ValidationError};
