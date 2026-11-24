@@ -60,6 +60,14 @@ log() {
     echo "[build-smp-images] $*" >&2
 }
 
+die() {
+    log "error: $*"
+    exit 1
+}
+
+[[ "${max_age_days}" =~ ^[0-9]+$ ]] \
+    || die "SMP_IMAGE_REUSE_MAX_AGE_DAYS must be a number of days, not '${max_age_days}'."
+
 # Print the SHA-256 hash of stdin, as hex.
 sha256() {
     sha256sum | cut -c1-64
@@ -89,7 +97,10 @@ fresh_image_exists() {
     log "${image} exists (built ${created}); reusing it."
 }
 
+# A plain assignment, so that `set -e` stops the script if compute-smp-sha.sh fails. The commit goes
+# into the image tags and keys, so the script also stops if it isn't a full commit SHA.
 adp_sha="$("${script_dir}/compute-smp-sha.sh" "${role}")"
+[[ "${adp_sha}" =~ ^[0-9a-f]{40}$ ]] || die "compute-smp-sha.sh gave '${adp_sha}', not a commit SHA."
 
 # Both sides run the Agent from the pipeline commit's `.datadog-agent-version.json`, so the comparison
 # measures only the ADP change. The baseline commit can predate the file, so the script reads it from
