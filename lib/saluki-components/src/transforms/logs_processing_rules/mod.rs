@@ -145,7 +145,7 @@ fn compile_rules(rules: &[LogsProcessingRule]) -> Result<Vec<CompiledRule>, Gene
 }
 
 /// Logs processing rules transform.
-pub struct LogsProcessingRules {
+struct LogsProcessingRules {
     rules: Vec<CompiledRule>,
     events_dropped: Counter,
 }
