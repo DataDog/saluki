@@ -40,7 +40,10 @@ pub enum SpanKind {
     /// Consumer span (receiving message from queue/topic).
     Consumer = 5,
 
-    /// Unrecognized span kind of a Datadog span, as the trace-agent names it.
+    /// Kind of a v1.0 Datadog span whose kind is 0 or unrecognized, which the trace-agent reports as `unknown`.
+    ///
+    /// Kept apart from [`Unspecified`][Self::Unspecified], which is the OTLP name for kind 0 and reads `unspecified`
+    /// in the stats.
     Unknown = 6,
 }
 
