@@ -9,7 +9,7 @@ use otlp_protos::opentelemetry::proto::collector::trace::v1::{
     trace_service_client::TraceServiceClient, ExportTraceServiceRequest,
 };
 use prost::Message;
-use saluki_common::buf::FrozenChunkedBytesBuffer;
+use saluki_common::{buf::FrozenChunkedBytesBuffer, throttle::Throttle};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::payload::Payload;
 use saluki_core::{
@@ -24,6 +24,11 @@ use tonic::transport::Channel;
 use tracing::{debug, error, warn};
 
 use crate::common::otlp::{OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH};
+
+/// How many failed-payload log lines each writer emits per window before suppressing.
+const EXPORT_LOG_LIMIT: u32 = 5;
+/// How long a writer's log budget window lasts.
+const EXPORT_LOG_WINDOW: Duration = Duration::from_secs(10);
 
 /// OTLP forwarder configuration.
 ///
@@ -71,8 +76,11 @@ impl ForwarderBuilder for OtlpForwarderConfiguration {
 
         Ok(Box::new(OtlpForwarder {
             trace_agent_client,
+            trace_export_throttle: Throttle::new(EXPORT_LOG_LIMIT, EXPORT_LOG_WINDOW),
             core_agent_metrics_client,
+            metrics_export_throttle: Throttle::new(EXPORT_LOG_LIMIT, EXPORT_LOG_WINDOW),
             core_agent_logs_client,
+            logs_export_throttle: Throttle::new(EXPORT_LOG_LIMIT, EXPORT_LOG_WINDOW),
         }))
     }
 }
@@ -85,8 +93,11 @@ impl MemoryBounds for OtlpForwarderConfiguration {
 
 struct OtlpForwarder {
     trace_agent_client: TraceServiceClient<Channel>,
+    trace_export_throttle: Throttle,
     core_agent_metrics_client: MetricsServiceClient<Channel>,
+    metrics_export_throttle: Throttle,
     core_agent_logs_client: LogsServiceClient<Channel>,
+    logs_export_throttle: Throttle,
 }
 
 #[async_trait]
@@ -94,8 +105,11 @@ impl Forwarder for OtlpForwarder {
     async fn run(mut self: Box<Self>, mut context: ForwarderContext) -> Result<(), GenericError> {
         let Self {
             mut trace_agent_client,
+            trace_export_throttle,
             mut core_agent_metrics_client,
+            metrics_export_throttle,
             mut core_agent_logs_client,
+            logs_export_throttle,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -114,13 +128,34 @@ impl Forwarder for OtlpForwarder {
                             let (_, endpoint, service_path, body) = grpc_payload.into_parts();
                             match &service_path {
                                 path if *path == OTLP_TRACES_GRPC_SERVICE_PATH => {
-                                    export_traces(&mut trace_agent_client, &endpoint, &service_path, body).await;
+                                    export_traces(
+                                        &mut trace_agent_client,
+                                        &trace_export_throttle,
+                                        &endpoint,
+                                        &service_path,
+                                        body,
+                                    )
+                                    .await;
                                 }
                                 path if *path == OTLP_METRICS_GRPC_SERVICE_PATH => {
-                                    export_metrics(&mut core_agent_metrics_client, &endpoint, &service_path, body).await;
+                                    export_metrics(
+                                        &mut core_agent_metrics_client,
+                                        &metrics_export_throttle,
+                                        &endpoint,
+                                        &service_path,
+                                        body,
+                                    )
+                                    .await;
                                 }
                                 path if *path == OTLP_LOGS_GRPC_SERVICE_PATH => {
-                                    export_logs(&mut core_agent_logs_client, &endpoint, &service_path, body).await;
+                                    export_logs(
+                                        &mut core_agent_logs_client,
+                                        &logs_export_throttle,
+                                        &endpoint,
+                                        &service_path,
+                                        body,
+                                    )
+                                    .await;
                                 }
                                 _ => {
                                     warn!(service_path = %service_path, "Received gRPC payload with unknown service path. Skipping.");
@@ -143,8 +178,8 @@ impl Forwarder for OtlpForwarder {
 }
 
 async fn export_traces(
-    trace_agent_client: &mut TraceServiceClient<Channel>, endpoint: &MetaString, service_path: &MetaString,
-    body: FrozenChunkedBytesBuffer,
+    trace_agent_client: &mut TraceServiceClient<Channel>, export_throttle: &Throttle, endpoint: &MetaString,
+    service_path: &MetaString, body: FrozenChunkedBytesBuffer,
 ) {
     // Decode the raw request payload into a typed body so we can export it.
     //
@@ -165,7 +200,7 @@ async fn export_traces(
         Ok(response) => {
             let resp = response.into_inner();
             if let Some(partial_success) = resp.partial_success {
-                if partial_success.rejected_spans > 0 {
+                if partial_success.rejected_spans > 0 && export_throttle.allow() {
                     warn!(
                         rejected_spans = partial_success.rejected_spans,
                         error = %partial_success.error_message,
@@ -175,14 +210,16 @@ async fn export_traces(
             }
         }
         Err(e) => {
-            error!(error = %e, %endpoint, %service_path, "Failed to export traces to Trace Agent.");
+            if export_throttle.allow() {
+                error!(error = %e, %endpoint, %service_path, "Failed to export traces to Trace Agent.");
+            }
         }
     }
 }
 
 async fn export_metrics(
-    core_agent_grpc_client: &mut MetricsServiceClient<Channel>, endpoint: &MetaString, service_path: &MetaString,
-    body: FrozenChunkedBytesBuffer,
+    core_agent_grpc_client: &mut MetricsServiceClient<Channel>, export_throttle: &Throttle, endpoint: &MetaString,
+    service_path: &MetaString, body: FrozenChunkedBytesBuffer,
 ) {
     // Decode the raw request payload into a typed body so we can export it.
     //
@@ -204,7 +241,7 @@ async fn export_metrics(
         Ok(response) => {
             let resp = response.into_inner();
             if let Some(partial_success) = resp.partial_success {
-                if partial_success.rejected_data_points > 0 {
+                if partial_success.rejected_data_points > 0 && export_throttle.allow() {
                     warn!(
                         rejected_data_points = partial_success.rejected_data_points,
                         error = %partial_success.error_message,
@@ -214,14 +251,16 @@ async fn export_metrics(
             }
         }
         Err(e) => {
-            error!(error = %e, %endpoint, %service_path, "Failed to export metrics to Core Agent.");
+            if export_throttle.allow() {
+                error!(error = %e, %endpoint, %service_path, "Failed to export metrics to Core Agent.");
+            }
         }
     }
 }
 
 async fn export_logs(
-    core_agent_grpc_client: &mut LogsServiceClient<Channel>, endpoint: &MetaString, service_path: &MetaString,
-    body: FrozenChunkedBytesBuffer,
+    core_agent_grpc_client: &mut LogsServiceClient<Channel>, export_throttle: &Throttle, endpoint: &MetaString,
+    service_path: &MetaString, body: FrozenChunkedBytesBuffer,
 ) {
     // Decode the raw request payload into a typed body so we can export it.
     //
@@ -253,7 +292,9 @@ async fn export_logs(
             }
         }
         Err(e) => {
-            error!(error = %e, %endpoint, %service_path, "Failed to export metrics to Core Agent.");
+            if export_throttle.allow() {
+                error!(error = %e, %endpoint, %service_path, "Failed to export metrics to Core Agent.");
+            }
         }
     }
 }
