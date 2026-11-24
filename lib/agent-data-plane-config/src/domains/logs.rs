@@ -29,9 +29,8 @@ impl Domain {
     /// # Errors
     ///
     /// Returns an error if a JSON string isn't a JSON array of rules or has a field of the wrong type, a rule has no
-    /// name, no type or an unknown type,
-    /// no pattern where its type needs one, or a `remap_source` rule has no matching entries or an entry with an empty
-    /// field.
+    /// name, no type or an unknown type, no pattern where its type needs one, or a `remap_source` rule has no matching
+    /// entries or an entry with an empty field.
     pub fn validate_processing_rules(&self) -> Result<Vec<ProcessingRule>, InvalidProcessingRules> {
         let decoded;
         let entries = match &self.processing_rules {

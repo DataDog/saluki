@@ -1150,8 +1150,9 @@ const OTLP_BLACKHOLE: &str = "otlp_out_blackhole";
 ///
 /// Each internal signal goes to its pipeline, which the pipeline predicates build for the same routes. OTLP metrics go
 /// directly to the enrichment stage of the metrics pipeline, skipping aggregation, to avoid transforming counters into
-/// rates. OTLP logs go to `logs_input`, the component that logs enter the logs pipeline through. When no signal is internal, the source has no output path of its own, but a topology can't hold a component
-/// with no connections, so it connects to [`OTLP_BLACKHOLE`].
+/// rates. OTLP logs go to `logs_input`, the component that logs enter the logs pipeline through. When no signal is
+/// internal, the source has no output path of its own, but a topology can't hold a component with no connections, so
+/// it connects to [`OTLP_BLACKHOLE`].
 fn otlp_source_edges(routes: OtlpRoutes, logs_input: &'static str) -> Vec<(&'static str, &'static str)> {
     let edges = [
         (routes.metrics, "otlp_in.metrics", "metrics_enrich"),
