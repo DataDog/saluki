@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["datadog","otlp"]};
+window.SIDEBAR_ITEMS = {"mod":["datadog"]};

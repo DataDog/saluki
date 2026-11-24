@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["apm","otlp"]};
+window.SIDEBAR_ITEMS = {"mod":["apm"]};
