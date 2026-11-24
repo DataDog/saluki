@@ -88,8 +88,10 @@ pub struct TracesOptions {
 
     /// Whether each side must hold a span with Single Step Instrumentation metadata.
     ///
-    /// Set it to `false` to compare the stats of a load that has no such metadata. Defaults to `true`. It has no
-    /// effect with `otlp_direct_analysis_mode`, so the step rejects it there.
+    /// The Agent or ADP adds that metadata to the spans that it sends, so the check shows that onboarding ran. Set it
+    /// to `false` to compare the stats of a side whose output has no such metadata, and set `min_stats_groups` too:
+    /// without the check, two sides with no spans match. Defaults to `true`. It has no effect with
+    /// `otlp_direct_analysis_mode`, so the step rejects it there.
     #[serde(default)]
     pub require_ssi: Option<bool>,
 
@@ -108,8 +110,8 @@ pub struct TracesOptions {
 
     /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
     ///
-    /// A step that compares stats and sets other expectations must set it, so that two sides with no stats do not
-    /// match. It has no effect with `otlp_direct_analysis_mode`, so the step rejects it there.
+    /// A step that compares stats and sets other expectations, or sets `require_ssi` to `false`, must set it, so that two
+    /// sides with no stats do not match. It has no effect with `otlp_direct_analysis_mode`, so the step rejects it there.
     #[serde(default)]
     pub min_stats_groups: Option<NonZeroUsize>,
 }
@@ -120,8 +122,8 @@ impl TracesOptions {
     /// # Errors
     ///
     /// If an entry names no issue or a path outside the trace statistics, or if `otlp_direct_analysis_mode` skips the
-    /// statistics comparison that an option applies to, or if a step that compares stats sets expectations and no
-    /// `min_stats_groups`, an error is returned.
+    /// statistics comparison that an option applies to, or if a step that compares stats sets expectations or turns
+    /// off `require_ssi` and sets no `min_stats_groups`, an error is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
         if otlp_direct_analysis_mode {
             let compares_nothing = "which compares no stats";
@@ -145,11 +147,14 @@ impl TracesOptions {
                 ));
             }
         } else if self.min_stats_groups.is_none()
-            && (self.min_traces.is_some() || self.min_spans.is_some() || !self.spans.is_empty())
+            && (self.require_ssi == Some(false)
+                || self.min_traces.is_some()
+                || self.min_spans.is_some()
+                || !self.spans.is_empty())
         {
             return Err(
-                "'traces' sets expectations, so it must set 'min_stats_groups' while the step compares \
-                 stats. Set 'otlp_direct_analysis_mode' to compare spans only"
+                "'traces' sets expectations or turns off 'require_ssi', so it must set 'min_stats_groups' while \
+                 the step compares stats. Set 'otlp_direct_analysis_mode' to compare spans only"
                     .to_string(),
             );
         }
@@ -420,7 +425,7 @@ impl TracesAnalyzer {
         }
 
         // Ensure that we observe at least one span on each side where Single Step Instrumentation-related metadata is
-        // present (when not in OTLP-direct mode, and when the case doesn't opt out).
+        // present, unless the step is in OTLP-direct mode or the case sets `require_ssi: false`.
         if !self.options.otlp_direct_analysis_mode && self.options.require_ssi {
             if !self.baseline_ssi_metadata_present {
                 error!("No Single Step Instrumentation metadata found in baseline spans.");

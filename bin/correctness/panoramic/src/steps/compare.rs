@@ -557,8 +557,14 @@ mod tests {
     }
 
     /// What every trace case below expects of each side: two traces with three spans, two named spans, and two groups of
-    /// stats. Stats are compared, and Single Step Instrumentation metadata is not required.
+    /// stats. Stats are compared, and each side holds Single Step Instrumentation metadata, as the output of ADP and the
+    /// Agent does.
     const EXPECTING_TRACES: &str = "{telemetry: traces, comparison: app, baseline: peer, \
+        traces: {min_traces: 2, min_spans: 3, min_stats_groups: 2, \
+        spans: [{service: api, name: web.request}, {service: db, resource: SELECT 1}]}}";
+
+    /// The expectations of `EXPECTING_TRACES` for a step that does not require the metadata.
+    const EXPECTING_TRACES_WITHOUT_SSI: &str = "{telemetry: traces, comparison: app, baseline: peer, \
         traces: {require_ssi: false, min_traces: 2, min_spans: 3, min_stats_groups: 2, \
         spans: [{service: api, name: web.request}, {service: db, resource: SELECT 1}]}}";
 
@@ -634,12 +640,16 @@ mod tests {
     }
 
     fn fixture_traces() -> Scripted {
-        tracing(fixture_spans(false), &fixture_groups())
+        tracing(fixture_spans(true), &fixture_groups())
     }
 
     #[tokio::test]
-    async fn a_trace_fixture_that_each_side_holds_passes_with_stats_and_no_ssi_metadata() {
+    async fn a_trace_fixture_that_each_side_holds_passes_with_stats_and_with_or_without_the_ssi_check() {
         let report = compare(EXPECTING_TRACES, &fixture_traces(), &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        let without_ssi = tracing(fixture_spans(false), &fixture_groups());
+        let report = compare(EXPECTING_TRACES_WITHOUT_SSI, &without_ssi, &without_ssi).await;
         assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
     }
 
@@ -686,9 +696,9 @@ mod tests {
             .await;
         }
 
-        // Without expectations, two sides that hold no spans and no stats are equal.
+        // Without expectations, a spans-only comparison finds two sides that hold nothing equal.
         let report = compare(
-            "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false}}",
+            "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true}",
             &withheld,
             &withheld,
         )
@@ -700,10 +710,10 @@ mod tests {
     async fn unrelated_spans_that_meet_the_counts_fail_the_named_check() {
         let unrelated = tracing(
             vec![
-                span_json("other", "other.a", "a", 1, 10, false),
-                span_json("other", "other.b", "b", 1, 11, false),
-                span_json("api", "other.c", "c", 2, 20, false),
-                span_json("db", "other.d", "SELECT 2", 3, 30, false),
+                span_json("other", "other.a", "a", 1, 10, true),
+                span_json("other", "other.b", "b", 1, 11, true),
+                span_json("api", "other.c", "c", 2, 20, true),
+                span_json("db", "other.d", "SELECT 2", 3, 30, true),
             ],
             &fixture_groups(),
         );
@@ -733,17 +743,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spans_without_the_expected_stats_groups_fail_the_stats_check_without_ssi_metadata() {
-        let no_stats = tracing(fixture_spans(false), &[]);
+    async fn spans_without_the_expected_stats_groups_fail_the_stats_check_with_the_ssi_check_on_or_off() {
+        let no_stats = tracing(fixture_spans(true), &[]);
+        let no_stats_without_ssi = tracing(fixture_spans(false), &[]);
 
-        let report = compare(EXPECTING_TRACES, &no_stats, &no_stats).await;
-        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
-        for side in ["comparison", "baseline"] {
-            let expected = format!("The {} holds 0 stats groups, but `min_stats_groups` is 2.", side);
-            assert!(report.message.contains(&expected), "{}", report.message);
-        }
-        for met in ["`min_traces`", "`min_spans`", "`spans["] {
-            assert!(!report.message.contains(met), "{}", report.message);
+        for (label, fields, side) in [
+            ("ssi required", EXPECTING_TRACES, &no_stats),
+            ("ssi not required", EXPECTING_TRACES_WITHOUT_SSI, &no_stats_without_ssi),
+        ] {
+            let report = compare(fields, side, side).await;
+            assert_eq!(report.status, StepStatus::Failed, "{}: {}", label, report.message);
+            for name in ["comparison", "baseline"] {
+                let expected = format!("The {} holds 0 stats groups, but `min_stats_groups` is 2.", name);
+                assert!(report.message.contains(&expected), "{}: {}", label, report.message);
+            }
+            for met in ["`min_traces`", "`min_spans`", "`spans["] {
+                assert!(!report.message.contains(met), "{}: {}", label, report.message);
+            }
         }
 
         // Stats missing from one side name that side only.
@@ -758,7 +774,7 @@ mod tests {
 
         // Without expectations, the same two sides are equal: only `min_stats_groups` fails them.
         let report = compare(
-            "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false}}",
+            "{telemetry: traces, comparison: app, baseline: peer}",
             &no_stats,
             &no_stats,
         )
@@ -771,7 +787,8 @@ mod tests {
         let without = tracing(fixture_spans(false), &fixture_groups());
         let with = tracing(fixture_spans(true), &fixture_groups());
         let by_default = "{telemetry: traces, comparison: app, baseline: peer}";
-        let opted_out = "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false}}";
+        let opted_out =
+            "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false, min_stats_groups: 2}}";
         let direct = "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true}";
 
         let report = compare(by_default, &without, &without).await;
@@ -789,15 +806,15 @@ mod tests {
         let known = "known_differences: [{gap: gap/no-stats, issue: 1, paths: [stats.groups], kinds: [missing], \
             reason: ADP sends no stats}]";
         let without_expectations = format!(
-            "{{telemetry: traces, comparison: app, baseline: peer, traces: {{require_ssi: false, {}}}}}",
+            "{{telemetry: traces, comparison: app, baseline: peer, traces: {{{}}}}}",
             known
         );
         let expecting = format!(
             "{{telemetry: traces, comparison: app, baseline: peer, \
-             traces: {{require_ssi: false, min_stats_groups: 2, {}}}}}",
+             traces: {{min_stats_groups: 2, {}}}}}",
             known
         );
-        let no_stats = tracing(fixture_spans(false), &[]);
+        let no_stats = tracing(fixture_spans(true), &[]);
 
         // The gap covers every group that the comparison lacks, so the sides match.
         let report = compare(&without_expectations, &no_stats, &fixture_traces()).await;
@@ -845,7 +862,11 @@ mod tests {
         let cases = [
             (
                 "{telemetry: traces, comparison: app, baseline: peer, traces: {min_spans: 1}}",
-                "'traces' sets expectations, so it must set 'min_stats_groups' while the step compares stats",
+                "'traces' sets expectations or turns off 'require_ssi', so it must set 'min_stats_groups'",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false}}",
+                "'traces' sets expectations or turns off 'require_ssi', so it must set 'min_stats_groups'",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \

@@ -533,6 +533,7 @@ For traces, `traces` takes these fields, besides `known_differences`:
   of the side must match every field that the entry sets. The `name` is the operation name.
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
+  The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
 
 ```yaml
 - step: compare
@@ -540,7 +541,6 @@ For traces, `traces` takes these fields, besides `known_differences`:
   comparison: intake-adp
   baseline: intake-agent
   traces:
-    require_ssi: false
     min_traces: 4
     min_spans: 12
     spans:
@@ -550,10 +550,11 @@ For traces, `traces` takes these fields, besides `known_differences`:
 ```
 
 A traces `compare` compares APM stats unless it sets `otlp_direct_analysis_mode`, which compares spans only. It
-also requires a span with Single Step Instrumentation metadata on each side. A case with `require_ssi: false` compares
-stats and does not require that metadata. A `traces` section that sets expectations on a step that compares stats must
-set `min_stats_groups`. A step with `otlp_direct_analysis_mode` compares no stats, so it takes no `min_stats_groups`,
-no `require_ssi` and no `known_differences`.
+also requires a span with Single Step Instrumentation metadata on each side, so two sides with no spans do not match.
+A case whose output carries no such metadata sets `require_ssi: false` to compare stats anyway. A `traces` section that
+sets expectations or `require_ssi: false`, on a step that compares stats, must set `min_stats_groups`. A step with
+`otlp_direct_analysis_mode` compares no stats, so it takes no `min_stats_groups`, no `require_ssi` and no
+`known_differences`.
 
 A known difference never excuses an unmet expectation. The step checks the expectations first, and it counts the groups
 that each side holds, whatever `known_differences` covers.
