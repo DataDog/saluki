@@ -606,6 +606,8 @@ default values.
 | `additional_endpoints`                                          | Dual-ship to extra endpoints                    |
 | `aggregator_stop_timeout`                                       | Timeout (s) for aggregator flush on stop        |
 | `apm_config.connection_limit`                                   | APM receiver connection limit                   |
+| `apm_config.decoder_timeout`                                    | Trace decoder wait timeout, in milliseconds     |
+| `apm_config.decoders`                                           | Number of concurrent trace decoders             |
 | `apm_config.features`                                           | Beta APM feature flags                          |
 | `apm_config.filter_tags.reject`                                 | Tags that drop a trace                          |
 | `apm_config.filter_tags.require`                                | Tags a trace must have to be kept               |
@@ -680,6 +682,22 @@ ADP reads this key to describe the trace-agent's configuration to tracers in the
 `/info` response. ADP doesn't limit the relay's own connections: the trace-agent behind the
 relay applies the limit to the connections it receives from ADP. As in the trace-agent,
 `/info` reports `0` unless the key is set.
+
+### `apm_config.decoder_timeout`
+
+ADP reads this key for its experimental native trace intake
+(`data_plane.experimental.apm.native_trace_intake`), which doesn't serve trace endpoints
+yet. Until it does, the trace-agent behind the APM relay applies the timeout to the requests
+ADP forwards to it.
+
+### `apm_config.decoders`
+
+ADP reads this key for its experimental native trace intake
+(`data_plane.experimental.apm.native_trace_intake`), which doesn't serve trace endpoints
+yet. Until it does, the trace-agent behind the APM relay applies the limit to the requests
+ADP forwards to it. As in the trace-agent, `0` means half the available parallelism, and at
+least one. ADP reads a negative value as `0`, with a warning, where the trace-agent fails to
+start.
 
 ### `apm_config.features`
 
@@ -1221,6 +1239,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation                          |                       |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                     |                       |
 | `data_plane.experimental.apm.enabled`                           | Run the experimental APM proxy in front of the trace-agent | false                 |
+| `data_plane.experimental.apm.native_trace_intake`               | Serve the trace intake endpoints in ADP                    | false                 |
 | `data_plane.experimental.apm.proxy_destination`                 | HTTP or Unix socket URL of the relocated trace-agent       | http://127.0.0.1:8127 |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                        | true                  |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT                 | false                 |

@@ -48,6 +48,12 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         documentation: None,
     },
     SalukiKey {
+        yaml_path: "data_plane.experimental.apm.native_trace_intake",
+        description: "Serve the trace intake endpoints in ADP",
+        default: "false",
+        documentation: None,
+    },
+    SalukiKey {
         yaml_path: "dogstatsd_allow_context_heap_allocs",
         description: "Allow heap allocations for contexts",
         default: "true",
