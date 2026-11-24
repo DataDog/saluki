@@ -290,6 +290,59 @@ impl FusedMetricEngine {
             .min()
     }
 
+    /// Returns the bucket widths (in seconds) of all stateful aggregate operators, keyed by node ID.
+    pub fn stateful_window_widths(&self) -> BTreeMap<NodeId, u64> {
+        let mut widths = BTreeMap::new();
+        for &idx in &self.stateful_steps {
+            if let CompiledOp::Aggregate { core, .. } = &self.steps[idx] {
+                widths.insert(self.step_ids[idx].clone(), core.bucket_width_secs().get());
+            }
+        }
+        widths
+    }
+
+    /// Extracts live [`AggregateCore`] state for every stateful node in `node_ids`, replacing them with empty cores.
+    ///
+    /// Used by generation switching to transfer unchanged stateful operators atomically across generations with zero
+    /// data loss.
+    pub fn take_stateful_cores(
+        &mut self, node_ids: &std::collections::BTreeSet<NodeId>,
+    ) -> BTreeMap<NodeId, AggregateCore<()>> {
+        let mut taken = BTreeMap::new();
+        for &idx in &self.stateful_steps {
+            let id = &self.step_ids[idx];
+            if !node_ids.contains(id) {
+                continue;
+            }
+            if let CompiledOp::Aggregate { core, .. } = &mut self.steps[idx] {
+                let replacement = AggregateCore::new(
+                    core.bucket_width_secs(),
+                    core.context_limit(),
+                    None,
+                    core.hist_config().clone(),
+                );
+                let live = std::mem::replace(core, replacement);
+                taken.insert(id.clone(), live);
+            }
+        }
+        taken
+    }
+
+    /// Restores transferred [`AggregateCore`] state into matching stateful nodes by node ID.
+    pub fn restore_stateful_cores(&mut self, mut cores: BTreeMap<NodeId, AggregateCore<()>>) -> usize {
+        let mut restored = 0;
+        for &idx in &self.stateful_steps {
+            let id = &self.step_ids[idx];
+            if let Some(live) = cores.remove(id) {
+                if let CompiledOp::Aggregate { core, .. } = &mut self.steps[idx] {
+                    *core = live;
+                    restored += 1;
+                }
+            }
+        }
+        restored
+    }
+
     /// Snapshots retained contexts across all stateful aggregate operators in this region.
     pub fn snapshot_contexts(&self) -> Vec<AggregateContextSnapshotEntry> {
         let mut out = Vec::new();

@@ -10,6 +10,7 @@
 pub mod effects;
 pub mod engine;
 pub mod explain;
+pub mod generations;
 pub mod interpreter;
 pub mod ir;
 pub mod lowering;
@@ -20,6 +21,9 @@ pub mod validate;
 pub use self::effects::{operator_spec, EffectFlags, OperatorSpec, PortArity};
 pub use self::engine::FusedMetricEngine;
 pub use self::explain::explain_plan;
+pub use self::generations::{
+    compute_shared_cut_boundary, diff_plans, AdmissionStamp, GenerationId, GenerationManager, InstallOutcome, PlanDiff,
+};
 pub use self::interpreter::{ReferenceInterpreter, RuntimeBindings};
 pub use self::ir::{Edge, MetricPlan, MetricPlanBuilder, Node, NodeId, Op, RouteFilterKind};
 pub use self::lowering::{lower_native_pipeline, NativePipelineConfig, RoutingPolicySpec};
