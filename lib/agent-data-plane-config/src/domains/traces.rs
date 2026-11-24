@@ -38,6 +38,10 @@ pub enum ApmFeature {
     /// converting them to the v1 representation.
     DisableConvertTraces,
 
+    /// `component2name`: trace normalization sets a span's operation name from its `component` tag, rather than the
+    /// tracer-provided name.
+    Component2Name,
+
     /// An unrecognized feature ID, carried verbatim.
     Other(String),
 }
@@ -52,6 +56,7 @@ impl ApmFeature {
             ApmFeature::DisableOtelScopeConvention => "disable_otel_scope_convention",
             ApmFeature::TooManyRequests => "429",
             ApmFeature::DisableConvertTraces => "disable-convert-traces",
+            ApmFeature::Component2Name => "component2name",
             ApmFeature::Other(feature) => feature,
         }
     }
@@ -66,6 +71,7 @@ impl From<&str> for ApmFeature {
             "disable_otel_scope_convention" => ApmFeature::DisableOtelScopeConvention,
             "429" => ApmFeature::TooManyRequests,
             "disable-convert-traces" => ApmFeature::DisableConvertTraces,
+            "component2name" => ApmFeature::Component2Name,
             other => ApmFeature::Other(other.to_owned()),
         }
     }
@@ -582,6 +588,7 @@ mod tests {
             ("disable_otel_scope_convention", ApmFeature::DisableOtelScopeConvention),
             ("429", ApmFeature::TooManyRequests),
             ("disable-convert-traces", ApmFeature::DisableConvertTraces),
+            ("component2name", ApmFeature::Component2Name),
         ] {
             assert_eq!(ApmFeature::from(id), feature, "{id}");
         }
@@ -613,6 +620,7 @@ mod tests {
             ApmFeature::DisableOtelScopeConvention,
             ApmFeature::TooManyRequests,
             ApmFeature::DisableConvertTraces,
+            ApmFeature::Component2Name,
             ApmFeature::Other("table_names".to_owned()),
         ] {
             assert_eq!(ApmFeature::from(feature.as_str()), feature);

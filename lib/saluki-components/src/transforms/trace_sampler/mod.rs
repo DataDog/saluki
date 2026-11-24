@@ -103,7 +103,10 @@ pub struct TraceSamplerConfiguration {
     /// Maximum number of distinct signatures the rare sampler tracks.
     pub rare_sampler_cardinality: usize,
 
-    /// Whether spans are marked top-level by their span kind.
+    /// Whether the OTLP translator marks top-level spans by their span kind
+    /// (`otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`).
+    ///
+    /// When set, the sampler leaves the top-level marks of OTLP traces as they are. It has no effect on Datadog traces.
     pub compute_top_level_by_span_kind: bool,
 
     /// Event extraction rates by service and operation name. Takes precedence over `analyzed_rate_by_service` when
@@ -680,7 +683,11 @@ impl TraceSampler {
             }
         }
 
-        if !self.compute_top_level_by_span_kind {
+        // The OTLP translator already marks top-level spans by span kind when this setting is on, as the trace-agent
+        // does for OTLP payloads. Datadog traces always get their top-level spans computed here.
+        let otlp_computed_top_level =
+            self.compute_top_level_by_span_kind && matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. });
+        if !otlp_computed_top_level {
             compute_top_level(trace.spans_mut());
         }
     }
@@ -1136,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_skips_top_level_when_span_kind_computation_enabled() {
+    fn backfill_skips_top_level_for_otlp_traces_when_span_kind_computation_enabled() {
         let sampler = TraceSampler {
             compute_top_level_by_span_kind: true,
             ..create_test_sampler()
@@ -1144,7 +1151,7 @@ mod tests {
         let root = create_span_with_parent_and_service(1, 0, "svc", &[]);
         let child = create_span_with_parent_and_service(2, 1, "svc", &[]);
         let orphan = create_span_with_parent_and_service(3, 0xEE, "svc", &[]);
-        let mut trace = create_test_trace(vec![root, child, orphan]);
+        let mut trace = create_otlp_test_trace(vec![root, child, orphan], 1.0, 1);
 
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
         sampler.backfill_trace_metadata(&mut trace, root_idx);
@@ -1155,6 +1162,34 @@ mod tests {
                 "no span should carry a top-level mark with the fallback disabled"
             );
         }
+    }
+
+    #[test]
+    fn backfill_marks_top_level_for_datadog_traces_when_span_kind_computation_enabled() {
+        // The span-kind setting is an OTLP setting, so Datadog traces still get their top-level spans computed.
+        let sampler = TraceSampler {
+            compute_top_level_by_span_kind: true,
+            ..create_test_sampler()
+        };
+        let root = create_span_with_parent_and_service(1, 0, "svc", &[]);
+        let child = create_span_with_parent_and_service(2, 1, "svc", &[]);
+        let mut trace = create_test_trace(vec![root, child]);
+
+        let root_idx = sampler.get_root_span_index(&trace).unwrap();
+        sampler.backfill_trace_metadata(&mut trace, root_idx);
+
+        let top_level = |sid: u64| {
+            trace
+                .spans()
+                .iter()
+                .find(|s| s.span_id() == sid)
+                .unwrap()
+                .attributes
+                .get(crate::common::datadog::TOP_LEVEL_KEY)
+                .and_then(AttributeValue::as_num)
+        };
+        assert_eq!(top_level(1), Some(1.0), "the root span is marked");
+        assert_eq!(top_level(2), None, "the same-service child is not marked");
     }
 
     #[test]

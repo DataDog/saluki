@@ -1,0 +1,6 @@
+upgrade:
+  - |
+    The trace processing component ``traces_enrich`` is split in two: ``otlp_traces_enrich`` runs the OTTL filter and
+    transform on OTLP traces, and ``traces_process`` runs obfuscation and tag replacement. Internal telemetry for these
+    stages now reports the new ``component_id`` values. Update any dashboards or monitors that filter on
+    ``component_id:traces_enrich``.

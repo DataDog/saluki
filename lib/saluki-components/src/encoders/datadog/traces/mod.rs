@@ -140,7 +140,9 @@ pub struct DatadogTraceConfiguration {
     /// Whether Error Tracking standalone mode is enabled.
     pub error_tracking_standalone: bool,
 
-    /// Whether spans missing intake-required fields are ingested rather than rejected.
+    /// Whether OTLP traces skip recomputing missing Datadog fields (`otlp_config.traces.ignore_missing_datadog_fields`).
+    ///
+    /// Has no effect on Datadog traces.
     pub ignore_missing_datadog_fields: bool,
 
     /// Default hostname of emitted payloads.
@@ -594,6 +596,10 @@ impl TraceEndpointEncoder {
             }
         };
 
+        // `ignore_missing_datadog_fields` is an OTLP setting, so it never changes how Datadog traces are encoded.
+        let ignore_missing_datadog_fields =
+            self.ignore_missing_datadog_fields && matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. });
+
         // Resolve computed metadata strings (may produce strings not directly present on trace fields).
         let container_tags = resolve_container_tags_from_attrs(
             &trace.attributes,
@@ -609,7 +615,7 @@ impl TraceEndpointEncoder {
         };
         let env_str: Option<&str> = if !payload_env.is_empty() {
             Some(payload_env)
-        } else if self.ignore_missing_datadog_fields {
+        } else if ignore_missing_datadog_fields {
             Some("")
         } else {
             None
@@ -618,7 +624,7 @@ impl TraceEndpointEncoder {
             get_tracer_hostname(trace).map(|hostname| hostname.as_ref()),
             matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. }),
             Some(self.default_hostname.as_ref()),
-            self.ignore_missing_datadog_fields,
+            ignore_missing_datadog_fields,
         );
         // The container's `version` tag fills in an application version that the payload leaves empty. The tags come
         // from the trace's own container-tag attributes and from the container's known tags, as they do for stats. They
@@ -1698,6 +1704,44 @@ mod tests {
             BTreeSet::from(["container_name:web", "image_tag:v1"]),
             container_tags.split(',').collect::<BTreeSet<_>>()
         );
+    }
+
+    /// `ignore_missing_datadog_fields` is an OTLP setting: with it on, an OTLP trace without a hostname keeps an empty
+    /// one, while a Datadog trace still gets the default hostname.
+    #[test]
+    fn ignore_missing_datadog_fields_applies_only_to_otlp_traces() {
+        let cases = [
+            (
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+                "",
+            ),
+            (TraceIngestInfo::Datadog, "test-host"),
+        ];
+        for (ingest_info, want_hostname) in cases {
+            let mut encoder = TraceEndpointEncoder::new(
+                MetaString::from("test-host"),
+                "0.0.0".to_string(),
+                "none".to_string(),
+                DEFAULT_TARGET_TPS,
+                DEFAULT_ERRORS_PER_SECOND,
+                false,
+                true,
+            );
+            let mut buf = Vec::new();
+            encoder
+                .encode(&make_trace(ingest_info), &mut buf)
+                .expect("encode should succeed");
+
+            let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+            let hostnames: Vec<&str> = payload
+                .idxTracerPayloads
+                .iter()
+                .map(|tp| resolve_ref(tp.strings(), tp.hostnameRef()))
+                .collect();
+            assert_eq!(hostnames, [want_hostname], "{ingest_info:?}");
+        }
     }
 
     #[test]

@@ -17,7 +17,7 @@ mod traces;
 use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality as ModelOriginTagCardinality;
 use saluki_core::data_model::origin::OriginTagCardinality;
 
-pub(crate) use self::apm::apm_relay_configuration;
+pub(crate) use self::apm::apm_source_configuration;
 pub(crate) use self::datadog::{datadog_metrics_configuration, forwarder_configuration, mrf_configuration};
 pub(crate) use self::dogstatsd::{metric_mirroring, metric_name_filter, tag_filter_entries, tag_value_allowlist};
 pub(crate) use self::otlp::{

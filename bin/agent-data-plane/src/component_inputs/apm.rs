@@ -1,4 +1,4 @@
-//! Inputs of the APM relay.
+//! Inputs of the APM source.
 
 use std::sync::Arc;
 
@@ -21,9 +21,9 @@ use super::{forwarder_configuration, trace_tag_replacer_configuration};
 /// The Datadog site when none is configured.
 const DEFAULT_SITE: &str = "datadoghq.com";
 
-/// Builds the relay inputs with the effective listen host, the tracer container resolver, the API key tracer flares
+/// Builds the source inputs with the effective listen host, the tracer container resolver, the API key tracer flares
 /// are sent with, and what `/info` reports.
-pub(crate) fn apm_relay_configuration(
+pub(crate) fn apm_source_configuration(
     config: &SalukiConfiguration, containerized: bool,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>, api_key: Live<String>,
@@ -194,8 +194,8 @@ mod tests {
         }
     }
 
-    fn relay_configuration(config: &SalukiConfiguration, containerized: bool) -> ApmConfiguration {
-        apm_relay_configuration(
+    fn source_configuration(config: &SalukiConfiguration, containerized: bool) -> ApmConfiguration {
+        apm_source_configuration(
             config,
             containerized,
             None,
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn apm_relay_configuration_comes_from_resolved_configuration() {
+    fn apm_source_configuration_comes_from_resolved_configuration() {
         let mut config = SalukiConfiguration::default();
         config.domains.apm.receiver_port = 9126;
         config.domains.apm.receiver_socket = Some("/tmp/receiver.sock".to_string());
@@ -216,7 +216,7 @@ mod tests {
         config.shared.bind_host = ConfigValue::explicit(Some("192.0.2.1".to_string()));
         config.shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
         let resolver: Arc<dyn CaptureEntityResolver + Send + Sync> = Arc::new(NoContainerResolver);
-        let relay = apm_relay_configuration(
+        let source = apm_source_configuration(
             &config,
             false,
             Some(resolver.clone()),
@@ -226,27 +226,27 @@ mod tests {
             SemanticRegistryProvider::default(),
         );
 
-        assert_eq!(relay.receiver_port, 9126);
-        assert_eq!(relay.receiver_socket, "/tmp/receiver.sock");
-        assert_eq!(relay.proxy_destination, "unix:///tmp/destination.sock");
-        assert_eq!(relay.bind_host.as_deref(), Some("192.0.2.1"));
-        assert!(relay.non_local_traffic);
-        assert!(Arc::ptr_eq(relay.capture_entity_resolver.as_ref().unwrap(), &resolver));
-        assert_eq!(relay.tracer_flare.site, "datadoghq.eu");
-        assert_eq!(relay.tracer_flare.api_key.as_str(), "api-key");
-        assert!(relay.agent_client.is_none());
+        assert_eq!(source.receiver_port, 9126);
+        assert_eq!(source.receiver_socket, "/tmp/receiver.sock");
+        assert_eq!(source.proxy_destination, "unix:///tmp/destination.sock");
+        assert_eq!(source.bind_host.as_deref(), Some("192.0.2.1"));
+        assert!(source.non_local_traffic);
+        assert!(Arc::ptr_eq(source.capture_entity_resolver.as_ref().unwrap(), &resolver));
+        assert_eq!(source.tracer_flare.site, "datadoghq.eu");
+        assert_eq!(source.tracer_flare.api_key.as_str(), "api-key");
+        assert!(source.agent_client.is_none());
     }
 
     #[test]
-    fn apm_relay_configuration_resolves_container_fallback_and_disabled_socket() {
+    fn apm_source_configuration_resolves_container_fallback_and_disabled_socket() {
         let mut config = SalukiConfiguration::default();
         config.shared.bind_host = ConfigValue::defaulted(Some("localhost".to_string()));
         for containerized in [false, true] {
-            let relay = relay_configuration(&config, containerized);
-            assert_eq!(relay.non_local_traffic, containerized);
-            assert_eq!(relay.bind_host, None);
-            assert!(relay.receiver_socket.is_empty());
-            assert!(relay.capture_entity_resolver.is_none());
+            let source = source_configuration(&config, containerized);
+            assert_eq!(source.non_local_traffic, containerized);
+            assert_eq!(source.bind_host, None);
+            assert!(source.receiver_socket.is_empty());
+            assert!(source.capture_entity_resolver.is_none());
         }
     }
 
@@ -303,7 +303,7 @@ mod tests {
         obfuscation.credit_cards.luhn = true;
         obfuscation.credit_cards.keep_values = vec!["card".to_string()];
 
-        let info = relay_configuration(&config, false).info;
+        let info = source_configuration(&config, false).info;
 
         // The environment is normalized as a tag value.
         assert_eq!(info.default_env, "staging");
@@ -379,7 +379,7 @@ mod tests {
             repl: "?".to_string(),
         }];
 
-        let info = relay_configuration(&config, false).info;
+        let info = source_configuration(&config, false).info;
         assert_eq!(replace_rules(&info), [("http.url", "token/(.*)", "?")]);
     }
 
@@ -389,9 +389,9 @@ mod tests {
         config.domains.apm.max_memory = ConfigValue::defaulted(5e8);
         config.domains.apm.max_cpu_percent = ConfigValue::defaulted(50.0);
 
-        let info = relay_configuration(&config, false).info;
+        let info = source_configuration(&config, false).info;
         assert_eq!((info.max_memory, info.max_cpu), (5e8, 0.5));
-        let info = relay_configuration(&config, true).info;
+        let info = source_configuration(&config, true).info;
         assert_eq!((info.max_memory, info.max_cpu), (0.0, 0.0));
     }
 
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn info_configuration_reports_none_without_an_environment() {
-        let info = relay_configuration(&SalukiConfiguration::default(), false).info;
+        let info = source_configuration(&SalukiConfiguration::default(), false).info;
         assert_eq!(info.default_env, "none");
     }
 }
