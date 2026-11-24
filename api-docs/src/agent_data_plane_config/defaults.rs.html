@@ -114,4 +114,7 @@
 <a href=#114 id=114 data-nosnippet>114</a>/// A literal loopback address rather than `localhost`, so the proxy and the trace-agent cannot resolve the name to
 <a href=#115 id=115 data-nosnippet>115</a>/// different address families. The Datadog Agent must move the trace-agent's receiver to the same address.
 <a href=#116 id=116 data-nosnippet>116</a></span><span class="kw">pub const </span>DEFAULT_APM_PROXY_DESTINATION: <span class="kw-2">&amp;</span>str = <span class="string">"http://127.0.0.1:8127"</span>;
+<a href=#117 id=117 data-nosnippet>117</a>
+<a href=#118 id=118 data-nosnippet>118</a><span class="doccomment">/// Default for serving the trace intake endpoints natively: off, so the APM relay proxies them to the trace-agent.
+<a href=#119 id=119 data-nosnippet>119</a></span><span class="kw">pub const </span>DEFAULT_APM_NATIVE_TRACE_INTAKE: bool = <span class="bool-val">false</span>;
 </code></pre></div></section></main></body></html>
