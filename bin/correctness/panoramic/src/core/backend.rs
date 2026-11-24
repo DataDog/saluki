@@ -66,6 +66,9 @@ pub(crate) struct Facts {
     pub(crate) publishes: bool,
     /// Whether a participant may mount host paths.
     pub(crate) mounts: bool,
+    /// Whether a command run in the participant sees the end of its input. It does not in a Windows container, where
+    /// Docker gets no end of input from the exec client.
+    pub(crate) exec_input_ends: bool,
     /// The realization options a case may set.
     pub(crate) options: &'static [&'static str],
 }
@@ -128,6 +131,7 @@ const LINUX_CONTAINER: Facts = Facts {
     listens: ALL_BUT_PIPES,
     publishes: true,
     mounts: true,
+    exec_input_ends: true,
     // `host_pid`: the container shares the host's PID namespace. `host_cgroup_namespace`: it shares the host's cgroup
     // namespace.
     options: &[HOST_PID, HOST_CGROUP_NAMESPACE],
@@ -149,6 +153,7 @@ const WINDOWS_CONTAINER: Facts = Facts {
     ],
     publishes: false,
     mounts: false,
+    exec_input_ends: false,
     options: &[],
 };
 
@@ -162,6 +167,7 @@ const KUBERNETES_POD: Facts = Facts {
     listens: ALL_BUT_PIPES,
     publishes: false,
     mounts: true,
+    exec_input_ends: true,
     // `host_pid`: the pod shares the node's PID namespace. `cri_socket`: the pod mounts the node's containerd socket.
     options: &[HOST_PID, CRI_SOCKET],
 };
@@ -178,6 +184,7 @@ const HOST_PROCESS_GROUP: Facts = Facts {
     listens: ALL_BUT_PIPES,
     publishes: false,
     mounts: false,
+    exec_input_ends: true,
     options: &[],
 };
 

@@ -23,6 +23,8 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool);
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool);
     fn consume_apm_config_connection_limit(&mut self, value: i64);
+    fn consume_apm_config_decoder_timeout(&mut self, value: i64);
+    fn consume_apm_config_decoders(&mut self, value: i64);
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool);
     fn consume_apm_config_env(&mut self, value: String);
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
@@ -97,6 +99,7 @@ pub trait DatadogConfigWitness {
     fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool);
     fn consume_data_plane_enabled(&mut self, value: bool);
     fn consume_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(&mut self, value: String);
+    fn consume_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint(&mut self, value: String);
     fn consume_data_plane_experimental_otlp_proxy_logs(&mut self, value: bool);
     fn consume_data_plane_experimental_otlp_proxy_metrics(&mut self, value: bool);
     fn consume_data_plane_experimental_otlp_proxy_traces(&mut self, value: bool);
@@ -212,6 +215,7 @@ pub trait DatadogConfigWitness {
     fn consume_observability_pipelines_worker_metrics_url(&mut self, value: String);
     fn consume_observability_pipelines_worker_metrics_use_v3_api_series(&mut self, value: bool);
     fn consume_origin_detection_unified(&mut self, value: bool);
+    fn consume_otlp_config_debug_verbosity(&mut self, value: String);
     fn consume_otlp_config_logs_enabled(&mut self, value: bool);
     fn consume_otlp_config_metrics_delta_ttl(&mut self, value: i64);
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool);
@@ -328,6 +332,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_apm_non_local_traffic(config.apm_config.apm_non_local_traffic.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
     consumer.consume_apm_config_connection_limit(config.apm_config.connection_limit.clone());
+    consumer.consume_apm_config_decoder_timeout(config.apm_config.decoder_timeout.clone());
+    consumer.consume_apm_config_decoders(config.apm_config.decoders.clone());
     consumer.consume_apm_config_enable_rare_sampler(config.apm_config.enable_rare_sampler.clone());
     consumer.consume_apm_config_env(config.apm_config.env.clone());
     consumer.consume_apm_config_error_tracking_standalone_enabled(
@@ -448,6 +454,15 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .otlp
             .proxy
             .agent_receiver_grpc_endpoint
+            .clone(),
+    );
+    consumer.consume_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint(
+        config
+            .data_plane
+            .experimental
+            .otlp
+            .proxy
+            .agent_receiver_http_endpoint
             .clone(),
     );
     consumer.consume_data_plane_experimental_otlp_proxy_logs(config.data_plane.experimental.otlp.proxy.logs.clone());
@@ -584,6 +599,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
         config.observability_pipelines_worker.metrics.use_v3_api.series.clone(),
     );
     consumer.consume_origin_detection_unified(config.origin_detection_unified.clone());
+    consumer.consume_otlp_config_debug_verbosity(config.otlp_config.debug.verbosity.clone());
     consumer.consume_otlp_config_logs_enabled(config.otlp_config.logs.enabled.clone());
     consumer.consume_otlp_config_metrics_delta_ttl(config.otlp_config.metrics.delta_ttl.clone());
     consumer.consume_otlp_config_metrics_enabled(config.otlp_config.metrics.enabled.clone());

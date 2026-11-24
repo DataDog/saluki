@@ -10,6 +10,10 @@ internal metrics registry.
   Encoders translate the model into output, so one encoder works for events from every source. `DDSketch` and the
   `serde_json::Value` in log properties are part of the model. Payload types under `src/data_model/payload/` are
   transport-level and can hold types such as `http::Request`.
+- `Opaque` events are the exception to the rule above. An `Opaque` holds a type name and encoded bytes, so that
+  payloads outside the model can move through the topology. `saluki-common` defines it, and `src/data_model/event/`
+  re-exports it. Don't flag its `Bytes` field. Flag an `Opaque` payload that a modeled event type can hold, and code
+  that decodes `Opaque` data directly instead of with `try_decode`, which checks the type name first.
 - When behavior depends on the input protocol, the event holds it in a typed field that the source sets at
   construction, as `TraceIngestInfo` does. Flag a new event method that gets the protocol from tags or attributes,
   because transforms can change or remove them.

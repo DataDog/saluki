@@ -26,8 +26,9 @@ use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricPrefixRule, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    ContainerTagPromotion, CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue,
-    SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+    ContainerTagPromotion, CumulativeMonotonicMode, DebugVerbosity, GrpcTransport, HistogramMode,
+    InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT,
+    DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule, SqlObfuscationMode, TagFilter};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
@@ -39,6 +40,8 @@ use datadog_agent_config::{
 use tracing::warn;
 
 use crate::source::SourceTree;
+
+const DEFAULT_SKETCH_SHADOW_SAMPLE_RATE: f64 = 0.001;
 
 /// Translates a [`DatadogConfiguration`] into a [`SalukiConfiguration`].
 ///
@@ -78,6 +81,7 @@ impl<'a> DatadogTranslator<'a> {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
         self.apply_deprecated_max_tps_alias();
+        self.detect_receiver_tls();
         self.resolve_v3_sketch_payload_limits();
         self.drop_regex_tag_filters_shadowed_by_exact_ones();
         (self.config, errors)
@@ -108,6 +112,29 @@ impl<'a> DatadogTranslator<'a> {
             return;
         }
         self.config.domains.traces.target_traces_per_second = self.max_traces_per_second;
+    }
+
+    /// Records, for each OTLP receiver protocol, whether an input explicitly set any `tls` value.
+    ///
+    /// This reads the merged sources, not the typed TLS fields. Those fields omit some `tls` keys, and they
+    /// hold an explicit empty value as the default.
+    fn detect_receiver_tls(&mut self) {
+        // ADP detects receiver TLS only from explicitly set `tls.<field>` leaves. This is intentionally
+        // narrower than the Agent's `ValidateDataPlaneProxy`
+        // (comp/otelcol/otlp/configcheck/configcheck_common.go). The Agent also rejects `tls:`, `tls: null`,
+        // and `tls: {}`.
+        //
+        // Those shapes never reach ADP. Configuration arrives as leaves, and empty or null sections carry none.
+        //
+        // Missing them is safe. The Agent rejects those shapes, so its OTLP ingest and relocated listeners
+        // don't start. An empty TLS section never configured TLS, so ADP downgrades nothing.
+        let receiver = &mut self.config.domains.otlp.receiver;
+        receiver.grpc.tls_configured = self
+            .sources
+            .has_explicit_under("otlp_config.receiver.protocols.grpc.tls");
+        receiver.http.tls_configured = self
+            .sources
+            .has_explicit_under("otlp_config.receiver.protocols.http.tls");
     }
 
     /// Drops each `filter_tags_regex` rule whose key a `filter_tags` rule in the same list already has.
@@ -526,6 +553,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             };
     }
 
+    fn consume_apm_config_decoder_timeout(&mut self, value: i64) {
+        self.config.domains.apm.decoder_timeout = non_positive_as_zero("apm_config.decoder_timeout", value);
+    }
+
+    fn consume_apm_config_decoders(&mut self, value: i64) {
+        // The trace-agent panics on a negative count, but only when it builds the receiver: a translation error here
+        // would stop every pipeline, so a negative count reads as `0`, the automatic size, instead.
+        self.config.domains.apm.decoders = non_positive_as_zero("apm_config.decoders", value);
+    }
+
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool) {
         self.config.domains.traces.enable_rare_sampler = value;
     }
@@ -922,6 +959,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(&mut self, value: String) {
         self.config.domains.otlp.proxy.grpc_endpoint = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint(&mut self, value: String) {
+        self.config.domains.otlp.proxy.http_endpoint = value;
     }
 
     fn consume_data_plane_experimental_otlp_proxy_logs(&mut self, value: bool) {
@@ -1566,6 +1607,21 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.dogstatsd.origin.unified = value;
     }
 
+    fn consume_otlp_config_debug_verbosity(&mut self, value: String) {
+        // The schema default is `basic`, which would turn the output on for every user, so only a configured value
+        // counts. A section declared without a `verbosity` is indistinguishable from an unset one, and stays off.
+        if self.sources.provenance("otlp_config.debug.verbosity") != Provenance::Explicit {
+            return;
+        }
+
+        // An unrecognized value leaves the output off and doesn't stop ADP from starting: this is an optional
+        // diagnostic setting, and a translation error would fail the whole configuration.
+        match value.parse::<DebugVerbosity>() {
+            Ok(verbosity) => self.config.domains.otlp.debug.verbosity = verbosity,
+            Err(error) => warn!(%error, "Invalid `otlp_config.debug.verbosity`; OTLP debug output stays off."),
+        }
+    }
+
     fn consume_otlp_config_logs_enabled(&mut self, value: bool) {
         self.config.domains.otlp.receiver.logs_enabled = value;
     }
@@ -1891,7 +1947,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(&mut self, value: f64) {
-        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate = value;
+        // Core defaults to disabled; ADP samples validation traffic unless an input sets the rate explicitly.
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate = if self
+            .sources
+            .provenance("serializer_experimental_use_v3_api.sketches.shadow_sample_rate")
+            == Provenance::Explicit
+        {
+            value
+        } else {
+            DEFAULT_SKETCH_SHADOW_SAMPLE_RATE
+        };
     }
 
     fn consume_serializer_experimental_use_v3_api_sketches_shadow_sites(&mut self, value: Vec<String>) {
@@ -2064,18 +2129,18 @@ mod tests {
     use agent_data_plane_config::domains::{
         dogstatsd::{MetricFilter, MetricPrefixRule, OriginTagCardinality},
         otlp::{
-            CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
+            CumulativeMonotonicMode, DebugVerbosity, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
         traces::{ApmFeature, SqlObfuscationMode, TagFilter},
     };
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
-    use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
+    use datadog_agent_config::{apply_datadog_env_vars, DatadogConfiguration, TranslateErrors};
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use serde_json::{json, Value};
 
-    use super::DatadogTranslator;
+    use super::{DatadogTranslator, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE};
     use crate::saluki_only::SalukiOnly;
     use crate::source::SourceTree;
 
@@ -2099,6 +2164,39 @@ mod tests {
             .collect();
 
         translate_sources(&SourceTree::from_settings(&settings))
+    }
+
+    #[test]
+    fn sketch_shadow_sampling_uses_the_adp_default_unless_explicit() {
+        let key = "serializer_experimental_use_v3_api.sketches.shadow_sample_rate";
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "{errors:?}");
+        assert_eq!(
+            config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate,
+            DEFAULT_SKETCH_SHADOW_SAMPLE_RATE
+        );
+
+        // A streamed Core default must not disable ADP sampling; an explicit zero must still opt out.
+        for (value, provenance, expected) in [
+            (0.0, StreamProvenance::Default, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE),
+            (0.001, StreamProvenance::Default, DEFAULT_SKETCH_SHADOW_SAMPLE_RATE),
+            (0.0, StreamProvenance::Explicit, 0.0),
+            (0.5, StreamProvenance::Explicit, 0.5),
+            (-1.0, StreamProvenance::Explicit, -1.0),
+        ] {
+            let (config, errors) = translate_stream(&[(key, json!(value), provenance)]);
+            assert!(errors.is_none(), "{errors:?}");
+            assert_eq!(
+                config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate,
+                expected
+            );
+        }
+    }
+
+    /// Returns whether `config` records receiver TLS for the gRPC and HTTP protocols, in that order.
+    fn receiver_tls_configured(config: &SalukiConfiguration) -> (bool, bool) {
+        let receiver = &config.domains.otlp.receiver;
+        (receiver.grpc.tls_configured, receiver.http.tls_configured)
     }
 
     /// Asserts that `actual` was set explicitly and holds `expected`.
@@ -2246,7 +2344,8 @@ mod tests {
                     "logs": logs,
                     "metrics": metrics,
                     "traces": traces,
-                    "agent_receiver_grpc_endpoint": "127.0.0.1:5000"
+                    "agent_receiver_grpc_endpoint": "127.0.0.1:5000",
+                    "agent_receiver_http_endpoint": "127.0.0.1:5001"
                 }}}}
             }));
             assert!(errors.is_none(), "translation should succeed: {errors:?}");
@@ -2257,6 +2356,7 @@ mod tests {
                 (logs, metrics, traces)
             );
             assert_eq!(proxy.grpc_endpoint, "127.0.0.1:5000");
+            assert_eq!(proxy.http_endpoint, "127.0.0.1:5001");
             assert!(proxy.enabled());
         }
     }
@@ -2272,6 +2372,91 @@ mod tests {
         assert!(!proxy.traces_enabled);
         assert!(!proxy.enabled());
         assert_eq!(proxy.grpc_endpoint, "127.0.0.1:4319");
+        assert_eq!(proxy.http_endpoint, "127.0.0.1:4320");
+    }
+
+    #[test]
+    fn otlp_receiver_tls_is_configured_by_an_explicit_value_in_a_local_file() {
+        // `cert_file` has a model field and `client_ca_file` has none, but either sets TLS up.
+        for protocol in ["grpc", "http"] {
+            for field in ["cert_file", "client_ca_file"] {
+                let (config, errors) = translate_explicit(json!({
+                    "otlp_config": { "receiver": { "protocols": { protocol: { "tls": { field: "/etc/tls.pem" } } } } }
+                }));
+                assert!(errors.is_none(), "translation should succeed: {errors:?}");
+                assert_eq!(
+                    receiver_tls_configured(&config),
+                    (protocol == "grpc", protocol == "http"),
+                    "{protocol} {field} should configure TLS for that protocol only"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn otlp_receiver_tls_is_configured_by_an_environment_variable() {
+        let vars = [(
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE".to_string(),
+            "/etc/cert.pem".to_string(),
+        )];
+        let mut base = json!({});
+        apply_datadog_env_vars(&mut base, vars, true).expect("environment variables decode");
+
+        let (config, errors) = translate_explicit(base);
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert_eq!(receiver_tls_configured(&config), (true, false));
+    }
+
+    #[test]
+    fn otlp_receiver_tls_is_configured_by_an_agent_setting_from_a_file() {
+        // The Agent reports `source: file` for a value its configuration file set.
+        let (config, errors) = translate_stream(&[(
+            "otlp_config.receiver.protocols.http.tls.key_file",
+            json!("/etc/key.pem"),
+            StreamProvenance::Explicit,
+        )]);
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert_eq!(receiver_tls_configured(&config), (false, true));
+    }
+
+    #[test]
+    fn otlp_receiver_tls_is_not_configured_by_defaults() {
+        // The Agent streams every key it knows, so its defaults must not count.
+        let (config, errors) = translate_stream(&[
+            (
+                "otlp_config.receiver.protocols.grpc.tls.cert_file",
+                json!(""),
+                StreamProvenance::Default,
+            ),
+            (
+                "otlp_config.receiver.protocols.http.tls.key_file",
+                json!(""),
+                StreamProvenance::Default,
+            ),
+        ]);
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert_eq!(receiver_tls_configured(&config), (false, false));
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert_eq!(receiver_tls_configured(&config), (false, false));
+    }
+
+    // This test pins intended behavior, not a gap. `detect_receiver_tls` gives the reason. A null section is
+    // dropped while the local file loads. See `empty_otlp_receiver_tls_sections_are_not_configured` in
+    // `loaded.rs`.
+    #[test]
+    fn otlp_receiver_tls_is_not_configured_by_an_empty_section() {
+        let (config, errors) = translate_explicit(json!({
+            "data_plane": { "experimental": { "otlp": { "proxy": { "logs": true } } } },
+            "otlp_config": { "receiver": { "protocols": {
+                "grpc": { "tls": {} },
+                "http": { "tls": {} },
+            } } }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(config.domains.otlp.proxy.enabled());
+        assert_eq!(receiver_tls_configured(&config), (false, false));
     }
 
     #[test]
@@ -2623,6 +2808,8 @@ mod tests {
         assert_eq!(apm.connection_limit, 0);
         assert_eq!(apm.receiver_timeout, 0);
         assert_eq!(apm.max_payload_size, 25 * 1024 * 1024);
+        assert_eq!(apm.decoders, 0);
+        assert_eq!(apm.decoder_timeout, 1000);
         assert_defaulted(&apm.max_memory, 5e8);
         assert_defaulted(&apm.max_cpu_percent, 50.0);
         assert!(apm.telemetry_enabled);
@@ -2645,6 +2832,8 @@ mod tests {
                 "connection_limit": 100,
                 "receiver_timeout": 7,
                 "max_payload_size": 1024,
+                "decoders": 3,
+                "decoder_timeout": 250,
                 "max_memory": 1e9,
                 "max_cpu_percent": 200,
                 "telemetry": { "enabled": false },
@@ -2663,6 +2852,8 @@ mod tests {
         assert_eq!(apm.connection_limit, 100);
         assert_eq!(apm.receiver_timeout, 7);
         assert_eq!(apm.max_payload_size, 1024);
+        assert_eq!(apm.decoders, 3);
+        assert_eq!(apm.decoder_timeout, 250);
         assert_explicit(&apm.max_memory, 1e9);
         assert_explicit(&apm.max_cpu_percent, 200.0);
         assert!(!apm.telemetry_enabled);
@@ -2683,11 +2874,15 @@ mod tests {
     fn negative_trace_agent_limits_recover_as_the_trace_agent_does() {
         // The trace-agent applies no connection limit and its default timeout for any value up to 0.
         let (config, errors) = translate_explicit(json!({
-            "apm_config": { "connection_limit": -1, "receiver_timeout": -5 },
+            "apm_config": { "connection_limit": -1, "receiver_timeout": -5, "decoders": -1, "decoder_timeout": -1 },
         }));
         assert!(errors.is_none());
         assert_eq!(config.domains.apm.connection_limit, 0);
         assert_eq!(config.domains.apm.receiver_timeout, 0);
+        // A wait of up to 0 rejects a payload at once, whenever no decoder is free.
+        assert_eq!(config.domains.apm.decoder_timeout, 0);
+        // The trace-agent panics on a negative decoder count; ADP sizes the pool automatically instead.
+        assert_eq!(config.domains.apm.decoders, 0);
 
         // A negative payload size has no recovery: the trace-agent would reject every request.
         let (_, errors) = translate_explicit(json!({ "apm_config": { "max_payload_size": -1 } }));
@@ -4275,5 +4470,64 @@ mod tests {
         let errors = errors.expect("zero delta_ttl should record a translation error");
         assert!(errors.to_string().contains("otlp_config.metrics.delta_ttl"));
         assert!(errors.to_string().contains("time to live must be positive"));
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_translates_each_explicit_level() {
+        for (configured, expected) in [
+            ("none", DebugVerbosity::None),
+            ("basic", DebugVerbosity::Basic),
+            ("normal", DebugVerbosity::Normal),
+            ("detailed", DebugVerbosity::Detailed),
+            ("Basic", DebugVerbosity::Basic),
+            ("DETAILED", DebugVerbosity::Detailed),
+        ] {
+            let (config, errors) = translate_explicit(json!({
+                "otlp_config": { "debug": { "verbosity": configured } }
+            }));
+
+            assert!(errors.is_none());
+            assert_eq!(config.domains.otlp.debug.verbosity, expected);
+        }
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_is_off_when_unset() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::None);
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_stays_off_when_the_stream_supplies_its_default() {
+        // The stream carries the schema default `basic` for every user who configured nothing.
+        let (config, errors) =
+            translate_stream(&[("otlp_config.debug.verbosity", json!("basic"), StreamProvenance::Default)]);
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::None);
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_honors_an_explicit_value_from_the_stream() {
+        let (config, errors) = translate_stream(&[(
+            "otlp_config.debug.verbosity",
+            json!("detailed"),
+            StreamProvenance::Explicit,
+        )]);
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::Detailed);
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_unknown_value_stays_off_without_failing_translation() {
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "debug": { "verbosity": "loud" } }
+        }));
+
+        assert_eq!(config.domains.otlp.debug.verbosity, DebugVerbosity::None);
+        assert!(errors.is_none(), "an unknown verbosity must not fail the configuration");
     }
 }

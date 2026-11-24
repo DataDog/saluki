@@ -8,13 +8,22 @@
 //! The listen settings are the trace-agent's own `apm_config.*` keys, so ADP binds exactly the address tracers are
 //! already configured to reach. The global `bind_host` also applies, and lives in the shared configuration.
 //!
+//! With [`native_trace_intake`](Domain::native_trace_intake) also enabled, the relay serves the trace intake endpoints
+//! itself instead of proxying them, applying the receiver limits held here as the trace-agent does.
+//!
 //! The domain also holds the trace-agent receiver settings that ADP doesn't apply itself but reports to tracers, such
 //! as the connection limit and the resource limits, as the trace-agent reads them.
 
+use std::num::NonZeroUsize;
+use std::time::Duration;
+
 use serde::Serialize;
 
-use crate::defaults::DEFAULT_APM_PROXY_DESTINATION;
+use crate::defaults::{DEFAULT_APM_NATIVE_TRACE_INTAKE, DEFAULT_APM_PROXY_DESTINATION};
 use crate::ConfigValue;
+
+/// The trace-agent's receiver request timeout, applied when `apm_config.receiver_timeout` is `0`.
+const DEFAULT_RECEIVER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Resolved APM configuration.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -50,6 +59,11 @@ pub struct Domain {
     /// unknown instead.
     pub proxy_destination: String,
 
+    /// Whether the relay serves the trace intake endpoints itself (`data_plane.experimental.apm.native_trace_intake`).
+    ///
+    /// When `false`, the default, the relay proxies them to the trace-agent. (not in Datadog Agent config schema)
+    pub native_trace_intake: bool,
+
     /// Maximum number of connections the trace-agent's receiver accepts (`apm_config.connection_limit`).
     ///
     /// `0` when the key is unset: the trace-agent reads the key only when it is set, so it ignores the schema
@@ -58,14 +72,27 @@ pub struct Domain {
 
     /// Timeout, in seconds, for a request to the trace-agent's receiver (`apm_config.receiver_timeout`).
     ///
-    /// `0`, the default, leaves the trace-agent's own default of 5 seconds. A negative value is read as `0`, with a
-    /// warning: the trace-agent uses its default for either.
+    /// `0`, the default, leaves the trace-agent's own default of 5 seconds; see [`Domain::effective_receiver_timeout`].
+    /// A negative value is read as `0`, with a warning: the trace-agent uses its default for either.
     pub receiver_timeout: u32,
 
     /// Maximum size, in bytes, of a request body the trace-agent's receiver accepts (`apm_config.max_payload_size`).
     ///
     /// Defaults to 25 MiB. A negative value is a translation error.
     pub max_payload_size: u64,
+
+    /// Number of trace payloads the receiver decodes concurrently (`apm_config.decoders`).
+    ///
+    /// `0`, the default, sizes the pool from the available parallelism; see [`Domain::effective_decoders`]. A negative
+    /// value is read as `0`, with a warning, where the trace-agent would panic.
+    pub decoders: u32,
+
+    /// Time, in milliseconds, a trace payload waits for a free decoder before the receiver rejects it
+    /// (`apm_config.decoder_timeout`).
+    ///
+    /// Defaults to 1000. A negative value is read as `0`, with a warning: the trace-agent rejects the payload
+    /// immediately for either.
+    pub decoder_timeout: u32,
 
     /// Memory, in bytes, the trace-agent aims to stay under (`apm_config.max_memory`).
     ///
@@ -88,6 +115,7 @@ impl Default for Domain {
         Self {
             // Saluki-only settings retain these defaults when unset.
             proxy_destination: DEFAULT_APM_PROXY_DESTINATION.to_string(),
+            native_trace_intake: DEFAULT_APM_NATIVE_TRACE_INTAKE,
             // Witnessed settings are overwritten during translation.
             receiver_port: 0,
             receiver_socket: None,
@@ -95,6 +123,8 @@ impl Default for Domain {
             connection_limit: 0,
             receiver_timeout: 0,
             max_payload_size: 0,
+            decoders: 0,
+            decoder_timeout: 0,
             max_memory: ConfigValue::defaulted(0.0),
             max_cpu_percent: ConfigValue::defaulted(0.0),
             telemetry_enabled: false,
@@ -118,6 +148,28 @@ impl Domain {
         } else {
             (None, containerized)
         }
+    }
+
+    /// Resolves the receiver's request timeout, where `0` means the trace-agent's default of 5 seconds.
+    pub fn effective_receiver_timeout(&self) -> Duration {
+        match self.receiver_timeout {
+            0 => DEFAULT_RECEIVER_TIMEOUT,
+            secs => Duration::from_secs(u64::from(secs)),
+        }
+    }
+
+    /// Resolves the number of decoders, given the available parallelism.
+    ///
+    /// As in the trace-agent, `0` means half the available parallelism (its `GOMAXPROCS`), and at least one.
+    pub fn effective_decoders(&self, parallelism: NonZeroUsize) -> NonZeroUsize {
+        NonZeroUsize::new(self.decoders as usize)
+            .or_else(|| NonZeroUsize::new(parallelism.get() / 2))
+            .unwrap_or(NonZeroUsize::MIN)
+    }
+
+    /// Resolves the time a payload waits for a free decoder before the receiver rejects it.
+    pub fn effective_decoder_timeout(&self) -> Duration {
+        Duration::from_millis(u64::from(self.decoder_timeout))
     }
 
     /// Resolves the memory, in bytes, the trace-agent aims to stay under, where `0` disables the limit.
@@ -208,6 +260,36 @@ mod tests {
             assert_eq!(explicit.effective_max_memory(containerized), 1e9);
             assert_eq!(explicit.effective_max_cpu(containerized), 2.0);
         }
+    }
+
+    #[test]
+    fn receiver_timeout_zero_means_five_seconds() {
+        let mut apm = Domain::default();
+        assert_eq!(apm.effective_receiver_timeout(), DEFAULT_RECEIVER_TIMEOUT);
+        apm.receiver_timeout = 7;
+        assert_eq!(apm.effective_receiver_timeout(), Duration::from_secs(7));
+    }
+
+    #[test]
+    fn decoders_zero_means_half_the_parallelism_and_at_least_one() {
+        let n = |v: usize| NonZeroUsize::new(v).unwrap();
+        let mut apm = Domain::default();
+        assert_eq!(apm.effective_decoders(n(8)), n(4));
+        assert_eq!(apm.effective_decoders(n(3)), n(1));
+        assert_eq!(apm.effective_decoders(n(1)), n(1));
+
+        apm.decoders = 6;
+        assert_eq!(apm.effective_decoders(n(1)), n(6));
+        assert_eq!(apm.effective_decoders(n(64)), n(6));
+    }
+
+    #[test]
+    fn decoder_timeout_is_in_milliseconds() {
+        let apm = Domain {
+            decoder_timeout: 1000,
+            ..Default::default()
+        };
+        assert_eq!(apm.effective_decoder_timeout(), Duration::from_secs(1));
     }
 
     #[test]

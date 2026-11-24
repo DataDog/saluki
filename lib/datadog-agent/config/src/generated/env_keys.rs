@@ -58,6 +58,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_APM_DECODER_TIMEOUT"],
+        path: &["apm_config", "decoder_timeout"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_DECODERS"],
+        path: &["apm_config", "decoders"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_ENABLE_RARE_SAMPLER"],
         path: &["apm_config", "enable_rare_sampler"],
         decode: EnvDecode::Bool,
@@ -430,6 +440,17 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
             "otlp",
             "proxy",
             "agent_receiver_grpc_endpoint",
+        ],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_AGENT_RECEIVER_HTTP_ENDPOINT"],
+        path: &[
+            "data_plane",
+            "experimental",
+            "otlp",
+            "proxy",
+            "agent_receiver_http_endpoint",
         ],
         decode: EnvDecode::RawString,
     },
@@ -1000,6 +1021,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_ORIGIN_DETECTION_UNIFIED"],
         path: &["origin_detection_unified"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_DEBUG_VERBOSITY"],
+        path: &["otlp_config", "debug", "verbosity"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_LOGS_ENABLED"],

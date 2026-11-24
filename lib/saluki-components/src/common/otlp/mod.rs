@@ -3,13 +3,18 @@
 //! Provides shared server setup code for both OTLP receiver (proxy mode) and OTLP source (translation mode).
 
 pub mod attributes;
+pub mod client_spans;
 pub mod origin;
+pub mod proxy;
 pub mod receiver;
 pub mod semantics;
 pub mod source;
 pub mod traces;
 pub mod util;
 pub mod value;
+
+#[cfg(test)]
+mod test_util;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -22,22 +27,27 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderName, Method, StatusCode};
 use axum::routing::post;
 use axum::Router;
-use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
+use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{
+    self, LogsService, LogsServiceServer,
+};
 use otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_server::{
-    MetricsService, MetricsServiceServer,
+    self, MetricsService, MetricsServiceServer,
 };
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
-use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
+use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{
+    self, TraceService, TraceServiceServer,
+};
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
 use saluki_core::accounting::MemoryLimiter;
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::runtime;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
+use saluki_io::net::server::grpc::unmatched_route;
 use saluki_io::net::server::http::{Http2Config, HttpServer};
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
@@ -48,12 +58,9 @@ use tonic::{Request as TonicRequest, Response, Status};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::error;
 
-pub const OTLP_METRICS_GRPC_SERVICE_PATH: MetaString =
-    MetaString::from_static("/opentelemetry.proto.collector.metrics.v1.MetricsService/Export");
-pub const OTLP_LOGS_GRPC_SERVICE_PATH: MetaString =
-    MetaString::from_static("/opentelemetry.proto.collector.logs.v1.LogsService/Export");
-pub const OTLP_TRACES_GRPC_SERVICE_PATH: MetaString =
-    MetaString::from_static("/opentelemetry.proto.collector.trace.v1.TraceService/Export");
+use self::client_spans::ClientSpanCounters;
+use self::proxy::OtlpProxy;
+
 const IMPLICIT_HEADERS: [HeaderName; 4] = [
     HeaderName::from_static("accept"),
     HeaderName::from_static("accept-language"),
@@ -67,7 +74,7 @@ pub struct Metrics {
     logs_received: Counter,
     logs_dropped_render_failure: Counter,
     bytes_received: Counter,
-    spans_received: Counter,
+    spans_received: ClientSpanCounters,
     traces_dropped_span_id_zero: Counter,
     spans_dropped_span_id_zero: Counter,
     metrics_errors_decode: Counter,
@@ -95,7 +102,8 @@ impl Metrics {
         &self.logs_dropped_render_failure
     }
 
-    pub fn spans_received(&self) -> &Counter {
+    /// Counters for spans received, resolved by the sending client's SDK language and version.
+    pub fn spans_received(&self) -> &ClientSpanCounters {
         &self.spans_received
     }
 
@@ -161,7 +169,7 @@ impl Metrics {
             logs_received: Counter::noop(),
             logs_dropped_render_failure: Counter::noop(),
             bytes_received: Counter::noop(),
-            spans_received: Counter::noop(),
+            spans_received: ClientSpanCounters::new(MetricsBuilder::default()),
             traces_dropped_span_id_zero: Counter::noop(),
             spans_dropped_span_id_zero: Counter::noop(),
             metrics_errors_decode: Counter::noop(),
@@ -195,8 +203,7 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
             ],
         ),
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
-        spans_received: builder
-            .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
+        spans_received: ClientSpanCounters::new(builder.clone()),
         traces_dropped_span_id_zero: builder.register_counter_with_tags(
             "component_events_dropped_total",
             ["intentional:true", "drop_reason:span_id_zero"],
@@ -312,13 +319,121 @@ const HTTP_SERVER_ID: &str = "otlp-http";
 /// Server identifier of the OTLP gRPC endpoint.
 const GRPC_SERVER_ID: &str = "otlp-grpc";
 
+/// An OTLP signal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Signal {
+    Metrics,
+    Logs,
+    Traces,
+}
+
+impl Signal {
+    /// Every signal.
+    pub(crate) const ALL: [Self; 3] = [Self::Metrics, Self::Logs, Self::Traces];
+
+    /// Returns the name of the signal.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Metrics => "metrics",
+            Self::Logs => "logs",
+            Self::Traces => "traces",
+        }
+    }
+
+    /// Returns the path of the signal's OTLP/HTTP endpoint.
+    pub(crate) const fn http_path(self) -> &'static str {
+        match self {
+            Self::Metrics => "/v1/metrics",
+            Self::Logs => "/v1/logs",
+            Self::Traces => "/v1/traces",
+        }
+    }
+
+    /// Returns the fully qualified name of the signal's gRPC service.
+    pub(crate) const fn grpc_service_name(self) -> &'static str {
+        match self {
+            Self::Metrics => metrics_service_server::SERVICE_NAME,
+            Self::Logs => logs_service_server::SERVICE_NAME,
+            Self::Traces => trace_service_server::SERVICE_NAME,
+        }
+    }
+}
+
+/// How the OTLP servers serve a signal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OtlpRoute {
+    /// The servers don't serve the signal: a gRPC call gets `UNIMPLEMENTED`, and an HTTP request gets 404.
+    Disabled,
+
+    /// The servers decode the signal's requests and pass them to the OTLP handler.
+    Internal,
+
+    /// The servers stream the signal's requests to an upstream OTLP receiver, and stream its responses back.
+    ///
+    /// The proxy doesn't decode or limit the requests: the upstream receiver enforces its own limits.
+    Proxied,
+}
+
+/// The route of each OTLP signal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OtlpRoutes {
+    /// Route of OTLP metrics.
+    pub metrics: OtlpRoute,
+
+    /// Route of OTLP logs.
+    pub logs: OtlpRoute,
+
+    /// Route of OTLP traces.
+    pub traces: OtlpRoute,
+}
+
+impl OtlpRoutes {
+    /// Every signal internal.
+    pub const ALL_INTERNAL: Self = Self {
+        metrics: OtlpRoute::Internal,
+        logs: OtlpRoute::Internal,
+        traces: OtlpRoute::Internal,
+    };
+
+    /// Every signal disabled.
+    pub const ALL_DISABLED: Self = Self {
+        metrics: OtlpRoute::Disabled,
+        logs: OtlpRoute::Disabled,
+        traces: OtlpRoute::Disabled,
+    };
+
+    const fn get(&self, signal: Signal) -> OtlpRoute {
+        match signal {
+            Signal::Metrics => self.metrics,
+            Signal::Logs => self.logs,
+            Signal::Traces => self.traces,
+        }
+    }
+
+    /// Returns `true` if any signal is proxied.
+    pub fn any_proxied(&self) -> bool {
+        Signal::ALL
+            .into_iter()
+            .any(|signal| self.get(signal) == OtlpRoute::Proxied)
+    }
+
+    /// Returns `true` if any signal is internal.
+    pub(crate) fn any_internal(&self) -> bool {
+        Signal::ALL
+            .into_iter()
+            .any(|signal| self.get(signal) == OtlpRoute::Internal)
+    }
+}
+
 /// OTLP server configuration.
 ///
 /// Holds the raw inputs needed to construct and start the OTLP HTTP and gRPC servers. Call [`build`][Self::build] to
 /// validate the configuration and spawn the servers.
+///
+/// A server with no endpoint doesn't start.
 pub struct OtlpServerConfiguration {
-    http_endpoint: ListenAddress,
-    grpc_endpoint: ListenAddress,
+    http_endpoint: Option<ListenAddress>,
+    grpc_endpoint: Option<ListenAddress>,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
@@ -327,12 +442,14 @@ pub struct OtlpServerConfiguration {
     grpc_tls: Option<OtlpTlsConfiguration>,
     http_server_id: MetaString,
     grpc_server_id: MetaString,
+    routes: OtlpRoutes,
+    proxy: Option<OtlpProxy>,
 }
 
 impl OtlpServerConfiguration {
     /// Creates a new OTLP server configuration.
     pub fn new(
-        http_endpoint: ListenAddress, grpc_endpoint: ListenAddress, grpc_max_recv_msg_size_bytes: usize,
+        http_endpoint: Option<ListenAddress>, grpc_endpoint: Option<ListenAddress>, grpc_max_recv_msg_size_bytes: usize,
     ) -> Self {
         Self {
             http_endpoint,
@@ -345,7 +462,24 @@ impl OtlpServerConfiguration {
             grpc_tls: None,
             http_server_id: MetaString::from_static(HTTP_SERVER_ID),
             grpc_server_id: MetaString::from_static(GRPC_SERVER_ID),
+            routes: OtlpRoutes::ALL_INTERNAL,
+            proxy: None,
         }
+    }
+
+    /// Sets the route of each signal.
+    ///
+    /// Defaults to [`OtlpRoutes::ALL_INTERNAL`]. A proxied signal also needs a proxy: see
+    /// [`with_proxy`][Self::with_proxy].
+    pub(crate) fn with_routes(mut self, routes: OtlpRoutes) -> Self {
+        self.routes = routes;
+        self
+    }
+
+    /// Sets the proxy that serves the proxied signals.
+    pub(crate) fn with_proxy(mut self, proxy: OtlpProxy) -> Self {
+        self.proxy = Some(proxy);
+        self
     }
 
     /// Sets the HTTP/2 settings used by the gRPC endpoint.
@@ -405,95 +539,149 @@ impl OtlpServerConfiguration {
     ///
     /// # Errors
     ///
-    /// If the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound, or the TLS
-    /// configuration is invalid, an error is returned.
+    /// If the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound, the TLS configuration is
+    /// invalid, or a signal is proxied without a proxy or without a destination for the protocol it arrives on, an
+    /// error is returned.
     pub async fn build<H: OtlpHandler>(
         self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, worker_pool: &Handle,
     ) -> Result<(), GenericError> {
+        if self.routes.any_proxied() && self.proxy.is_none() {
+            return Err(generic_error!("An OTLP signal is proxied, but no OTLP proxy is set."));
+        }
+
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
-        // Validate TLS configurations before spawning.
+        // Validate TLS configurations before spawning. A server with no endpoint doesn't start, so its TLS
+        // configuration isn't loaded.
         let http_tls_config = match self.http_tls {
-            Some(tls) => Some(tls.build()?),
-            None => None,
+            Some(tls) if self.http_endpoint.is_some() => Some(tls.build()?),
+            _ => None,
         };
         let grpc_tls_config = match self.grpc_tls {
-            Some(tls) => Some(tls.build()?),
-            None => None,
+            Some(tls) if self.grpc_endpoint.is_some() => Some(tls.build()?),
+            _ => None,
         };
 
         // Create and spawn the gRPC server.
-        let inner_grpc = GrpcServiceImpl::new(otlp_handler.clone(), memory_limiter.clone(), metrics.clone());
-
-        let grpc_metrics_server =
-            MetricsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
-        let grpc_logs_server =
-            LogsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
-        let grpc_traces_server =
-            TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
+        //
         // The gRPC endpoint is served by an HTTP server: gRPC is HTTP/2 with a distinct route naming convention, so
         // the generated services are just another route set. It is restricted to HTTP/2 because the OTLP gRPC port
         // only ever serves gRPC, and an HTTP/1.1 caller belongs on the HTTP endpoint instead.
-        let mut grpc_server = HttpServer::from_listen_address(self.grpc_endpoint.clone())
-            .add_grpc_service(grpc_metrics_server)
-            .add_grpc_service(grpc_logs_server)
-            .add_grpc_service(grpc_traces_server)
-            .with_http2_only()
-            .with_http2_config(self.grpc_http2_config)
-            .with_server_id(self.grpc_server_id)
-            .with_worker_pool(worker_pool.clone());
+        //
+        // A proxied signal takes the whole path prefix of its service, so the upstream answers every method of it. It
+        // replaces the internal service rather than sitting next to it, since both register the same paths.
+        if let Some(grpc_endpoint) = self.grpc_endpoint {
+            let inner_grpc = GrpcServiceImpl::new(otlp_handler.clone(), memory_limiter.clone(), metrics.clone());
+            let max_decoding_message_size = self.grpc_max_recv_msg_size_bytes;
+            let mut grpc_server = HttpServer::from_listen_address(grpc_endpoint);
+            let mut proxied_grpc_routes = Router::new();
+            for signal in Signal::ALL {
+                match (self.routes.get(signal), &self.proxy) {
+                    // The check at the top of `build` rules out a proxied signal without a proxy.
+                    (OtlpRoute::Disabled, _) | (OtlpRoute::Proxied, None) => {}
+                    (OtlpRoute::Internal, _) => {
+                        let inner = inner_grpc.clone();
+                        grpc_server = match signal {
+                            Signal::Metrics => grpc_server.add_grpc_service(
+                                MetricsServiceServer::new(inner).max_decoding_message_size(max_decoding_message_size),
+                            ),
+                            Signal::Logs => grpc_server.add_grpc_service(
+                                LogsServiceServer::new(inner).max_decoding_message_size(max_decoding_message_size),
+                            ),
+                            Signal::Traces => grpc_server.add_grpc_service(
+                                TraceServiceServer::new(inner).max_decoding_message_size(max_decoding_message_size),
+                            ),
+                        };
+                    }
+                    (OtlpRoute::Proxied, Some(proxy)) => {
+                        let path = format!("/{}/{{*method}}", signal.grpc_service_name());
+                        proxied_grpc_routes = proxied_grpc_routes.route(&path, proxy.grpc_service(signal)?);
+                    }
+                }
+            }
 
-        if let Some(tls_config) = grpc_tls_config {
-            grpc_server = grpc_server.with_tls_config(tls_config);
+            // The server answers misses with `UNIMPLEMENTED` only when it has an internal service, so set that answer
+            // here too, for a server with only proxied or disabled signals.
+            let mut grpc_server = grpc_server
+                .add_routes(proxied_grpc_routes.fallback(unmatched_route))
+                .with_http2_only()
+                .with_http2_config(self.grpc_http2_config)
+                .with_server_id(self.grpc_server_id)
+                .with_worker_pool(worker_pool.clone());
+
+            if let Some(tls_config) = grpc_tls_config {
+                grpc_server = grpc_server.with_tls_config(tls_config);
+            }
+
+            runtime::nested_supervisor(grpc_server.into_supervisor())
+                .needed()
+                .stops_with_owner()
+                .spawn();
         }
-
-        runtime::nested_supervisor(grpc_server.into_supervisor())
-            .needed()
-            .stops_with_owner()
-            .spawn();
 
         // Create and spawn the HTTP server.
-        //
-        // Apply an explicit body-size limit. A configured `0` selects the receiver's 20 MiB compatibility default; a
-        // positive value is the limit in bytes. Axum's own default is not the receiver's default and must not be left
-        // implicit.
-        let max_body_size = if self.http_max_request_body_size == 0 {
-            HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE
-        } else {
-            self.http_max_request_body_size as usize
-        };
+        if let Some(http_endpoint) = self.http_endpoint {
+            // Apply an explicit body-size limit. A configured `0` selects the receiver's 20 MiB compatibility default;
+            // a positive value is the limit in bytes. Axum's own default is not the receiver's default and must not be
+            // left implicit.
+            let max_body_size = if self.http_max_request_body_size == 0 {
+                HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE
+            } else {
+                self.http_max_request_body_size as usize
+            };
 
-        let router = Router::new()
-            .route("/v1/metrics", post(http_metrics_handler::<H>))
-            .route("/v1/logs", post(http_logs_handler::<H>))
-            .route("/v1/traces", post(http_traces_handler::<H>))
-            .layer(DefaultBodyLimit::max(max_body_size))
-            .with_state((otlp_handler, memory_limiter, metrics));
+            // A proxied signal takes every method of its path, so the upstream answers them all, CORS preflights
+            // included. The body limit and CORS layers apply to the internal routes only: the upstream enforces its
+            // own.
+            let mut internal_routes = Router::new();
+            let mut proxied_routes = Router::new();
+            for signal in Signal::ALL {
+                match (self.routes.get(signal), &self.proxy) {
+                    // The check at the top of `build` rules out a proxied signal without a proxy.
+                    (OtlpRoute::Disabled, _) | (OtlpRoute::Proxied, None) => {}
+                    (OtlpRoute::Internal, _) => {
+                        let handler = match signal {
+                            Signal::Metrics => post(http_metrics_handler::<H>),
+                            Signal::Logs => post(http_logs_handler::<H>),
+                            Signal::Traces => post(http_traces_handler::<H>),
+                        };
+                        internal_routes = internal_routes.route(signal.http_path(), handler);
+                    }
+                    (OtlpRoute::Proxied, Some(proxy)) => {
+                        proxied_routes = proxied_routes.route(signal.http_path(), proxy.http_service(signal)?);
+                    }
+                }
+            }
 
-        // Apply CORS middleware when origins are configured.
-        let router = if !self.cors.allowed_origins.is_empty() {
-            router.layer(build_cors_layer(&self.cors))
-        } else {
-            router
-        };
+            let router = internal_routes.layer(DefaultBodyLimit::max(max_body_size)).with_state((
+                otlp_handler,
+                memory_limiter,
+                metrics,
+            ));
 
-        let mut http_server = HttpServer::from_listen_address(self.http_endpoint)
-            .add_routes(router)
-            .with_server_id(self.http_server_id)
-            .with_worker_pool(worker_pool.clone());
+            // Apply CORS middleware when origins are configured.
+            let router = if !self.cors.allowed_origins.is_empty() {
+                router.layer(build_cors_layer(&self.cors))
+            } else {
+                router
+            };
+            let router = router.merge(proxied_routes);
 
-        if let Some(tls_config) = http_tls_config {
-            http_server = http_server.with_tls_config(tls_config);
+            let mut http_server = HttpServer::from_listen_address(http_endpoint)
+                .add_routes(router)
+                .with_server_id(self.http_server_id)
+                .with_worker_pool(worker_pool.clone());
+
+            if let Some(tls_config) = http_tls_config {
+                http_server = http_server.with_tls_config(tls_config);
+            }
+
+            runtime::nested_supervisor(http_server.into_supervisor())
+                .needed()
+                .stops_with_owner()
+                .spawn();
         }
-
-        runtime::nested_supervisor(http_server.into_supervisor())
-            .needed()
-            .stops_with_owner()
-            .spawn();
 
         Ok(())
     }
@@ -721,7 +909,7 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::sync::Arc;
 
     use axum::{
         body::Body,
@@ -732,18 +920,19 @@ mod tests {
     use saluki_core::{
         accounting::MemoryLimiter,
         components::ComponentContext,
-        runtime::{
-            state::{DataspaceUpdate, IdentifierFilter},
-            test_util::TestSupervisor,
-        },
+        runtime::{state::IdentifierFilter, test_util::TestSupervisor},
     };
-    use saluki_io::net::BoundListenAddress;
+    use saluki_io::net::{client::http::HttpProtocol, BoundListenAddress};
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::TlsConnector;
     use tower::ServiceExt;
 
+    use super::proxy::OtlpProxyDestinations;
+    use super::test_util::{
+        bound_port, grpc_ok, http_ok, proxy_to, wait_for_port, FakeUpstream, RecordingHandler, TestClient, TestServers,
+    };
     use super::*;
 
     struct NoopHandler;
@@ -1003,7 +1192,7 @@ mod tests {
         let max_body_size: usize = 64;
         supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+                OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024)
                     .with_server_ids(http_server_id, "grpc-body-limit-rejects-oversized-request")
                     .with_http_max_request_body_size(max_body_size as u64)
                     .build(
@@ -1066,7 +1255,7 @@ mod tests {
         // Build with the default (`max_request_body_size=0` → 20 MiB limit) — no explicit limit set.
         supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+                OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024)
                     .with_server_ids(http_server_id, "grpc-body-default-limit-rejects-oversized-request")
                     .build(
                         NoopHandler,
@@ -1110,21 +1299,6 @@ mod tests {
             .expect("supervisor should shut down cleanly");
     }
 
-    /// Polls `port` until something accepts a connection on it.
-    ///
-    /// Spawning only queues the servers for the supervisor, so their listeners come up a moment after `build` returns
-    /// rather than synchronously with it.
-    async fn wait_for_port(port: u16) {
-        let addr = format!("127.0.0.1:{}", port);
-        for _ in 0..200 {
-            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        panic!("nothing was listening on port {} within a second", port);
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn build_succeeds_with_unix_grpc_endpoint() {
@@ -1140,7 +1314,7 @@ mod tests {
         // The servers spawn on the ambient supervisor, so the build has to run under the one they belong to.
         let result = supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024).build(
                     NoopHandler,
                     MemoryLimiter::noop(),
                     Metrics::for_tests(),
@@ -1154,6 +1328,59 @@ mod tests {
             "build should succeed with a Unix gRPC endpoint, got: {:?}",
             result.err()
         );
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn build_starts_only_the_servers_with_an_endpoint() {
+        let supervisor = TestSupervisor::start("otlp-test").await;
+
+        // A server with no endpoint doesn't load its TLS files, which here don't exist.
+        let missing_tls = || OtlpTlsConfiguration::new("/missing/cert.pem".into(), "/missing/key.pem".into());
+
+        // The HTTP server alone.
+        supervisor
+            .scope(
+                OtlpServerConfiguration::new(Some(ListenAddress::tcp_loopback(0)), None, 4 * 1024 * 1024)
+                    .with_server_ids("http-only-http", "http-only-grpc")
+                    .with_grpc_tls(missing_tls())
+                    .build(
+                        NoopHandler,
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
+            .await
+            .expect("build should succeed with only an HTTP endpoint");
+
+        bound_port(&supervisor, "http-only-http").await;
+        assert_eq!(supervisor.active_children(), 1);
+        assert_not_bound(&supervisor, "http-only-grpc");
+
+        // The gRPC server alone.
+        supervisor
+            .scope(
+                OtlpServerConfiguration::new(None, Some(ListenAddress::tcp_loopback(0)), 4 * 1024 * 1024)
+                    .with_server_ids("grpc-only-http", "grpc-only-grpc")
+                    .with_http_tls(missing_tls())
+                    .build(
+                        NoopHandler,
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
+            .await
+            .expect("build should succeed with only a gRPC endpoint");
+
+        bound_port(&supervisor, "grpc-only-grpc").await;
+        assert_eq!(supervisor.active_children(), 2);
+        assert_not_bound(&supervisor, "grpc-only-http");
 
         supervisor
             .shutdown()
@@ -1176,7 +1403,7 @@ mod tests {
 
         supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024).build(
                     NoopHandler,
                     MemoryLimiter::noop(),
                     Metrics::for_tests(),
@@ -1241,7 +1468,7 @@ mod tests {
         let grpc_server_id = format!("otlp-grpc-test-{}", server_id);
 
         let tls_config = OtlpTlsConfiguration::new(cert_path, key_path);
-        let server_config = OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+        let server_config = OtlpServerConfiguration::new(Some(http_endpoint), Some(grpc_endpoint), 4 * 1024 * 1024)
             .with_server_ids(&*http_server_id, &*grpc_server_id)
             .with_http_tls(tls_config.clone())
             .with_grpc_tls(tls_config);
@@ -1264,16 +1491,17 @@ mod tests {
         (http_port, grpc_port, cert, supervisor)
     }
 
-    async fn bound_port(supervisor: &TestSupervisor, id: &str) -> u16 {
+    /// Asserts that the server with identifier `id` has not bound a listen address.
+    fn assert_not_bound(supervisor: &TestSupervisor, id: &str) {
         let id = format!("http-server-{}", id);
-        let mut subscription = supervisor
+        let bound = supervisor
             .dataspace()
-            .subscribe::<BoundListenAddress>(IdentifierFilter::exact(id.clone()));
+            .current_values::<BoundListenAddress>(IdentifierFilter::exact(id.clone()));
 
-        match tokio::time::timeout(Duration::from_secs(5), subscription.recv()).await {
-            Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address)))) => address.port(),
-            update => panic!("expected a bound address assertion for '{id}', got {update:?}"),
-        }
+        assert!(
+            bound.is_empty(),
+            "'{id}' should not bind a listen address, got {bound:?}"
+        );
     }
 
     #[tokio::test]
@@ -1371,6 +1599,341 @@ mod tests {
         let result = connector.connect(server_name, stream).await;
 
         assert!(result.is_err(), "TLS handshake should fail without trusted cert");
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
+    }
+
+    /// Sends an empty export request for `signal` over gRPC and returns the resulting status code.
+    async fn grpc_export_code(port: u16, signal: Signal) -> tonic::Code {
+        use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
+        use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+        use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_client::TraceServiceClient;
+
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .expect("endpoint should parse")
+            .connect()
+            .await
+            .expect("should connect to the gRPC server");
+        let result = match signal {
+            Signal::Metrics => MetricsServiceClient::new(channel)
+                .export(ExportMetricsServiceRequest::default())
+                .await
+                .map(|_| ()),
+            Signal::Logs => LogsServiceClient::new(channel)
+                .export(ExportLogsServiceRequest::default())
+                .await
+                .map(|_| ()),
+            Signal::Traces => TraceServiceClient::new(channel)
+                .export(ExportTraceServiceRequest::default())
+                .await
+                .map(|_| ()),
+        };
+        match result {
+            Ok(()) => tonic::Code::Ok,
+            Err(status) => status.code(),
+        }
+    }
+
+    /// Sends an export request for `signal` over HTTP and returns the response status.
+    async fn http_export_status(port: u16, signal: Signal, body: Vec<u8>) -> StatusCode {
+        TestClient::new(HttpProtocol::Http1)
+            .send(
+                "POST",
+                &format!("http://127.0.0.1:{port}{}", signal.http_path()),
+                &[("content-type", "application/x-protobuf")],
+                body,
+            )
+            .await
+            .expect("HTTP server should answer")
+            .status
+    }
+
+    #[tokio::test]
+    async fn each_signal_is_served_by_its_route() {
+        // Each signal takes each route once over three runs, with the other signals on the other routes.
+        const ROUTES: [OtlpRoute; 3] = [OtlpRoute::Disabled, OtlpRoute::Internal, OtlpRoute::Proxied];
+
+        for rotation in 0..ROUTES.len() {
+            let route_of = |signal: Signal| {
+                let index = Signal::ALL
+                    .iter()
+                    .position(|s| *s == signal)
+                    .expect("signal should be listed");
+                ROUTES[(index + rotation) % ROUTES.len()]
+            };
+            let routes = OtlpRoutes {
+                metrics: route_of(Signal::Metrics),
+                logs: route_of(Signal::Logs),
+                traces: route_of(Signal::Traces),
+            };
+            let grpc_upstream = FakeUpstream::tcp(grpc_ok).await;
+            let http_upstream = FakeUpstream::tcp(http_ok).await;
+            let handler = RecordingHandler::default();
+            let servers = TestServers::start(
+                &format!("routes-{rotation}"),
+                TestServers::configuration()
+                    .with_routes(routes)
+                    .with_proxy(proxy_to(&grpc_upstream, &http_upstream)),
+                handler.clone(),
+            )
+            .await;
+
+            for signal in Signal::ALL {
+                let route = route_of(signal);
+                let (expected_code, expected_status) = match route {
+                    OtlpRoute::Disabled => (tonic::Code::Unimplemented, StatusCode::NOT_FOUND),
+                    OtlpRoute::Internal | OtlpRoute::Proxied => (tonic::Code::Ok, StatusCode::OK),
+                };
+                assert_eq!(
+                    grpc_export_code(servers.grpc_port, signal).await,
+                    expected_code,
+                    "gRPC {signal:?} on {route:?}"
+                );
+                assert_eq!(
+                    http_export_status(servers.http_port, signal, Vec::new()).await,
+                    expected_status,
+                    "HTTP {signal:?} on {route:?}"
+                );
+
+                let grpc_path = format!("/{}/Export", signal.grpc_service_name());
+                let proxied = |upstream: &FakeUpstream, path: &str| {
+                    upstream
+                        .requests()
+                        .iter()
+                        .filter(|request| request.path_and_query == path)
+                        .count()
+                };
+                let (expected_handled, expected_proxied) = match route {
+                    OtlpRoute::Disabled => (0, 0),
+                    OtlpRoute::Internal => (2, 0),
+                    OtlpRoute::Proxied => (0, 1),
+                };
+                assert_eq!(handler.count(signal), expected_handled, "{signal:?} on {route:?}");
+                assert_eq!(
+                    proxied(&grpc_upstream, &grpc_path),
+                    expected_proxied,
+                    "gRPC {signal:?} on {route:?}"
+                );
+                assert_eq!(
+                    proxied(&http_upstream, signal.http_path()),
+                    expected_proxied,
+                    "HTTP {signal:?} on {route:?}"
+                );
+            }
+
+            servers.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn grpc_server_without_internal_signals_answers_misses_with_unimplemented() {
+        // With no internal service, the gRPC server has no fallback of its own, so `build` sets one.
+        for route in [OtlpRoute::Disabled, OtlpRoute::Proxied] {
+            let upstream = FakeUpstream::tcp(grpc_ok).await;
+            let servers = TestServers::start(
+                &format!("grpc-misses-{route:?}"),
+                TestServers::configuration()
+                    .with_routes(OtlpRoutes {
+                        metrics: route,
+                        logs: route,
+                        traces: route,
+                    })
+                    .with_proxy(proxy_to(&upstream, &upstream)),
+                RecordingHandler::default(),
+            )
+            .await;
+
+            let response = TestClient::new(HttpProtocol::Http2)
+                .send(
+                    "POST",
+                    &format!("http://127.0.0.1:{}/unknown.v1.Service/Method", servers.grpc_port),
+                    &[("content-type", "application/grpc"), ("te", "trailers")],
+                    Bytes::new(),
+                )
+                .await
+                .expect("gRPC server should answer");
+            assert_eq!(response.status, StatusCode::OK, "{route:?}");
+            assert_eq!(response.headers["grpc-status"], "12", "{route:?}");
+            assert!(upstream.requests().is_empty(), "{route:?}");
+
+            servers.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn http_body_limit_applies_to_internal_signals_only() {
+        // The upstream receiver enforces its own limit on proxied requests.
+        let upstream = FakeUpstream::tcp(http_ok).await;
+        let servers = TestServers::start(
+            "http-body-limit-internal-only",
+            TestServers::configuration()
+                .with_http_max_request_body_size(64)
+                .with_routes(OtlpRoutes {
+                    metrics: OtlpRoute::Proxied,
+                    ..OtlpRoutes::ALL_INTERNAL
+                })
+                .with_proxy(proxy_to(&upstream, &upstream)),
+            RecordingHandler::default(),
+        )
+        .await;
+
+        let body = vec![7u8; 1024];
+        assert_eq!(
+            http_export_status(servers.http_port, Signal::Metrics, body.clone()).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            http_export_status(servers.http_port, Signal::Logs, body.clone()).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let requests = upstream.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].body, body);
+
+        servers.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cors_applies_to_internal_signals_only() {
+        // The upstream answers CORS for a proxied signal, preflights included.
+        let upstream = FakeUpstream::tcp(|_| {
+            let mut response = axum::response::Response::new(Body::empty());
+            *response.status_mut() = StatusCode::NO_CONTENT;
+            response
+                .headers_mut()
+                .insert("x-upstream", header::HeaderValue::from_static("yes"));
+            response
+        })
+        .await;
+        let servers = TestServers::start(
+            "cors-internal-only",
+            TestServers::configuration()
+                .with_cors(CorsConfiguration {
+                    allowed_origins: vec!["http://example.com".to_string()],
+                    ..Default::default()
+                })
+                .with_routes(OtlpRoutes {
+                    metrics: OtlpRoute::Proxied,
+                    ..OtlpRoutes::ALL_INTERNAL
+                })
+                .with_proxy(proxy_to(&upstream, &upstream)),
+            RecordingHandler::default(),
+        )
+        .await;
+
+        let mut client = TestClient::new(HttpProtocol::Http1);
+        let preflight = [
+            ("origin", "http://example.com"),
+            ("access-control-request-method", "POST"),
+        ];
+        let uri = |signal: Signal| format!("http://127.0.0.1:{}{}", servers.http_port, signal.http_path());
+
+        let proxied = client
+            .send("OPTIONS", &uri(Signal::Metrics), &preflight, Bytes::new())
+            .await
+            .expect("proxy should answer");
+        assert_eq!(proxied.status, StatusCode::NO_CONTENT);
+        assert_eq!(proxied.headers["x-upstream"], "yes");
+        assert!(!proxied.headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        let proxied = client
+            .send(
+                "POST",
+                &uri(Signal::Metrics),
+                &[("origin", "http://example.com")],
+                Bytes::new(),
+            )
+            .await
+            .expect("proxy should answer");
+        assert!(!proxied.headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        let internal = client
+            .send("OPTIONS", &uri(Signal::Logs), &preflight, Bytes::new())
+            .await
+            .expect("server should answer");
+        assert_eq!(
+            internal.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "http://example.com"
+        );
+        assert!(!internal.headers.contains_key("x-upstream"));
+
+        let methods: Vec<_> = upstream.requests().into_iter().map(|request| request.method).collect();
+        assert_eq!(methods, [Method::OPTIONS, Method::POST]);
+
+        servers.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn build_fails_for_a_proxied_signal_without_a_proxy() {
+        let supervisor = TestSupervisor::start("otlp-test").await;
+        let result = supervisor
+            .scope(
+                TestServers::configuration()
+                    .with_server_ids("http-proxied-without-proxy", "grpc-proxied-without-proxy")
+                    .with_routes(OtlpRoutes {
+                        logs: OtlpRoute::Proxied,
+                        ..OtlpRoutes::ALL_INTERNAL
+                    })
+                    .build(
+                        RecordingHandler::default(),
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
+            .await;
+
+        let error = result.expect_err("build should fail");
+        assert_eq!(
+            error.to_string(),
+            "An OTLP signal is proxied, but no OTLP proxy is set."
+        );
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn build_fails_for_a_proxied_signal_without_a_destination_for_its_protocol() {
+        let upstream = FakeUpstream::tcp(http_ok).await;
+        let proxy = OtlpProxy::new(
+            &OtlpProxyDestinations {
+                grpc: None,
+                http: Some(upstream.destination.clone()),
+            },
+            MetricsBuilder::default(),
+        )
+        .expect("proxy should build");
+
+        let supervisor = TestSupervisor::start("otlp-test").await;
+        let result = supervisor
+            .scope(
+                TestServers::configuration()
+                    .with_server_ids("http-proxied-without-destination", "grpc-proxied-without-destination")
+                    .with_routes(OtlpRoutes {
+                        logs: OtlpRoute::Proxied,
+                        ..OtlpRoutes::ALL_INTERNAL
+                    })
+                    .with_proxy(proxy)
+                    .build(
+                        RecordingHandler::default(),
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
+            .await;
+
+        let error = result.expect_err("build should fail");
+        assert_eq!(
+            error.to_string(),
+            "An OTLP signal is proxied over gRPC, but the OTLP proxy has no gRPC destination."
+        );
 
         supervisor
             .shutdown()

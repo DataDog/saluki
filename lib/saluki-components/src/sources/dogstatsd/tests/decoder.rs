@@ -1,13 +1,14 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
+use saluki_core::data_model::event::Event;
 use saluki_io::net::{ConnectionAddress, ProcessCredentialsError, ProcessIdentity};
 use saluki_metrics::test::TestRecorder;
 use tokio::time::timeout;
 
 use super::*;
 use crate::sources::dogstatsd::should_warn_stream_log_too_big;
-use crate::sources::dogstatsd::{handle_frame, handle_metric_packet, BufferDecodeMode, DecodeOutcome, PacketForwarder};
+use crate::sources::dogstatsd::{handle_metric_packet, BufferDecodeMode, DecodeOutcome, PacketForwarder};
 
 fn packets_ok_key(listener_type: &str) -> Key {
     source_counter(
@@ -205,60 +206,43 @@ async fn decoder_continues_connectionless_but_stops_connected_on_framing_error()
     assert_eq!(recorder.counter(packets_ok_key("unix")), Some(0));
 }
 
-#[test]
-fn events_and_service_checks_fall_back_to_host_tag_for_hostname() {
+#[tokio::test]
+async fn events_and_service_checks_fall_back_to_host_tag_for_hostname() {
     let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
-    let context = test_component_context();
-    let metrics = build_metrics(&listen_addr, &context, false);
-    let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-    let mut context_resolvers = ContextResolvers::for_tests(true, None);
-    let default_hostname = MetaString::from_static("default-host");
-
-    let mut handle = |frame: &[u8]| {
-        handle_frame(
-            frame,
-            &codec,
-            &mut context_resolvers,
-            &metrics,
-            false,
-            None,
-            EnablePayloadsFilter::default(),
-            &[],
-            &default_hostname,
-        )
-        .expect("frame should parse")
-        .expect("frame should produce an event")
-    };
+    let metrics = build_metrics(&listen_addr, &test_component_context(), false);
+    let mut fixture = DecoderFixture::new(test_decoder_context(false));
 
     // Like the reference DogStatsD server, a `host:` tag sets the hostname when there's no `h:` field, and `h:`
-    // wins otherwise. An empty `host:` tag gives an explicitly empty hostname.
-    let cases: [(&[u8], &str); 3] = [
+    // wins otherwise. The `host:` tag itself is removed, and an empty one gives an explicitly empty hostname.
+    let cases: [(&[u8], &str); 6] = [
         (b"_e{5,4}:title|text|#host:tagged-host,env:prod", "tagged-host"),
         (
             b"_e{5,4}:title|text|h:field-host|#host:tagged-host,env:prod",
             "field-host",
         ),
         (b"_e{5,4}:title|text|#host:,env:prod", ""),
-    ];
-    for (frame, expected_hostname) in cases {
-        let eventd = handle(frame).try_into_eventd().expect("should be an event");
-        assert_eq!(eventd.hostname(), Some(expected_hostname));
-        assert_eq!(
-            eventd.tags().into_iter().map(|t| t.as_str()).collect::<Vec<_>>(),
-            ["env:prod"]
-        );
-    }
-
-    let cases: [(&[u8], &str); 3] = [
         (b"_sc|my.check|0|#host:tagged-host,env:prod", "tagged-host"),
         (b"_sc|my.check|0|h:field-host|#host:tagged-host,env:prod", "field-host"),
         (b"_sc|my.check|0|#host:,env:prod", ""),
     ];
     for (frame, expected_hostname) in cases {
-        let service_check = handle(frame)
-            .try_into_service_check()
-            .expect("should be a service check");
-        assert_eq!(service_check.hostname(), Some(expected_hostname));
+        let event = fixture
+            .decoder
+            .handle_frame(frame, &metrics, None)
+            .expect("frame should parse")
+            .expect("frame should produce an event");
+        let (hostname, tags) = match event {
+            Event::EventD(eventd) => (eventd.hostname().map(str::to_string), eventd.tags().clone()),
+            Event::ServiceCheck(check) => (check.hostname().map(str::to_string), check.tags().clone()),
+            other => panic!("unexpected event: {other:?}"),
+        };
+        let frame = String::from_utf8_lossy(frame);
+        assert_eq!(hostname.as_deref(), Some(expected_hostname), "{frame}");
+        assert_eq!(
+            tags.into_iter().map(|t| t.as_str().to_string()).collect::<Vec<_>>(),
+            ["env:prod"],
+            "{frame}"
+        );
     }
 }
 

@@ -161,7 +161,7 @@ mod tests {
             host_enrichment().transform_buffer(&mut events);
 
             let mut events = events.into_iter();
-            let eventd = events.next().and_then(Event::try_into_eventd).expect("event");
+            let eventd = events.next().and_then(Event::try_into_event_d).expect("event");
             let service_check = events
                 .next()
                 .and_then(Event::try_into_service_check)

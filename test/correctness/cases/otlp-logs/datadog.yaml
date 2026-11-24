@@ -23,7 +23,6 @@ otlp_config:
   receiver:
     protocols:
       grpc:
-        endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"
         max_recv_msg_size_mib: 4
   logs:
     enabled: true

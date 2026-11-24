@@ -10,7 +10,7 @@ use std::{io::IsTerminal, process::ExitCode};
 use clap::Parser as _;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 use crate::core::case::{self, CaseError};
@@ -19,32 +19,22 @@ use crate::core::plan::{self, CasePlan};
 use crate::core::registry::Registry;
 use crate::participant_case::KindState;
 use crate::runner::Runner;
+use crate::test::RunnerSettings;
 
 mod kind;
 
-mod actions;
-mod assertions;
 mod cli;
 mod collector;
+use self::cli::{Cli, Command, LogLevel};
 use self::collector::{
     consume_run, run_teardown, RunCollector, RunDisplay, RunEnd, EXIT_HARNESS_ERROR, EXIT_NO_TESTS_SELECTED,
 };
 
-mod correctness;
-use self::cli::{Cli, Command, LogLevel};
-
-mod config;
 mod core;
-mod dynamic_vars;
-mod integration;
-mod mounts;
-use self::config::discover_tests;
 
 mod events;
 use self::events::create_event_channel;
 
-mod image_override;
-mod intake;
 mod interrupts;
 use self::interrupts::Interrupts;
 
@@ -59,11 +49,7 @@ use self::reporter::{OutputFormat, Reporter};
 mod runner;
 mod steps;
 mod test;
-mod test_env;
-mod traffic;
 mod tui;
-mod unix_runner;
-mod utils;
 
 #[cfg(not(windows))]
 fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
@@ -159,15 +145,6 @@ fn resolve_selection(requested: &str, discovered: &[Box<dyn test::Test>]) -> (Ve
 }
 
 async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
-    let settings = cmd.runner_settings();
-    debug!(
-        adp_binary_path = %settings.adp_binary_path.display(),
-        core_agent_binary_path = %settings.core_agent_binary_path.display(),
-        mounts_dir = %settings.mounts_dir.display(),
-        alpine_image = %settings.alpine_image,
-        "Resolved runner settings."
-    );
-
     if cmd.test_dirs.is_empty() {
         let msg = "No test directories specified. Use -d <path> to specify one or more directories.";
         if use_tui {
@@ -178,11 +155,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let selection = cmd
-        .selection()
-        .and_then(|(os, runtime)| Ok((os, runtime, participant_case::replacements(&cmd.set)?)));
-    let (subject_os, integration_runtime, set) = match selection {
-        Ok((os, runtime, set)) => (os, runtime.to_string(), set),
+    let set = match participant_case::replacements(&cmd.set) {
+        Ok(set) => set,
         Err(e) => {
             if use_tui {
                 eprintln!("{}", e);
@@ -192,13 +166,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let test_cases = match discover_tests(
-        &cmd.test_dirs,
-        &integration_runtime,
-        &cmd.image_overrides,
-        subject_os,
-        &set,
-    ) {
+    let test_cases = match participant_case::discover(&cmd.test_dirs, cmd.subject_os, &set) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -228,9 +196,9 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             let (selected, unmatched) = resolve_selection(requested, &test_cases);
             if !unmatched.is_empty() {
                 let msg = format!(
-                    "No test matches: {}. Run 'panoramic list' to see the tests in scope for runtime '{}'.",
+                    "No test matches: {}. Run 'panoramic list' to see the tests in scope for subject OS {}.",
                     unmatched.join(", "),
-                    integration_runtime
+                    cmd.subject_os
                 );
                 if use_tui {
                     eprintln!("{}", msg);
@@ -296,7 +264,6 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                 .map(|plan| (test.name(), plan))
         })
         .collect();
-    let mut settings = settings;
     // Created before the checks, so the display shows the progress of the kind setup they run.
     let (tx, rx) = create_event_channel();
     let kind = participant_case::KindSetup {
@@ -312,8 +279,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
         checked = participant_case::check_before_the_first_case(&plans, kind, &mut kind_state) => checked,
     };
-    settings.backends = match checked {
-        Ok(backends) => backends,
+    let settings = match checked {
+        Ok(backends) => RunnerSettings { backends },
         Err(errors) => {
             for e in errors {
                 if use_tui {
@@ -341,7 +308,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     let mut report = RunReport::new(
         cmd.test_dirs.clone(),
-        integration_runtime.clone(),
+        participant_case::runtime_of(cmd.subject_os).to_string(),
         cmd.parallelism.get(),
         log_dir.clone(),
         test_cases.iter().map(|t| t.name()).collect(),
@@ -476,21 +443,14 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let (subject_os, integration_runtime) = match cmd.selection() {
-        Ok(selection) => selection,
-        Err(e) => {
-            error!("{}", e);
-            return ExitCode::from(2);
-        }
-    };
-    let mut test_cases = match discover_tests(&cmd.test_dirs, integration_runtime, &[], subject_os, &BTreeMap::new()) {
+    let mut test_cases = match participant_case::discover(&cmd.test_dirs, cmd.subject_os, &BTreeMap::new()) {
         Ok(tests) => tests,
         Err(e) => {
             error!("Failed to discover tests: {}", e);
             return ExitCode::from(2);
         }
     };
-    // A participant case that does not declare the subject OS has no row for it, as a legacy case outside the runtime.
+    // A case that does not declare the subject OS has no row for it.
     test_cases.retain(|test| test.participant_case().is_none_or(|case| case.plan.is_ok()));
 
     if cmd.json {
@@ -499,10 +459,9 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
             test_map.insert(
                 test.name(),
                 serde_json::json!({
-                    "type": test.suite(),
+                    "suite": test.suite(),
                     "runtime": test.runtime(),
                     "timeout": test.timeout(),
-                    "images": test.images(),
                 }),
             );
         }
@@ -682,14 +641,6 @@ mod tests {
                 if !dir.join(case::CASE_FILE).exists() {
                     continue;
                 }
-                match config::is_legacy_case(&dir.join(case::CASE_FILE)) {
-                    Ok(false) => {}
-                    Ok(true) => continue,
-                    Err(e) => {
-                        failures.push(format!("{:#}", e));
-                        continue;
-                    }
-                }
                 if let Err(errors) = load_and_plan(&dir, &BTreeMap::new()) {
                     failures.extend(errors.iter().map(ToString::to_string));
                 }
@@ -721,45 +672,6 @@ mod tests {
         assert!(directives.contains("airlock=debug"), "directives were '{}'", directives);
         assert!(directives.contains("off"), "directives were '{}'", directives);
         assert!(!directives.contains("hyper"), "directives were '{}'", directives);
-    }
-
-    #[tokio::test]
-    async fn image_override_validation_precedes_name_selection() {
-        let dir = tempfile::tempdir().unwrap();
-        let case_dir = dir.path().join("unselected");
-        std::fs::create_dir(&case_dir).unwrap();
-        std::fs::write(
-            case_dir.join("config.yaml"),
-            r#"
-type: integration
-name: unselected
-timeout: 1s
-intake:
-  enabled: true
-procedure: []
-"#,
-        )
-        .unwrap();
-        for (entry, expected) in [
-            ("intake=tools:custom", EXIT_NO_TESTS_SELECTED),
-            ("typo=tools:custom", EXIT_HARNESS_ERROR),
-        ] {
-            let cli = Cli::try_parse_from([
-                "panoramic",
-                "run",
-                "-d",
-                dir.path().to_str().unwrap(),
-                "-t",
-                "not-discovered",
-                "--image-override",
-                entry,
-            ])
-            .unwrap();
-            let Command::Run(cmd) = cli.command else {
-                panic!("expected run")
-            };
-            assert_eq!(run_tests(*cmd, false).await, ExitCode::from(expected));
-        }
     }
 
     #[test]

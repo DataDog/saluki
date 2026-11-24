@@ -138,7 +138,7 @@ pub struct DatadogEvents {
 #[async_trait]
 impl IncrementalEncoder for DatadogEvents {
     async fn process_event(&mut self, event: Event) -> Result<ProcessResult, GenericError> {
-        let eventd = match event.try_into_eventd() {
+        let eventd = match event.try_into_event_d() {
             Some(eventd) => eventd,
             None => return Ok(ProcessResult::Continue),
         };

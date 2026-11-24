@@ -84,8 +84,8 @@ pub struct Environment {
     /// Only read in standalone mode, where it is reported verbatim. In connected mode the hostname comes from the
     /// Datadog Agent and this value is ignored.
     ///
-    /// Defaults to empty, and a defaulted or empty value is treated as absent. Operators running standalone must set
-    /// it explicitly; startup fails otherwise.
+    /// Defaults to empty, and a defaulted or empty value is treated as absent. In standalone mode, an absent hostname
+    /// means data is sent without a host, as the Datadog Agent does in sidecar deployments such as ECS Fargate.
     pub hostname: ConfigValue<String>,
 
     /// containerd runtime discovery and client timeouts.
@@ -554,7 +554,7 @@ pub struct V3ApiSettings {
 
     /// Probability of shadowing each eligible V2 sketch batch, independently for each destination.
     ///
-    /// Defaults to `0` (disabled). Zero or negative values disable sampling; values at least `1` sample every batch.
+    /// Defaults to `0.001` (0.1%). Zero or negative values disable sampling; values at least `1` sample every batch.
     pub shadow_sample_rate: f64,
 
     /// Sites eligible for sketch shadow sampling, matched against the resolved V2 destination.

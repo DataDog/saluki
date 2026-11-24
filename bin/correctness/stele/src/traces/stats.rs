@@ -275,6 +275,11 @@ pub struct ClientStatistics {
 }
 
 impl ClientStatistics {
+    /// Returns the name of the service whose spans these statistics cover.
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
     /// Merges `other` into `self`.
     ///
     /// If `other` doesn't have the same aggregation key as `self` (essentially: if any of the string fields differ),

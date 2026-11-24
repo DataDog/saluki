@@ -114,3 +114,6 @@ pub const MAX_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(1024 
 /// A literal loopback address rather than `localhost`, so the proxy and the trace-agent cannot resolve the name to
 /// different address families. The Datadog Agent must move the trace-agent's receiver to the same address.
 pub const DEFAULT_APM_PROXY_DESTINATION: &str = "http://127.0.0.1:8127";
+
+/// Default for serving the trace intake endpoints natively: off, so the APM relay proxies them to the trace-agent.
+pub const DEFAULT_APM_NATIVE_TRACE_INTAKE: bool = false;

@@ -25,8 +25,8 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::time::{timeout_at, Instant};
 
 use crate::{
-    driver::with_transient_error_retry,
     removal::{bounded, RequestError},
+    retry::with_transient_error_retry,
     scope::CaseScope,
 };
 
