@@ -43,6 +43,7 @@ use crate::decoders::datadog::{decode_v1_payload, first_span, resolve_process_ta
 
 const SEC_FETCH_SITE_HEADER: HeaderName = HeaderName::from_static("sec-fetch-site");
 const PROCESS_TAGS_HEADER: HeaderName = HeaderName::from_static("x-datadog-process-tags");
+const LANG_HEADER: HeaderName = HeaderName::from_static("datadog-meta-lang");
 const LANG_INTERPRETER_HEADER: HeaderName = HeaderName::from_static("datadog-meta-lang-interpreter");
 const LANG_INTERPRETER_VENDOR_HEADER: HeaderName = HeaderName::from_static("datadog-meta-lang-interpreter-vendor");
 const COMPUTED_TOP_LEVEL_HEADER: HeaderName = HeaderName::from_static("datadog-client-computed-top-level");
@@ -228,6 +229,7 @@ fn receiver_metadata(
         client_dropped_p0s_weight,
         client_computed_stats: is_header_true(header_str(headers, &COMPUTED_STATS_HEADER)),
         client_computed_top_level: is_header_true(header_str(headers, &COMPUTED_TOP_LEVEL_HEADER)),
+        lang: meta(&LANG_HEADER),
         interpreter: meta(&LANG_INTERPRETER_HEADER),
         lang_vendor: meta(&LANG_INTERPRETER_VENDOR_HEADER),
         endpoint_version: version.as_meta_string(),
@@ -636,6 +638,7 @@ mod tests {
                 ("datadog-client-computed-stats", "yes"),
                 ("datadog-client-computed-top-level", "false"),
                 ("datadog-client-dropped-p0-traces", "6"),
+                ("datadog-meta-lang", "python"),
                 ("datadog-meta-lang-interpreter", "CPython"),
                 ("datadog-meta-lang-interpreter-vendor", "python-foundation"),
             ]
@@ -648,6 +651,7 @@ mod tests {
         assert!(receiver.client_computed_stats);
         assert!(!receiver.client_computed_top_level);
         assert_eq!(receiver.client_dropped_p0s_weight, 1.5);
+        assert_eq!(receiver.lang, "python");
         assert_eq!(receiver.interpreter, "CPython");
         assert_eq!(receiver.lang_vendor, "python-foundation");
         assert_eq!(receiver.endpoint_version, "v1.0");

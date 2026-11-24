@@ -160,6 +160,8 @@ pub struct ReceiverMetadata {
     /// Whether the SDK exports its telemetry through OTLP (`_dd.sdk.otlp_export`), hoisted from the payload or its
     /// first span. Empty when the tracer didn't send it.
     pub sdk_otlp_export: MetaString,
+    /// Tracer language from the `Datadog-Meta-Lang` header, which names the fallback service of spans without one.
+    pub lang: MetaString,
     /// Tracer language interpreter, reported in receiver telemetry.
     pub interpreter: MetaString,
     /// Tracer language interpreter vendor, reported in receiver telemetry.
@@ -187,6 +189,7 @@ impl ReceiverMetadata {
             container_tags: MetaString::empty(),
             process_tags: MetaString::empty(),
             sdk_otlp_export: MetaString::empty(),
+            lang: MetaString::empty(),
             interpreter: MetaString::empty(),
             lang_vendor: MetaString::empty(),
             endpoint_version: MetaString::empty(),
