@@ -2,7 +2,6 @@
 
 use std::borrow::Cow;
 use std::char;
-use std::fmt::Write as _;
 
 use saluki_common::strings::StringBuilder;
 use stringtheory::MetaString;
@@ -36,8 +35,6 @@ const STRUCTURED_SUFFIXES: [&str; 3] = [".json", ".msgpack", ".protobuf"];
 
 // default service name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_OTLP_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
-// default service name the trace-agent assigns a Datadog span with no service and no tracer language
-const DEFAULT_DD_SERVICE_NAME: &str = "unnamed-service";
 // default span name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_SPAN_NAME: MetaString = MetaString::from_static("unnamed_operation");
 
@@ -79,55 +76,30 @@ static IS_VALID_ASCII_TAG_CHAR_LOOKUP: [bool; 256] = {
     lookup
 };
 
-/// Why a value was modified during normalization, as the trace-agent reports it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NormalizeError {
-    /// The input was empty and was replaced with a fallback.
-    Empty,
-    /// The input exceeded its maximum length and was truncated.
-    TooLong,
-    /// Nothing valid survived normalization, so the input was replaced with a fallback.
-    Invalid,
-}
-
 /// Normalizes a span name.
 ///
 /// This function truncates the name to `MAX_NAME_LEN`, replaces invalid characters with underscores,
 /// and handles consecutive underscores and underscores after periods. An already-normalized name is
 /// returned unchanged, without allocating.
-pub fn normalize_name(name: MetaString) -> MetaString {
-    normalize_name_with_reason(name).0
-}
-
-/// Normalizes a span name, also returning why it was modified, as the trace-agent does.
-///
-/// Character repairs alone are not reported: only an empty name, a truncation, or a name with no alphabetic
-/// character (replaced by the default span name) are.
-pub fn normalize_name_with_reason(mut name: MetaString) -> (MetaString, Option<NormalizeError>) {
+pub fn normalize_name(mut name: MetaString) -> MetaString {
     if name.is_empty() {
         debug!(
             "normalize_name: name is empty, returning default span name: {}",
             DEFAULT_SPAN_NAME
         );
-        return (DEFAULT_SPAN_NAME.clone(), Some(NormalizeError::Empty));
+        return DEFAULT_SPAN_NAME.clone();
     }
-    let mut reason = None;
     if name.len() > MAX_NAME_LEN {
         name = MetaString::from(truncate_utf8(&name, MAX_NAME_LEN));
-        reason = Some(NormalizeError::TooLong);
         debug!("normalize_name: name is too long,truncated name: {}", name);
     }
 
     // Fast path: already normalized, so return the input without allocating.
     if is_valid_metric_name(&name) {
-        return (name, reason);
+        return name;
     }
 
-    match normalize_name_slow(name) {
-        Some(name) => (name, reason),
-        // Nothing valid survives, which overrides a truncation.
-        None => (DEFAULT_SPAN_NAME.clone(), Some(NormalizeError::Invalid)),
-    }
+    normalize_name_slow(name).unwrap_or(DEFAULT_SPAN_NAME)
 }
 
 /// Repairs a non-empty name that failed the fast-path check.
@@ -197,57 +169,23 @@ fn normalize_name_slow(name: MetaString) -> Option<MetaString> {
 ///
 /// The output is always written from a cleared buffer.
 pub(crate) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I>) {
-    let _ = normalize_service_value_into(service, out);
-    if out.as_str().is_empty() {
-        let _ = out.push_str(DEFAULT_OTLP_SERVICE_NAME.as_ref());
-    }
-}
-
-/// Normalizes a Datadog span service name into `out`, as the trace-agent does.
-///
-/// When the service is empty, or nothing valid survives normalization, it's replaced with the language's
-/// fallback: `unnamed-<lang>-service`, or `unnamed-service` when `lang` is empty. Returns why the service was
-/// modified, if it was. The output is always written from a cleared buffer.
-pub(crate) fn normalize_service_with_lang_into<I>(
-    service: &str, lang: &str, out: &mut StringBuilder<I>,
-) -> Option<NormalizeError> {
-    let reason = normalize_service_value_into(service, out);
-    if out.as_str().is_empty() {
-        if lang.is_empty() {
-            let _ = out.push_str(DEFAULT_DD_SERVICE_NAME);
-        } else {
-            let _ = write!(out, "unnamed-{lang}-service");
-        }
-    }
-    reason
-}
-
-/// Truncates and normalizes a service name as a tag value into `out`, leaving `out` empty when the service is
-/// empty or nothing valid survives.
-fn normalize_service_value_into<I>(service: &str, out: &mut StringBuilder<I>) -> Option<NormalizeError> {
     out.clear();
 
     if service.is_empty() {
-        return Some(NormalizeError::Empty);
+        let _ = out.push_str(DEFAULT_OTLP_SERVICE_NAME.as_ref());
+        return;
     }
 
-    let reason = (service.len() > MAX_SERVICE_LEN).then_some(NormalizeError::TooLong);
     let truncated = truncate_utf8_str(service, MAX_SERVICE_LEN);
     if is_normalized_ascii_tag(truncated, false) {
         let _ = out.push_str(truncated);
-        return reason;
+        return;
     }
     normalize_unchecked(truncated, false, out);
 
     if out.as_str().is_empty() {
-        return Some(NormalizeError::Invalid);
+        let _ = out.push_str(DEFAULT_OTLP_SERVICE_NAME.as_ref());
     }
-    reason
-}
-
-/// Returns whether `code` is a valid HTTP status code, between 100 and 599.
-pub(crate) fn is_valid_status_code(code: &str) -> bool {
-    code.parse::<u64>().is_ok_and(|code| (100..600).contains(&code))
 }
 
 /// How a peer service name changed while being normalized.
@@ -653,7 +591,7 @@ pub fn needs_name_normalization(name: &str) -> bool {
     name.is_empty() || name.len() > MAX_NAME_LEN || !is_valid_metric_name(name)
 }
 
-pub(crate) fn truncate_utf8_str(s: &str, max_len: usize) -> &str {
+fn truncate_utf8_str(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         return s;
     }

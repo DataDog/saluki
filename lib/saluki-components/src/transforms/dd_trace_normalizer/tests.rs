@@ -3,16 +3,21 @@
 //! Behaviors the trace-agent tests on V0 spans only, but that also apply to V1 spans, are tested on the V1 span
 //! shape.
 
+use libdd_trace_normalization::normalizer_v1::{normalize_span_with, MalformedReason, NormalizeObserver as _};
 use saluki_common::collections::FastHashMap;
 use saluki_core::components::test_util::TestComponentDriver;
 use saluki_core::data_model::event::metric::MetricValues;
-use saluki_core::data_model::event::trace::AttributeValueExt as _;
-use saluki_core::data_model::event::trace::{SpanLink, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _, Span, SpanLink, TraceIngestInfo};
 use saluki_core::data_model::event::Event;
 
 use super::*;
+use crate::common::traces::normalize::MAX_TYPE_LEN;
 
 const TEST_SPAN_ID: u64 = 0x5eed_5eed;
+const PEER_SERVICE_KEY: &str = "peer.service";
+const BASE_SERVICE_KEY: &str = "_dd.base_service";
+const HTTP_STATUS_CODE_KEY: &str = "http.status_code";
+const LINK_NAME_KEY: &str = "link.name";
 
 /// Builds a valid V1 test span with a fixed span ID.
 fn new_test_span_v1() -> Span {
@@ -57,7 +62,11 @@ fn normalize_v1(span: &mut Span, lang: &str) -> (Result<(), DropReason>, ReasonC
 
 fn normalize_v1_with(span: &mut Span, lang: &str, component2name: bool) -> (Result<(), DropReason>, ReasonCounts) {
     let mut counts = ReasonCounts::default();
-    let result = normalize_span(span, lang, component2name, &mut StringBuilder::new(), &mut counts);
+    let opts = NormalizeOptions { lang, component2name };
+    let result = normalize_span_with(span, &opts, &mut counts);
+    if let Err(reason) = result {
+        counts.drop(reason);
+    }
     (result, counts)
 }
 
@@ -105,8 +114,7 @@ fn now_nanos() -> u64 {
 
 #[test]
 fn test_normalize_service_pass_thru_v1() {
-    let mut s = new_test_span_v1();
-    s.set_service("foo");
+    let mut s = new_test_span_v1().with_service("foo");
     set_string_attribute(&mut s, PEER_SERVICE_KEY, "foo");
     set_string_attribute(&mut s, BASE_SERVICE_KEY, "bar");
     let (result, counts) = normalize_v1(&mut s, "");
@@ -119,8 +127,7 @@ fn test_normalize_service_pass_thru_v1() {
 
 #[test]
 fn test_normalize_empty_service_no_lang_v1() {
-    let mut s = new_test_span_v1();
-    s.set_service("");
+    let mut s = new_test_span_v1().with_service("");
     set_string_attribute(&mut s, PEER_SERVICE_KEY, "");
     set_string_attribute(&mut s, BASE_SERVICE_KEY, "");
     let (result, counts) = normalize_v1(&mut s, "");
@@ -134,8 +141,7 @@ fn test_normalize_empty_service_no_lang_v1() {
 
 #[test]
 fn test_normalize_empty_service_with_lang_v1() {
-    let mut s = new_test_span_v1();
-    s.set_service("");
+    let mut s = new_test_span_v1().with_service("");
     set_string_attribute(&mut s, PEER_SERVICE_KEY, "");
     set_string_attribute(&mut s, BASE_SERVICE_KEY, "");
     let (result, counts) = normalize_v1(&mut s, "java");
@@ -148,8 +154,7 @@ fn test_normalize_empty_service_with_lang_v1() {
 
 #[test]
 fn test_normalize_long_service_v1() {
-    let mut s = new_test_span_v1();
-    s.set_service("CAMEMBERT".repeat(100));
+    let mut s = new_test_span_v1().with_service("CAMEMBERT".repeat(100));
     set_string_attribute(&mut s, PEER_SERVICE_KEY, &"BRIE".repeat(100));
     set_string_attribute(&mut s, BASE_SERVICE_KEY, &"ROQUEFORT".repeat(100));
     let (result, counts) = normalize_v1(&mut s, "");
@@ -181,8 +186,7 @@ fn test_normalize_name_pass_thru_v1() {
 
 #[test]
 fn test_normalize_empty_name_v1() {
-    let mut s = new_test_span_v1();
-    s.set_name("");
+    let mut s = new_test_span_v1().with_name("");
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
     assert_eq!(s.name(), "unnamed_operation");
@@ -191,8 +195,7 @@ fn test_normalize_empty_name_v1() {
 
 #[test]
 fn test_normalize_long_name_v1() {
-    let mut s = new_test_span_v1();
-    s.set_name("CAMEMBERT".repeat(100));
+    let mut s = new_test_span_v1().with_name("CAMEMBERT".repeat(100));
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
     assert_eq!(s.name(), &"CAMEMBERT".repeat(100)[..100]);
@@ -201,8 +204,7 @@ fn test_normalize_long_name_v1() {
 
 #[test]
 fn test_normalize_name_no_alphanumeric_v1() {
-    let mut s = new_test_span_v1();
-    s.set_name("/");
+    let mut s = new_test_span_v1().with_name("/");
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
     assert_eq!(s.name(), "unnamed_operation");
@@ -247,8 +249,7 @@ fn test_normalize_start_v1_pass_through() {
 
 #[test]
 fn test_normalize_start_v1_too_small() {
-    let mut s = new_test_span_v1();
-    s.set_start(42);
+    let mut s = new_test_span_v1().with_start(42);
     let min_start = now_nanos() - s.duration();
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -259,9 +260,7 @@ fn test_normalize_start_v1_too_small() {
 
 #[test]
 fn test_normalize_start_v1_too_small_with_large_duration() {
-    let mut s = new_test_span_v1();
-    s.set_start(42);
-    s.set_duration(now_nanos() * 2);
+    let mut s = new_test_span_v1().with_start(42).with_duration(now_nanos() * 2);
     let min_start = now_nanos();
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -281,8 +280,7 @@ fn test_normalize_duration_pass_thru_v1() {
 
 #[test]
 fn test_normalize_empty_duration_v1() {
-    let mut s = new_test_span_v1();
-    s.set_duration(0);
+    let mut s = new_test_span_v1().with_duration(0);
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
     assert_eq!(s.duration(), 0);
@@ -291,8 +289,7 @@ fn test_normalize_empty_duration_v1() {
 
 #[test]
 fn test_normalize_large_duration_v1() {
-    let mut s = new_test_span_v1();
-    s.set_duration(i64::MAX as u64);
+    let mut s = new_test_span_v1().with_duration(i64::MAX as u64);
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
     assert_eq!(s.duration(), 0);
@@ -319,8 +316,7 @@ fn test_normalize_type_too_long_v1() {
 
 #[test]
 fn test_normalize_service_tag_v1() {
-    let mut s = new_test_span_v1();
-    s.set_service("retargeting(api-Staging ");
+    let mut s = new_test_span_v1().with_service("retargeting(api-Staging ");
     set_string_attribute(&mut s, PEER_SERVICE_KEY, "retargeting(api-Peer ");
     set_string_attribute(&mut s, BASE_SERVICE_KEY, "retargeting(api-Base ");
     let (result, counts) = normalize_v1(&mut s, "");
@@ -476,7 +472,10 @@ fn normalize_v1_drops_invalid_http_status_code() {
         (AttributeValue::String("200".into()), true),
         (AttributeValue::Int(599), true),
         (AttributeValue::Float(404.0), true),
+        (AttributeValue::Bytes(b"503".to_vec()), true),
         (AttributeValue::String("600".into()), false),
+        // The trace-agent parses the code with `strconv.ParseUint`, which rejects a sign.
+        (AttributeValue::String("+200".into()), false),
         (AttributeValue::String("99".into()), false),
         (AttributeValue::String("abc".into()), false),
         (AttributeValue::Int(-200), false),
@@ -503,30 +502,25 @@ fn normalize_v1_drops_invalid_http_status_code() {
 }
 
 #[test]
-fn attribute_as_string_matches_go_any_value_as_string() {
-    assert_eq!(attribute_as_string(&AttributeValue::Float(200.0)), "200");
-    assert_eq!(attribute_as_string(&AttributeValue::Float(0.1)), "0.1");
-    assert_eq!(
-        attribute_as_string(&AttributeValue::Float(1e21)),
-        "1000000000000000000000"
-    );
-    assert_eq!(attribute_as_string(&AttributeValue::Float(f64::INFINITY)), "+Inf");
-    assert_eq!(attribute_as_string(&AttributeValue::Float(f64::NAN)), "NaN");
-    assert_eq!(attribute_as_string(&AttributeValue::Bool(false)), "false");
-    assert_eq!(
-        attribute_as_string(&AttributeValue::Array(vec![
-            AttributeValue::Int(1),
-            AttributeValue::String("a".into())
-        ])),
-        "[1,a]"
-    );
-    assert_eq!(
-        attribute_as_string(&AttributeValue::KeyValueList(vec![(
-            MetaString::from("k"),
-            AttributeValue::Bool(true)
-        )])),
-        "{k=true}"
-    );
+fn format_as_string_matches_go_any_value_as_string() {
+    for (value, expected) in [
+        (AttributeValue::Float(200.0), "200"),
+        (AttributeValue::Float(0.1), "0.1"),
+        (AttributeValue::Float(1e21), "1000000000000000000000"),
+        (AttributeValue::Float(f64::INFINITY), "+Inf"),
+        (AttributeValue::Float(f64::NAN), "NaN"),
+        (AttributeValue::Bool(false), "false"),
+        (
+            AttributeValue::Array(vec![AttributeValue::Int(1), AttributeValue::String("a".into())]),
+            "[1,a]",
+        ),
+        (
+            AttributeValue::KeyValueList(vec![(MetaString::from("k"), AttributeValue::Bool(true))]),
+            "{k=true}",
+        ),
+    ] {
+        assert_eq!(value.format_as_string(), expected, "{value:?}");
+    }
 }
 
 /// The component forwards normalized traces, drops invalid chunks, and reports the counts on its metrics output.
@@ -595,14 +589,25 @@ async fn transform_drops_empty_chunks_silently() {
     assert!(metrics.is_empty(), "{metrics:?}");
 }
 
-/// The payload env is normalized as a tag value, as the trace-agent does.
+/// The payload env is normalized as a tag value, as the trace-agent does, and gets the same result as the span env.
 #[test]
 fn normalize_payload_env() {
     let mut normalizer = DatadogTraceNormalizer::new(false);
-    for (env, expected) in [("Prod Env!", "prod_env"), ("staging", "staging"), ("", "")] {
-        let mut trace = new_test_trace(vec![new_test_span_v1()]);
+    for (env, expected) in [
+        ("Prod Env!", "prod_env"),
+        ("staging", "staging"),
+        ("", ""),
+        ("123DEVELOPMENT", "123development"),
+        // `libdd-trace-normalization` keeps `²`, which Go's `unicode.IsDigit` drops.
+        ("api\u{00B2}", "api\u{00B2}"),
+    ] {
+        let mut trace = new_test_trace(vec![new_test_span_v1().with_env(env)]);
         trace.payload.env = MetaString::from(env);
         normalizer.normalize_payload_env(&mut trace);
         assert_eq!(trace.payload.env, expected, "env {env:?}");
+        assert!(normalizer
+            .normalize_trace(&mut trace, &mut ReasonCounts::default())
+            .is_ok());
+        assert_eq!(trace.spans()[0].env, expected, "span env {env:?}");
     }
 }
