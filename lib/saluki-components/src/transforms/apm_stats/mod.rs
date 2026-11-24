@@ -191,12 +191,17 @@ impl ApmStats {
         let container_version = ContainerVersionData::from_tags(&infra_tags.container_tags);
         let payload_key = self.build_payload_key(trace, &process_tags, container_version);
 
-        let origin = trace
-            .spans()
-            .first()
-            .and_then(|s| s.attributes.get("_dd.origin").and_then(AttributeValue::as_string))
-            .map(|s| s.as_ref())
-            .unwrap_or("");
+        // Datadog traces use the chunk origin, as the trace-agent does: v1.0 chunks carry it, and the decoders promote a
+        // v0.x root span's `_dd.origin` onto it. OTLP traces read the first span's `_dd.origin`.
+        let origin = match trace.ingest_info() {
+            TraceIngestInfo::Datadog => trace.origin.as_ref(),
+            TraceIngestInfo::Otlp { .. } => trace
+                .spans()
+                .first()
+                .and_then(|s| s.attributes.get("_dd.origin").and_then(AttributeValue::as_string))
+                .map(|s| s.as_ref())
+                .unwrap_or(""),
+        };
 
         for span in trace.spans() {
             if let Some(stat_span) = self.concentrator.new_stat_span_from_span(span, trace.ingest_info()) {
@@ -835,6 +840,28 @@ mod tests {
 
         let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
         assert!(stats.is_empty(), "client-computed stats must not be recomputed");
+    }
+
+    #[test]
+    fn datadog_trace_stats_use_the_chunk_origin() {
+        let now = now_nanos();
+        let mut transform = test_transform("");
+
+        // The chunk origin marks the stats as synthetics even though no span carries `_dd.origin`.
+        let span = make_test_span("test-service", "test-operation", "test-resource");
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.origin = MetaString::from("synthetics-browser");
+
+        transform.process_trace(&trace);
+
+        let payloads = transform.concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
+        let synthetics: Vec<bool> = payloads
+            .iter()
+            .flat_map(|payload| payload.stats())
+            .flat_map(|bucket| bucket.stats())
+            .map(|grouped| grouped.synthetics())
+            .collect();
+        assert_eq!(synthetics, [true]);
     }
 
     #[test]
