@@ -136,23 +136,23 @@ impl PropertySink for Vec<(String, JsonValue)> {
 /// JSON can't hold a NaN or an infinite double, and the Agent fails to marshal a log that holds one. A non-finite
 /// double becomes a `null` placeholder, so the caller can drop the log if the placeholder is still there once every
 /// property is set. No other value becomes `null`.
-fn flatten_attribute<S: PropertySink>(key: &str, value: Option<&OtlpValue>, depth: usize, out: &mut S) -> bool {
+fn flatten_attribute<S: PropertySink>(key: Cow<'_, str>, value: Option<&OtlpValue>, depth: usize, out: &mut S) -> bool {
     match value {
         Some(KvlistValue(map)) if depth != FLATTEN_STRING_DEPTH => {
             let mut non_finite = false;
             for kv in &map.values {
                 let nested_key = if key.is_empty() {
-                    kv.key.clone()
+                    Cow::Borrowed(kv.key.as_str())
                 } else {
-                    format!("{}.{}", key, kv.key)
+                    Cow::Owned(format!("{}.{}", key, kv.key))
                 };
-                non_finite |= flatten_attribute(&nested_key, key_value_value(kv), depth + 1, out);
+                non_finite |= flatten_attribute(nested_key, key_value_value(kv), depth + 1, out);
             }
             non_finite
         }
         _ => {
             let (leaf, non_finite) = flattened_value(value, depth);
-            out.set(key.to_string(), leaf);
+            out.set(key.into_owned(), leaf);
             non_finite
         }
     }
@@ -170,7 +170,7 @@ fn flattened_value(value: Option<&OtlpValue>, depth: usize) -> (JsonValue, bool)
                     // Only a map element that spreads has keys to look at. Every other element is a single value.
                     Some(map @ KvlistValue(_)) if depth + 1 != FLATTEN_STRING_DEPTH => {
                         let mut flattened = Vec::new();
-                        non_finite |= flatten_attribute("", Some(map), depth + 1, &mut flattened);
+                        non_finite |= flatten_attribute(Cow::Borrowed(""), Some(map), depth + 1, &mut flattened);
                         match flattened.iter().rposition(|(key, _)| key.is_empty()) {
                             Some(index) => flattened.swap_remove(index).1,
                             None => JsonValue::Object(flattened.into_iter().collect()),
@@ -329,7 +329,12 @@ pub fn transform_log_record(
             }
             // Default: flatten maps, keep arrays, and insert every value.
             _ => {
-                non_finite |= flatten_attribute(&kv.key, key_value_value(kv), 1, &mut additional_properties);
+                non_finite |= flatten_attribute(
+                    Cow::Borrowed(kv.key.as_str()),
+                    key_value_value(kv),
+                    1,
+                    &mut additional_properties,
+                );
             }
         }
     }
