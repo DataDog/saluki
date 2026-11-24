@@ -707,6 +707,38 @@ mod tests {
     }
 
     #[test]
+    fn default_hostname_reaches_the_traces_translator() {
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span};
+
+        let mut config = source_configuration();
+        config.traces.string_interner_size = NonZeroUsize::new(64 * 1024).unwrap();
+        config.default_hostname = MetaString::from("data-plane-host");
+        let mut translator =
+            config.traces_translator(OtlpOriginTagResolver::new(Arc::clone(&config.workload_provider)));
+        let resource_spans = ResourceSpans {
+            scope_spans: vec![ScopeSpans {
+                spans: vec![Span {
+                    trace_id: vec![1; 16],
+                    span_id: vec![1; 8],
+                    name: "span".to_owned(),
+                    end_time_unix_nano: 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // The resource carries no host, so the span falls back to the default hostname.
+        let hostnames: Vec<String> = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .filter_map(Event::try_into_trace)
+            .map(|trace| trace.payload.hostname.to_string())
+            .collect();
+        assert_eq!(hostnames, ["data-plane-host"]);
+    }
+
+    #[test]
     fn empty_static_tags_preserve_explicit_otlp_metric_tags() {
         let mut metrics = metrics_settings();
         metrics.tags = "configured:true".to_string();
@@ -1123,6 +1155,63 @@ mod tests {
             assert_eq!(log.message(), r#"{"message":"","status":""}"#);
             assert!(log.additional_properties().is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn the_grpc_message_size_limit_is_in_mib() {
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value, AnyValue};
+
+        const MIB: usize = 1024 * 1024;
+
+        let mut config = source_configuration();
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.receiver.grpc.max_recv_msg_size_mib = 1;
+        // The configuration translator resolves a zero keepalive to these defaults.
+        config.receiver.grpc.keepalive.time = Duration::from_secs(2 * 60 * 60);
+        config.receiver.grpc.keepalive.timeout = Duration::from_secs(20);
+
+        let (control, mut outputs) = TestComponentDriver::source(config).await.expect("source should build");
+        let _logs = outputs.take_named_output("logs");
+        let mut bound = control
+            .supervisor()
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-grpc"));
+        let address = match bound.recv().await {
+            Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address))) => address,
+            update => panic!("expected the gRPC server to bind, got {update:?}"),
+        };
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
+            .expect("endpoint should parse")
+            .connect()
+            .await
+            .expect("should connect to the gRPC server");
+        let mut client = LogsServiceClient::new(channel);
+        let request = |body_len: usize| ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("x".repeat(body_len))),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        // A limit in KiB or GiB would fail the first request or accept the second.
+        client
+            .export(request(MIB / 2))
+            .await
+            .expect("a message under the limit should be accepted");
+        client
+            .export(request(2 * MIB))
+            .await
+            .expect_err("a message over the limit should be rejected");
+
+        control.shutdown().await.expect("source should stop cleanly");
     }
 
     #[tokio::test]

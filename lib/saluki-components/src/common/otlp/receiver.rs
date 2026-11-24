@@ -1,4 +1,4 @@
-//! OTLP receiver settings, shared by the OTLP source and relay.
+//! OTLP receiver settings of the OTLP source.
 
 use std::time::Duration;
 
