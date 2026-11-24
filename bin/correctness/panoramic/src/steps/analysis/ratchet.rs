@@ -97,42 +97,62 @@ impl KnownDifference {
     }
 }
 
+/// A part of a known difference's `when` that the ratchet tracks the use of on its own.
+enum Scope<'a> {
+    /// The entry has no `when`, so it applies to every record.
+    All,
+
+    /// One value of one field of the entry's `when`.
+    Value(&'a str, &'a Value),
+}
+
+impl Scope<'_> {
+    /// Returns `true` if a record whose view is `view` falls in the scope.
+    fn holds(&self, view: &BTreeMap<String, Value>) -> bool {
+        match self {
+            Scope::All => true,
+            Scope::Value(field, value) => view.get(*field) == Some(*value),
+        }
+    }
+}
+
+/// A known difference, and whether a diff used each of its paths, for each of its scopes.
+struct Tracked<'a> {
+    entry: &'a KnownDifference,
+    scopes: Vec<Scope<'a>>,
+
+    /// For each path of the entry, whether a diff used it, for each scope.
+    used: Vec<Vec<bool>>,
+}
+
 /// Matches diffs against known differences, and tracks which entry paths were used, for each value of the entry's
 /// `when`.
 pub struct Ratchet<'a> {
-    entries: &'a [KnownDifference],
-
-    /// For each entry, every field and value of its `when`, or one unscoped slot when the entry has no `when`.
-    scopes: Vec<Vec<Option<(&'a str, &'a Value)>>>,
-
-    /// For each entry and path, whether a diff used it, for each scope of the entry.
-    used: Vec<Vec<Vec<bool>>>,
+    entries: Vec<Tracked<'a>>,
 }
 
 impl<'a> Ratchet<'a> {
     /// Creates a new `Ratchet` over the given entries.
     pub fn new(entries: &'a [KnownDifference]) -> Self {
-        let scopes = entries
+        let entries = entries
             .iter()
             .map(|entry| {
-                let values = entry
+                let mut scopes = entry
                     .when
                     .iter()
-                    .flat_map(|(field, values)| values.iter().map(move |value| Some((field.as_str(), value))))
+                    .flat_map(|(field, values)| values.iter().map(|value| Scope::Value(field.as_str(), value)))
                     .collect::<Vec<_>>();
-                if values.is_empty() {
-                    vec![None]
-                } else {
-                    values
+                if scopes.is_empty() {
+                    scopes.push(Scope::All);
+                }
+                Tracked {
+                    entry,
+                    used: vec![vec![false; scopes.len()]; entry.paths.len()],
+                    scopes,
                 }
             })
-            .collect::<Vec<_>>();
-        let used = entries
-            .iter()
-            .zip(&scopes)
-            .map(|(entry, scopes)| vec![vec![false; scopes.len()]; entry.paths.len()])
             .collect();
-        Self { entries, scopes, used }
+        Self { entries }
     }
 
     /// Returns `true` if any entry covers `diff`, found on a record whose view is `view`.
@@ -141,17 +161,17 @@ impl<'a> Ratchet<'a> {
     /// entries aren't reported as stale.
     pub fn allows(&mut self, diff: &FieldDiff, view: &BTreeMap<String, Value>) -> bool {
         let mut allowed = false;
-        for ((entry, scopes), used) in self.entries.iter().zip(&self.scopes).zip(&mut self.used) {
-            if !entry.applies(diff, view) {
+        for tracked in &mut self.entries {
+            if !tracked.entry.applies(diff, view) {
                 continue;
             }
-            for (pattern, used) in entry.paths.iter().zip(used.iter_mut()) {
+            for (pattern, used) in tracked.entry.paths.iter().zip(&mut tracked.used) {
                 if !path_matches(pattern, &diff.path) {
                     continue;
                 }
                 allowed = true;
-                for (scope, used) in scopes.iter().zip(used.iter_mut()) {
-                    if scope.is_none_or(|(field, value)| view.get(field) == Some(value)) {
+                for (scope, used) in tracked.scopes.iter().zip(used.iter_mut()) {
+                    if scope.holds(view) {
                         *used = true;
                     }
                 }
@@ -164,16 +184,17 @@ impl<'a> Ratchet<'a> {
     /// for.
     pub fn stale_entries(&self) -> Vec<String> {
         let mut stale = Vec::new();
-        for ((entry, scopes), used) in self.entries.iter().zip(&self.scopes).zip(&self.used) {
+        for Tracked { entry, scopes, used } in &self.entries {
             let issue = entry.issue.map(|issue| format!(" (#{})", issue)).unwrap_or_default();
             for (path, used) in entry.paths.iter().zip(used) {
                 for (scope, used) in scopes.iter().zip(used) {
                     if *used {
                         continue;
                     }
-                    let scope = scope
-                        .map(|(field, value)| format!(" when `{}` is {}", field, value))
-                        .unwrap_or_default();
+                    let scope = match scope {
+                        Scope::All => String::new(),
+                        Scope::Value(field, value) => format!(" when `{}` is {}", field, value),
+                    };
                     stale.push(format!(
                         "Known difference for {}{} no longer occurs: path `{}`{} ({}). Remove it from the case.",
                         entry.gap, issue, path, scope, entry.reason
