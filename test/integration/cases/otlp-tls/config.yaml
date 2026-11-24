@@ -10,7 +10,7 @@ participants:
       DD_API_KEY: "test-api-key"
       DD_HOSTNAME: "integration-test-otlp-tls"
       DD_DATA_PLANE_ENABLED: "true"
-      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
       # Bind ADP to the harness's OTLP endpoints, reachable through the container port mapping.
       DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
