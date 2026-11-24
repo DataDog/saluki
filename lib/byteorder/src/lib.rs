@@ -8,6 +8,9 @@
 //!
 //! [upstream]: https://github.com/BurntSushi/byteorder
 
+// TODO: Remove this crate and its Cargo patch once a crates.io release includes the AIX alignment fix:
+// https://github.com/BurntSushi/byteorder/pull/223
+
 #![deny(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
