@@ -501,6 +501,9 @@ mod tests {
         Span::new("svc", "op", resource, "web", 1, 0, start, 1_000_000_000, 0).with_attributes(attrs)
     }
 
+    /// The values of `now` to test the clamp at: on a bucket boundary, and inside a bucket.
+    const BOUNDARY_NOWS: [u64; 2] = [1_000 * BUCKET_DURATION_NS, 1_000 * BUCKET_DURATION_NS + 3_000_000_000];
+
     /// Adds `spans` at `now`, flushes, and returns the start of each flushed bucket with the resources it holds.
     fn add_and_flush(concentrator: &mut SpanConcentrator, spans: &[Span], now: u64) -> Vec<(u64, Vec<String>)> {
         let payload_key = PayloadAggregationKey {
@@ -572,6 +575,34 @@ mod tests {
             ]
         );
         assert_eq!(concentrator.drain_future_clamps(), 0);
+    }
+
+    #[test]
+    fn a_span_that_ends_in_the_last_nanosecond_of_the_current_bucket_is_not_clamped() {
+        for now in BOUNDARY_NOWS {
+            let aligned_now = align_ts(now, BUCKET_DURATION_NS);
+            let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
+
+            let end = aligned_now + BUCKET_DURATION_NS - 1;
+            let flushed = add_and_flush(&mut concentrator, &[measured_span("current", end - 1_000_000_000)], now);
+
+            assert_eq!(flushed, vec![(aligned_now, vec!["current".to_string()])], "now = {now}");
+            assert_eq!(concentrator.drain_future_clamps(), 0, "now = {now}");
+        }
+    }
+
+    #[test]
+    fn a_span_that_ends_in_the_first_nanosecond_of_the_next_bucket_is_clamped() {
+        for now in BOUNDARY_NOWS {
+            let aligned_now = align_ts(now, BUCKET_DURATION_NS);
+            let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
+
+            let end = aligned_now + BUCKET_DURATION_NS;
+            let flushed = add_and_flush(&mut concentrator, &[measured_span("next", end - 1_000_000_000)], now);
+
+            assert_eq!(flushed, vec![(aligned_now, vec!["next".to_string()])], "now = {now}");
+            assert_eq!(concentrator.drain_future_clamps(), 1, "now = {now}");
+        }
     }
 
     #[test]
