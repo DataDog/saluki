@@ -1,21 +1,15 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},
-    data_model::{
-        event::metric::Metric,
-        tags::{SharedTagSet, Tag},
-    },
+    data_model::event::metric::Metric,
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
-use stringtheory::MetaString;
+use saluki_metric_kernels::host_tags::{filter_metric_host_tags, HostTagsKernel};
 
 /// Host Tags synchronous transform.
 ///
@@ -56,7 +50,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
             // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
             let client = RemoteAgentClient::connect(&self.client_config).await?;
             let host_tags_reply = client.get_host_tags().await?.into_inner();
-            Some(metric_host_tags(host_tags_reply.system))
+            Some(filter_metric_host_tags(host_tags_reply.system))
         } else {
             None
         };
@@ -64,7 +58,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),
             expected_tags_duration: self.expected_tags_duration,
-            host_tags,
+            kernel: HostTagsKernel::new(host_tags),
         }))
     }
 }
@@ -77,37 +71,15 @@ impl MemoryBounds for HostTagsConfiguration {
     }
 }
 
-/// Prefix of the Agent's infrastructure-mode mark (`InfraModeTagKey` in `pkg/config/utils/inframode.go`).
-const INFRA_MODE_TAG_PREFIX: &str = "infra_mode:";
-
-/// Converts the Core Agent's system host tags into the tags attached to metrics.
-///
-/// `GetHostTags` includes the Agent's `infra_mode:*` mark, which the Agent strips before copying host tags onto
-/// metrics: the intake moves series carrying it out of the customer's metric namespace.
-fn metric_host_tags(system: Vec<String>) -> SharedTagSet {
-    system
-        .into_iter()
-        .filter(|tag| !tag.starts_with(INFRA_MODE_TAG_PREFIX))
-        .map(|s| Arc::from(s.as_str()))
-        .map(MetaString::from)
-        .map(Tag::from)
-        .collect()
-}
-
 pub struct HostTagsEnrichment {
     start: Instant,
     expected_tags_duration: Duration,
-    host_tags: Option<SharedTagSet>,
+    kernel: HostTagsKernel,
 }
 
 impl HostTagsEnrichment {
     fn enrich_metric(&mut self, metric: &mut Metric) {
-        let host_tags = match self.host_tags.as_ref() {
-            Some(host_tags) => host_tags,
-            None => return,
-        };
-
-        metric.context_mut().mutate_tags(|tags| tags.merge_shared(host_tags));
+        self.kernel.apply(metric);
     }
 }
 
@@ -115,7 +87,7 @@ impl SynchronousTransform for HostTagsEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         // Skip adding host tags if duration has elapsed.
         if self.start.elapsed() >= self.expected_tags_duration {
-            self.host_tags = None;
+            self.kernel.clear();
             return;
         }
 
@@ -129,7 +101,10 @@ impl SynchronousTransform for HostTagsEnrichment {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use saluki_core::data_model::event::metric::{context::Context, Metric};
+    use saluki_core::data_model::{
+        event::metric::{context::Context, Metric},
+        tags::{SharedTagSet, Tag},
+    };
 
     use super::*;
 
@@ -139,7 +114,7 @@ mod tests {
         let mut host_tags_enrichment = HostTagsEnrichment {
             start: Instant::now(),
             expected_tags_duration: Duration::from_secs(30),
-            host_tags: Some(host_tags.clone()),
+            kernel: HostTagsKernel::new(Some(host_tags.clone())),
         };
 
         // Enrich a metric, and ensure the host tags are added.
@@ -151,7 +126,7 @@ mod tests {
         }
 
         // Simulate exceeding our configured enrichment duration by clearing host tags.
-        host_tags_enrichment.host_tags = None;
+        host_tags_enrichment.kernel.clear();
 
         // We should no longer enrich the metric with host tags.
         let mut metric2 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
@@ -163,7 +138,7 @@ mod tests {
     fn infra_mode_host_tags_are_not_attached_to_metrics() {
         // Mirrors the Agent's `WithoutInfraModeTags` (DataDog/datadog-agent#57905), which drops only
         // `infra_mode:*`.
-        let host_tags = metric_host_tags(vec![
+        let host_tags = filter_metric_host_tags(vec![
             "env:prod".to_string(),
             "infra_mode:cloud_cost_only".to_string(),
             "infra_mode:".to_string(),

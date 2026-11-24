@@ -9,5 +9,7 @@
 
 pub mod filterlist;
 pub mod histogram;
+pub mod host_tags;
 pub mod metric_name;
 pub mod routing_filter;
+pub mod timestamp_split;

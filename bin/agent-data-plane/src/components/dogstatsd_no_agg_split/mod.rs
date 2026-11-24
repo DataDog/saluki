@@ -19,14 +19,14 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{
-        metric::{Metric, MetricValues},
-        Event, EventType,
-    },
+    data_model::event::{metric::Metric, Event, EventType},
     observability::ComponentMetricsExt as _,
     topology::{EventsBuffer, EventsDispatcher, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::timestamp_split::{
+    counter_values_to_rate, is_supported_passthrough_type, try_split_timestamped_values,
+};
 use saluki_metrics::MetricsBuilder;
 use tokio::{pin, select, time::interval};
 use tracing::{debug, error, trace, warn};
@@ -36,12 +36,6 @@ use self::telemetry::Telemetry;
 
 const PASSTHROUGH_OUTPUT: &str = "passthrough";
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
-
-// Timestamped counters carry no duration. Core Agent encodes them as rates using this fixed compatibility interval,
-// independently of its time sampler's interval. Changing an Agent-owned aggregation window must not reinterpret
-// a client-provided point. This is a protocol convention, not a configurable aggregation default.
-// https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/no_aggregation_stream_worker.go#L223-L235
-const PASSTHROUGH_COUNTER_NORMALIZATION_INTERVAL: Duration = Duration::from_secs(10);
 
 /// DogStatsD no-aggregation-pipeline split transform configuration.
 ///
@@ -107,41 +101,6 @@ fn has_timestamped_metrics(events: &EventsBuffer) -> bool {
     events
         .events::<Metric>()
         .any(|metric| metric.values().any_timestamped())
-}
-
-fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<Metric>) {
-    if metric.values().all_timestamped() {
-        (Some(metric), None)
-    } else if metric.values().any_timestamped() {
-        // Only _some_ of the values are timestamped, so we'll split the timestamped values into a new metric.
-        let new_metric_values = metric.values_mut().split_timestamped();
-        let new_metric = Metric::from_parts(metric.context().clone(), new_metric_values, metric.metadata().clone());
-
-        (Some(new_metric), Some(metric))
-    } else {
-        // No timestamped values, so this metric isn't part of the no-aggregation pipeline.
-        (None, Some(metric))
-    }
-}
-
-/// Returns `true` if the given metric values can be forwarded by the no-aggregation pipeline.
-///
-/// Like the Datadog Agent, only gauges, counters and rates are supported: there's no way to forward a single
-/// timestamped histogram, distribution or set point without aggregating it.
-///
-/// <https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/no_aggregation_stream_worker.go#L283-L297>
-fn is_supported_passthrough_type(values: &MetricValues) -> bool {
-    matches!(
-        values,
-        MetricValues::Counter(_) | MetricValues::Rate(..) | MetricValues::Gauge(_)
-    )
-}
-
-fn counter_values_to_rate(values: MetricValues) -> MetricValues {
-    match values {
-        MetricValues::Counter(points) => MetricValues::rate(points, PASSTHROUGH_COUNTER_NORMALIZATION_INTERVAL),
-        values => values,
-    }
 }
 
 struct PassthroughBatcher {
@@ -375,6 +334,7 @@ mod tests {
         DatadogMetricsConfiguration, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3ApiSettings, V3SeriesMode,
     };
     use saluki_components::forwarders::OpwMetricsConfiguration;
+    use saluki_core::data_model::event::metric::MetricValues;
     use saluki_core::{
         components::test_util::TestComponentDriver,
         data_model::event::metric::{context::Context, ScalarPoints},
