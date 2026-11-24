@@ -765,11 +765,6 @@ cases today. That is a named change, shown by the configuration diff.
 | `apm_uds` | `unix_stream` | `{{ self.dir }}/apm_uds.sock` | Linux only | opt-in, `DD_APM_RECEIVER_SOCKET` |
 | `dogstatsd_pipe` | `named_pipe` | `panoramic-dogstatsd` | Windows only | opt-in, `DD_DOGSTATSD_PIPE_NAME` |
 
-When a case sets `DD_DATA_PLANE_ENABLED` and `DD_DATA_PLANE_OTLP_ENABLED` to `true`, the image's
-`cont-init.d` script moves the Agent's OTLP listeners to `127.0.0.1:14317` and `127.0.0.1:14318`, so
-`agent_otlp_grpc` and `agent_otlp_http` are unwired whatever the case writes: connecting to one or waiting
-on it is a plan error.
-
 For an opt-in endpoint the key is the case's choice. `ADP_DD_<key>` in a Linux container reaches ADP
 only, and the `datadog.yaml` spelling works wherever the case supplies that file.
 

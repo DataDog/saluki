@@ -15,4 +15,4 @@ two-letter-cases-of-one-windows-path: {subject_os: windows, error: "two files la
 two-processes-observed-through-the-container: {subject_os: linux, error: "processes 'main', 'helper' are observed through the container"}
 unwired-after-a-dotted-file-key: {subject_os: linux, error: "datadog.yaml sets 'apm_config.receiver_port', so the default DD_APM_RECEIVER_PORT was withdrawn, and nothing references the endpoint.\n  Write: receiver_port: \"{{ self.endpoints.apm_tcp.port }}\" under apm_config in datadog.yaml"}
 unwired-after-an-adp-only-key: {subject_os: linux, error: "env sets ADP_DD_DOGSTATSD_PORT, so the default DD_DOGSTATSD_PORT was withdrawn"}
-otlp-moved-by-the-image: {subject_os: linux, error: "With DD_DATA_PLANE_OTLP_ENABLED set, the image moves the Agent's OTLP listeners to 127.0.0.1"}
+otlp-moved-by-the-agent: {subject_os: linux, error: "With DD_DATA_PLANE_OTLP_ENABLED set, the Agent moves its OTLP listeners off these ports"}
