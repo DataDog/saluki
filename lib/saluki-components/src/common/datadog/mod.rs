@@ -123,7 +123,15 @@ pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
     }
 }
 
+/// Returns the env a trace is sampled under.
+///
+/// A Datadog trace is sampled under its tracer payload's env, as `processedTraceV1` sets `TracerEnv` from
+/// `TracerPayload.Env()` (`agent.go`): the env attributes a v0.x payload's spans keep are ignored. An OTLP trace is
+/// sampled under its root span's env, else the first span env, else the payload env, as `traceutil.GetEnv`.
 pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
+    if trace.ingest_info() == TraceIngestInfo::Datadog {
+        return (!trace.payload.env.is_empty()).then_some(&trace.payload.env);
+    }
     // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L19-L20
     let env = trace
         .spans()
@@ -323,5 +331,30 @@ mod tests {
         assert_eq!(as_double_value(&AttributeValue::Bool(true)), Some(1.0));
         assert_eq!(as_double_value(&AttributeValue::Bool(false)), Some(0.0));
         assert_eq!(as_double_value(&AttributeValue::Bytes(vec![1])), None);
+    }
+
+    #[test]
+    fn datadog_traces_are_sampled_under_their_payload_env_and_otlp_under_their_span_env() {
+        let span = Span::default().with_attributes(FastHashMap::from_iter([(
+            MetaString::from("env"),
+            AttributeValue::String(MetaString::from("Span-Env")),
+        )]));
+        let trace = |ingest_info, payload_env: &str| {
+            let mut trace = Trace::new(vec![span.clone()], ingest_info);
+            trace.payload.env = MetaString::from(payload_env);
+            trace
+        };
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
+
+        // A v0.4 span keeps its `env` tag as an attribute; the normalized payload env wins, as `TracerEnv` does.
+        let datadog = trace(TraceIngestInfo::Datadog, "payload-env");
+        assert_eq!(get_trace_env(&datadog, 0).map(|env| env.as_ref()), Some("payload-env"));
+        assert_eq!(get_trace_env(&trace(TraceIngestInfo::Datadog, ""), 0), None);
+        assert_eq!(
+            get_trace_env(&trace(otlp, "payload-env"), 0).map(|env| env.as_ref()),
+            Some("Span-Env")
+        );
     }
 }

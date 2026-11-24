@@ -684,19 +684,22 @@ relay applies the limit to the connections it receives from ADP. As in the trace
 
 ### `apm_config.decoder_timeout`
 
-ADP reads this key for its experimental native trace intake
-(`data_plane.experimental.apm.native_trace_intake`), which doesn't serve trace endpoints
-yet. Until it does, the trace-agent behind the APM relay applies the timeout to the requests
-ADP forwards to it.
+With the experimental native trace intake
+(`data_plane.experimental.apm.native_trace_intake`), ADP applies the timeout to the trace
+endpoints it serves, `/v1.0/traces`, as the trace-agent does: a payload that waits longer for
+a free decoder is read, dropped, and answered with `200 OK`, or with `429 Too Many Requests`
+when `apm_config.features` contains `429` or the tracer sends `Datadog-Send-Real-Http-Status`.
+The trace-agent behind the APM relay applies the timeout to the trace endpoints ADP forwards
+to it.
 
 ### `apm_config.decoders`
 
-ADP reads this key for its experimental native trace intake
-(`data_plane.experimental.apm.native_trace_intake`), which doesn't serve trace endpoints
-yet. Until it does, the trace-agent behind the APM relay applies the limit to the requests
-ADP forwards to it. As in the trace-agent, `0` means half the available parallelism, and at
-least one. ADP reads a negative value as `0`, with a warning, where the trace-agent fails to
-start.
+With the experimental native trace intake
+(`data_plane.experimental.apm.native_trace_intake`), ADP decodes at most this many payloads
+at once on the trace endpoints it serves, `/v1.0/traces`. The trace-agent behind the APM
+relay applies the limit to the trace endpoints ADP forwards to it. As in the trace-agent, `0`
+means half the available parallelism, and at least one. ADP reads a negative value as `0`,
+with a warning, where the trace-agent fails to start.
 
 ### `apm_config.features`
 
@@ -713,9 +716,20 @@ ADP recognizes these values:
 - `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
   does.
 - `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
+- `429`: with the experimental native trace intake
+  (`data_plane.experimental.apm.native_trace_intake`), a payload that waits longer than
+  `apm_config.decoder_timeout` for a free decoder is answered with `429 Too Many Requests`
+  instead of `200 OK`. A tracer can ask for the same on a single request with the
+  `Datadog-Send-Real-Http-Status` header.
+- `component2name`: with the experimental native trace intake, trace normalization replaces
+  the operation name of a span that has a `component` tag with that tag. Unlike the
+  trace-agent, ADP doesn't apply it to OTLP traces.
 
-Every other value is ignored, without a warning: the flag inventory is not stable across agent
-versions, so unrecognized entries are inert rather than errors.
+The trace-agent behind the APM relay applies every feature to the trace endpoints ADP forwards
+to it.
+
+Every other value is ignored by ADP, without a warning: the flag inventory is not stable across
+agent versions, so unrecognized entries are inert rather than errors.
 
 ### `apm_config.filter_tags.reject`
 
@@ -762,8 +776,11 @@ trace-agent, the limit defaults to `0` in a container when the key is unset.
 ### `apm_config.max_payload_size`
 
 ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
-`/info` response. The trace-agent behind the relay enforces the limit on the requests ADP
-forwards to it; ADP doesn't enforce it on the requests it handles itself.
+`/info` response. With the experimental native trace intake
+(`data_plane.experimental.apm.native_trace_intake`), ADP also rejects a payload on the trace
+endpoints it serves, `/v1.0/traces`, with `413 Payload Too Large` once it reaches the limit,
+as the trace-agent does. The trace-agent behind the relay enforces the limit on the requests
+ADP forwards to it.
 
 ### `apm_config.obfuscation.sql_exec_plan.enabled`
 
@@ -780,8 +797,12 @@ relay; ADP doesn't apply it to the traces it receives over OTLP.
 ### `apm_config.receiver_timeout`
 
 ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
-`/info` response. ADP doesn't apply the timeout to the relay's listeners: the trace-agent
-behind the relay applies it to the requests ADP forwards to it.
+`/info` response. With the experimental native trace intake
+(`data_plane.experimental.apm.native_trace_intake`), ADP applies the timeout to the trace
+endpoints it serves, `/v1.0/traces`, as the trace-agent does: a request still waiting for a
+decoder is answered with `429 Too Many Requests`, and a body not read in time with
+`408 Request Timeout`. The trace-agent behind the relay applies it to the requests ADP
+forwards to it.
 
 ### `apm_config.sql_obfuscation_mode`
 

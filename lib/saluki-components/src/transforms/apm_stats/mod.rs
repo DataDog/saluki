@@ -191,15 +191,20 @@ impl ApmStats {
         let container_version = ContainerVersionData::from_tags(&infra_tags.container_tags);
         let payload_key = self.build_payload_key(trace, &process_tags, container_version);
 
-        let origin = trace
-            .spans()
-            .first()
-            .and_then(|s| s.attributes.get("_dd.origin").and_then(AttributeValue::as_string))
-            .map(|s| s.as_ref())
-            .unwrap_or("");
+        // Datadog traces use the chunk origin, as the trace-agent does: v1.0 chunks carry it, and the decoders promote a
+        // v0.x root span's `_dd.origin` onto it. OTLP traces read the first span's `_dd.origin`.
+        let origin = match trace.ingest_info() {
+            TraceIngestInfo::Datadog => trace.origin.as_ref(),
+            TraceIngestInfo::Otlp { .. } => trace
+                .spans()
+                .first()
+                .and_then(|s| s.attributes.get("_dd.origin").and_then(AttributeValue::as_string))
+                .map(|s| s.as_ref())
+                .unwrap_or(""),
+        };
 
         for span in trace.spans() {
-            if let Some(stat_span) = self.concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = self.concentrator.new_stat_span_from_span(span, trace.ingest_info()) {
                 self.concentrator
                     .add_span(&stat_span, trace_weight, &payload_key, &infra_tags, origin);
             }
@@ -240,34 +245,39 @@ impl ApmStats {
             .find(|s| s.parent_id() == 0)
             .or_else(|| trace.spans().first());
 
-        // env fallback order mirrors get_trace_env (Go agent pkg/trace/traceutil/trace.go:GetEnv):
-        // root span attrs → all span attrs → trace.payload.env (ADP extension) → agent_env.
-        let env = root_span
-            .and_then(|s| {
-                s.attributes
-                    .get("env")
-                    .and_then(AttributeValue::as_string)
-                    .filter(|s| !s.is_empty())
-            })
-            .cloned()
-            .or_else(|| {
-                trace.spans().iter().find_map(|s| {
+        let payload_env = || {
+            // The trace encoder normalizes the payload's env, so stats do the same to keep both on one env.
+            let payload_env = normalized_tag_value(&trace.payload.env);
+            if !payload_env.is_empty() {
+                payload_env
+            } else {
+                self.agent_env.clone()
+            }
+        };
+        let env = match trace.ingest_info() {
+            // OTLP: env fallback order mirrors get_trace_env (Go agent pkg/trace/traceutil/trace.go:GetEnv):
+            // root span attrs → all span attrs → trace.payload.env (ADP extension) → agent_env.
+            TraceIngestInfo::Otlp { .. } => root_span
+                .and_then(|s| {
                     s.attributes
                         .get("env")
                         .and_then(AttributeValue::as_string)
                         .filter(|s| !s.is_empty())
-                        .cloned()
                 })
-            })
-            .unwrap_or_else(|| {
-                // The trace encoder normalizes the payload's env, so stats do the same to keep both on one env.
-                let payload_env = normalized_tag_value(&trace.payload.env);
-                if !payload_env.is_empty() {
-                    payload_env
-                } else {
-                    self.agent_env.clone()
-                }
-            });
+                .cloned()
+                .or_else(|| {
+                    trace.spans().iter().find_map(|s| {
+                        s.attributes
+                            .get("env")
+                            .and_then(AttributeValue::as_string)
+                            .filter(|s| !s.is_empty())
+                            .cloned()
+                    })
+                })
+                .unwrap_or_else(payload_env),
+            // Datadog traces use the (normalized) tracer payload env, else the agent env, as the trace-agent does.
+            TraceIngestInfo::Datadog => payload_env(),
+        };
 
         // OTLP traces use the payload hostname, then the root span's `_dd.hostname`. Datadog traces use only the tracer
         // payload hostname, as the trace-agent does; the decoders promote a v0.x root `_dd.hostname` onto the payload.
@@ -278,9 +288,15 @@ impl ApmStats {
         };
         let hostname = tracer_hostname.cloned().unwrap_or_else(|| self.agent_hostname.clone());
 
-        // The root span's `version` attribute takes priority: for OTLP traces it already prefers the span's version
+        // Datadog traces read the version, git commit SHA and language from the tracer payload alone, as
+        // `processedTraceV1` does (agent.go): the `version` and `_dd.git.commit.sha` attributes a v0.x payload's spans
+        // keep are ignored. The container's tags fill in what the payload leaves empty.
+        let is_datadog = trace.ingest_info() == TraceIngestInfo::Datadog;
+
+        // For OTLP traces, the root span's `version` attribute takes priority: it already prefers the span's version
         // over the resource's. The payload's version comes next, then the container's `version` tag.
         let version = root_span
+            .filter(|_| !is_datadog)
             .and_then(|s| {
                 s.attributes
                     .get("version")
@@ -305,22 +321,34 @@ impl ApmStats {
                 .unwrap_or_default()
         };
 
-        // The commit SHA set on the tracer payload wins over the root span's, and both win over the container's tag.
-        let git_commit_sha = trace
-            .attributes
-            .get(TAG_GIT_COMMIT_SHA)
-            .and_then(AttributeValue::as_string)
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                root_span.and_then(|s| {
-                    s.attributes
-                        .get(TAG_GIT_COMMIT_SHA)
-                        .and_then(AttributeValue::as_string)
-                        .filter(|s| !s.is_empty())
+        // For OTLP traces, the commit SHA set on the tracer payload wins over the root span's. Datadog traces carry their
+        // tracer payload attributes on the receiver metadata, and a payload SHA that's present wins even when empty, as
+        // in `processedTraceV1` (agent.go). The container's tag comes last.
+        let git_commit_sha = if is_datadog {
+            trace
+                .payload
+                .receiver()
+                .payload_attributes
+                .iter()
+                .find(|(key, _)| key == TAG_GIT_COMMIT_SHA)
+                .and_then(|(_, value)| value.as_string())
+        } else {
+            trace
+                .attributes
+                .get(TAG_GIT_COMMIT_SHA)
+                .and_then(AttributeValue::as_string)
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    root_span.and_then(|s| {
+                        s.attributes
+                            .get(TAG_GIT_COMMIT_SHA)
+                            .and_then(AttributeValue::as_string)
+                            .filter(|s| !s.is_empty())
+                    })
                 })
-            })
-            .cloned()
-            .unwrap_or_else(|| MetaString::from(container_version.git_commit_sha));
+        }
+        .cloned()
+        .unwrap_or_else(|| MetaString::from(container_version.git_commit_sha));
 
         let image_tag = root_span
             .and_then(|s| {
@@ -332,7 +360,7 @@ impl ApmStats {
             .cloned()
             .unwrap_or_else(|| MetaString::from(container_version.image_tag));
 
-        let lang = if !trace.payload.language_name.is_empty() {
+        let lang = if is_datadog || !trace.payload.language_name.is_empty() {
             trace.payload.language_name.clone()
         } else {
             root_span
@@ -545,8 +573,14 @@ fn now_nanos() -> u64 {
         .as_nanos() as u64
 }
 
-/// Extracts process tags from trace, checking both span and trace attributes.
+/// Extracts the process tags of a trace.
+///
+/// Datadog traces use the process tags the receiver resolved for their payload, as the trace-agent's V1 stats do. OTLP
+/// traces check the root span's attributes, then the trace attributes.
 fn extract_process_tags(trace: &Trace) -> MetaString {
+    if trace.ingest_info() == TraceIngestInfo::Datadog {
+        return trace.payload.receiver().process_tags.clone();
+    }
     let root_span = trace
         .spans()
         .iter()
@@ -696,7 +730,12 @@ mod tests {
             Some(meta),
         );
         control
-            .send_event(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .send_event(Event::Trace(Trace::new(
+                vec![span],
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            )))
             .await;
 
         // Closing the input makes the run loop flush and stop.
@@ -804,6 +843,28 @@ mod tests {
     }
 
     #[test]
+    fn datadog_trace_stats_use_the_chunk_origin() {
+        let now = now_nanos();
+        let mut transform = test_transform("");
+
+        // The chunk origin marks the stats as synthetics even though no span carries `_dd.origin`.
+        let span = make_test_span("test-service", "test-operation", "test-resource");
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.origin = MetaString::from("synthetics-browser");
+
+        transform.process_trace(&trace);
+
+        let payloads = transform.concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
+        let synthetics: Vec<bool> = payloads
+            .iter()
+            .flat_map(|payload| payload.stats())
+            .flat_map(|bucket| bucket.stats())
+            .map(|grouped| grouped.synthetics())
+            .collect();
+        assert_eq!(synthetics, [true]);
+    }
+
+    #[test]
     fn payload_key_hostname_depends_on_ingest_protocol() {
         let transform = test_transform("agent-host");
         let root_with_hostname = || {
@@ -897,7 +958,7 @@ mod tests {
         let infra_tags = InfraTags::default();
 
         for span in trace.spans() {
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
         }
@@ -938,7 +999,7 @@ mod tests {
         let infra_tags = InfraTags::default();
 
         for span in trace.spans() {
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
         }
@@ -974,7 +1035,7 @@ mod tests {
         let infra_tags = InfraTags::default();
 
         for span in &spans {
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
         }
@@ -1057,7 +1118,12 @@ mod tests {
         let infra_tags = InfraTags::default();
 
         for span in &spans {
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
         }
@@ -1110,7 +1176,12 @@ mod tests {
             };
             let infra_tags = InfraTags::default();
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1124,7 +1195,12 @@ mod tests {
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_attributes(client_attrs);
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &client_span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1155,7 +1231,12 @@ mod tests {
             };
             let infra_tags = InfraTags::default();
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1169,7 +1250,12 @@ mod tests {
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_attributes(client_attrs);
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &client_span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1218,7 +1304,12 @@ mod tests {
             };
             let infra_tags = InfraTags::default();
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &client_span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1265,7 +1356,12 @@ mod tests {
             };
             let infra_tags = InfraTags::default();
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &client_span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1327,7 +1423,7 @@ mod tests {
             let infra_tags = InfraTags::default();
 
             for span in &spans {
-                if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+                if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
                     concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
                 }
             }
@@ -1398,49 +1494,67 @@ mod tests {
 
     #[test]
     fn test_extract_process_tags() {
-        // Test with no process tags
-        {
-            let span = Span::default();
-            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
-            let process_tags = extract_process_tags(&trace);
-            assert!(process_tags.is_empty(), "Should be empty when no _dd.tags.process");
-        }
-
-        // Test with process tags in first span meta
-        {
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
+        let span_with_process_tags = |tags: &str| {
             let mut attrs = FastHashMap::default();
             attrs.insert(
                 MetaString::from(TAG_PROCESS_TAGS),
-                AttributeValue::String(MetaString::from("a:1,b:2,c:3")),
+                AttributeValue::String(MetaString::from(tags)),
             );
-            let span = Span::default().with_attributes(attrs);
-            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
-            let process_tags = extract_process_tags(&trace);
-            assert_eq!(process_tags, "a:1,b:2,c:3");
-        }
+            Span::default().with_attributes(attrs)
+        };
 
-        // Test with empty process tags
-        {
-            let mut attrs = FastHashMap::default();
-            attrs.insert(
-                MetaString::from(TAG_PROCESS_TAGS),
-                AttributeValue::String(MetaString::from("")),
-            );
-            let span = Span::default().with_attributes(attrs);
-            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
-            let process_tags = extract_process_tags(&trace);
-            assert!(
-                process_tags.is_empty(),
-                "Should be empty when _dd.tags.process is empty string"
-            );
-        }
+        // OTLP: no process tags, then the root span's, then an empty value, then no spans.
+        assert!(extract_process_tags(&Trace::new(vec![Span::default()], otlp)).is_empty());
+        assert_eq!(
+            extract_process_tags(&Trace::new(vec![span_with_process_tags("a:1,b:2,c:3")], otlp)),
+            "a:1,b:2,c:3"
+        );
+        assert!(extract_process_tags(&Trace::new(vec![span_with_process_tags("")], otlp)).is_empty());
+        assert!(extract_process_tags(&Trace::new(vec![], otlp)).is_empty());
 
-        // Test with empty trace
-        {
-            let trace = Trace::new(vec![], TraceIngestInfo::Datadog);
-            let process_tags = extract_process_tags(&trace);
-            assert!(process_tags.is_empty(), "Should be empty when trace has no spans");
-        }
+        // Datadog traces use the receiver's process tags, not the root span's, as the trace-agent's V1 stats do.
+        let mut trace = Trace::new(vec![span_with_process_tags("from:span")], TraceIngestInfo::Datadog);
+        assert!(extract_process_tags(&trace).is_empty());
+        trace.payload.receiver = Some(Arc::new(ReceiverMetadata {
+            process_tags: MetaString::from("from:receiver"),
+            ..ReceiverMetadata::new()
+        }));
+        assert_eq!(extract_process_tags(&trace), "from:receiver");
+    }
+
+    #[test]
+    fn datadog_traces_aggregate_under_the_payload_env_not_the_span_env() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::from("agent-env"),
+            agent_hostname: MetaString::default(),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+        let mut attrs = FastHashMap::default();
+        attrs.insert(
+            MetaString::from("env"),
+            AttributeValue::String(MetaString::from("span-env")),
+        );
+        let env_of = |ingest_info, payload_env: &str| {
+            let mut trace = Trace::new(vec![Span::default().with_attributes(attrs.clone())], ingest_info);
+            trace.payload.env = MetaString::from(payload_env);
+            transform
+                .build_payload_key(&trace, "", ContainerVersionData::default())
+                .env
+        };
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
+
+        assert_eq!(env_of(TraceIngestInfo::Datadog, "payload-env"), "payload-env");
+        assert_eq!(env_of(TraceIngestInfo::Datadog, ""), "agent-env");
+        assert_eq!(env_of(otlp, "payload-env"), "span-env");
     }
 
     #[test]
@@ -1835,7 +1949,10 @@ mod tests {
         );
         let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
 
-        let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
+        let mut trace = Trace::new(vec![root_span], otlp);
         // Simulate OTLP resource extraction: payload.app_version comes from resource attrs only.
         trace.payload.app_version = MetaString::from("resource-v1");
 
@@ -1914,7 +2031,7 @@ mod tests {
             ..Default::default()
         };
         let stat_span = concentrator
-            .new_stat_span_from_span(span)
+            .new_stat_span_from_span(span, trace.ingest_info())
             .expect("a client span with a peer tag should produce stats");
         concentrator.add_span(&stat_span, 1.0, &payload_key, &InfraTags::default(), "");
 
@@ -1966,15 +2083,46 @@ mod tests {
     }
 
     #[test]
+    fn datadog_payload_git_commit_sha_wins_over_container_tags_even_when_empty() {
+        let transform = transform_with_workload_provider(None);
+        // `processedTraceV1` (agent.go) lets a payload attribute that's present override the container's SHA, even an
+        // empty one; only an absent attribute falls back to the container's tag.
+        let git_commit_sha = |payload_sha: Option<&str>| {
+            let mut trace = Trace::new(vec![make_test_span("svc", "op", "res")], TraceIngestInfo::Datadog);
+            let mut receiver = ReceiverMetadata::new();
+            receiver.payload_attributes = payload_sha
+                .map(|sha| {
+                    vec![(
+                        MetaString::from(TAG_GIT_COMMIT_SHA),
+                        AttributeValue::String(MetaString::from(sha)),
+                    )]
+                })
+                .unwrap_or_default();
+            trace.payload.receiver = Some(Arc::new(receiver));
+            transform
+                .build_payload_key(&trace, "", CONTAINER_VERSION)
+                .git_commit_sha
+        };
+
+        assert_eq!(git_commit_sha(Some("")), "");
+        assert_eq!(git_commit_sha(None), "container-sha");
+        assert_eq!(git_commit_sha(Some("payload-sha")), "payload-sha");
+    }
+
+    #[test]
     fn trace_version_data_wins_over_container_tags() {
         let transform = transform_with_workload_provider(None);
+        // The span and tracer payload attributes apply to OTLP traces; Datadog traces read the payload alone.
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
 
         // The payload version and the root span's image tag and commit SHA win over the container's tags.
         let span = make_test_span("svc", "op", "res").with_attributes(string_attributes(&[
             (TAG_GIT_COMMIT_SHA, "span-sha"),
             ("_dd.image_tag", "span-image"),
         ]));
-        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        let mut trace = Trace::new(vec![span], otlp);
         trace.payload.app_version = MetaString::from("payload-v");
         let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
         assert_eq!(key.version, "payload-v");
@@ -1992,7 +2140,7 @@ mod tests {
             (TAG_GIT_COMMIT_SHA, ""),
             ("_dd.image_tag", ""),
         ]));
-        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        let mut trace = Trace::new(vec![span], otlp);
         trace.attributes = Arc::new(string_attributes(&[(TAG_GIT_COMMIT_SHA, "")]));
         let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
         assert_eq!(key.version, "container-v");
@@ -2108,6 +2256,45 @@ mod tests {
         );
         let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
         assert_eq!(key.hostname.as_ref(), "agent-host");
+    }
+
+    #[test]
+    fn datadog_traces_aggregate_under_the_payload_fields_not_the_span_attributes() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::default(),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+        // A v0.4 root span keeps the tags the decoder promoted from it, here from an earlier span than the one the
+        // payload's fields come from.
+        let attrs = FastHashMap::from_iter(
+            [
+                ("version", "root-version"),
+                ("_dd.git.commit.sha", "root-sha"),
+                ("language", "root-language"),
+            ]
+            .map(|(key, value)| (MetaString::from(key), AttributeValue::String(MetaString::from(value)))),
+        );
+        let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
+        let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
+        trace.payload.app_version = MetaString::from("payload-version");
+        let mut receiver = ReceiverMetadata::new();
+        receiver.payload_attributes = vec![(
+            MetaString::from("_dd.git.commit.sha"),
+            AttributeValue::String(MetaString::from("payload-sha")),
+        )];
+        trace.payload.receiver = Some(Arc::new(receiver));
+
+        let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
+
+        assert_eq!(key.version, "payload-version");
+        assert_eq!(key.git_commit_sha, "payload-sha");
+        // No `Datadog-Meta-Lang` header: the language stays empty, as `TracerPayload.LanguageName()` would be.
+        assert_eq!(key.lang, "");
     }
 
     proptest! {

@@ -157,7 +157,9 @@ impl DatadogTraceNormalizer {
             return Err(DropReason::TraceIdZero);
         }
 
-        let lang = trace.payload.language_name.clone();
+        // The fallback service name uses the request's language header, as the trace-agent's `ts.Lang`, not the
+        // payload's language.
+        let lang = trace.payload.receiver().lang.clone();
         self.seen_span_ids.clear();
         for span in trace.spans_mut() {
             normalize_span(span, &lang, self.component2name, &mut self.string_builder, counts)?;

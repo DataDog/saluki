@@ -3,10 +3,12 @@
 //! Behaviors the trace-agent tests on V0 spans only, but that also apply to V1 spans, are tested on the V1 span
 //! shape.
 
+use std::sync::Arc;
+
 use saluki_common::collections::FastHashMap;
 use saluki_core::components::test_util::TestComponentDriver;
 use saluki_core::data_model::event::metric::MetricValues;
-use saluki_core::data_model::event::trace::{SpanLink, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{ReceiverMetadata, SpanLink, TraceIngestInfo};
 use saluki_core::data_model::event::Event;
 
 use super::*;
@@ -526,6 +528,30 @@ fn attribute_as_string_matches_go_any_value_as_string() {
         )])),
         "{k=true}"
     );
+}
+
+/// A span without a service falls back to the language of the request's `Datadog-Meta-Lang` header, as the
+/// trace-agent's `ts.Lang`, rather than to the payload's language.
+#[tokio::test]
+async fn fallback_service_uses_the_request_language() {
+    let (control, mut outputs) = TestComponentDriver::transform(DatadogTraceNormalizerConfiguration::new())
+        .await
+        .expect("the normalizer should start");
+
+    let mut trace = new_test_trace(vec![new_test_span_v1().with_service("")]);
+    trace.payload.language_name = MetaString::from("go");
+    trace.payload.receiver = Some(Arc::new(ReceiverMetadata {
+        lang: MetaString::from("python"),
+        ..ReceiverMetadata::default()
+    }));
+    control.send_event(Event::Trace(trace)).await;
+    control.shutdown().await.expect("the normalizer should stop cleanly");
+
+    let traces = outputs.default_output().collect_events().await;
+    let Event::Trace(trace) = &traces[0] else {
+        panic!("expected a trace: {:?}", traces[0]);
+    };
+    assert_eq!(trace.spans()[0].service(), "unnamed-python-service");
 }
 
 /// The component forwards normalized traces, drops invalid chunks, and reports the counts on its metrics output.
