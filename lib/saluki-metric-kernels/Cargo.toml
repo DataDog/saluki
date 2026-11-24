@@ -9,9 +9,11 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+regex = { workspace = true, features = ["std", "unicode-perl"] }
 saluki-antithesis = { workspace = true }
 saluki-common = { workspace = true }
 saluki-core = { workspace = true }
+saluki-error = { workspace = true }
 serde = { workspace = true }
 simdutf8 = { workspace = true }
 stringtheory = { workspace = true }
