@@ -32,10 +32,12 @@ abstraction would have one caller.
   with shared fixtures in `tests/mod.rs`. Pure move.
 - [x] **2. Tier 1 test cleanups:** tables, counter-key helper, fixtures, `tempfile`, deleting duplicate coverage. Three
   pull requests: source tests, replay/forwarder tests, codec tests.
-- [ ] **3. Tier 1 production cleanups:** `worker_with_shutdown`, `EventBufferManager`, `DecoderContext` embed,
+- [x] **3. Tier 1 production cleanups:** `worker_with_shutdown`, `EventBufferManager`, `DecoderContext` embed,
   `EnablePayloads` fold, `origin_from_*` collapse, `listener_type()` reuse, dead code, replay `WriterState`,
-  `file_header`.
-- [ ] **4. Bug fixes 1, 2, 4,** each with a regression test (codec parity first).
+  `file_header`. Three pull requests: source, replay, codec. Two rows were dropped: the `send_split` helper (the
+  per-stream Antithesis assertions need literal messages, so it came out net-neutral) and the SO_REUSEPORT gate (not
+  redundant: it logs a different, once-per-build warning and passes `None` streams on non-Linux).
+- [ ] **4. Bug fixes 1 and 2** each with a regression test (codec parity first). Fix 4 landed with the step 3 `file_header` change.
 - [ ] **5. Inline connected-stream reads** and the context-struct collapse, with an SMP benchmark comparison.
 - [ ] **6. Capture/replay:** eager controls, marker-bit removal, typed errors, `EntityId` conversions, then relocation
   out of `sources/dogstatsd`.
@@ -61,7 +63,7 @@ abstraction would have one caller.
 | Replay `WriterState`: `target_path`/`compressed` are write-only, `ongoing` mirrors the atomic, `accepting` == `traffic_tx.is_some()`. Collapse to `Option<SyncSender>`. `CaptureRecord.ancillary` is always empty. | replay/writer.rs:63-201, 322-328 | — | ~40 |
 | `file_header.rs`: `write_all` instead of a Go-ported short-write check; slice compares; drop the double `valid_header` call | replay/file_header.rs:20-66, reader.rs:77-83 | std | ~15 |
 | Remove the `PacketForwarderTarget` pass-through type | forwarder.rs:21-43, mod.rs:564-576 | — | ~10 |
-| Codec: one `ascii_while1(pred)` helper for 4 copies of take_while1 + Antithesis assert + `from_utf8_unchecked`; inline the `decode_*` wrappers; map metric kind directly (drops an `unreachable!`) | codec helpers.rs:87-200, metric.rs:195-246, mod.rs:202-225 | `nom::combinator::value` | ~30 |
+| Codec: one `unsafe_ascii_while1(pred)` helper for 4 copies of take_while1 + Antithesis assert + `from_utf8_unchecked`; inline the `decode_*` wrappers; map metric kind directly (drops an `unreachable!`) | codec helpers.rs:87-200, metric.rs:195-246, mod.rs:202-225 | `nom::combinator::value` | ~30 |
 | `#[derive(Default)]` on `WellKnownTags` | tags.rs:44-49 | — | ~5 |
 
 ### Tests (~1,100 lines)
