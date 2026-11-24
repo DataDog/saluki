@@ -132,8 +132,8 @@ impl TracesOptions {
     ///
     /// If an entry names no issue, has a path outside the trace statistics and the span fields, or has a span path
     /// and doesn't scope itself to spans by service, name or resource, or if `otlp_direct_analysis_mode` skips the
-    /// statistics comparison that an option or an entry's path applies to, or if a step that compares stats sets expectations or turns
-    /// off `require_ssi` and sets no `min_stats_groups`, an error is returned.
+    /// statistics comparison that an option or an entry's path applies to, or if a step that compares stats sets
+    /// expectations or turns off `require_ssi` and sets no `min_stats_groups`, an error is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
         if otlp_direct_analysis_mode {
             let compares_nothing = "which compares no stats";
@@ -460,13 +460,14 @@ impl TracesAnalyzer {
         }
 
         // A known difference that matched nothing is stale: its gap is fixed, or the entry is wrong.
-        for stale in ratchet.stale_entries() {
-            error!("{}", stale);
+        let stale = ratchet
+            .stale_entries()
+            .into_iter()
+            .map(|stale| format!("  {}", stale))
+            .collect::<Vec<_>>();
+        for line in &stale {
+            error!("{}", line.trim_start());
             error_count += 1;
-            if stats_samples.len() < SAMPLE_MISMATCH_LIMIT {
-                stats_samples.push(format!("  {}", stale));
-            }
-            all_stats_details.push(format!("  {}", stale));
         }
 
         // Ensure that we observe at least one span on each side where Single Step Instrumentation-related metadata is
@@ -510,8 +511,20 @@ impl TracesAnalyzer {
                 }
             }
 
+            if !stale.is_empty() {
+                msg.push_str(&format!(
+                    "\n  ({} known difference path(s) no longer occur)",
+                    stale.len()
+                ));
+                for line in &stale {
+                    msg.push('\n');
+                    msg.push_str(line);
+                }
+            }
+
             let mut all_details = all_span_details;
             all_details.extend(all_stats_details);
+            all_details.extend(stale);
 
             Err((generic_error!("{}", msg), all_details))
         } else {

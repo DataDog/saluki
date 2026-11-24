@@ -985,10 +985,16 @@ mod tests {
         // The entry matched nothing, so it is stale too.
         assert!(report.message.contains("gap/top-level (#1)"), "{}", report.message);
 
-        // Once the difference is gone, the entry is stale.
+        // Once the difference is gone, the entry is stale, and the failure lists it under its own heading.
         let report = compare(fields, &fixture_traces(), &fixture_traces()).await;
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains("(1 known difference path(s) no longer occur)"),
+            "{}",
+            report.message
+        );
         assert!(report.message.contains("no longer occurs"), "{}", report.message);
+        assert!(!report.message.contains("stats group(s))"), "{}", report.message);
     }
 
     #[tokio::test]
