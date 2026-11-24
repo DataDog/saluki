@@ -212,6 +212,28 @@ inventory:
       relay applies the limit to the connections it receives from ADP. As in the trace-agent,
       `/info` reports `0` unless the key is set.
 
+  apm_config.decoder_timeout:
+    support: partial
+    pipelines: [traces]
+    description: "Trace decoder wait timeout, in milliseconds"
+    documentation: |-
+      ADP reads this key for its experimental native trace intake
+      (`data_plane.experimental.apm.native_trace_intake`), which doesn't serve trace endpoints
+      yet. Until it does, the trace-agent behind the APM relay applies the timeout to the requests
+      ADP forwards to it.
+
+  apm_config.decoders:
+    support: partial
+    pipelines: [traces]
+    description: "Number of concurrent trace decoders"
+    documentation: |-
+      ADP reads this key for its experimental native trace intake
+      (`data_plane.experimental.apm.native_trace_intake`), which doesn't serve trace endpoints
+      yet. Until it does, the trace-agent behind the APM relay applies the limit to the requests
+      ADP forwards to it. As in the trace-agent, `0` means half the available parallelism, and at
+      least one. ADP reads a negative value as `0`, with a warning, where the trace-agent fails to
+      start.
+
   apm_config.enable_rare_sampler:
     support: full
     pipelines: [traces]
@@ -4642,8 +4664,6 @@ excluded:
   apm_config.debugger_diagnostics_api_key: "ignored in initial audit 2026-04-23"
   apm_config.debugger_diagnostics_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.debugger_logs_enabled_override: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
-  apm_config.decoder_timeout: "ignored in initial audit 2026-04-23"
-  apm_config.decoders: "ignored in initial audit 2026-04-23"
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"

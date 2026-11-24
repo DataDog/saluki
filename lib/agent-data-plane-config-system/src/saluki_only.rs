@@ -265,6 +265,11 @@ pub struct DataPlaneExperimentalApm {
     ///
     /// Defaults to `http://127.0.0.1:8127`.
     pub proxy_destination: Option<String>,
+    /// Whether the APM proxy serves the trace intake endpoints itself
+    /// (`data_plane.experimental.apm.native_trace_intake`).
+    ///
+    /// Defaults to `false`.
+    pub native_trace_intake: Option<bool>,
 }
 
 /// `data_plane.checks.*`.
@@ -660,6 +665,9 @@ impl SalukiOnly {
         if let Some(v) = self.data_plane.experimental.apm.proxy_destination.clone() {
             config.domains.apm.proxy_destination = v;
         }
+        if let Some(v) = self.data_plane.experimental.apm.native_trace_intake {
+            config.domains.apm.native_trace_intake = v;
+        }
 
         // domains.checks
         if let Some(v) = &self.checks_ipc_endpoint {
@@ -671,7 +679,7 @@ impl SalukiOnly {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::defaults::{
-        DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_APM_PROXY_DESTINATION,
+        DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_APM_NATIVE_TRACE_INTAKE, DEFAULT_APM_PROXY_DESTINATION,
         DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES, DEFAULT_ENCODER_FLUSH_TIMEOUT,
         DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_RARE_SAMPLER_CARDINALITY,
         DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES,
@@ -735,7 +743,8 @@ mod tests {
                 "experimental": {
                     "apm": {
                         "enabled": true,
-                        "proxy_destination": "unix:///var/run/datadog/trace-agent.socket"
+                        "proxy_destination": "unix:///var/run/datadog/trace-agent.socket",
+                        "native_trace_intake": true
                     }
                 }
             },
@@ -851,6 +860,7 @@ mod tests {
             config.domains.apm.proxy_destination,
             "unix:///var/run/datadog/trace-agent.socket"
         );
+        assert!(config.domains.apm.native_trace_intake);
 
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
@@ -1118,5 +1128,6 @@ mod tests {
 
         assert!(!config.control.apm);
         assert_eq!(config.domains.apm.proxy_destination, DEFAULT_APM_PROXY_DESTINATION);
+        assert_eq!(config.domains.apm.native_trace_intake, DEFAULT_APM_NATIVE_TRACE_INTAKE);
     }
 }
