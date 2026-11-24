@@ -1036,6 +1036,26 @@ mod tests {
     }
 
     #[test]
+    fn a_known_stats_difference_is_stale_for_each_named_group_that_no_longer_differs() {
+        let mut entry = known("gap/fewer-hits", &["stats.hits"], &["value"]);
+        entry.when = BTreeMap::from([("resource".to_string(), vec![json!("a"), json!("b")])]);
+
+        let (mismatches, stale) = compare(
+            &[(1, group("a", 2)), (2, group("b", 1))],
+            &[(1, group("a", 1)), (2, group("b", 1))],
+            &[entry],
+        );
+
+        assert!(mismatches.is_empty(), "{:?}", mismatches);
+        assert_eq!(stale.len(), 1, "{:?}", stale);
+        assert!(
+            stale[0].contains("path `stats.hits` when `resource` is \"b\""),
+            "{}",
+            stale[0]
+        );
+    }
+
+    #[test]
     fn a_known_stats_difference_that_matches_nothing_is_stale() {
         let entries = [known("gap/missing-groups", &["stats.groups"], &["missing"])];
 

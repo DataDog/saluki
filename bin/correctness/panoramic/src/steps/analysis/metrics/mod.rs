@@ -603,6 +603,25 @@ mod tests {
     }
 
     #[test]
+    fn a_known_type_difference_is_stale_for_each_named_series_that_no_longer_differs() {
+        let options = "{min_series: 1, known_differences: [{gap: gap/as-gauge, issue: 1, paths: [type], \
+            when: {name: [known.series, value.series]}, reason: a gauge in the comparison}]}";
+        let comparison = valued(&[
+            ("known.series", &[], "Gauge", 3.0),
+            ("value.series", &[], "Count", 15.0),
+        ]);
+
+        let (error, details) = analyze(baseline(), comparison, options).unwrap_err();
+        assert_eq!(error, "1 known difference path(s) no longer occur.");
+        assert_eq!(details.len(), 1, "{:?}", details);
+        assert!(
+            details[0].contains("path `type` when `name` is \"value.series\""),
+            "{}",
+            details[0]
+        );
+    }
+
+    #[test]
     fn a_series_on_one_side_only_leaves_the_other_series_compared() {
         let baseline = valued(&[
             ("known.series", &[], "Count", 30.0),

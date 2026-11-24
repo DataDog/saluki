@@ -608,7 +608,8 @@ See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching r
   `issue`, `paths: [type]`, `when: {name: [...]}`, `kinds` (optional, only `value`) and `reason`. A series of a
   listed name that each side holds with a different type is left out of the comparison on both sides, and the other
   series are still compared by value. A series on one side only does not stop the comparison of the values of the
-  other series. A difference that no entry covers fails the step, and so does an entry that matches no series.
+  other series. A difference that no entry covers fails the step, and so does a name in `when` that has no type
+  difference.
 
 ### When a metric has a different type
 
@@ -632,6 +633,19 @@ out of the value comparison. A missing series or an extra type is not a type dif
 
 The fixture sends another sum, `otlp.cumulative.monotonic`. Its count must still match. To check the values of the
 pair that `compare` left out, the case uses `intake_has_metric` on each intake: count 30 on one, gauge 3 on the other.
+
+**Known differences of traces.** A traces `compare` reports every difference in the APM statistics, not only the
+first. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
+`logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
+`paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
+compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a
+statistics group on one side only, `stats.<field>`, for a field of a group on both sides, or `span.<field>`, such as
+`span.metrics._top_level`, for a field of a span on both sides. `stats.<field>` covers a difference anywhere inside
+the field, such as in a sketch. A kind is `missing` (only in the baseline), `extra` (only in the comparison) or
+`value`. `when` matches the fields of the group, for example `{service: [api-gateway]}`, or the `service`, `name` and
+`resource` of the span. An entry with a `span.` path must name its spans with `when`. A difference that no entry
+covers fails the step, and so does an entry path that matches no difference for one of the values in `when`, so that
+a fix removes its entries.
 
 ### APM stats in an OTLP trace case
 
