@@ -601,9 +601,8 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Source, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.sources.insert(component_id, Box::new(builder));
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -621,9 +620,8 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Relay, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.relays.insert(component_id, Box::new(builder));
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -641,9 +639,8 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Decoder, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.decoders.insert(component_id, Box::new(builder));
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -661,9 +658,8 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Transform, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.transforms.insert(component_id, Box::new(builder));
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -681,9 +677,8 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Destination, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.destinations.insert(component_id, Box::new(builder));
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -701,9 +696,8 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Encoder, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.encoders.insert(component_id, Box::new(builder));
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -721,9 +715,8 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Forwarder, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.forwarders.insert(component_id, Box::new(builder));
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -2228,6 +2221,27 @@ mod tests {
             expected_firm,
             "firm bytes should add the max in-flight event-buffer memory on top of the minimum"
         );
+    }
+
+    #[test]
+    fn recalculate_bounds_includes_last_added_component() {
+        let blueprint = blueprint_with_components();
+
+        let (interconnect_capacity, bounds) = {
+            let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+            let state = guard.as_ref().expect("topology blueprint already initialized");
+            (state.interconnect_capacity.get(), state.component_registry.as_bounds())
+        };
+
+        // `blueprint_with_components` registers one source, one transform, and one destination.
+        let expected_min = (interconnect_capacity * 2) * std::mem::size_of::<EventsBuffer>();
+        let max_in_flight = (2 * interconnect_capacity) + 1 + 1;
+        let per_buffer =
+            std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Event>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
+        let expected_firm = expected_min + (max_in_flight * per_buffer);
+
+        assert_eq!(bounds.total_minimum_required_bytes(), expected_min);
+        assert_eq!(bounds.total_firm_limit_bytes(), expected_firm);
     }
 
     #[test]
