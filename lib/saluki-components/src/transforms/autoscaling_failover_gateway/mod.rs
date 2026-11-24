@@ -9,13 +9,11 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{
-        metric::{Metric, MetricValues},
-        EventType,
-    },
+    data_model::event::{metric::Metric, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::routing_filter::MetricAllowlistKernel;
 use tokio::select;
 use tracing::{debug, error};
 
@@ -36,49 +34,22 @@ impl AutoscalingFailoverGatewayConfiguration {
     }
 }
 
-/// Routing and filtering state for the autoscaling failover metrics gateway.
-#[derive(Debug)]
-enum GatewayMode {
-    /// Autoscaling failover is disabled or has no allowed metrics; drop all events.
-    Inactive,
-    /// Autoscaling failover is active; forward only matching series metrics.
-    FilteredForward { allowlist: HashSet<String> },
-}
-
 /// Autoscaling failover metrics gateway transform.
 pub struct AutoscalingFailoverGateway {
-    mode: GatewayMode,
+    kernel: MetricAllowlistKernel,
 }
 
 impl AutoscalingFailoverGateway {
     fn new(failover_config: AutoscalingFailoverConfiguration) -> Self {
-        let mode = Self::mode_for_config(&failover_config);
-
-        Self { mode }
-    }
-
-    fn mode_for_config(failover_config: &AutoscalingFailoverConfiguration) -> GatewayMode {
-        if !failover_config.is_branch_requested() {
-            GatewayMode::Inactive
-        } else {
-            GatewayMode::FilteredForward {
-                allowlist: failover_config.metrics().iter().cloned().collect(),
-            }
-        }
+        let kernel = MetricAllowlistKernel::for_series_allowlist(
+            failover_config.is_branch_requested(),
+            failover_config.metrics(),
+        );
+        Self { kernel }
     }
 
     fn should_forward(&self, metric: &Metric) -> bool {
-        let GatewayMode::FilteredForward { allowlist } = &self.mode else {
-            return false;
-        };
-        if !matches!(
-            metric.values(),
-            MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..)
-        ) {
-            return false;
-        }
-
-        allowlist.contains(metric.context().name().as_ref())
+        self.kernel.should_forward(metric)
     }
 
     async fn process_event_batch(
@@ -141,7 +112,7 @@ impl Transform for AutoscalingFailoverGateway {
         let mut health = context.take_health_handle();
 
         health.mark_ready();
-        debug!(mode = ?self.mode, "Autoscaling failover metrics gateway transform started.");
+        debug!(kernel = ?self.kernel, "Autoscaling failover metrics gateway transform started.");
 
         loop {
             select! {

@@ -10,3 +10,4 @@
 pub mod filterlist;
 pub mod histogram;
 pub mod metric_name;
+pub mod routing_filter;

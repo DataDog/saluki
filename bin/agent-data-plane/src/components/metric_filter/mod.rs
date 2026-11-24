@@ -1,11 +1,8 @@
 //! Metric filtering shared by MRF and endpoint allow lists.
 
-use std::collections::HashSet;
-
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
 use saluki_common::sync::live::Live;
-use saluki_components::config::metrics_endpoint_routing::compact_metric_prefixes;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
@@ -17,27 +14,14 @@ use saluki_core::{
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::routing_filter::MetricAllowlistKernel;
+pub use saluki_metric_kernels::routing_filter::MetricMirroring;
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
 
-use super::metric_name::{is_normalized, normalize_into, NameBuf};
-
 const ALLOWLIST_METRICS_FILTERED_METRIC: &str = "metrics_endpoint_allowlist_metrics_filtered_total";
 const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";
-
-/// Multi-Region Failover metric mirroring settings, delivered as a [`Live`] value.
-///
-/// Activation and the allowlist arrive together, so each update rebuilds the filter from one configuration version.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetricMirroring {
-    /// Whether metrics are mirrored to the failover region.
-    pub enabled: bool,
-
-    /// Metric names permitted to be mirrored, matched exactly. While mirroring is enabled, an empty list mirrors every
-    /// metric.
-    pub allowlist: Vec<String>,
-}
 
 /// Configuration for a metric filter between enrichment and encoding.
 ///
@@ -111,65 +95,20 @@ impl FilterSource {
     }
 }
 
-/// The matching rule used by both sources. An empty set naturally matches nothing.
-enum Filter {
-    DropAll,
-    All,
-    MrfAllowlist(HashSet<String>),
-    Allowlist {
-        names: HashSet<Vec<u8>>,
-        prefixes: Vec<String>,
-    },
-}
+/// Wraps [`MetricAllowlistKernel`] with component batch dispatch and telemetry.
+struct Filter(MetricAllowlistKernel);
 
 impl Filter {
     fn for_allowlist(names: &[String], prefixes: &[String]) -> Self {
-        let mut prefixes = prefixes.to_vec();
-        // Remove covered prefixes so a binary search only needs to check its predecessor.
-        compact_metric_prefixes(&mut prefixes);
-        Self::Allowlist {
-            names: names.iter().map(|name| name.as_bytes().to_vec()).collect(),
-            prefixes,
-        }
+        Self(MetricAllowlistKernel::for_allowlist(names, prefixes))
     }
 
     fn for_mrf(enabled: bool, routing: &MetricMirroring) -> Self {
-        if !enabled || !routing.enabled {
-            Self::DropAll
-        } else if routing.allowlist.is_empty() {
-            Self::All
-        } else {
-            Self::MrfAllowlist(routing.allowlist.iter().cloned().collect())
-        }
+        Self(MetricAllowlistKernel::for_mirroring(enabled, routing))
     }
 
     fn should_forward(&self, metric: &Metric) -> bool {
-        match self {
-            Self::DropAll => false,
-            Self::All => true,
-            Self::MrfAllowlist(names) => names.contains(metric.context().name().as_ref()),
-            Self::Allowlist { names, prefixes } => {
-                let name = metric.context().name().as_ref();
-                if is_normalized(name) {
-                    return Self::matches_allowlist(name.as_bytes(), names, prefixes);
-                }
-                let mut buf = NameBuf::new();
-                match normalize_into(&mut buf, name) {
-                    Some(normalized) => Self::matches_allowlist(normalized, names, prefixes),
-                    None => false,
-                }
-            }
-        }
-    }
-
-    fn matches_allowlist(name: &[u8], names: &HashSet<Vec<u8>>, prefixes: &[String]) -> bool {
-        if names.contains(name) {
-            return true;
-        }
-        match prefixes.binary_search_by(|prefix| prefix.as_bytes().cmp(name)) {
-            Ok(_) => true,
-            Err(index) => index > 0 && name.starts_with(prefixes[index - 1].as_bytes()),
-        }
+        self.0.should_forward(metric)
     }
 
     fn filter_events(&self, events: &mut EventsBuffer, telemetry: &Telemetry) -> usize {
@@ -218,13 +157,10 @@ impl Telemetry {
     }
 
     fn set_allowlist_sizes(&self, filter: &Filter) {
-        match filter {
-            Filter::Allowlist { names, prefixes } => {
-                // Report stored matcher entries, after exact-name deduplication and prefix compaction.
-                self.exact_size.set(names.len() as f64);
-                self.prefix_size.set(prefixes.len() as f64);
-            }
-            Filter::DropAll | Filter::All | Filter::MrfAllowlist(_) => {}
+        if let MetricAllowlistKernel::NormalizedAllowlist { names, prefixes } = &filter.0 {
+            // Report stored matcher entries, after exact-name deduplication and prefix compaction.
+            self.exact_size.set(names.len() as f64);
+            self.prefix_size.set(prefixes.len() as f64);
         }
     }
 

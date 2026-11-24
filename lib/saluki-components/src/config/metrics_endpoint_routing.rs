@@ -3,23 +3,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use saluki_error::{generic_error, GenericError};
+/// Sorts literal prefixes and removes duplicates and prefixes covered by another prefix.
+pub use saluki_metric_kernels::routing_filter::compact_metric_prefixes;
 
 use crate::common::datadog::routing::{RoutingTargetCatalog, RoutingTargetSet};
-
-/// Sorts literal prefixes and removes duplicates and prefixes covered by another prefix.
-pub fn compact_metric_prefixes(prefixes: &mut Vec<String>) {
-    prefixes.sort_unstable();
-    if !prefixes.is_empty() {
-        let mut retained = 0;
-        for next in 1..prefixes.len() {
-            if !prefixes[next].starts_with(&prefixes[retained]) {
-                retained += 1;
-                prefixes.swap(retained, next);
-            }
-        }
-        prefixes.truncate(retained + 1);
-    }
-}
 
 /// A group of configured endpoints that share exact-name and prefix metric allowlists.
 #[derive(Clone, Debug, Eq, PartialEq)]
