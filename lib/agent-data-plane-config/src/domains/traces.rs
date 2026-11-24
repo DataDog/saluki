@@ -31,6 +31,24 @@ pub enum ApmFeature {
     /// Stops emitting the `otel.scope.*` tags on OTLP spans. The deprecated `otel.library.*` tags remain.
     DisableOtelScopeConvention,
 
+    /// Selects the `sqllexer` SQL obfuscator when no SQL obfuscation mode is configured.
+    Sqllexer,
+
+    /// Collects the table names of SQL queries into the `sql.tables` tag.
+    TableNames,
+
+    /// Replaces digits in SQL table names and identifiers. Same effect as `ReplaceSqlDigits`.
+    QuantizeSqlTables,
+
+    /// Replaces digits in SQL table names and identifiers. Same effect as `QuantizeSqlTables`.
+    ReplaceSqlDigits,
+
+    /// Keeps SQL aliases instead of removing them.
+    KeepSqlAlias,
+
+    /// Treats `$func$` dollar-quoted strings specially in PostgreSQL queries.
+    DollarQuotedFunc,
+
     /// An unrecognized feature ID, carried verbatim.
     Other(String),
 }
@@ -43,6 +61,12 @@ impl ApmFeature {
             ApmFeature::DisableOperationAndResourceNameLogicV2 => "disable_operation_and_resource_name_logic_v2",
             ApmFeature::DisableReceiveResourceSpansV2 => "disable_receive_resource_spans_v2",
             ApmFeature::DisableOtelScopeConvention => "disable_otel_scope_convention",
+            ApmFeature::Sqllexer => "sqllexer",
+            ApmFeature::TableNames => "table_names",
+            ApmFeature::QuantizeSqlTables => "quantize_sql_tables",
+            ApmFeature::ReplaceSqlDigits => "replace_sql_digits",
+            ApmFeature::KeepSqlAlias => "keep_sql_alias",
+            ApmFeature::DollarQuotedFunc => "dollar_quoted_func",
             ApmFeature::Other(feature) => feature,
         }
     }
@@ -55,6 +79,12 @@ impl From<&str> for ApmFeature {
             "disable_operation_and_resource_name_logic_v2" => ApmFeature::DisableOperationAndResourceNameLogicV2,
             "disable_receive_resource_spans_v2" => ApmFeature::DisableReceiveResourceSpansV2,
             "disable_otel_scope_convention" => ApmFeature::DisableOtelScopeConvention,
+            "sqllexer" => ApmFeature::Sqllexer,
+            "table_names" => ApmFeature::TableNames,
+            "quantize_sql_tables" => ApmFeature::QuantizeSqlTables,
+            "replace_sql_digits" => ApmFeature::ReplaceSqlDigits,
+            "keep_sql_alias" => ApmFeature::KeepSqlAlias,
+            "dollar_quoted_func" => ApmFeature::DollarQuotedFunc,
             other => ApmFeature::Other(other.to_owned()),
         }
     }
@@ -569,6 +599,12 @@ mod tests {
                 ApmFeature::DisableReceiveResourceSpansV2,
             ),
             ("disable_otel_scope_convention", ApmFeature::DisableOtelScopeConvention),
+            ("sqllexer", ApmFeature::Sqllexer),
+            ("table_names", ApmFeature::TableNames),
+            ("quantize_sql_tables", ApmFeature::QuantizeSqlTables),
+            ("replace_sql_digits", ApmFeature::ReplaceSqlDigits),
+            ("keep_sql_alias", ApmFeature::KeepSqlAlias),
+            ("dollar_quoted_func", ApmFeature::DollarQuotedFunc),
         ] {
             assert_eq!(ApmFeature::from(id), feature, "{id}");
         }
@@ -598,7 +634,13 @@ mod tests {
             ApmFeature::DisableOperationAndResourceNameLogicV2,
             ApmFeature::DisableReceiveResourceSpansV2,
             ApmFeature::DisableOtelScopeConvention,
-            ApmFeature::Other("table_names".to_owned()),
+            ApmFeature::Sqllexer,
+            ApmFeature::TableNames,
+            ApmFeature::QuantizeSqlTables,
+            ApmFeature::ReplaceSqlDigits,
+            ApmFeature::KeepSqlAlias,
+            ApmFeature::DollarQuotedFunc,
+            ApmFeature::Other("error_rare_sample_tracer_drop".to_owned()),
         ] {
             assert_eq!(ApmFeature::from(feature.as_str()), feature);
         }

@@ -105,7 +105,6 @@ pub(crate) fn trace_tag_replacer_configuration(traces: &traces::Domain) -> Trace
     TraceTagReplacerConfiguration::new(rules, traces.obfuscation.remove_stack_traces)
 }
 
-/// Builds the obfuscator settings.
 /// Builds the obfuscation configuration from the resolved trace settings.
 ///
 /// The SQL options come from the `apm_config.obfuscation.sql` settings and from the beta feature flags in
@@ -114,20 +113,18 @@ pub(crate) fn trace_tag_replacer_configuration(traces: &traces::Domain) -> Trace
 /// Tag replacement rules are left out: the tag replacer transform owns them.
 pub(crate) fn obfuscation_configuration(traces: &traces::Domain) -> ObfuscationConfig {
     let obfuscation = &traces.obfuscation;
-    let has_feature = |id: &str| {
-        traces
-            .features
-            .iter()
-            .any(|feature| matches!(feature, traces::ApmFeature::Other(other) if other == id))
-    };
+    let has_feature = |feature: traces::ApmFeature| traces.features.contains(&feature);
 
     let sql = SqlConfig {
         replace_digits: obfuscation.sql.replace_digits
-            || has_feature("quantize_sql_tables")
-            || has_feature("replace_sql_digits"),
-        keep_sql_alias: obfuscation.sql.keep_sql_alias || has_feature("keep_sql_alias"),
-        dollar_quoted_func: obfuscation.sql.dollar_quoted_func || has_feature("dollar_quoted_func"),
-        obfuscation_mode: sql_obfuscation_mode(obfuscation.sql_obfuscation_mode, has_feature("sqllexer")),
+            || has_feature(traces::ApmFeature::QuantizeSqlTables)
+            || has_feature(traces::ApmFeature::ReplaceSqlDigits),
+        keep_sql_alias: obfuscation.sql.keep_sql_alias || has_feature(traces::ApmFeature::KeepSqlAlias),
+        dollar_quoted_func: obfuscation.sql.dollar_quoted_func || has_feature(traces::ApmFeature::DollarQuotedFunc),
+        obfuscation_mode: sql_obfuscation_mode(
+            obfuscation.sql_obfuscation_mode,
+            has_feature(traces::ApmFeature::Sqllexer),
+        ),
         ..SqlConfig::default()
     };
 
@@ -138,8 +135,17 @@ pub(crate) fn obfuscation_configuration(traces: &traces::Domain) -> ObfuscationC
             "Ignoring the configured SQL dialect: the SQL obfuscator reads it from each span's `db.system` attribute."
         );
     }
-    if obfuscation.sql.table_names || has_feature("table_names") {
-        warn!("SQL table names are not collected, so the `sql.tables` tag is not set.");
+    if obfuscation.sql.table_names {
+        warn!(
+            config_key = "apm_config.obfuscation.sql.table_names",
+            "Ignoring the setting: SQL table names are not collected, so the `sql.tables` tag is not set."
+        );
+    }
+    if has_feature(traces::ApmFeature::TableNames) {
+        warn!(
+            config_key = "apm_config.features",
+            "Ignoring the `table_names` feature: SQL table names are not collected, so the `sql.tables` tag is not set."
+        );
     }
 
     let json = |query: &traces::JsonQueryObfuscation| {
@@ -332,9 +338,9 @@ mod tests {
 
     #[test]
     fn only_the_full_trace_id_feature_enables_full_trace_id_sampling() {
-        // Unrecognized flags are carried, not rejected, and enable nothing.
+        // Other flags are carried, not rejected, and enable nothing here.
         let traces = traces::Domain {
-            features: vec![traces::ApmFeature::Other("table_names".to_owned())],
+            features: vec![traces::ApmFeature::TableNames],
             ..Default::default()
         };
         let config = trace_sampler_configuration(
@@ -367,13 +373,10 @@ mod tests {
         }
     }
 
-    fn domain_with(obfuscation: traces::Obfuscation, features: &[&str]) -> traces::Domain {
+    fn domain_with(obfuscation: traces::Obfuscation, features: &[traces::ApmFeature]) -> traces::Domain {
         traces::Domain {
             obfuscation,
-            features: features
-                .iter()
-                .map(|feature| traces::ApmFeature::Other((*feature).to_owned()))
-                .collect(),
+            features: features.to_vec(),
             ..Default::default()
         }
     }
@@ -453,13 +456,20 @@ mod tests {
     fn sql_options_follow_the_feature_flags() {
         let config = obfuscation_configuration(&domain_with(
             traces::Obfuscation::default(),
-            &["quantize_sql_tables", "keep_sql_alias", "dollar_quoted_func"],
+            &[
+                traces::ApmFeature::QuantizeSqlTables,
+                traces::ApmFeature::KeepSqlAlias,
+                traces::ApmFeature::DollarQuotedFunc,
+            ],
         ));
         assert!(config.sql.replace_digits);
         assert!(config.sql.keep_sql_alias);
         assert!(config.sql.dollar_quoted_func);
 
-        let config = obfuscation_configuration(&domain_with(traces::Obfuscation::default(), &["replace_sql_digits"]));
+        let config = obfuscation_configuration(&domain_with(
+            traces::Obfuscation::default(),
+            &[traces::ApmFeature::ReplaceSqlDigits],
+        ));
         assert!(config.sql.replace_digits, "either flag turns on digit replacement");
         assert!(!config.sql.keep_sql_alias);
 
@@ -476,7 +486,7 @@ mod tests {
                 sql_obfuscation_mode: configured,
                 ..Default::default()
             };
-            let features: &[&str] = if sqllexer { &["sqllexer"] } else { &[] };
+            let features: &[traces::ApmFeature] = if sqllexer { &[traces::ApmFeature::Sqllexer] } else { &[] };
             obfuscation_configuration(&domain_with(obfuscation, features))
                 .sql
                 .obfuscation_mode

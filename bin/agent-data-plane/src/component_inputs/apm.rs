@@ -270,7 +270,7 @@ mod tests {
         traces.max_events_per_second = 16.0;
         traces.analyzed_spans_by_service =
             HashMap::from([("web".to_string(), HashMap::from([("request".to_string(), 0.5)]))]);
-        traces.features = vec![ApmFeature::Other("sqllexer".to_string())];
+        traces.features = vec![ApmFeature::Sqllexer];
         traces.probabilistic_sampler.enabled = true;
         traces.compute_stats_by_span_kind = true;
         traces.peer_tags_aggregation = true;

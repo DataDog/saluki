@@ -91,8 +91,8 @@ impl ValueMapMut<SalukiValues> for KeyValueList {
 
 /// Saluki's accessors for [`AttributeValue`].
 ///
-/// These used to be inherent methods. [`AttributeValue`] is now a generic type defined elsewhere, so they live on this
-/// trait: import it to call them.
+/// [`AttributeValue`] is a type alias for a generic type from another crate, so these accessors are on a trait. Import
+/// the trait to call them.
 pub trait AttributeValueExt {
     /// Returns the inner string if this is a `String` variant.
     fn as_string(&self) -> Option<&MetaString>;
@@ -159,8 +159,6 @@ impl AttributeValueExt for AttributeValue {
         }
     }
 }
-
-// --- attributes over FastHashMap<MetaString, AttributeValue> -------------------------------------
 
 type AttrMap = FastHashMap<MetaString, AttributeValue>;
 
@@ -229,8 +227,6 @@ impl_attributes!(SpanEvent, |s| &s.attributes, |m| &mut m.attributes);
 impl_attributes!(SpanLink, |s| &s.attributes, |m| &mut m.attributes);
 // Trace-level attributes are behind an `Arc`: every write is copy-on-write.
 impl_attributes!(Trace, |s| &*s.attributes, |m| Arc::make_mut(&mut m.attributes));
-
-// --- spans ----------------------------------------------------------------------------------------
 
 fn non_empty(s: &MetaString) -> Option<&str> {
     (!s.is_empty()).then_some(s.as_ref())
@@ -360,8 +356,6 @@ impl model::SpanMut for Span {
         self.span_links.iter_mut()
     }
 }
-
-// --- trace chunk ----------------------------------------------------------------------------------
 
 impl model::TraceChunk for Trace {
     type Span = Span;

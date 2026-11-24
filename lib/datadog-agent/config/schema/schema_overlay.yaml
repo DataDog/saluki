@@ -255,6 +255,13 @@ inventory:
       - `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
         does.
       - `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
+      - `sqllexer` selects the `sqllexer` SQL obfuscator when `apm_config.sql_obfuscation_mode` isn't set.
+      - `quantize_sql_tables` and `replace_sql_digits` replace digits in SQL table names and
+        identifiers.
+      - `keep_sql_alias` keeps SQL aliases instead of removing them.
+      - `dollar_quoted_func` treats `$func$` dollar-quoted strings specially in PostgreSQL queries.
+      - `table_names` is ignored with a warning: ADP can't collect SQL table names, so it doesn't set
+        the `sql.tables` tag.
 
       Every other value is ignored, without a warning: the flag inventory is not stable across agent
       versions, so unrecognized entries are inert rather than errors.

@@ -268,10 +268,7 @@ mod tests {
             )
         };
 
-        assert_eq!(
-            settings(&[ApmFeature::Other("table_names".to_owned())]),
-            (false, false, false)
-        );
+        assert_eq!(settings(&[ApmFeature::TableNames]), (false, false, false));
         assert_eq!(
             settings(&[ApmFeature::DisableOperationAndResourceNameLogicV2]),
             (true, false, false)
