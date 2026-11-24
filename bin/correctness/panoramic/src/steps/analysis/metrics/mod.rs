@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stele::MetricValue;
+use stele::{Metric, MetricValue};
 use tracing::{error, info, warn};
 
+use super::expectations::MetricsExpectations;
 use crate::steps::intake::metrics::{
     get_formatted_metric_value, MetricType, NormalizedMetric, NormalizedMetricContext, NormalizedMetrics,
 };
@@ -16,20 +17,26 @@ type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
 pub struct MetricsAnalyzer {
     baseline_metrics: NormalizedMetrics,
     comparison_metrics: NormalizedMetrics,
+    expectations: Option<MetricsExpectations>,
 }
 
 impl MetricsAnalyzer {
     /// Creates a new `MetricsAnalyzer` instance with the given baseline/comparison data.
-    pub fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Result<Self, GenericError> {
-        let baseline_metrics = NormalizedMetrics::try_from_stele_metrics(baseline_data.metrics())
+    ///
+    /// When `expectations` are set, each side must meet them before the sides are compared.
+    pub fn new(
+        baseline_data: &CollectedData, comparison_data: &CollectedData, expectations: Option<MetricsExpectations>,
+    ) -> Result<Self, GenericError> {
+        let baseline_metrics = normalize(baseline_data.metrics(), expectations.is_some())
             .error_context("Failed to normalize baseline metrics.")?;
 
-        let comparison_metrics = NormalizedMetrics::try_from_stele_metrics(comparison_data.metrics())
+        let comparison_metrics = normalize(comparison_data.metrics(), expectations.is_some())
             .error_context("Failed to normalize comparison metrics.")?;
 
         Ok(Self {
             baseline_metrics,
             comparison_metrics,
+            expectations,
         })
     }
 
@@ -51,6 +58,12 @@ impl MetricsAnalyzer {
         // Filter out internal telemetry metrics.
         filter_internal_telemetry_metrics(&mut baseline_metrics, &mut comparison_metrics);
 
+        // Each side must hold what the case expects before we compare the sides: two sides that hold only internal
+        // telemetry are equal once it's filtered out.
+        if let Some(expectations) = &self.expectations {
+            expectations.check(&baseline_metrics, &comparison_metrics)?;
+        }
+
         // Make sure both the baseline and comparison targets emitted the same unique set of metrics.
         //
         // We don't yet care about the _values_ of those metrics, just that both sides are emitting the same contexts.
@@ -68,6 +81,16 @@ impl MetricsAnalyzer {
 }
 
 const SAMPLE_MISMATCH_LIMIT: usize = 5;
+
+/// Normalizes the metrics of one side.
+///
+/// A side that holds no metrics is an error, unless the case sets expectations: they report what the side lacks.
+fn normalize(metrics: &[Metric], has_expectations: bool) -> Result<NormalizedMetrics, GenericError> {
+    if metrics.is_empty() && has_expectations {
+        return Ok(NormalizedMetrics::from_stele_metrics(metrics).0);
+    }
+    NormalizedMetrics::try_from_stele_metrics(metrics)
+}
 
 /// Returns the differences, if any, between two sets of normalized metrics.
 ///

@@ -27,13 +27,46 @@ pub enum Mismatch {
 /// A name, tags, and optionally a type and a value, that one normalized metric context must meet by itself.
 ///
 /// Contexts are never combined: a criterion met by one context and another met by a second do not add up.
-#[derive(Debug)]
+///
+/// A case writes the criteria as a map of `name`, `tags`, `tags_match`, `metric_type` and `value`. Only `name` is
+/// required.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "CriteriaFields")]
 pub struct MetricCriteria {
     /// Expected name and tags, normalized like an observed context.
     expected: NormalizedMetricContext,
     tags_match: TagMatch,
     metric_type: Option<MetricType>,
     value: Option<f64>,
+}
+
+/// The fields of [`MetricCriteria`], as a case writes them.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CriteriaFields {
+    name: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    tags_match: TagMatch,
+    #[serde(default)]
+    metric_type: Option<MetricType>,
+    #[serde(default)]
+    value: Option<f64>,
+}
+
+impl TryFrom<CriteriaFields> for MetricCriteria {
+    type Error = String;
+
+    fn try_from(fields: CriteriaFields) -> Result<Self, Self::Error> {
+        Self::new(
+            fields.name,
+            fields.tags,
+            fields.tags_match,
+            fields.metric_type,
+            fields.value,
+        )
+    }
 }
 
 impl MetricCriteria {

@@ -1,6 +1,7 @@
 use saluki_error::GenericError;
 use serde::Deserialize;
 
+pub use self::expectations::MetricsExpectations;
 pub use self::logs::LogsAnalysisOptions;
 use self::ratchet::KnownDifference;
 pub use self::traces::TracesOptions;
@@ -8,6 +9,7 @@ use crate::steps::intake::CollectedData;
 
 mod dogstatsd_forwarding;
 mod events;
+mod expectations;
 mod logs;
 mod metrics;
 mod ratchet;
@@ -54,6 +56,7 @@ pub struct AnalysisRunner {
     comparison_data: CollectedData,
     traces_options: Option<TracesAnalysisOptions>,
     logs_options: LogsAnalysisOptions,
+    metrics_expectations: Option<MetricsExpectations>,
     require_dogstatsd_forwarded_packets: bool,
 }
 
@@ -71,6 +74,7 @@ impl AnalysisRunner {
             comparison_data,
             traces_options,
             logs_options: LogsAnalysisOptions::default(),
+            metrics_expectations: None,
             require_dogstatsd_forwarded_packets: false,
         }
     }
@@ -78,6 +82,12 @@ impl AnalysisRunner {
     /// Sets the options used when mode is `Logs`.
     pub fn with_logs_options(mut self, options: LogsAnalysisOptions) -> Self {
         self.logs_options = options;
+        self
+    }
+
+    /// Sets what each side must hold when mode is `Metrics`.
+    pub fn with_metrics_expectations(mut self, expectations: Option<MetricsExpectations>) -> Self {
+        self.metrics_expectations = expectations;
         self
     }
 
@@ -104,8 +114,12 @@ impl AnalysisRunner {
                 analyzer.run_analysis()
             }
             AnalysisMode::Metrics => {
-                let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)
-                    .map_err(|e| (e, vec![]))?;
+                let analyzer = metrics::MetricsAnalyzer::new(
+                    &self.baseline_data,
+                    &self.comparison_data,
+                    self.metrics_expectations,
+                )
+                .map_err(|e| (e, vec![]))?;
                 analyzer.run_analysis()
             }
             AnalysisMode::ServiceChecks => {

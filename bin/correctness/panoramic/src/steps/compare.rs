@@ -3,6 +3,9 @@
 //!
 //! The comparison is what a case checks ADP against the Agent with: each sends to its own intake, and the step compares
 //! what the two intakes hold. Both dumps are kept, with the files collected from each intake, when the case fails.
+//!
+//! Two intakes that hold nothing, or the same unrelated records, are equal. A case sets the `metrics` or `traces`
+//! section to say what each intake must hold, and the step checks each side against it before it compares the sides.
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -12,7 +15,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::time::Instant;
 
-use super::analysis::{AnalysisMode, AnalysisRunner, LogsAnalysisOptions, TracesAnalysisOptions, TracesOptions};
+use super::analysis::{
+    AnalysisMode, AnalysisRunner, LogsAnalysisOptions, MetricsExpectations, TracesAnalysisOptions, TracesOptions,
+};
 use super::intake::CollectedData;
 use super::stopped;
 use crate::core::handle::HandleError;
@@ -49,6 +54,7 @@ impl StepFactory for CompareFactory {
             additional_span_ignore_fields,
             traces,
             logs,
+            metrics,
         } = fields.decode()?;
         if comparison == baseline {
             return Err(format!("'comparison' and 'baseline' are both '{}'", comparison));
@@ -76,10 +82,14 @@ impl StepFactory for CompareFactory {
             Telemetry::Traces,
         )?;
         only_for(traces.is_some(), "traces", Telemetry::Traces)?;
+        only_for(metrics.is_some(), "metrics", Telemetry::Metrics)?;
         only_for(logs.is_some(), "logs", Telemetry::Logs)?;
         let otlp_direct_analysis_mode = otlp_direct_analysis_mode.unwrap_or_default();
         let traces = traces.unwrap_or_default();
         traces.validate(otlp_direct_analysis_mode)?;
+        if let Some(metrics) = &metrics {
+            metrics.validate()?;
+        }
         Ok(Box::new(Compare {
             telemetry,
             comparison,
@@ -89,6 +99,7 @@ impl StepFactory for CompareFactory {
             additional_span_ignore_fields: additional_span_ignore_fields.unwrap_or_default(),
             traces,
             logs: logs.unwrap_or_default(),
+            metrics,
         }))
     }
 }
@@ -111,6 +122,8 @@ struct Fields {
     traces: Option<TracesOptions>,
     /// Logs only: how logs are paired and counted, and the differences expected.
     logs: Option<LogsAnalysisOptions>,
+    /// Metrics only: what each side must hold, checked before the sides are compared.
+    metrics: Option<MetricsExpectations>,
 }
 
 /// The telemetry compared.
@@ -168,6 +181,7 @@ struct Compare {
     additional_span_ignore_fields: Vec<String>,
     traces: TracesOptions,
     logs: LogsAnalysisOptions,
+    metrics: Option<MetricsExpectations>,
 }
 
 #[async_trait]
@@ -199,6 +213,7 @@ impl Step for Compare {
             };
             let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, Some(traces))
                 .with_logs_options(self.logs.clone())
+                .with_metrics_expectations(self.metrics.clone())
                 .with_dogstatsd_forwarding_requirement(self.require_dogstatsd_forwarded_packets);
             let report = match runner.run_analysis() {
                 Ok(()) => StepReport {
@@ -262,22 +277,26 @@ impl Compare {
 mod tests {
     use serde_json::json;
 
+    use super::super::intake::fixtures::{count, gauge, metric_json};
     use super::super::scripted::{observation, run_with_peer, Scripted, DUMP_FILE};
     use super::*;
     use crate::core::step::StepFields;
 
     const FIELDS: &str = "{telemetry: metrics, comparison: app, baseline: peer}";
 
-    fn holding(value: f64) -> Scripted {
-        let dump = json!({"metrics": [{
-            "context": {"name": "app.count", "tags": []},
-            "values": [[1, {"mtype": "Count", "value": value}]],
-        }]})
-        .to_string();
+    /// An intake whose `dump` answers with `dump`.
+    fn dumping(dump: Value) -> Scripted {
         Scripted {
-            files: [(DUMP_FILE, Ok(dump.into_bytes()))].into(),
+            files: [(DUMP_FILE, Ok(dump.to_string().into_bytes()))].into(),
             ..Scripted::default()
         }
+    }
+
+    fn holding(value: f64) -> Scripted {
+        dumping(json!({"metrics": [{
+            "context": {"name": "app.count", "tags": []},
+            "values": [[1, {"mtype": "Count", "value": value}]],
+        }]}))
     }
 
     #[tokio::test]
@@ -339,5 +358,185 @@ mod tests {
             .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
             .unwrap_err();
         assert_eq!(error, "'traces' is an option for traces, not metrics");
+    }
+
+    /// What every case below expects of each side: two series, and the two fixture metrics by name.
+    const EXPECTING_FIXTURE: &str = "{telemetry: metrics, comparison: app, baseline: peer, metrics: {min_series: 2, \
+        series: [{name: fixture.requests}, {name: fixture.latency, metric_type: gauge, value: 3}]}}";
+
+    /// An intake that holds `metrics`, and the internal telemetry that every Agent sends.
+    fn with_internal(metrics: &[Value]) -> Scripted {
+        let mut held = vec![metric_json("datadog.agent.running", &[], &[gauge(1.0)])];
+        held.extend_from_slice(metrics);
+        dumping(json!({"metrics": held}))
+    }
+
+    fn fixture() -> Vec<Value> {
+        vec![
+            metric_json("fixture.requests", &["env:test"], &[count(5.0)]),
+            metric_json("fixture.latency", &["env:test"], &[gauge(3.0)]),
+        ]
+    }
+
+    fn unrelated(names: &[&str]) -> Vec<Value> {
+        names.iter().map(|name| metric_json(name, &[], &[count(1.0)])).collect()
+    }
+
+    async fn compare(fields: &str, comparison: &Scripted, baseline: &Scripted) -> StepReport {
+        run_with_peer(&CompareFactory, fields, comparison, baseline, &observation()).await
+    }
+
+    #[tokio::test]
+    async fn a_fixture_that_each_side_holds_passes_whatever_internal_telemetry_comes_with_it() {
+        let comparison = with_internal(&fixture());
+        let mut agent_metrics = fixture();
+        agent_metrics.push(metric_json("datadog.agent.other", &[], &[gauge(9.0)]));
+        let baseline = with_internal(&agent_metrics);
+
+        let report = compare(EXPECTING_FIXTURE, &comparison, &baseline).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_fixture_withheld_from_one_side_or_both_fails_and_names_each_side() {
+        let held = with_internal(&fixture());
+        let withheld = with_internal(&[]);
+        // A side that sends nothing at all, not even internal telemetry.
+        let silent = dumping(json!({"metrics": []}));
+
+        let cases: [(&str, &Scripted, &Scripted, &[&str], Option<&str>); 4] = [
+            (
+                "the comparison",
+                &withheld,
+                &held,
+                &["The comparison holds 0 series"],
+                Some("The baseline holds"),
+            ),
+            (
+                "the baseline",
+                &held,
+                &withheld,
+                &["The baseline holds 0 series"],
+                Some("The comparison holds"),
+            ),
+            (
+                "both sides",
+                &withheld,
+                &withheld,
+                &["The comparison holds 0 series", "The baseline holds 0 series"],
+                None,
+            ),
+            (
+                "a silent side",
+                &silent,
+                &held,
+                &["The comparison holds 0 series"],
+                Some("The baseline holds"),
+            ),
+        ];
+        for (label, comparison, baseline, named, unnamed) in cases {
+            let report = compare(EXPECTING_FIXTURE, comparison, baseline).await;
+            assert_eq!(report.status, StepStatus::Failed, "{}: {}", label, report.message);
+            for expected in named {
+                assert!(report.message.contains(expected), "{}: {}", label, report.message);
+            }
+            assert!(
+                report.message.contains("`min_series` is 2"),
+                "{}: {}",
+                label,
+                report.message
+            );
+            assert!(report.message.contains("`series[0]`"), "{}: {}", label, report.message);
+            if let Some(unnamed) = unnamed {
+                assert!(!report.message.contains(unnamed), "{}: {}", label, report.message);
+            }
+        }
+
+        // Without expectations, two sides that hold only internal telemetry are equal.
+        let report = compare(FIELDS, &withheld, &withheld).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn unrelated_series_that_meet_the_count_fail_the_named_check() {
+        let comparison = with_internal(&unrelated(&["other.a", "other.b", "other.c"]));
+        let baseline = with_internal(&fixture());
+
+        let report = compare(EXPECTING_FIXTURE, &comparison, &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(!report.message.contains("`min_series`"), "{}", report.message);
+        assert!(
+            report.message.contains(
+                "The comparison holds no series that meets `series[0]` (name=fixture.requests, tags_match=subset): \
+                 no series has that name."
+            ),
+            "{}",
+            report.message
+        );
+        assert!(
+            report.message.contains("`series[1]` (name=fixture.latency"),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_series_with_the_name_and_the_wrong_value_fails_and_says_why() {
+        let wrong = vec![
+            metric_json("fixture.requests", &["env:test"], &[count(5.0)]),
+            metric_json("fixture.latency", &["env:test"], &[gauge(4.0)]),
+        ];
+        let report = compare(EXPECTING_FIXTURE, &with_internal(&wrong), &with_internal(&wrong)).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains("1 series have that name: fixture.latency[env:test] (gauge) fails value: expected 3"),
+            "{}",
+            report.message
+        );
+        assert!(
+            report.message.contains("The baseline holds no series"),
+            "{}",
+            report.message
+        );
+    }
+
+    #[test]
+    fn expectations_that_do_not_fit_the_step_are_rejected() {
+        let cases = [
+            (
+                "{telemetry: logs, comparison: app, baseline: peer, metrics: {min_series: 1}}",
+                "'metrics' is an option for metrics, not logs",
+            ),
+            (
+                "{telemetry: metrics, comparison: app, baseline: peer, metrics: {}}",
+                "'metrics' sets no expectation",
+            ),
+            (
+                "{telemetry: metrics, comparison: app, baseline: peer, metrics: {min_series: 0}}",
+                "invalid value: integer `0`",
+            ),
+            (
+                "{telemetry: metrics, comparison: app, baseline: peer, metrics: {min_traces: 1}}",
+                "unknown field `min_traces`",
+            ),
+            (
+                "{telemetry: metrics, comparison: app, baseline: peer, metrics: {series: [{tags: [a]}]}}",
+                "missing field `name`",
+            ),
+            (
+                "{telemetry: metrics, comparison: app, baseline: peer, \
+                 metrics: {series: [{name: m, metric_type: sketch, value: 1}]}}",
+                "can't combine `value` with `metric_type: sketch`",
+            ),
+        ];
+        for (fields, expected) in cases {
+            let error = CompareFactory
+                .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
+                .unwrap_err();
+            assert!(error.contains(expected), "{}: {}", fields, error);
+        }
     }
 }
