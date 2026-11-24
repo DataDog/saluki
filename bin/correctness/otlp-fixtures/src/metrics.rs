@@ -334,20 +334,29 @@ pub fn as_type_rate_fixture() -> Vec<u8> {
     )
 }
 
-/// Two points of a cumulative monotonic sum, ten seconds apart.
+/// Two cumulative monotonic sums, each with two points ten seconds apart.
+///
+/// ADP's list of sums to report as a gauge of their rate holds `raymond.test.cumulative.as.gauge`, and the Agent's
+/// list does not.
 pub fn cumulative_monotonic_fixture() -> Vec<u8> {
-    service_request(
-        vec![],
-        None,
+    let sum = |name, first, second| {
         monotonic_sum(
-            "otlp.cumulative.monotonic",
+            name,
             AggregationTemporality::Cumulative,
             vec![
-                point(ONE_SECOND_NANOS, 10.0, vec![]),
-                point(11 * ONE_SECOND_NANOS, 25.0, vec![]),
+                point(ONE_SECOND_NANOS, first, vec![]),
+                point(11 * ONE_SECOND_NANOS, second, vec![]),
             ],
-        ),
-    )
+        )
+    };
+    request(vec![resource_metrics(
+        resource(vec![kv("service.name", string("otlp-test"))]),
+        None,
+        vec![
+            sum("otlp.cumulative.monotonic", 10.0, 25.0),
+            sum("raymond.test.cumulative.as.gauge", 100.0, 130.0),
+        ],
+    )])
 }
 
 /// One valid delta histogram with two explicit bounds and three bucket counts.
