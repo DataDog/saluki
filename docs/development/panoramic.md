@@ -638,7 +638,7 @@ their difference as a defect.
 first. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
 `logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
 `paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
-compared, so the step takes no entries. A path is `stats.groups`, for a
+compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a
 statistics group on one side only, `stats.<field>`, for a field of a group on both sides, or `span.<field>`, such as
 `span.metrics._top_level`, for a field of a span on both sides. `stats.<field>` covers a difference anywhere inside
 the field, such as in a sketch. A kind is `missing` (only in the baseline), `extra` (only in the comparison) or

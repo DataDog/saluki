@@ -363,13 +363,14 @@ mod tests {
             );
         }
 
-        // The mode skips the stats comparison, so every entry would be stale.
+        // The mode skips the stats comparison, so a stats entry would be stale. It still compares spans.
         let error = build(
             "otlp_direct_analysis_mode: true,",
             "{gap: gap/a, issue: 1, paths: [stats.hits], reason: r}",
         )
         .unwrap_err();
-        assert!(error.contains("takes no 'known_differences'"), "{}", error);
+        assert!(error.contains("can't cover a 'stats.*' path"), "{}", error);
+        assert!(build("otlp_direct_analysis_mode: true,", span_entry).is_ok());
 
         let fields = "{telemetry: metrics, comparison: app, baseline: peer, traces: {}}";
         let error = CompareFactory

@@ -132,16 +132,21 @@ impl TracesOptions {
     ///
     /// If an entry names no issue, has a path outside the trace statistics and the span fields, or has a span path
     /// and doesn't scope itself to spans by service, name or resource, or if `otlp_direct_analysis_mode` skips the
-    /// statistics comparison that an option applies to, or if a step that compares stats sets expectations or turns
+    /// statistics comparison that an option or an entry's path applies to, or if a step that compares stats sets expectations or turns
     /// off `require_ssi` and sets no `min_stats_groups`, an error is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
         if otlp_direct_analysis_mode {
             let compares_nothing = "which compares no stats";
-            if !self.known_differences.is_empty() {
-                return Err(
-                    "'otlp_direct_analysis_mode' skips the trace stats comparison, so it takes no 'known_differences'"
-                        .to_string(),
-                );
+            if let Some(entry) = self
+                .known_differences
+                .iter()
+                .find(|entry| entry.paths.iter().any(|path| path.starts_with(STATS_PREFIX)))
+            {
+                return Err(format!(
+                    "'otlp_direct_analysis_mode' skips the trace stats comparison, so known difference '{}' can't \
+                     cover a '{}*' path",
+                    entry.gap, STATS_PREFIX
+                ));
             }
             if self.require_ssi.is_some() {
                 return Err(format!(
