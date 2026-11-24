@@ -8,13 +8,17 @@
 #![deny(missing_docs)]
 
 pub mod effects;
+pub mod explain;
 pub mod interpreter;
 pub mod ir;
+pub mod lowering;
 pub mod telemetry_check;
 pub mod validate;
 
 pub use self::effects::{operator_spec, EffectFlags, OperatorSpec, PortArity};
+pub use self::explain::explain_plan;
 pub use self::interpreter::{ReferenceInterpreter, RuntimeBindings};
 pub use self::ir::{Edge, MetricPlan, MetricPlanBuilder, Node, NodeId, Op, RouteFilterKind};
+pub use self::lowering::{lower_native_pipeline, NativePipelineConfig, RoutingPolicySpec};
 pub use self::telemetry_check::{analyze_telemetry_contracts, TelemetryContract, TelemetryWarning};
 pub use self::validate::{validate_plan, ValidatedPlan, ValidationError};

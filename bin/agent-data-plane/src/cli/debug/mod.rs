@@ -2,7 +2,10 @@ use agent_data_plane_config_system::LoadedConfiguration;
 use argh::FromArgs;
 use tracing::{error, info};
 
-use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
+use crate::{
+    cli::utils::{get_api_client_or_exit, DataPlaneAPIClient},
+    metric_plan::render_plan_explanation,
+};
 
 mod runtime;
 use self::runtime::{handle_runtime_command, RuntimeCommand};
@@ -23,12 +26,23 @@ pub struct DebugCommand {
 #[derive(FromArgs, Debug)]
 #[argh(subcommand)]
 enum DebugSubcommand {
+    ExplainMetricsPlan(ExplainMetricsPlanCommand),
     ResetLogLevel(ResetLogLevelCommand),
     SetLogLevel(SetLogLevelCommand),
     ResetMetricLevel(ResetMetricLevelCommand),
     SetMetricLevel(SetMetricLevelCommand),
     Runtime(RuntimeCommand),
     Workload(WorkloadCommand),
+}
+
+/// Lowers the local configuration into a metric pipeline plan and prints its structure, effect contracts, and
+/// telemetry-contract checks.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "explain-metrics-plan")]
+pub struct ExplainMetricsPlanCommand {
+    /// emit the lowered metric plan as pretty-printed JSON instead of human-readable text
+    #[argh(switch)]
+    pub json: bool,
 }
 
 /// Resets the log level.
@@ -69,9 +83,21 @@ pub struct SetMetricLevelCommand {
 
 /// Entrypoint for the `debug` commands.
 pub async fn handle_debug_command(local_config: LoadedConfiguration, cmd: DebugCommand) {
+    if let DebugSubcommand::ExplainMetricsPlan(explain_cmd) = cmd.subcommand {
+        match render_plan_explanation(local_config.local(), explain_cmd.json) {
+            Ok(rendered) => println!("{rendered}"),
+            Err(e) => {
+                error!("Failed to explain metrics plan: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let mut api_client = get_api_client_or_exit(&local_config).await;
 
     match cmd.subcommand {
+        DebugSubcommand::ExplainMetricsPlan(_) => unreachable!("handled above"),
         DebugSubcommand::ResetLogLevel(_) => reset_log_level(&mut api_client).await,
         DebugSubcommand::SetLogLevel(cmd) => set_log_level(&mut api_client, cmd).await,
         DebugSubcommand::ResetMetricLevel(_) => reset_metric_level(&mut api_client).await,
