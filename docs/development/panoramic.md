@@ -636,7 +636,8 @@ pair that `compare` left out, the case uses `intake_has_metric` on each intake: 
 
 **Known differences of traces.** A traces `compare` reports every difference in the spans and the APM statistics,
 not only the first. A span or a statistics group on one side only does not stop the comparison of the spans and
-groups on both sides. A span on one side only always fails the step. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
+groups on both sides. A span on one side only fails the step.
+`traces: {known_differences: [...]}` lists the differences that an open gap explains, as
 `logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
 `paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
 compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a
