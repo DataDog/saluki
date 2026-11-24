@@ -65,14 +65,19 @@ procedure:
           min_stats_groups: 3
           # ADP marks spans by span kind, and the Agent by service boundary.
           known_differences:
+            # One entry per span, so that each one goes stale on its own.
             - gap: gap/otlp-top-level-by-span-kind-default
               issue: 3407
               paths: [span.metrics._top_level, stats.groups]
               kinds: [missing]
-              when: {resource: [tl.b.internal, tl.orphan]}
-              reason: >-
-                The Agent marks a span below a service boundary and an orphan top-level, and computes their stats. ADP
-                marks neither.
+              when: {resource: [tl.b.internal]}
+              reason: The Agent marks a span below a service boundary top-level, and computes its stats. ADP does not.
+            - gap: gap/otlp-top-level-by-span-kind-default
+              issue: 3407
+              paths: [span.metrics._top_level, stats.groups]
+              kinds: [missing]
+              when: {resource: [tl.orphan]}
+              reason: The Agent marks an orphan span top-level, and computes its stats. ADP does not.
             - gap: gap/otlp-top-level-by-span-kind-default
               issue: 3407
               paths: [span.metrics._dd.measured]
