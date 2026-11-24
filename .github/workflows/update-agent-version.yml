@@ -29,7 +29,7 @@ concurrency:
 
 env:
   # Space-separated release lines, such as `1.9.x 1.10.x`.
-  MAINTAINED_LINES: "1.9.x"
+  MAINTAINED_LINES: "1.8.x 1.9.x"
 
 jobs:
   discover:
