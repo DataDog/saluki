@@ -47,8 +47,8 @@ inventory:
       ADP also sends logs to these endpoints, which the core Agent never does: the Agent sends logs only
       to the endpoints configured under `logs_config`, including `logs_config.additional_endpoints`.
       Only the logs ADP handles itself are affected: native OTLP logs, when it doesn't relay them to the
-      core Agent, and check logs. ADP sends native traces to these endpoints too, where the core Agent
-      uses `apm_config.additional_endpoints`.
+      core Agent, and check logs. ADP doesn't send traces to these endpoints: native traces go to
+      `apm_config.additional_endpoints` instead.
     issue: "#2973"
 
   agent_ipc.grpc_max_message_size:
@@ -173,6 +173,11 @@ inventory:
     pipelines: [cross_cutting]
     description: "API key for endpoint auth"
 
+  apm_config.additional_endpoints:
+    support: full
+    pipelines: [traces]
+    description: "Dual-ship traces and stats to extra endpoints"
+
   apm_config.analyzed_rate_by_service:
     support: full
     pipelines: [traces]
@@ -184,13 +189,9 @@ inventory:
     description: "Per service|operation APM event extraction rates"
 
   apm_config.apm_dd_url:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2419"
+    support: full
     pipelines: [traces]
     description: "APM intake URL override"
-    documentation: "ADP sends trace and stats payloads to the endpoints derived from `dd_url` or `site` and ignores this override."
 
   apm_config.apm_non_local_traffic:
     support: full
@@ -211,6 +212,37 @@ inventory:
       `/info` response. ADP doesn't limit the relay's own connections: the trace-agent behind the
       relay applies the limit to the connections it receives from ADP. As in the trace-agent,
       `/info` reports `0` unless the key is set.
+
+  apm_config.connection_reset_interval:
+    support: partial
+    pipelines: [traces]
+    description: "Traces and stats connection reset period (secs)"
+    documentation: |-
+      Resets the connections to the traces intake after this many seconds, for traces and APM stats. As in the
+      trace-agent, `0` never resets, and `forwarder_connection_reset_interval` doesn't apply to traces. A negative
+      value reads as `0`, with a warning. The APM relay's own connections to the trace-agent aren't reset.
+
+  apm_config.decoder_timeout:
+    support: partial
+    pipelines: [traces]
+    description: "Trace decoder wait timeout, in milliseconds"
+    documentation: |-
+      ADP reads this key for its experimental native trace intake
+      (`data_plane.experimental.apm.native_trace_intake`), which doesn't serve trace endpoints
+      yet. Until it does, the trace-agent behind the APM relay applies the timeout to the requests
+      ADP forwards to it.
+
+  apm_config.decoders:
+    support: partial
+    pipelines: [traces]
+    description: "Number of concurrent trace decoders"
+    documentation: |-
+      ADP reads this key for its experimental native trace intake
+      (`data_plane.experimental.apm.native_trace_intake`), which doesn't serve trace endpoints
+      yet. Until it does, the trace-agent behind the APM relay applies the limit to the requests
+      ADP forwards to it. As in the trace-agent, `0` means half the available parallelism, and at
+      least one. ADP reads a negative value as `0`, with a warning, where the trace-agent fails to
+      start.
 
   apm_config.enable_rare_sampler:
     support: full
@@ -340,6 +372,16 @@ inventory:
       ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
       `/info` response. The trace-agent behind the relay enforces the limit on the requests ADP
       forwards to it; ADP doesn't enforce it on the requests it handles itself.
+
+  apm_config.max_sender_retries:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Failed sends before a payload is dropped"
+    documentation: |-
+      The trace-agent drops a trace or stats payload after this many failed sends, 4 by default. ADP follows its forwarder: it
+      retries with backoff, up to `forwarder_backoff_max`, until the byte-bounded retry queue evicts the payload. Nothing uses this key in practice, so ADP doesn't implement it.
 
   apm_config.max_traces_per_second:
     support: full
@@ -533,6 +575,34 @@ inventory:
       relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
       invalid value logs a warning and falls back to the default obfuscator.
 
+  apm_config.stats_writer.connection_limit:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Concurrent stats requests"
+    documentation: |-
+      ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.
+
+  apm_config.stats_writer.queue_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Pending stats payloads"
+    documentation: |-
+      ADP sends traces and APM stats from one forwarder with a byte-bounded retry queue, so a writer can't have its own queue size. Nothing uses this key in practice, so ADP doesn't implement it.
+
+  apm_config.sync_flushing:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Flush payloads on request, not on a timer"
+    documentation: |-
+      The trace-agent flushes its writers only when the host asks, which serverless deployments use. ADP's encoders flush on
+      timers and ADP has no host flush, so ADP doesn't support this mode. Nothing uses this key in practice, so ADP doesn't implement it.
+
   apm_config.target_traces_per_second:
     support: full
     pipelines: [traces]
@@ -547,18 +617,29 @@ inventory:
       `/info` response. The relay forwards `/telemetry/proxy/` to the trace-agent behind it, which
       proxies tracer telemetry when this key is enabled.
 
-  apm_config.traces_send_to_main_endpoint:
+  apm_config.trace_writer.connection_limit:
     support: none
     severity: low
-    planned: true
-    issue: "#2419"
+    planned: false
+    pipelines: [traces]
+    description: "Concurrent trace requests"
+    documentation: |-
+      ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.
+
+  apm_config.trace_writer.queue_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Pending trace payloads"
+    documentation: |-
+      The trace-agent deprecates this key and always queues one payload. ADP sends traces from a forwarder with a byte-bounded
+      retry queue and doesn't read it. Nothing uses this key in practice, so ADP doesn't implement it.
+
+  apm_config.traces_send_to_main_endpoint:
+    support: full
     pipelines: [traces]
     description: "Send traces and stats to the main endpoint"
-    documentation: |-
-      When `false`, the trace-agent sends traces and APM stats only to `apm_config.additional_endpoints`. ADP
-      sends the trace and stats payloads from its OTLP traces pipeline to the endpoints derived from `dd_url`
-      or `site` and `additional_endpoints`, whatever this key's value. Traces that ADP relays to the
-      trace-agent follow this key.
 
   auth_token_file_path:
     support: full
@@ -707,56 +788,113 @@ inventory:
   data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint:
     support: full
     pipelines: [otlp]
-    description: "Agent OTLP/gRPC listener that ADP proxies to"
+    description: "OTLP/gRPC proxy destination"
+    documentation: |-
+      ADP proxies the OTLP/gRPC requests of each proxied signal, traces included, to the Agent's
+      relocated OTLP/gRPC receiver at this address. When `otlp_config.receiver.protocols.grpc.transport` is
+      `unix`, it is a socket path.
+
+      ADP starts no OTLP ingest when a signal is proxied and this address reaches one of ADP's own OTLP
+      listeners, `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`,
+      because ADP would proxy requests to itself.
+
+      The Agent relocates only the receiver protocols configured under `otlp_config.receiver.protocols`.
+      ADP serves both protocols when their endpoints are set, so a proxied request on a protocol that the
+      configuration doesn't list fails: the client gets `502 Bad Gateway` over HTTP, or `UNAVAILABLE` over
+      gRPC.
+
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
 
   data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint:
-    support: none
-    severity: low
-    planned: false
+    support: full
     pipelines: [otlp]
-    description: "Relocated Agent OTLP/HTTP listener"
+    description: "OTLP/HTTP proxy destination"
     documentation: |-
-      ADP proxies every signal to the Agent over gRPC, at
-      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, including signals it receives
-      over HTTP. It never sends to this endpoint. The Agent relocates only the receiver protocols
-      configured under `otlp_config.receiver.protocols`, so without a gRPC receiver, proxied signals
-      have no destination.
+      ADP proxies the OTLP/HTTP requests of each proxied signal, traces included, to the Agent's
+      relocated OTLP/HTTP receiver at this address. When `otlp_config.receiver.protocols.http.transport` is
+      `unix`, it is a socket path.
+
+      ADP starts no OTLP ingest when a signal is proxied and this address reaches one of ADP's own OTLP
+      listeners, `otlp_config.receiver.protocols.grpc.endpoint` or `otlp_config.receiver.protocols.http.endpoint`,
+      because ADP would proxy requests to itself.
+
+      The Agent relocates only the receiver protocols configured under `otlp_config.receiver.protocols`.
+      ADP serves both protocols when their endpoints are set, so a proxied request on a protocol that the
+      configuration doesn't list fails: the client gets `502 Bad Gateway` over HTTP, or `UNAVAILABLE` over
+      gRPC.
+
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
 
   data_plane.experimental.otlp.proxy.logs:
-    support: partial
+    support: full
     pipelines: [otlp]
     description: "Proxy OTLP logs to the Agent"
     documentation: |-
-      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      When `true`, ADP doesn't process OTLP logs itself. It streams each OTLP logs request to the
+      Agent's relocated OTLP receiver and returns the Agent's response: OTLP/gRPC requests go to
+      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, and OTLP/HTTP requests to
+      `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`. The other signals follow their
+      own settings.
+
+      A disabled signal stays disabled: when OTLP logs aren't enabled, ADP doesn't serve them,
+      whatever this setting says. OTLP logs need `otlp_config.logs.enabled` and `logs_enabled`.
+      Like the Agent, ADP still counts the setting: when any of
       `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-      exactly.
+      `data_plane.experimental.otlp.proxy.traces` is `true`, the Agent relocates its OTLP receiver.
+      A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
+      from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
+      to the Agent.
+
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
 
   data_plane.experimental.otlp.proxy.metrics:
-    support: partial
+    support: full
     pipelines: [otlp]
     description: "Proxy OTLP metrics to the Agent"
     documentation: |-
-      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      When `true`, ADP doesn't process OTLP metrics itself. It streams each OTLP metrics request to the
+      Agent's relocated OTLP receiver and returns the Agent's response: OTLP/gRPC requests go to
+      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, and OTLP/HTTP requests to
+      `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`. The other signals follow their
+      own settings.
+
+      A disabled signal stays disabled: when OTLP metrics aren't enabled, ADP doesn't serve them,
+      whatever this setting says. OTLP metrics need `otlp_config.metrics.enabled`.
+      Like the Agent, ADP still counts the setting: when any of
       `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-      exactly.
+      `data_plane.experimental.otlp.proxy.traces` is `true`, the Agent relocates its OTLP receiver.
+      A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
+      from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
+      to the Agent.
+
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
 
   data_plane.experimental.otlp.proxy.traces:
-    support: partial
+    support: full
     pipelines: [otlp]
     description: "Proxy OTLP traces to the Agent"
     documentation: |-
-      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      When `true`, ADP doesn't process OTLP traces itself. It streams each OTLP traces request to the
+      Agent's relocated OTLP receiver and returns the Agent's response: OTLP/gRPC requests go to
+      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, and OTLP/HTTP requests to
+      `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`. The other signals follow their
+      own settings.
+
+      A disabled signal stays disabled: when OTLP traces aren't enabled, ADP doesn't serve them,
+      whatever this setting says. OTLP traces need `otlp_config.traces.enabled`.
+      Like the Agent, ADP still counts the setting: when any of
       `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-      exactly.
+      `data_plane.experimental.otlp.proxy.traces` is `true`, the Agent relocates its OTLP receiver.
+      A `tls` value under `otlp_config.receiver.protocols.grpc` or `otlp_config.receiver.protocols.http` stops ADP
+      from starting OTLP ingest while any of the three settings is `true`. ADP doesn't secure the proxied connection
+      to the Agent.
+
+      This key is transitional and is planned for removal: ADP proxies to the Agent only until its own OTLP
+      support is complete.
 
   data_plane.log_file:
     support: full
@@ -1035,6 +1173,10 @@ inventory:
       the topology. This feature is for support and troubleshooting. It does not change normal
       metric forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
 
+      The destination records each metric before metric mapping (`dogstatsd_mapper_profiles`) and
+      enrichment. The core agent records each metric after them, so metric names and tags in the
+      file can differ from the core agent's.
+
       Use these settings to control the file:
 
       | Config Key                     | Behavior                                                                                    |
@@ -1176,12 +1318,16 @@ inventory:
     documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_metrics_stats_enable:
-    support: partial
-    warn: true
+    support: full
     pipelines: [dogstatsd]
     description: "Enable per-metric debug stats"
-    documentation: "See `dogstatsd_stats_enable`"
-    issue: "#1352"
+    documentation: |
+      ### `dogstatsd_metrics_stats_enable`
+
+      When `true`, ADP writes the DogStatsD metric debug log, as the core agent does. The DogStatsD
+      metric debug log section describes the file. ADP's DogStatsD statistics API is always
+      available, whatever the value of this key. The DogStatsD statistics section describes how
+      ADP's statistics differ from the core agent's `agent dogstatsd-stats` output.
 
   dogstatsd_no_aggregation_pipeline:
     support: full
@@ -1350,6 +1496,20 @@ inventory:
       `/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
       window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
       same API and renders the result as either summary or cardinality analysis.
+
+      ADP's per-metric statistics differ from the core agent's in these ways:
+
+      - ADP collects statistics on demand, for a fixed window. The core agent keeps a cumulative map
+        for as long as `dogstatsd_metrics_stats_enable` is `true`. ADP counts only the samples that
+        arrive during the requested window, and keeps nothing between requests.
+      - `dogstatsd_metrics_stats_enable` does not control the ADP statistics API. The API is always
+        available. In ADP, the key only controls the DogStatsD metric debug log.
+      - Use `agent-data-plane dogstatsd stats` to read ADP's statistics. The core agent's
+        `agent dogstatsd-stats` command reads the core agent's own statistics, not ADP's.
+      - ADP does not log the core agent's warning about a burst of metrics.
+      - ADP records each metric before metric mapping (`dogstatsd_mapper_profiles`) and enrichment.
+        The core agent records each metric after them, so metric names and tags can differ between
+        the two outputs.
 
       ADP also exposes aggregate DogStatsD counters through its internal telemetry scrape endpoint. This
       endpoint is separate from `/dogstatsd/stats`: it does not return the per-metric count and last-seen
@@ -1920,8 +2080,9 @@ inventory:
     pipelines: [cross_cutting]
     description: "Forced hostname for emitted data"
     documentation: |-
-      ADP uses this only in standalone mode, where the fixed host provider requires a configured
-      hostname. In connected mode the hostname comes from the Datadog Agent.
+      ADP uses this only in standalone mode, where the fixed host provider reports it as-is. When
+      it's unset or empty, ADP sends data without a host, as the Agent does in sidecar deployments
+      such as ECS Fargate. In connected mode the hostname comes from the Datadog Agent.
 
   intake_routing.enabled:
     support: none
@@ -1977,9 +2138,9 @@ inventory:
       runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
       `true`. ADP reads it the same way, but doesn't log the warning.
 
-      ADP doesn't yet act on the result. The core Agent refuses to start its OTLP receiver when
-      `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled. ADP doesn't apply this
-      check, and accepts OTLP logs whatever `logs_enabled` and `log_enabled` say.
+      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. ADP doesn't yet
+      apply the Agent's check that starts no OTLP receiver at all when `otlp_config.logs.enabled` is
+      `true` but the logs agent isn't enabled: ADP still serves OTLP metrics and traces then.
     issue: "#2969"
 
   log_file_max_rolls:
@@ -2754,8 +2915,9 @@ inventory:
       `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
       and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
 
-      ADP reads `logs_enabled`, but doesn't yet apply this check, and accepts OTLP logs whatever
-      `logs_enabled` says.
+      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. It doesn't yet
+      apply the check that starts no OTLP receiver at all: ADP still serves OTLP metrics and traces
+      then.
     issue: "#2969"
 
   metric_filterlist:
@@ -2916,6 +3078,19 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Per-metric tag allow/deny filter list"
+    documentation: |-
+      ADP matches `metric_tag_filterlist` rules against metric names and tag keys as Datadog stores
+      them, which is what you see in Datadog. Both the configured strings and incoming metrics are
+      normalized for comparison, so a rule for `my-service.requests` with the tag key `Env` applies to
+      the metric `my_service.requests` and removes tags such as `env:prod` and `ENV:Prod`. Rules whose
+      metric names normalize to the same name are merged; if they configure both `include` and
+      `exclude`, ADP keeps only the `exclude` rules and logs a warning. ADP ignores, with a warning,
+      a rule whose metric name Datadog never stores, such as `123`. It also ignores any tag key
+      containing `:`, since tag keys can't contain one: list the key only, such as `env`.
+      Whitespace in a tag key is normalized like any other character, so `"env "` becomes `env_`
+      and no longer matches `env`. Tags that are kept are sent unchanged. See
+      `SPEC.md` in the `datadog-agent-tag-normalization` crate (`lib/datadog-agent/tag-normalization/`)
+      for the rules.
 
   min_tls_version:
     support: partial
@@ -3103,23 +3278,40 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use V3 series for OPW"
 
+  observability_pipelines_worker.traces.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Route traces and stats to OPW"
+
+  observability_pipelines_worker.traces.url:
+    support: full
+    pipelines: [traces]
+    description: "OPW traces intake URL"
+
   origin_detection_unified:
     support: full
     pipelines: [dogstatsd]
     description: "Unified origin detection mode"
 
   otlp_config.debug.verbosity:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [otlp]
-    description: "Verbosity of the OTLP debug exporter"
+    description: "Verbosity of OTLP debug logging"
     documentation: |-
-      In the core Agent's OTLP logs path: when the `otlp_config.debug` section is declared and verbosity
-      is a valid level other than none, a debug exporter is added to the logs (and other enabled)
-      pipelines; invalid levels leave it detached.
+      ADP logs the OTLP metrics, logs, and traces it receives natively, at the level this key sets:
 
-      ADP ignores this key: it has no OTLP debug exporter.
+      - `none`: nothing is logged.
+      - `basic`: one summary line per received export request, with the number of items it carries.
+      - `normal`: the summary line, then about one line per item.
+      - `detailed`: the summary line, then every field of every item.
+
+      The output stays off unless you set the key, and values are matched ignoring case. An unrecognized value
+      leaves the output off and logs a warning. A configured `otlp_config.debug` section with no `verbosity`
+      doesn't turn it on in ADP. ADP writes the output to its log at the `info` level, so a higher log level hides it.
+      The format of the lines is ADP's own. `detailed` prints trace and span IDs as lists of numbers. Support is
+      partial because of this format, and because ADP doesn't read the section's other settings, such as log sampling.
+      ADP doesn't honor this key for an OTLP signal that it proxies to the core Agent, because it doesn't decode that
+      signal. Issue #3281 tracks this.
 
   otlp_config.logs.batch.flush_timeout:
     support: none
@@ -3188,8 +3380,9 @@ inventory:
       When it's `true` but `logs_enabled` isn't, the Agent logs an error and starts no OTLP
       receiver at all.
 
-      ADP reads `otlp_config.logs.enabled`, but doesn't yet gate on it: it accepts OTLP logs whenever
-      any OTLP signal is enabled, natively and in proxy mode.
+      Like the core Agent, ADP serves OTLP logs only when `otlp_config.logs.enabled` and `logs_enabled`
+      are both `true`. ADP doesn't yet apply the Agent's check that starts no OTLP receiver at all when
+      `logs_enabled` isn't `true`: ADP still serves OTLP metrics and traces then.
     issue: "#2969"
 
   otlp_config.logs.infra_attributes.tags_as_ddtags:
@@ -3256,7 +3449,7 @@ inventory:
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.metrics.enabled"
+    description: "Accept OTLP metrics"
 
   otlp_config.metrics.histograms.mode:
     support: full
@@ -3335,7 +3528,20 @@ inventory:
   otlp_config.receiver.protocols.grpc.endpoint:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.receiver.protocols.grpc.endpoint"
+    description: "OTLP gRPC receiver listen address"
+    documentation: |-
+      Address that ADP listens on for OTLP gRPC requests. Defaults to `localhost:4317`.
+      An empty value in `datadog.yaml` or the Agent configuration stream disables the gRPC receiver. An empty
+      environment variable counts as unset. If both receiver endpoints are empty, ADP logs an error and doesn't start
+      OTLP ingest. The other pipelines keep running.
+      The Datadog Agent doesn't disable the receiver for an empty value. Its receiver listens on a port that the system
+      picks, on all interfaces. ADP doesn't copy this, because clients can't know that port.
+
+      ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
+      doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols for
+      which a key under `otlp_config.receiver.protocols.<protocol>` is set. An environment variable for such a key
+      counts. ADP differs because it gets each key with its default value applied, so it can't tell whether the
+      configuration lists a protocol.
 
   otlp_config.receiver.protocols.grpc.include_metadata:
     support: none
@@ -3490,6 +3696,7 @@ inventory:
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
       When set, the server requests client certificates and verifies them if presented, but does not require them.
       Defaults to empty (no client certificate verification).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
     support: none
@@ -3507,6 +3714,7 @@ inventory:
     documentation: |-
       Path to the PEM-encoded certificate chain file for the OTLP gRPC receiver. When set together with
       `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
     support: none
@@ -3559,6 +3767,7 @@ inventory:
     documentation: |-
       Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
       certificate in `cert_file`. Defaults to empty (TLS disabled).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
     support: none
@@ -3668,7 +3877,20 @@ inventory:
   otlp_config.receiver.protocols.http.endpoint:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.receiver.protocols.http.endpoint"
+    description: "OTLP HTTP receiver listen address"
+    documentation: |-
+      Address that ADP listens on for OTLP HTTP requests. Defaults to `localhost:4318`.
+      An empty value in `datadog.yaml` or the Agent configuration stream disables the HTTP receiver. An empty
+      environment variable counts as unset. If both receiver endpoints are empty, ADP logs an error and doesn't start
+      OTLP ingest. The other pipelines keep running.
+      The Datadog Agent doesn't disable the receiver for an empty value. Its receiver listens on a port that the system
+      picks, on all interfaces. ADP doesn't copy this, because clients can't know that port.
+
+      ADP starts a receiver for each protocol that has a non-empty endpoint. This holds even when the configuration
+      doesn't list the protocol under `otlp_config.receiver.protocols`. The Datadog Agent starts only the protocols for
+      which a key under `otlp_config.receiver.protocols.<protocol>` is set. An environment variable for such a key
+      counts. ADP differs because it gets each key with its default value applied, so it can't tell whether the
+      configuration lists a protocol.
 
   otlp_config.receiver.protocols.http.idle_timeout:
     support: unknown
@@ -3726,6 +3948,7 @@ inventory:
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
       When set, the server requests client certificates and verifies them if presented, but does not require them.
       Defaults to empty (no client certificate verification).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
     support: none
@@ -3743,6 +3966,7 @@ inventory:
     documentation: |-
       Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When set together with
       `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
     support: none
@@ -3795,6 +4019,7 @@ inventory:
     documentation: |-
       Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
       certificate in `cert_file`. Defaults to empty (TLS disabled).
+      ADP starts no OTLP ingest if this key is set while any `data_plane.experimental.otlp.proxy.*` setting is `true`.
 
   otlp_config.receiver.protocols.http.tls.key_pem:
     support: none
@@ -3865,7 +4090,7 @@ inventory:
   otlp_config.traces.enabled:
     support: full
     pipelines: [traces]
-    description: "otlp_config.traces.enabled"
+    description: "Accept OTLP traces"
 
   otlp_config.traces.infra_attributes.container_tag_promotion:
     support: full
@@ -3889,7 +4114,7 @@ inventory:
   otlp_config.traces.internal_port:
     support: full
     pipelines: [traces]
-    description: "otlp_config.traces.internal_port"
+    description: "Trace-agent OTLP port"
 
   otlp_config.traces.probabilistic_sampler.sampling_percentage:
     support: full
@@ -4046,7 +4271,7 @@ inventory:
     support: full
     pipelines: [checks, dogstatsd]
     description: "V3 sketches shadow sample rate"
-    documentation: "Defaults to `0` (disabled). Samples eligible V2 sketch batches independently per destination. Zero or negative values disable shadowing; values at least `1` sample every batch. Authoritative V3 sketches are not shadowed."
+    documentation: "ADP defaults to `0.001` (0.1%) instead of the Core Agent's `0`, including when Core streams its default. Explicit values are honored: zero or negative values disable shadowing; values at least `1` sample every batch. Samples eligible V2 sketch batches independently per destination. Authoritative V3 sketches are not shadowed."
 
   serializer_experimental_use_v3_api.sketches.shadow_sites:
     support: full
@@ -4349,6 +4574,16 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use V3 series for Vector"
 
+  vector.traces.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Route traces to OPW (legacy alias)"
+
+  vector.traces.url:
+    support: full
+    pipelines: [traces]
+    description: "OPW traces intake URL (legacy alias)"
+
   vsock_addr:
     support: full
     pipelines: [cross_cutting]
@@ -4581,11 +4816,9 @@ excluded:
   anomaly_detection.storage.inactive_series_ttl: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.storage.max_series: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.storage.point_retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
-  apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
-  apm_config.connection_reset_interval: "ignored in initial audit 2026-04-23"
   apm_config.dd_agent_bin: "ignored in initial audit 2026-04-23"
   apm_config.debug.port: "ignored in initial audit 2026-04-23"
   apm_config.debug_v1_payloads: "ignored in initial audit 2026-04-23"
@@ -4596,8 +4829,6 @@ excluded:
   apm_config.debugger_diagnostics_api_key: "ignored in initial audit 2026-04-23"
   apm_config.debugger_diagnostics_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.debugger_logs_enabled_override: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
-  apm_config.decoder_timeout: "ignored in initial audit 2026-04-23"
-  apm_config.decoders: "ignored in initial audit 2026-04-23"
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
@@ -4620,7 +4851,6 @@ excluded:
   apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
   apm_config.max_connections: "ignored in initial audit 2026-04-23"
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
-  apm_config.max_sender_retries: "ignored in initial audit 2026-04-23"
   apm_config.mode: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"
@@ -4639,17 +4869,12 @@ excluded:
   apm_config.socket_activation.enabled: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.handle_tcp_probe: "ignored in initial audit 2026-04-23"
   apm_config.span_derived_primary_tags: "ignored in initial audit 2026-04-23"
-  apm_config.stats_writer.connection_limit: "ignored in initial audit 2026-04-23"
-  apm_config.stats_writer.queue_size: "ignored in initial audit 2026-04-23"
   apm_config.symdb_additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.symdb_api_key: "ignored in initial audit 2026-04-23"
   apm_config.symdb_dd_url: "ignored in initial audit 2026-04-23"
-  apm_config.sync_flushing: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.dd_url: "ignored in initial audit 2026-04-23"
   apm_config.trace_buffer: "ignored in initial audit 2026-04-23"
-  apm_config.trace_writer.connection_limit: "ignored in initial audit 2026-04-23"
-  apm_config.trace_writer.queue_size: "ignored in initial audit 2026-04-23"
   apm_config.watchdog_check_delay: "ignored in initial audit 2026-04-23"
   apm_config.windows_pipe_buffer_size: "ignored in initial audit 2026-04-23"
   apm_config.windows_pipe_name: "ignored in initial audit 2026-04-23"
@@ -5762,8 +5987,6 @@ excluded:
   network_pcap.forwarder.use_v2_api: "2026-11-05: ADP does not currently support remote packet capture."
   network_pcap.forwarder.zstd_compression_level: "2026-11-05: ADP does not currently support remote packet capture."
   notable_events.enabled: "ignored in initial audit 2026-04-23"
-  observability_pipelines_worker.traces.enabled: "OPW traces routing out of scope for ADP"
-  observability_pipelines_worker.traces.url: "OPW traces routing out of scope for ADP"
   ol_proxy_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   ol_proxy_config.api_key: "ignored in initial audit 2026-04-23"
   ol_proxy_config.api_version: "ignored in initial audit 2026-04-23"
@@ -6214,8 +6437,6 @@ excluded:
   use_diskv2_check: "ignored in initial audit 2026-04-23"
   use_improved_cgroup_parser: "ignored in initial audit 2026-04-23"
   use_networkv2_check: "ignored in initial audit 2026-04-23"
-  vector.traces.enabled: "OPW traces routing out of scope for ADP"
-  vector.traces.url: "OPW traces routing out of scope for ADP"
   win_skip_com_init: "ignored in initial audit 2026-04-23"
   windows_counter_init_failure_limit: "ignored in initial audit 2026-04-23"
   windows_counter_refresh_interval: "ignored in initial audit 2026-04-23"

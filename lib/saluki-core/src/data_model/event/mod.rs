@@ -22,6 +22,12 @@ use self::trace::Trace;
 pub mod trace_stats;
 use self::trace_stats::TraceStats;
 
+/// Opaque payloads.
+pub mod opaque {
+    pub use saluki_common::opaque::{Opaque, OpaqueType};
+}
+use self::opaque::Opaque;
+
 /// Telemetry event type.
 ///
 /// This type is a bitmask, which means different event types can be combined together. This makes `EventType` mainly
@@ -46,6 +52,9 @@ pub enum EventType {
 
     /// Trace stats.
     TraceStats,
+
+    /// Opaque payloads.
+    Opaque,
 }
 
 impl Default for EventType {
@@ -82,6 +91,10 @@ impl fmt::Display for EventType {
             types.push("TraceStats");
         }
 
+        if self.contains(Self::Opaque) {
+            types.push("Opaque");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -112,6 +125,46 @@ pub trait EventKind: sealed::Sealed + Sized + 'static {
 
     /// Returns a mutable reference to the inner value of the given event, if it's of this type.
     fn try_from_event_mut(event: &mut Event) -> Option<&mut Self>;
+}
+
+/// A telemetry event.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    /// A metric.
+    Metric(Metric),
+
+    /// A Datadog Event.
+    EventD(EventD),
+
+    /// A service check.
+    ServiceCheck(ServiceCheck),
+
+    /// A log.
+    Log(Log),
+
+    /// A trace.
+    Trace(Trace),
+
+    /// Trace stats.
+    TraceStats(TraceStats),
+
+    /// Opaque event.
+    Opaque(Opaque),
+}
+
+impl Event {
+    /// Gets the type of this event.
+    pub fn event_type(&self) -> EventType {
+        match self {
+            Event::Metric(_) => EventType::Metric,
+            Event::EventD(_) => EventType::EventD,
+            Event::ServiceCheck(_) => EventType::ServiceCheck,
+            Event::Log(_) => EventType::Log,
+            Event::Trace(_) => EventType::Trace,
+            Event::TraceStats(_) => EventType::TraceStats,
+            Event::Opaque(_) => EventType::Opaque,
+        }
+    }
 }
 
 macro_rules! impl_event_kind {
@@ -146,6 +199,31 @@ macro_rules! impl_event_kind {
                 }
             }
         }
+
+        $crate::reexport::paste! {
+            impl Event {
+                #[doc = "Returns the inner event value, if this event is a `" $variant "`."]
+                #[doc = ""]
+                #[doc = "Otherwise, `None` is returned and the original event is consumed."]
+                pub fn [<try_into_ $variant:snake:lower>](self) -> Option<$ty> {
+                    $ty::try_from_event(self).ok()
+                }
+
+                #[doc = "Returns a reference to the inner event value, if this event is a `" $variant "`."]
+                #[doc = ""]
+                #[doc = "Otherwise, `None` is returned."]
+                pub fn [<try_as_ $variant:snake:lower>](&self) -> Option<&$ty> {
+                    $ty::try_from_event_ref(self)
+                }
+
+                #[doc = "Returns a mutable reference to the inner event value, if this event is a `" $variant "`."]
+                #[doc = ""]
+                #[doc = "Otherwise, `None` is returned."]
+                pub fn [<try_as_ $variant:snake:lower _mut>](&mut self) -> Option<&mut $ty> {
+                    $ty::try_from_event_mut(self)
+                }
+            }
+        }
     };
 }
 
@@ -155,138 +233,7 @@ impl_event_kind!(ServiceCheck, ServiceCheck);
 impl_event_kind!(Log, Log);
 impl_event_kind!(Trace, Trace);
 impl_event_kind!(TraceStats, TraceStats);
-
-/// A telemetry event.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    /// A metric.
-    Metric(Metric),
-
-    /// A Datadog Event.
-    EventD(EventD),
-
-    /// A service check.
-    ServiceCheck(ServiceCheck),
-
-    /// A log.
-    Log(Log),
-
-    /// A trace.
-    Trace(Trace),
-
-    /// Trace stats.
-    TraceStats(TraceStats),
-}
-
-impl Event {
-    /// Gets the type of this event.
-    pub fn event_type(&self) -> EventType {
-        match self {
-            Event::Metric(_) => EventType::Metric,
-            Event::EventD(_) => EventType::EventD,
-            Event::ServiceCheck(_) => EventType::ServiceCheck,
-            Event::Log(_) => EventType::Log,
-            Event::Trace(_) => EventType::Trace,
-            Event::TraceStats(_) => EventType::TraceStats,
-        }
-    }
-
-    /// Returns the inner event value, if this event is a `Metric`.
-    ///
-    /// Otherwise, `None` is returned and the original event is consumed.
-    pub fn try_into_metric(self) -> Option<Metric> {
-        Metric::try_from_event(self).ok()
-    }
-
-    /// Returns a reference inner event value, if this event is a `Metric`.
-    ///
-    /// Otherwise, `None` is returned.
-    pub fn try_as_metric(&self) -> Option<&Metric> {
-        Metric::try_from_event_ref(self)
-    }
-
-    /// Returns a mutable reference inner event value, if this event is a `Metric`.
-    ///
-    /// Otherwise, `None` is returned.
-    pub fn try_as_metric_mut(&mut self) -> Option<&mut Metric> {
-        Metric::try_from_event_mut(self)
-    }
-
-    /// Returns a mutable reference to the inner event value, if this event is an `EventD`.
-    ///
-    /// Otherwise, `None` is returned.
-    pub fn try_as_eventd_mut(&mut self) -> Option<&mut EventD> {
-        EventD::try_from_event_mut(self)
-    }
-
-    /// Returns the inner event value, if this event is an `EventD`.
-    ///
-    /// Otherwise, `None` is returned and the original event is consumed.
-    pub fn try_into_eventd(self) -> Option<EventD> {
-        EventD::try_from_event(self).ok()
-    }
-
-    /// Returns the inner event value, if this event is a `ServiceCheck`.
-    ///
-    /// Otherwise, `None` is returned and the original event is consumed.
-    pub fn try_into_service_check(self) -> Option<ServiceCheck> {
-        ServiceCheck::try_from_event(self).ok()
-    }
-
-    /// Returns a mutable reference to the inner event value, if this event is a `ServiceCheck`.
-    ///
-    /// Otherwise, `None` is returned.
-    pub fn try_as_service_check_mut(&mut self) -> Option<&mut ServiceCheck> {
-        ServiceCheck::try_from_event_mut(self)
-    }
-
-    /// Returns a reference inner event value, if this event is a `Trace`.
-    ///
-    /// Otherwise, `None` is returned.
-    pub fn try_into_trace(self) -> Option<Trace> {
-        Trace::try_from_event(self).ok()
-    }
-
-    /// Returns a mutable reference inner event value, if this event is a `Trace`.
-    ///
-    /// Otherwise, `None` is returned.
-    pub fn try_as_trace_mut(&mut self) -> Option<&mut Trace> {
-        Trace::try_from_event_mut(self)
-    }
-
-    /// Returns the inner event value, if this event is a `TraceStats`.
-    ///
-    /// Otherwise, `None` is returned and the original event is consumed.
-    pub fn try_into_trace_stats(self) -> Option<TraceStats> {
-        TraceStats::try_from_event(self).ok()
-    }
-
-    #[allow(unused)]
-    /// Returns `true` if the event is a `Metric`.
-    pub fn is_metric(&self) -> bool {
-        Metric::try_from_event_ref(self).is_some()
-    }
-
-    /// Returns `true` if the event is an `EventD`.
-    pub fn is_eventd(&self) -> bool {
-        EventD::try_from_event_ref(self).is_some()
-    }
-
-    /// Returns `true` if the event is a `ServiceCheck`.
-    pub fn is_service_check(&self) -> bool {
-        ServiceCheck::try_from_event_ref(self).is_some()
-    }
-
-    /// Returns `true` if the event is a `Log`.
-    pub fn is_log(&self) -> bool {
-        Log::try_from_event_ref(self).is_some()
-    }
-
-    /// Returns `true` if the event is a `Trace`.
-    pub fn is_trace(&self) -> bool {
-        Trace::try_from_event_ref(self).is_some()
-    }
-}
+impl_event_kind!(Opaque, Opaque);
 
 #[cfg(test)]
 mod tests {
@@ -325,6 +272,7 @@ mod tests {
         assert_size_budget!(Log, 216);
         assert_size_budget!(Trace, 344);
         assert_size_budget!(TraceStats, 32);
+        assert_size_budget!(Opaque, 56);
     }
 
     #[test]
@@ -336,6 +284,7 @@ mod tests {
         assert_eq!(EventType::Log.to_string(), "Log");
         assert_eq!(EventType::Trace.to_string(), "Trace");
         assert_eq!(EventType::TraceStats.to_string(), "TraceStats");
+        assert_eq!(EventType::Opaque.to_string(), "Opaque");
     }
 
     #[test]
@@ -344,11 +293,20 @@ mod tests {
         assert_eq!((EventType::Log | EventType::Metric).to_string(), "Metric|Log");
         assert_eq!(
             EventType::all_bits().to_string(),
-            "Metric|DatadogEvent|ServiceCheck|Log|Trace|TraceStats"
+            "Metric|DatadogEvent|ServiceCheck|Log|Trace|TraceStats|Opaque"
         );
 
         // The empty bitmask (also the `Default`) renders as an empty string.
         assert_eq!(EventType::none().to_string(), "");
         assert_eq!(EventType::default().to_string(), "");
+    }
+
+    #[test]
+    fn opaque_event_round_trips() {
+        let opaque = Opaque::new("saluki.test.Payload", bytes::Bytes::from_static(b"payload"));
+
+        let event = opaque.clone().into_event();
+        assert_eq!(event.event_type(), EventType::Opaque);
+        assert_eq!(Opaque::try_from_event(event), Ok(opaque));
     }
 }

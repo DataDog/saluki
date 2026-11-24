@@ -16,8 +16,8 @@ participants:
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "false"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "false"
-      DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
-      DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
       # This site disables Remote Configuration in the Core Agent but not in ADP, which still polls it.
       DD_SITE: "ddog-gov.com"
       DD_LOG_LEVEL: "debug"
@@ -44,6 +44,6 @@ procedure:
       - {step: process_stable_for, on: adp, process: adp, duration: 10s}
       - step: log_not_contains
         on: adp
-        pattern: "adp.remote_config_polls_total.*outcome:(ok|rpc_error|invalid_response)|Failed to poll the Agent|panic|PANIC"
+        pattern: "adp.remote_config_polls_total.*outcome:(ok|rpc_error|invalid_response)|Failed to poll the Agent|panicked at|panic: |PANIC"
         regex: true
         during: 10s

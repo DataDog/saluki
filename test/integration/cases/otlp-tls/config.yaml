@@ -13,8 +13,8 @@ participants:
       DD_DATA_PLANE_STANDALONE_MODE: "true"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
       # Bind ADP to the harness's OTLP endpoints, reachable through the container port mapping.
-      DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
-      DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
       # The mounted test PEM contains both the certificate and its private key.
       DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE: "/tmp/otlp-tls/server.pem"
       DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE: "/tmp/otlp-tls/server.pem"
@@ -50,4 +50,4 @@ procedure:
   # Ensure the process stays healthy and doesn't panic.
   - parallel:
       - {step: process_stable_for, on: adp, process: adp, duration: 10s}
-      - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}

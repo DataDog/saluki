@@ -443,11 +443,16 @@ impl<'a> Handle<'a> {
 
     fn courier(&self) -> Result<Courier<'a>, HandleError> {
         let enclosure = self.planned.realization.enclosure;
-        let path = enclosure
-            .facts()
+        let facts = enclosure.facts();
+        let path = facts
             .courier
             .ok_or_else(|| HandleError::Harness(format!("a {} has no courier", enclosure)))?;
-        Ok(Courier::new(self.realized, path))
+        let courier = Courier::new(self.realized, path);
+        Ok(if facts.exec_input_ends {
+            courier
+        } else {
+            courier.without_stdin()
+        })
     }
 
     /// Requests `path` from the runner, through the port published or forwarded for `endpoint` on the runner's

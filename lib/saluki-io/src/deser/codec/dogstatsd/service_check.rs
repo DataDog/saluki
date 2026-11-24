@@ -72,17 +72,17 @@ pub fn parse_dogstatsd_service_check<'a>(
                 maybe_timestamp = Some(timestamp);
             }
             // Hostname: client-provided hostname for the host that this service check originated from.
-            HOSTNAME_PREFIX => {
+            HOSTNAME_PREFIX if chunk != HOSTNAME_PREFIX => {
                 let (_, hostname) = all_consuming(preceded(tag(HOSTNAME_PREFIX), string_field)).parse(chunk)?;
                 maybe_hostname = Some(hostname);
             }
             // Local Data: client-provided data used for resolving the entity ID that this service check originated from.
-            LOCAL_DATA_PREFIX if config.client_origin_detection => {
+            LOCAL_DATA_PREFIX if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX => {
                 let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
                 maybe_local_data = Some(local_data);
             }
             // External Data: client-provided data used for resolving the entity ID that this service check originated from.
-            EXTERNAL_DATA_PREFIX if config.client_origin_detection => {
+            EXTERNAL_DATA_PREFIX if config.client_origin_detection && chunk != EXTERNAL_DATA_PREFIX => {
                 let (_, external_data) =
                     all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
                 maybe_external_data = Some(external_data);
@@ -102,8 +102,9 @@ pub fn parse_dogstatsd_service_check<'a>(
                 let (_, cardinality) = cardinality(chunk)?;
                 maybe_cardinality = cardinality;
             }
-            // Origin detection fields are ignored when client origin detection is disabled.
-            LOCAL_DATA_PREFIX | EXTERNAL_DATA_PREFIX => {}
+            // A known field with an empty value (for example, `h:`) is treated as missing, as for events. Origin
+            // detection fields are also ignored when client origin detection is disabled.
+            HOSTNAME_PREFIX | LOCAL_DATA_PREFIX | EXTERNAL_DATA_PREFIX => {}
             _ if chunk.starts_with(CARDINALITY_PREFIX) => {}
             // An unknown or malformed field (for example, a stray `T`). Like any other invalid field, the caller
             // skips it in permissive mode, matching the reference DogStatsD server, and rejects the service check
@@ -242,6 +243,25 @@ mod tests {
         let raw = "_sc|testsvc|1|#|#tag1,tag2";
         for config in [&permissive, &strict] {
             assert_eq!(parse_dsd_service_check_with_conf(raw.as_bytes(), config), expected);
+        }
+    }
+
+    #[test]
+    fn empty_field_values_are_treated_as_missing() {
+        // Like events, empty values don't reject the service check in either mode.
+        let raw = b"_sc|testsvc|0|h:|c:|e:|card:|#env:prod";
+        for permissive in [true, false] {
+            let config = DogStatsDCodecConfiguration::default()
+                .with_client_origin_detection(true)
+                .with_permissive_mode(permissive);
+            let (remaining, packet) = parse_dogstatsd_service_check(raw, &config)
+                .unwrap_or_else(|e| panic!("permissive={permissive}: failed to parse: {e:?}"));
+            assert!(remaining.is_empty());
+            assert_eq!(packet.hostname, None);
+            assert_eq!(packet.local_data, None);
+            assert_eq!(packet.external_data, None);
+            assert_eq!(packet.cardinality, None);
+            assert_eq!(packet.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
         }
     }
 

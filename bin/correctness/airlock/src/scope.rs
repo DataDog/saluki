@@ -3,10 +3,8 @@
 //! A [`CaseScope`] computes every name it uses from its ID without talking to Docker, so a caller can record the
 //! scope for reclaim before [`CaseScope::prepare`] creates anything.
 //!
-//! Every resource carries the label `airlock-case=<id>`, never the isolation group label of
-//! [`Driver`][crate::driver::Driver], so reclaiming one never removes the other's containers. Names start with
-//! `airlock-case-`, which keeps them apart from isolation groups, named `airlock-<id>`, unless an isolation group ID
-//! starts with `case-`.
+//! Every resource carries the label `airlock-case=<id>`, so reclaiming one case never removes the containers of
+//! another case. Names start with `airlock-case-`.
 
 use std::collections::HashMap;
 
@@ -19,8 +17,8 @@ use tokio::time::{timeout_at, Instant};
 use tracing::debug;
 
 use crate::{
-    driver::with_transient_error_retry,
     removal::{bounded, is_not_found, Group, RequestError},
+    retry::with_transient_error_retry,
 };
 
 const CREATED_BY_LABEL: (&str, &str) = ("created_by", "airlock");

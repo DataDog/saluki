@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use tracing::warn;
 
@@ -11,7 +11,24 @@ use super::{
     retry::RetryConfiguration,
     routing::RoutingTargetCatalog,
     sketch_shadow::sketch_shadow_eligible,
+    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
 };
+
+/// Maximum number of pending requests for a sketch shadow worker.
+///
+/// Shadow traffic is a small sample, so a few slots are sufficient. When these slots are full, the worker moves new
+/// shadow payloads to the retry queue, which drops its oldest entries when it is full.
+const SKETCH_SHADOW_ENDPOINT_BUFFER_SIZE: usize = 4;
+
+/// Maximum in-memory retry queue size for a sketch shadow worker, in bytes.
+///
+/// The queue holds four payloads of the default maximum compressed size.
+const SKETCH_SHADOW_RETRY_QUEUE_MAX_SIZE_BYTES: u64 = 4 * DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT as u64;
+
+/// Maximum number of concurrent requests for a sketch shadow worker.
+///
+/// Shadow validation is best-effort. This cap bounds its concurrency independently of authoritative worker settings.
+const SKETCH_SHADOW_ENDPOINT_CONCURRENCY: usize = 2;
 
 const fn default_api_key_validation_interval_mins() -> i64 {
     60
@@ -287,6 +304,28 @@ impl ForwarderConfiguration {
         self
     }
 
+    /// Returns the configuration for a sketch shadow worker.
+    ///
+    /// Shadow validation is best-effort. It must not use authoritative disk capacity, delay shutdown for in-flight
+    /// shadows, or reserve as much memory as an authoritative worker. This configuration caps the pending queue, the
+    /// in-memory retry queue, and the request concurrency of the shadow worker. The forwarder calculates the memory
+    /// bounds of its shadow workers from this configuration.
+    pub(crate) fn for_sketch_shadow(&self) -> Self {
+        let mut config = self.clone();
+        config.endpoint_concurrency = self
+            .effective_endpoint_concurrency()
+            .min(SKETCH_SHADOW_ENDPOINT_CONCURRENCY);
+        config.endpoint_concurrency_multiplier = 1;
+        config.endpoint_buffer_size = config.endpoint_buffer_size.min(SKETCH_SHADOW_ENDPOINT_BUFFER_SIZE);
+        config.retry.queue_max_size_bytes = config
+            .retry
+            .queue_max_size_bytes
+            .min(SKETCH_SHADOW_RETRY_QUEUE_MAX_SIZE_BYTES);
+        config.retry.storage_max_size_bytes = 0;
+        config.stop_wait_for_inflight = false;
+        config
+    }
+
     /// Returns the maximum number of concurrent requests for an individual endpoint, after clamping each factor.
     pub(crate) const fn effective_endpoint_concurrency(&self) -> usize {
         let endpoint_concurrency = if self.endpoint_concurrency == 0 {
@@ -317,6 +356,11 @@ impl ForwarderConfiguration {
     /// intake delivers for the primary target, because it replaces the primary endpoint for metrics.
     pub(crate) fn build_routable_endpoints(&self) -> Result<Vec<RoutableEndpoint>, GenericError> {
         let mut endpoints = self.build_unlabeled_endpoints()?;
+        if endpoints.is_empty() {
+            return Err(generic_error!(
+                "No endpoint to send to: the primary endpoint is skipped and no additional endpoint has an API key."
+            ));
+        }
         if let Some(catalog) = &self.routing_targets {
             endpoints = endpoints
                 .into_iter()
@@ -339,10 +383,12 @@ impl ForwarderConfiguration {
     fn build_unlabeled_endpoints(&self) -> Result<Vec<RoutableEndpoint>, GenericError> {
         // Label each endpoint so the I/O loop can route metrics to OPW and non-metrics to the normal primary.
         let mut endpoints = Vec::new();
-        endpoints.push(RoutableEndpoint::new(
-            EndpointRoute::Primary,
-            self.endpoint.build_primary_endpoint()?,
-        ));
+        if self.endpoint.sends_to_primary() {
+            endpoints.push(RoutableEndpoint::new(
+                EndpointRoute::Primary,
+                self.endpoint.build_primary_endpoint()?,
+            ));
+        }
 
         if let Some(selected) = self.opw_metrics.selected_endpoint() {
             let trimmed_url = selected.url.trim();
@@ -676,6 +722,37 @@ mod tests {
     }
 
     #[test]
+    fn the_primary_endpoint_can_be_skipped() {
+        let mut config = forwarder_config_for(
+            DATADOG_URL,
+            HashMap::from([(ADDITIONAL_URL.to_string(), vec!["extra-api-key".to_string()])]),
+        );
+        config.endpoint = config.endpoint.without_primary();
+
+        assert!(endpoint_urls_by_route(&config, EndpointRoute::Primary).is_empty());
+        assert_eq!(
+            vec![ADDITIONAL_URI],
+            endpoint_urls_by_route(&config, EndpointRoute::Additional)
+        );
+    }
+
+    #[test]
+    fn skipping_the_primary_endpoint_without_an_additional_one_fails_closed() {
+        let mut config = forwarder_config_for(DATADOG_URL, HashMap::new());
+        config.endpoint = config.endpoint.without_primary();
+
+        assert!(config.build_routable_endpoints().is_err());
+
+        config.endpoint = EndpointConfiguration::new(
+            "api-key".to_string(),
+            DATADOG_URL.to_string(),
+            HashMap::from([(ADDITIONAL_URL.to_string(), vec![" ".to_string()])]),
+        )
+        .without_primary();
+        assert!(config.build_routable_endpoints().is_err());
+    }
+
+    #[test]
     fn a_single_destination_replaces_every_configured_endpoint() {
         // A destination override must survive construction: the configured primary endpoint, the
         // additional endpoints, and the alternate metrics intake all conflict with it here.
@@ -722,5 +799,39 @@ mod tests {
 
         assert_eq!(V3SeriesMode::Enabled, config.use_v3_api.series.enabled);
         assert_eq!(0.0, config.v3_api.sketches.shadow_sample_rate);
+    }
+
+    #[test]
+    fn sketch_shadow_caps_resources_and_disables_persistence() {
+        let mut config = forwarder_configuration();
+        config.endpoint_concurrency = 10;
+        config.endpoint_concurrency_multiplier = 3;
+        config.endpoint_buffer_size = 100;
+        config.retry.queue_max_size_bytes = 15 * 1024 * 1024;
+        config.retry.storage_max_size_bytes = 1024;
+        config.stop_wait_for_inflight = true;
+
+        let shadow = config.for_sketch_shadow();
+        assert_eq!(
+            SKETCH_SHADOW_ENDPOINT_CONCURRENCY,
+            shadow.effective_endpoint_concurrency()
+        );
+        assert_eq!(SKETCH_SHADOW_ENDPOINT_BUFFER_SIZE, shadow.endpoint_buffer_size);
+        assert_eq!(
+            SKETCH_SHADOW_RETRY_QUEUE_MAX_SIZE_BYTES,
+            shadow.retry.queue_max_size_bytes
+        );
+        assert_eq!(0, shadow.retry.storage_max_size_bytes);
+        assert!(!shadow.stop_wait_for_inflight);
+
+        // Smaller configured limits are kept.
+        config.endpoint_concurrency = 0;
+        config.endpoint_concurrency_multiplier = 0;
+        config.endpoint_buffer_size = 1;
+        config.retry.queue_max_size_bytes = 1024;
+        let shadow = config.for_sketch_shadow();
+        assert_eq!(1, shadow.effective_endpoint_concurrency());
+        assert_eq!(1, shadow.endpoint_buffer_size);
+        assert_eq!(1024, shadow.retry.queue_max_size_bytes);
     }
 }

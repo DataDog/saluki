@@ -16,10 +16,7 @@ participants:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "true"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
-      # ADP binds its own receiver; container initialization moves the Core Agent's.
-      # TODO(#2177): Replace this ADP-only override with the canonical schema-provided endpoint key
-      # once endpoint ownership prevents both processes from attempting to bind the same port.
-      ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
       DD_APM_ERROR_TRACKING_STANDALONE_ENABLED: "true"
     files:
       datadog.yaml: {from: datadog.yaml, template: true}

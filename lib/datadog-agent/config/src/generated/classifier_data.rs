@@ -5,12 +5,6 @@ use crate::classifier::*;
 
 pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
     ClassifierEntry {
-        yaml_path: "dogstatsd_metrics_stats_enable",
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("false"),
-    },
-    ClassifierEntry {
         yaml_path: "forwarder_num_workers",
         support_level: SupportLevel::Partial,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -47,28 +41,46 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("true"),
     },
     ClassifierEntry {
-        yaml_path: "apm_config.apm_dd_url",
+        yaml_path: "apm_config.max_sender_retries",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
-        default: DefaultValue::Json("\"\""),
+        default: DefaultValue::Json("4"),
     },
     ClassifierEntry {
-        yaml_path: "apm_config.traces_send_to_main_endpoint",
+        yaml_path: "apm_config.stats_writer.connection_limit",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
-        default: DefaultValue::Json("true"),
+        default: DefaultValue::Json("0"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.stats_writer.queue_size",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("0"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.sync_flushing",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("false"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.trace_writer.connection_limit",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("0"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.trace_writer.queue_size",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("0"),
     },
     ClassifierEntry {
         yaml_path: "config_id",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("\"\""),
-    },
-    ClassifierEntry {
-        yaml_path: "data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
-        default: DefaultValue::Json("\"127.0.0.1:4320\""),
     },
     ClassifierEntry {
         yaml_path: "data_plane.telemetry_enabled",
@@ -729,12 +741,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
         default: DefaultValue::Json("\"\""),
-    },
-    ClassifierEntry {
-        yaml_path: "otlp_config.debug.verbosity",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
-        default: DefaultValue::Json("\"basic\""),
     },
     ClassifierEntry {
         yaml_path: "otlp_config.logs.batch.flush_timeout",

@@ -144,7 +144,7 @@ and `adp` tells its OTLP receiver where to listen by referring to the endpoint.
     subject: true
     env:
       DD_DATA_PLANE_OTLP_ENABLED: "true"
-      DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
   gen:
     image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:<tag>
     args:
@@ -280,7 +280,8 @@ with: {host_view: true}       # agent-adp, agent: mount the host's /proc and cgr
                               # socket. A pod gets the container runtime's socket from the cri_socket option.
 with: {own_ip: {env: [DD_BIND_HOST], hosts: [foo.local]}}
                               # agent-adp: set these variables to the container's address on the case's network, and
-                              # map these host names to it, before the software starts
+                              # map these host names to it, before the software starts. A Linux or Windows
+                              # container only. A name in `env` may not also be in the case's `env`.
 
 programs:
   - {name: main, path: python3, args: [./helper/serve.py], env: {PYTHONUNBUFFERED: "1"}}
@@ -756,26 +757,20 @@ cases today. That is a named change, shown by the configuration diff.
 | `api` | `http` | 45100 | every realization | default, `DD_DATA_PLANE_API_LISTEN_ADDRESS` |
 | `agent_otlp_grpc` | `grpc` | 44317 | every realization | default, `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT` |
 | `agent_otlp_http` | `http` | 44318 | every realization | default, `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT` |
-| `otlp_grpc` | `grpc` | 46317 | every realization | opt-in, `DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY` |
-| `otlp_http` | `http` | 46318 | every realization | opt-in, `DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY` |
+| `otlp_grpc` | `grpc` | 46317 | every realization | opt-in, `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT` |
+| `otlp_http` | `http` | 46318 | every realization | opt-in, `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT` |
 | `dogstatsd_tcp` | `tcp` | 9126 | every realization | opt-in, `DD_DOGSTATSD_TCP_PORT` |
 | `dogstatsd_uds` | `unix_datagram` | `{{ self.dir }}/dogstatsd_uds.sock` | not Windows | opt-in, `DD_DOGSTATSD_SOCKET` |
 | `dogstatsd_uds_stream` | `unix_stream` | `{{ self.dir }}/dogstatsd_uds_stream.sock` | not Windows | opt-in, `DD_DOGSTATSD_STREAM_SOCKET` |
 | `apm_uds` | `unix_stream` | `{{ self.dir }}/apm_uds.sock` | Linux only | opt-in, `DD_APM_RECEIVER_SOCKET` |
 | `dogstatsd_pipe` | `named_pipe` | `panoramic-dogstatsd` | Windows only | opt-in, `DD_DOGSTATSD_PIPE_NAME` |
 
-When a case sets `DD_DATA_PLANE_ENABLED` and `DD_DATA_PLANE_OTLP_ENABLED` to `true`, the image's
-`cont-init.d` script moves the Agent's OTLP listeners to `127.0.0.1:14317` and `127.0.0.1:14318`, so
-`agent_otlp_grpc` and `agent_otlp_http` are unwired whatever the case writes: connecting to one or waiting
-on it is a plan error.
-
 For an opt-in endpoint the key is the case's choice. `ADP_DD_<key>` in a Linux container reaches ADP
 only, and the `datadog.yaml` spelling works wherever the case supplies that file.
 
-The addresses of the endpoints wired by default are the values
-`bin/correctness/panoramic/src/test_env.rs` injects on `main` today, all below 49152, and the
-default environment is a copy of that file's, checked against it after every rebase (see "How old
-and new coexist"). The opt-in ports are the ones integration cases write today.
+The addresses of the endpoints wired by default are the values the legacy `test_env.rs` injected, all below
+49152. `DEFAULT_ENV` in `bin/correctness/panoramic/src/participants/datadog_agent.rs` holds them
+now, and `rmlegacy` deleted the file it was copied from. The opt-in ports are the ones integration cases write.
 Comparison cases write different ones (54317 and 4317), and they move to the table's. A few case
 scripts hold these ports as literals. They keep working while addresses are fixed, and a script
 should take them from its `exec` step's `env` by reference before addresses are ever assigned.
@@ -789,7 +784,7 @@ The other participant types are smaller.
 | `millstone` | none |  |
 
 `agent` keeps the Agent's own ports for DogStatsD and APM while it runs only in its own container.
-Before `agent` runs as host processes, `hostproc` moves them off those ports, as `test_env.rs` does
+Before `agent` runs as host processes, `hostproc` moves them off those ports, as `DEFAULT_ENV` does
 for `agent-adp`, so it cannot collide with an Agent installed on the host.
 
 The intake binary hard-codes its two ports on `main` today. Reading these two variables is a small
@@ -1248,6 +1243,16 @@ The table leaves out five points.
   Their differences become a table of constants per container OS: the shared root and separator, the
   courier path, the network driver, whether there is a case volume, whether ports publish, whether
   host mounts are allowed, the PID namespace and the options accepted.
+- **Windows containers need a Windows runner host.** The check before the first case refuses a
+  Windows container participant when the runner host is not Windows, before anything starts. The
+  Windows script builds the courier and places it where the backend looks for it. The case has no
+  volume, so `{{ self.dir }}` is inside each container only. A host process group on Windows is
+  still refused, because stopping a tree of processes there needs a Job object.
+- **A send's payload is an argument in a Windows container.** The exec client has no half-close, so
+  the end of a command's input never reaches Docker on Windows, and a courier that reads standard
+  input would wait for ever. `Facts::exec_input_ends` is false there, and `courier send` takes
+  `--payload-hex` instead. A payload over 15 000 bytes is a harness error, because Windows command
+  lines stop at 32 767 characters.
 - **The courier follows log files in containers.** A supervised process writes its output to a file.
   Following it with `sh` and `tail` from the image would make both a hidden requirement on any image
   a case names, so Linux containers use the courier's `follow`, as Windows containers do. A pod's
@@ -1296,6 +1301,10 @@ Every process a participant declares has one exit channel and one output channel
   can grow. A line counts once its newline is written. The first line is final, so a restart never
   returns a process to running. A case can declare supervised processes of its own, so this format
   is a contract and the user guide documents it.
+- **The Windows entrypoint supervises and does not restart.** It starts the Agent, then ADP, through
+  `cmd` so each log file gets the program's own bytes, appends one exit record per program, and
+  starts nothing again, because the first record is final. After both programs exit it keeps the
+  container up, so the harness can read the logs and records until it stops the container.
 - **Per-process exits.** The realization may report the exit of each process apart from the
   participant's (`Realized::reported_exit`), and `Handle::exit` asks it first. A host process group
   does, for each program. Its own exit is "every program has exited", with the first program's code,
@@ -1375,7 +1384,7 @@ realization. Nothing else in the harness writes a program path of the Agent or A
 | --- | --- | --- |
 | Linux container | `/opt/datadog-agent/embedded/bin/agent-data-plane` | `/opt/datadog-agent/bin/agent/agent` |
 | Windows container | `C:\adp\agent-data-plane.exe` | `C:\Program Files\Datadog\Datadog Agent\bin\agent.exe` |
-| macOS host process group | its `adp` program, then `-c datadog.yaml` | its `agent` program with that program's environment, then `-c .` |
+| macOS host process group | its `adp` program, then `-c datadog.yaml` | its `agent` program with that program's environment, then `-c` and the participant's directory |
 
 **Operations are capabilities.** An operation is a name, what it uses of its participant, and a Rust
 function. A step asks for the name, so a second intake implementation works with `compare`
@@ -1400,12 +1409,21 @@ endpoints it uses exist, which the plan checks.
 | `dump` | `datadog-intake` | a request to `api` | `compare`, `intake_has_metric` |
 | `config_dump` | `agent-adp` | command `adp` | `config_key_equals`, with `{view: source \| runtime}` |
 | `config_set` | `agent-adp` | command `agent` | `config_set` |
-| `dogstatsd_capture`, `dogstatsd_replay`, `dogstatsd_stats` | `agent-adp` | command `adp` | `dogstatsd_replay` |
+| `dogstatsd_capture` | `agent-adp` | command `adp` | `dogstatsd_replay`, with `{duration_ms}`; answers `{path}` |
+| `dogstatsd_replay` | `agent-adp` | command `adp` | `dogstatsd_replay`, with `{path}`; answers `{}` |
+| `dogstatsd_stats` | `agent-adp` | command `adp` | `dogstatsd_replay`, with `{duration_secs}`; answers `{metrics}` |
 
 `config_dump` runs `agent-data-plane config --json`, with `--runtime` for the runtime view, and parses
 the output as JSON. It does not use the secure API, which stays a literal default of `agent-adp`
 and not an endpoint. When the command fails it reports only the exit code, because the
 configuration holds the API key. `agent-adp` names the command `adp` and, for now, no other.
+
+The three DogStatsD operations run `dogstatsd capture --duration <n>ms --compressed false`,
+`dogstatsd replay --file <path>` and `dogstatsd stats --duration-secs <n>`. Each answers with what it
+parsed, and the step decides: `{path}` is the capture file, read from the line "Data will be
+written to '<path>'", and `{metrics}` is the first cell of every row of the statistics table. A
+command that fails reports only the exit code, except that a capture with no path quotes up to 1 KiB
+of its standard output. Arguments that are not exactly the ones named are a harness error.
 
 The rule for choosing: a plain command line needs no Rust, so it is a `commands` entry run with
 `exec`. An operation exists where the answer must be decoded or the arguments are the software's
@@ -1434,16 +1452,26 @@ exits 0 and, if `output_contains` is set, its output holds that text.
 `command` is a list, or the name of one of the participant's `commands`. `args` is appended. `env`
 is added for this command. All three may hold references.
 
-As built, `exec` takes `on`, `command` as a non-empty list, `env` and `timeout`. Naming a command,
-`args` and `output_contains` arrive with the first cases that need them, which replace the legacy
-CLI actions. A command that outlives `timeout` fails the step, as `target_exec` did, rather than
-making it `errored`. On failure the step quotes the last 4 KiB of the command's output.
+As built, `exec` takes `on`, `command`, `args`, `env`, `output_contains` and `timeout`. A named
+command needs the participant to have it, and a list needs only the participant. `output_contains`
+is matched against the command's standard output followed by its standard error. A command that
+outlives `timeout` fails the step, as `target_exec` did, rather than making it `errored`. On failure
+the step quotes the last 4 KiB of the command's output, and on success it quotes standard output.
+The legacy CLI actions redacted that output.
+
+**`config_set`** sets a key of the Agent's runtime configuration. It calls the operation of the same
+name until it answers or `timeout` ends, and the operation runs `agent config set <key> <value>`,
+which makes the Agent's IPC call. A nonzero exit is a software error with the code and the last 1 KiB
+of the command's output. The CLI does not tell a refusal from an Agent that is not ready yet, so the
+step tries every software error again and quotes the last one at the deadline. The legacy action
+failed at once on a refusal. A key holds only ASCII letters, digits, `_`, `-` and `.`, and `timeout`
+has no default.
 
 **The steps.** Every step may carry an `os` overlay.
 
 | Step | Purpose | Fields | Needs |
 | --- | --- | --- | --- |
-| `exec` | action | `on`, `command`, `env`, `timeout`; later `args` and `output_contains` | the participant; the command, when named |
+| `exec` | action | `on`, `command`, `args`, `env`, `output_contains` (optional), `timeout` | the participant; the command, when named |
 | `exits_with` | assertion | `on`, `process`, `code`, `timeout` | the process |
 | `process_stable_for` | assertion | `on`, `process` (optional), `duration` | the participant or the process |
 | `log_contains` | assertion | `on`, `process` (optional), `pattern`, `regex`, `timeout` | the participant or the process |
@@ -1455,7 +1483,7 @@ making it `errored`. On failure the step quotes the last 4 KiB of the command's 
 | `wait` | action | `duration` | nothing |
 | `config_key_equals` | assertion | `on`, `key`, `value`, `view: source \| runtime` (required), `timeout` | operation `config_dump` |
 | `config_set` | action | `on`, `key`, `value`, `timeout` | operation `config_set` |
-| `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `capture_duration`, `stats_duration`, `expected_metrics`, `timeout` | three operations; the endpoint, to send |
+| `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `payload_interval` (optional), `capture_duration`, `stats_duration` (whole seconds), `expected_metrics`, `timeout` | operations `dogstatsd_capture`, `dogstatsd_replay` and `dogstatsd_stats`; the endpoint, to send |
 | `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
 | `compare` | assertion | `telemetry`, `comparison`, `baseline`, and the options of each telemetry | operation `dump` on both participants |
 
@@ -1492,9 +1520,10 @@ run needs no flag.
 `NAME` is the reference exactly as written, and the run uses `REFERENCE` in its place wherever it
 was written. `panoramic plan` and `run.json` show both. A name given twice, or a name no discovered
 case uses, is an error before anything starts. This is how CI points cases at the images a pipeline
-built. A backend's constants are not `--set` names. A helper image a backend runs comes from
-`PANORAMIC_ALPINE_IMAGE`, as the legacy runner's does today, and the check before the first case
-covers it; the courier binary is built by `make build-courier`.
+built. A backend's constants are not `--set` names. No backend runs a helper image, so there is no
+`--alpine-image` and no `PANORAMIC_ALPINE_IMAGE`: `rmlegacy` deleted them with the legacy runners
+that read them. A backend that needs a helper image later gets a constant. The courier binary is
+built by `make build-courier`.
 
 **Before the first case**, once, after selection:
 
@@ -1508,9 +1537,8 @@ covers it; the courier binary is built by `make build-courier`.
    participant is created. A bare name is found on the runner's `PATH`, and any other path is
    relative to the directory panoramic runs in.
 4. For pod cases, the kind cluster exists and holds the images. The harness creates a missing
-   cluster, as the legacy runner does, so `kind` on the `PATH` is the host requirement, and the
-   cluster must have a single node. Setup blocks the run here, outside every case's timeout, where
-   the legacy runner set the cluster up in the background. Images are loaded with
+   cluster, so `kind` on the `PATH` is the host requirement, and the cluster must have a single
+   node. Setup blocks the run here, outside every case's timeout. Images are loaded with
    `kind load docker-image`, which needs a single-platform image.
 
 Pulling a missing image keeps "run a new container" a one-line change in a case, in CI as well as
@@ -1524,10 +1552,10 @@ The cases are the main test. A test of the harness alone covers what a passing c
 | --- | --- | --- | --- |
 | Bad cases | A bad case file is rejected, for a given subject OS, with a given message. A few cases, for the trickiest checks: the guards, the wired check, start order and when a reference has a value | Case files as data under `bin/correctness/panoramic/testdata/bad/`, with one driver test | Unit test jobs |
 | Failing checks | Each step fails when its condition is false, and errors when the mechanism fails or an exit is undetermined | Beside each step, against one scripted handle | Unit test jobs |
-| Cleanup, scheduler | Deadline, cancellation and reclaim leave nothing behind and record the outcome | With the runner, the ledger and tasks; most exist on `main` | Unit test jobs |
+| Cleanup, scheduler | Deadline, cancellation and reclaim leave nothing behind and record the outcome | With the runner, the ledger and tasks; a scripted test drives the case record, as the step driver does | Unit test jobs |
 | Cleanup, containers | A failed start and a cancelled case leave no container, network or volume | Ignored tests beside the container backend and in `airlock` | By hand, `make test-container-daemon` |
 | Cleanup, host processes | The same, for a process group and its directory | Unit tests beside the backend | Unit test jobs on Linux and macOS |
-| Cleanup, Windows containers | The same | Ignored tests | By hand, on a Windows host with Docker |
+| Cleanup, Windows containers | The same | Ignored tests; not built yet, because nobody has a Windows host to run them | By hand, on a Windows host with Docker |
 | Cleanup, pods | A failed start leaves no namespace or node directory | One ignored test | By hand, `make test-kind` |
 | Real cases compile | Every case compiles for every OS it declares | One test over every case directory | Unit test jobs |
 | The boundary | `core` names neither `participants` nor `steps`, and those two do not name each other | One rule in `test/architecture` | Unit test jobs |
@@ -1552,6 +1580,9 @@ the cases it turns over.
 
 **How old and new coexist**
 
+`rmlegacy` ended this. No legacy case file, runner, flag or routing is left, and a top-level `type:`
+key is an unknown field. The list below records how the two ran side by side until then.
+
 - **One crate.** The new code lives in the existing `panoramic` crate as three new modules, `core`,
   `participants` and `steps`, beside the legacy modules. New modules never import legacy modules;
   legacy modules may import new ones.
@@ -1572,11 +1603,12 @@ the cases it turns over.
   error, so each pair enters a CI job in the PR that migrates the first case that uses it.
 - **Copies of `main`'s data are checked.** Where the new path holds its own copy of something
   `main` owns, the copy is checked against `main`'s version after every rebase, until one of the two
-  is deleted. `agent-adp`'s default environment is a copy of what
-  `bin/correctness/panoramic/src/test_env.rs` injects, and its s6 scripts are copies of
-  `docker/s6-services/`, the image's own. They sit beside them, in `docker/s6-services-panoramic/`,
-  and no image is built with them. The s6 scripts add exit records and log capture, so they are not
-  byte copies: their check fails when `main`'s versions change, and the change is ported by hand.
+  is deleted. `rmlegacy` deleted the originals of the default environment (`test_env.rs`), the
+  Windows entrypoint and the nested names table (`WINDOWS_ENV_ALIASES`), so those are no longer
+  copies. What remains is `agent-adp`'s s6 scripts, which are copies of `docker/s6-services/`, the
+  image's own. They sit beside them, in `docker/s6-services-panoramic/`, and no image is built with
+  them. The s6 scripts add exit records and log capture, so they are not byte copies: their check
+  fails when `main`'s versions change, and the change is ported by hand.
 - **The size of the whole.** The per-PR estimates sum to about 22k new non-test lines: about 12k of
   machinery (the Docker mechanisms, the courier, observation, the backends, the step bodies), about
   6k of the model (the case schema, the participant spec, planning, addresses and the participant
@@ -1639,9 +1671,9 @@ apart. The last column names what the migration rule sends to each PR.
 | 11 | `pod` | Pod backend; migrate the origin detection matrix | 9 | 1.6k / 0.3k | Cases that run in pods: the origin detection matrix |
 | 12 | `linuxrest` | Probe, exec and config steps; finish the Linux-only cases | 8 | 0.7k / 0.1k | Linux-only cases that probe, request, exec or check configuration |
 | 13 | `hostproc` | Host process backend; migrate the macOS and Unix cases that need nothing more | 12 | 1.35k / 0.22k as built | Cases on macOS, alone or with Linux, that need no step beyond the backend's |
-| 13b | `replay` | `dogstatsd_replay`; migrate `dogstatsd-replay-unix` | 13 | 0.35k / 0.05k | Cases on macOS that replay DogStatsD |
-| 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13, 13b | 1.0k / 0.4k | Cases on Windows, alone or with Linux; cases on all three OSes |
-| 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above | deletions, docs | none |
+| 13b | `replay` | `dogstatsd_replay`; migrate `dogstatsd-replay-unix` | 13 | 0.39k / 0.07k as built | Cases on macOS that replay DogStatsD |
+| 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13, 13b | 0.8k / 0.05k as built, and 42 case files | Cases on Windows, alone or with Linux; cases on all three OSes |
+| 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above; no legacy case file is left | 18.8k deleted; 0.19k / 0.40k as built, and 0.49k of docs | none |
 | 16 | `followups` | The os overlay, the intake on macOS and Windows, a case-supplied helper | 15 | 0.55k / 0.1k | Cases that differ only by OS merge; the intake cases gain macOS and Windows; one new case |
 
 The stages are foundations (1–2), the Linux slice (3–8), comparison cases (9–11), Linux-only cases
@@ -2011,6 +2043,34 @@ Why this order:
   fixed ports or use `/tmp/panoramic`. `dogstatsd-skip-failed-listener` loses a UDP probe.
   `process_stable_for` watches ADP in these cases.
 
+**13b. `replay`: the `dogstatsd_replay` step**
+
+- **Builds:** the three DogStatsD operations of `agent-adp` and the `dogstatsd_replay` step, then
+  migrates `dogstatsd-replay-unix`. `dogstatsd-replay-windows` stays legacy until `windows`; the same
+  step shape covers it there, as a send through the Windows courier.
+- **What was taken:**
+  - The step sends `payloads` to an `endpoint`. It does not run a sender command, which would make
+    Python a requirement of the host on macOS and of the image on Linux. The legacy sender's pause of
+    one second between its two datagrams stays, as the optional `payload_interval`, so that the
+    capture is still checked to keep traffic that arrives late. The step's budget counts it.
+  - `stats_duration` is whole seconds, and `build` rejects a fraction, because the CLI takes seconds.
+  - The operations answer parsed values, and the step decides from them: `dogstatsd_capture` answers
+    `{path}`, `dogstatsd_replay` answers `{}`, and `dogstatsd_stats` answers `{metrics}`. The
+    matching rule is in one place.
+  - The operations report a failed command's exit code only, as the legacy action redacts the CLI's
+    output. The one exception is a capture with no path, which quotes up to 1 KiB of standard output.
+  - The step keeps the legacy statuses. An error that stops the capture or a send is `stopped`. A
+    replay that exited nonzero counts as a replay that ran. A statistics error is `failed` once a
+    replay ran, and the status of its own error before. At the deadline the step is `failed` if a
+    replay ran and `errored` if not.
+  - In the migrated case the socket is ADP's `dogstatsd_uds` endpoint, owned by the harness, and
+    `process_stable_for` watches `adp`.
+- **Watch out:** the socket moves from `/tmp/saluki-dogstatsd-replay-unix.sock` to
+  `/airlock/adp/shared/dogstatsd_uds.sock` in the Linux container, and to
+  `/tmp/panoramic/adp/shared/dogstatsd_uds.sock` on macOS. The capture file's path is ADP's answer,
+  used where ADP runs, so it needs no mapping. Only CI's macOS jobs show that a send from the runner
+  reaches ADP's socket and that ADP's capture works there.
+
 **14. `windows`: Windows containers and the three-OS cases**
 
 - **Builds:** the last backend table, then the cases that needed every backend.
@@ -2021,37 +2081,92 @@ Why this order:
   - The cases that run on all three OSes. Those that read logs and exits need almost no Rust. Those
     that use endpoints and commands need `config_set` and `exec` of a command the participant type
     names, which replaces the legacy CLI actions.
+  - After it no legacy integration case is left, and a legacy `type: integration` file fails
+    discovery.
+- **What was taken:**
+  - `courier send` takes `--payload-hex`, and `Facts::exec_input_ends` marks the container OS where a
+    payload must be an argument. The limit is 15 000 bytes.
+  - Windows containers need a Windows runner host, checked before the first case. Windows host
+    process groups stay refused.
+  - `agent-adp` in a Windows container runs a new entrypoint,
+    `ci/tooling/windows-adp-entrypoint-panoramic.ps1`, as its `command`, with ADP's arguments as
+    `args`. It writes `adp.log`, `agent.log` and the `data-plane` and `agent` records, restarts
+    nothing, and keeps the container up after both programs exit. The spec adds the nested
+    `DD_DATA_PLANE__*` names and `DD_DATA_PLANE_FORCE_ENABLE`, and has no `consumes` and no OTLP
+    override.
+  - `with.own_ip` is a script the participant type places: an s6 init script on Linux and a script the
+    entrypoint runs on Windows. A name it sets may not be in the case's `env`, and `agent` rejects it.
+  - `agent-adp` names `agent` as well as `adp` on every realization.
+  - `exec` takes a named command, `args` and `output_contains`, and quotes output where the legacy
+    CLI actions redacted it.
+  - `config_set` retries every software error until the deadline, and has no default timeout. The
+    cases write `30s`.
+  - Case conversions: `dogstatsd-named-pipe-windows` keeps its PowerShell client as an `exec`,
+    `dogstatsd-replay-windows` sends one two-line payload, the Windows logging cases keep their `C:\`
+    paths, and `dogstatsd-enabled`, `dogstatsd-autoscale-udp`, both `dogstatsd-invalid-*` cases and
+    `dogstatsd-top-windows` replace their UDP probe with ADP's listener line. `adp-no-pipelines-exit`
+    gains no exit-code check, which would be new coverage.
+  - The Windows script drops `--image-override`, and `test-integration-macos-run` drops the two
+    legacy binary flags. `-p 1` stayed until `rmlegacy`, which dropped it.
+  - No Windows container cleanup test is built, because nobody has a Windows host to run an ignored
+    one.
 - **Watch out:** this job is the slowest CI loop. Start the first part early as a draft; it does not
   need `hostproc`. The three-OS cases are their own commits and wait for `hostproc` and `replay`.
-  - The cases shared with Linux bind to the container's own address, some through a custom
-    hostname, and both mechanisms are needed on Linux too.
-  - The CI image bakes in the legacy entrypoint script; a spec's own command must override it, and
-    the baked one stays until `rmlegacy`.
-  - Network creation collides under load on Windows; the legacy path retries it and the new
-    mechanisms must too. Some lints fire only on Windows.
-  - This PR migrates the last legacy integration case, so the Windows script drops
-    `--image-override`, and the PR adds the check that a legacy file in `test/integration/cases`
-    fails at load.
-  - `dogstatsd-enabled` and `dogstatsd-autoscale-udp` each lose a UDP probe. `exec` quotes a
-    command's output on failure, which the legacy CLI actions did not.
-  - Adding an exit-code check to `adp-no-pipelines-exit` is new coverage; add it here only if it is
-    named.
+  - The CI image baked in the legacy entrypoint script; a spec's own command overrides it, and the
+    baked one stayed until `rmlegacy`, which dropped it.
+  - Network creation collides under load on Windows; the legacy path retries it and so does the new
+    one, for network creation and container start. Some lints fire only on Windows.
   - One red Windows row holds every case in the PR. If the three-OS cases stall, split them off as a
     PR of case files.
 
 **15. `rmlegacy`: delete the legacy runners and rewrite the testing guide**
 
-- **Builds:** no new code.
+- **Builds:** about 0.19k non-test lines, 0.40k test lines and 0.49k of docs, and deletes 18.8k lines.
   - Deletes the comparison runner under `bin/correctness/panoramic/src/correctness/` and the
-    comparison schemas. The baseline mixin and the generator's baseline branch go in `pod`.
+    comparison schemas. The baseline mixin and the generator's baseline branch went in `pod`.
   - Deletes the integration runners, the legacy schema, actions and assertions, `traffic.rs`, the
-    routing, `--runtime` and the other legacy flags, `image_override.rs`, airlock's legacy behaviour
-    and the temporary guard rule.
-  - Rewrites `docs/development/testing.md` and `test/integration/README.md` as a user guide of about
-    400 lines. It documents the exit record format, which is a contract for case authors.
-- **Watch out:** deletion and the guide only. It is ready when no legacy case file remains, and it
-  waits for a week of green nightly pipelines. After it, a top-level `type:` key is an unknown
-  field.
+    routing, `--runtime` and the other legacy flags, `image_override.rs`, `config.rs`, airlock's
+    `driver`, `config` and `unix` modules and the temporary guard rule.
+  - Adds `participant_case::discover`, which loads every case directory with `ParticipantCase::load`,
+    and `airlock/src/retry.rs`, which holds the transient-error retry moved out of the legacy driver.
+  - Adds `docs/development/panoramic.md`, the user guide for case authors, about 440 lines. It
+    documents the exit record format, which is a contract. `testing.md` keeps a short section for each
+    suite and both review regions.
+- **What was taken:**
+  - A top-level `type:` key is an unknown field. `core/case.rs` lost its own check, and the bad case
+    `testdata/bad/top-level-type` pins the error.
+  - The CLI keeps `--subject-os` only, and it defaults to the host's OS on `run` and `list`.
+    `--runtime`, `--image-override`, `--mounts-dir`, `--adp-binary-path`, `--core-agent-binary-path`
+    and `--alpine-image` are gone, with their environment variables.
+  - `list --json` names a case's suite `suite`, which is the name of the directory above its cases
+    directory, and has no `images`. `runtime` stays in `list --json` and `run.json`, with the same
+    values. `Test::suite` returns a string, and `TestSuite` is gone.
+  - The runner writes `plan.json` from the settled outcome, so a case that it cancels or drops after
+    the cleanup grace keeps its plan. The case no longer writes it.
+  - The scheduler tests drive the case record: `ScriptedTest` takes a list of `ScriptedStep` and
+    calls `record.plan`, `start` and `finish`, as the step driver does. The tests of the legacy step
+    budget and the legacy intake poll went with their code. The report tests build their steps with
+    `TestResult::from_steps`.
+  - The Windows test image adds no entrypoint or `CMD` of its own. `windows-adp-entrypoint.ps1` is deleted,
+    and `windows-adp-entrypoint-panoramic.ps1` keeps its name.
+  - The macOS target drops `-p 1`, because the host permit serializes host-process cases.
+  - The comparison and integration runners went in one commit, because the crate denies dead code
+    and each module held up another. That deletion also removed what only they used: the polling helpers of
+    `core/probe.rs`, `Deadline::narrow`, `TestResult::with_assertion_details`, the unused
+    `ActivePhase` methods, and the `snafu`, `socket2` and `zstd` dependencies.
+- **Deviations from the brief:**
+  - `--alpine-image` and `PANORAMIC_ALPINE_IMAGE` are deleted, because no backend runs a helper image.
+  - The guide is a new page, and `test/integration/README.md` is rewritten as a short page that says what the
+    directory is for and points to the guide.
+  - `list --json` says `suite` and has no `images`.
+  - The runner, not the case, writes `plan.json`.
+  - The Windows image has no baked entrypoint.
+  - The step driver's overrun path (`RunningStep::overran`) has no unit test since the legacy one
+    went. Add a failing-check test for it with the next change to the step driver.
+- **Watch out:** it is ready when no legacy case file remains, and it waits for a week of green
+  nightly pipelines. `provision-macos-test-env` and its IPC bootstrap are untouched: whether the new
+  macOS path still needs the bootstrapped certificate is unverified, and only the macOS jobs can
+  show it.
 
 ### After the migration
 
@@ -2115,9 +2230,19 @@ host-process subject with containerized helpers.
 - `panoramic`'s mounts directory, whose init script resolves the legacy dynamic variables, is not
   mounted into participant containers. A value known only at run time is a reference.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.
+- `config_set` runs the Agent CLI and retries every refusal. The legacy action failed at once on one.
+- On Windows, ADP and the Agent run under an entrypoint that writes logs and exit records and
+  restarts nothing. The named pipe is `panoramic-dogstatsd`. Steps reach ADP through the courier in
+  its container. The bind-host cases take the container's address from `with.own_ip`, on Linux too.
+- `dogstatsd-replay-windows` sends one payload through the courier, not a PowerShell client.
 - Host programs on macOS run with a cleared environment, and ADP no longer waits for the Agent's IPC
   credentials. The second is unverified until the macOS jobs run.
 - A case's log files move from `/tmp` into the participant's directory, as `{{ self.dir }}`.
 - A load error exits 2 with no `run.json`, and a run where every case is skipped exits 3.
 - The merged traffic manifest goes. A participant case writes none: its collected files, with their
   retention, are listed in `result.json`.
+- `rmlegacy`: a top-level `type:` key is an unknown field. `--runtime`, `--image-override`,
+  `--mounts-dir`, `--adp-binary-path`, `--core-agent-binary-path`, `--alpine-image` and their
+  environment variables are gone. `list --json` says `suite` and has no `images`. `plan.json` is kept
+  for interrupted cases. The Windows test image adds no entrypoint of its own: panoramic replaces the base image's
+  entrypoint.

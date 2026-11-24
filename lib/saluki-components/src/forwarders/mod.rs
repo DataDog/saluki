@@ -14,6 +14,3 @@ pub use crate::common::datadog::retry::RetryConfiguration;
 pub use crate::common::datadog::routing::{
     MetricsRoutingTargets, RoutingTarget, RoutingTargetCatalog, RoutingTargetId, RoutingTargetKind, RoutingTargetSet,
 };
-
-mod otlp;
-pub use self::otlp::OtlpForwarderConfiguration;

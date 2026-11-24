@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use super::datadog_agent::{
-    self, ListenAt, Listener, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE, NOT_WINDOWS,
+    self, ListenAt, Listener, With, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE,
+    NOT_WINDOWS,
 };
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
 use crate::core::spec::{Evidence, ParticipantSpec, Protocol, Wiring};
@@ -99,6 +100,10 @@ impl ParticipantType for Agent {
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
+        let with: With = cx.with()?;
+        if with.own_ip.is_some() {
+            return Err("with.own_ip is agent-adp's".to_string());
+        }
         let ready = Evidence::Output {
             pattern: Template::parse(DOGSTATSD_UDP_STARTED)?,
             process: "agent".to_string(),
@@ -108,7 +113,7 @@ impl ParticipantType for Agent {
             // No command: the image's own entrypoint starts s6.
             files: datadog_agent::s6_overlay(&["agent"]),
             ready: BTreeMap::from([("dogstatsd_udp".to_string(), ready)]),
-            processes: Some(vec![datadog_agent::s6_process("agent", "agent", "agent.log")?]),
+            processes: Some(vec![datadog_agent::supervised_process("agent", "agent", "agent.log")?]),
             aliases: BTreeMap::from([
                 (DATADOG_YAML, DATADOG_YAML_PATH),
                 (OTEL_CONFIG_YAML, OTEL_CONFIG_YAML_PATH),

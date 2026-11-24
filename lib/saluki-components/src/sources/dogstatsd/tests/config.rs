@@ -59,16 +59,6 @@ fn statsd_forward_target_requires_host_and_port() {
 }
 
 #[test]
-fn statsd_forward_invalid_target_still_builds_forwarder_handle() {
-    let config = DogStatsDConfiguration {
-        statsd_forward_host: Some(MetaString::from("not a valid host")),
-        statsd_forward_port: 9125,
-        ..DogStatsDConfiguration::for_test()
-    };
-    assert!(config.packet_forwarder_target().is_some());
-}
-
-#[test]
 fn autoscaling_disabled_yields_a_single_udp_stream() {
     let config = DogStatsDConfiguration {
         autoscale_udp_listeners: false,

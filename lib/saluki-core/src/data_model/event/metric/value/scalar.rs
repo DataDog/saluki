@@ -27,12 +27,16 @@ impl ScalarPoints {
         &mut self.0
     }
 
+    #[inline]
     pub(super) fn add_point(&mut self, timestamp: Option<NonZeroU64>, value: f64) {
+        let needs_sort = self.0.values.last().is_some_and(|last| last.timestamp > timestamp);
         self.0.values.push(TimestampedValue {
             timestamp,
             value: OrderedFloat(value),
         });
-        self.0.sort_by_timestamp();
+        if needs_sort {
+            self.0.sort_by_timestamp();
+        }
     }
 
     pub(super) fn drain_timestamped(&mut self) -> Self {
@@ -162,5 +166,40 @@ impl fmt::Display for ScalarPoints {
             write!(f, "({}, {})", ts, value)?;
         }
         write!(f, "]")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ts(v: u64) -> Option<NonZeroU64> {
+        NonZeroU64::new(v)
+    }
+
+    #[test]
+    fn add_point_maintains_sorted_timestamp_order() {
+        let mut points = ScalarPoints::new();
+        points.add_point(None, 1.0);
+        points.add_point(None, 2.0);
+        points.add_point(ts(10), 3.0);
+        points.add_point(ts(20), 4.0);
+        points.add_point(ts(15), 5.0);
+        points.add_point(None, 6.0);
+        points.add_point(ts(10), 7.0);
+
+        let collected: Vec<_> = (&points).into_iter().collect();
+        assert_eq!(
+            collected,
+            vec![
+                (None, 1.0),
+                (None, 2.0),
+                (None, 6.0),
+                (ts(10), 3.0),
+                (ts(10), 7.0),
+                (ts(15), 5.0),
+                (ts(20), 4.0),
+            ]
+        );
     }
 }

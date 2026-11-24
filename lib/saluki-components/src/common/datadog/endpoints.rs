@@ -31,6 +31,10 @@ static DD_URL_REGEX: LazyLock<Regex> =
 /// An official Datadog site with no subdomain, such as `datadoghq.com`.
 static DD_SITE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("^({DD_SITE_PATTERN})$")).unwrap());
 
+/// An official Datadog site, with its optional region and Multi-Region Failover label, such as `us5.datadoghq.com`.
+static DD_AGENT_SITE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"^(?:mrf\.)?{DD_REGION_PATTERN}(?:{DD_SITE_PATTERN})$")).unwrap());
+
 /// The site suffix of a configured or resolved endpoint, including its region.
 static DD_SITE_SUFFIX_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"(?:^|\.)(?P<site>{DD_REGION_PATTERN}(?:{DD_SITE_PATTERN}))$")).unwrap());
@@ -302,6 +306,9 @@ pub struct EndpointConfiguration {
 
     /// Additional endpoints to dual-ship to, keyed by endpoint URL with their API keys.
     additional_endpoints: HashMap<String, Vec<String>>,
+
+    /// Whether payloads skip the primary endpoint and go only to the additional endpoints.
+    skip_primary: bool,
 }
 
 impl EndpointConfiguration {
@@ -314,7 +321,21 @@ impl EndpointConfiguration {
             api_key,
             primary_endpoint,
             additional_endpoints,
+            skip_primary: false,
         }
+    }
+
+    /// Sends payloads only to the additional endpoints, skipping the primary endpoint.
+    ///
+    /// The caller is responsible for configuring at least one additional endpoint, or nothing is sent.
+    pub fn without_primary(mut self) -> Self {
+        self.skip_primary = true;
+        self
+    }
+
+    /// Returns whether payloads go to the primary endpoint.
+    pub(crate) const fn sends_to_primary(&self) -> bool {
+        !self.skip_primary
     }
 
     /// Creates a new `EndpointConfiguration` that targets a single destination.
@@ -325,6 +346,7 @@ impl EndpointConfiguration {
             api_key: destination.api_key.clone(),
             primary_endpoint: destination.url.clone(),
             additional_endpoints: HashMap::new(),
+            skip_primary: false,
         }
     }
 
@@ -649,13 +671,20 @@ fn compute_logs_authority(endpoint: &Url) -> Option<Authority> {
 }
 
 /// Computes the traces intake authority from a resolved endpoint URL.
-/// Returns `None` if the host doesn't contain the marker or if the authority can't be parsed.
+///
+/// Only a host that this crate version-prefixed, which has the form `{prefix}.agent.{site}` with an official Datadog
+/// site, gets one. A configured host that merely contains `.agent.` is the operator's own and is used as is.
+///
+/// Returns `None` if the host isn't of that form or if the authority can't be parsed.
 fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
     const AGENT_HOST_MARKER: &str = ".agent.";
 
     let host = endpoint.host_str()?;
     let idx = host.find(AGENT_HOST_MARKER)?;
     let site = &host[idx + AGENT_HOST_MARKER.len()..];
+    if !host_matches(&DD_AGENT_SITE_REGEX, site) {
+        return None;
+    }
     let traces_host = format!("trace.agent.{}", site);
 
     Authority::from_str(&traces_host).ok()
@@ -1102,6 +1131,25 @@ mod tests {
             ..v3_endpoint_config(&resolved, &series_config)
         });
         assert!(settings.use_v3_series);
+    }
+
+    #[test]
+    fn only_official_datadog_hosts_get_a_traces_authority() {
+        let cases = [
+            ("https://app.datadoghq.com", Some("trace.agent.datadoghq.com")),
+            ("https://app.us5.datadoghq.com", Some("trace.agent.us5.datadoghq.com")),
+            ("https://app.datadoghq.eu", Some("trace.agent.datadoghq.eu")),
+            ("https://trace.agent.datadoghq.com", Some("trace.agent.datadoghq.com")),
+            // Hosts the operator wrote are used as is, even when they contain the marker.
+            ("https://foo.agent.corp.example", None),
+            ("http://opw.agent.internal:8080", None),
+            ("https://custom.example.com", None),
+        ];
+
+        for (raw, expected) in cases {
+            let endpoint = ResolvedEndpoint::from_raw_endpoint(raw, "fake-api-key").expect("endpoint should resolve");
+            assert_eq!(expected, endpoint.traces_authority().map(Authority::as_str), "{raw}");
+        }
     }
 
     #[test]

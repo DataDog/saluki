@@ -68,7 +68,8 @@ pub(crate) struct ContainerOs {
     archive_root: &'static str,
     /// Kernel parameters set in every container.
     sysctls: &'static [(&'static str, &'static str)],
-    /// The courier's target triple, without its architecture, and file name, as `make build-courier` builds it.
+    /// The courier's target triple, without its architecture, and file name. Linux has it as `make build-courier`
+    /// builds it, and Windows as the Windows integration script places it.
     courier_target: &'static str,
     courier_file: &'static str,
 }
@@ -83,6 +84,17 @@ pub(crate) const LINUX: ContainerOs = ContainerOs {
     sysctls: &[("net.ipv4.ip_local_port_range", LINUX_EPHEMERAL_PORT_RANGE)],
     courier_target: "unknown-linux-musl",
     courier_file: "courier",
+};
+
+/// Windows containers. The case has no volume: the participant's directory is inside each container only.
+pub(crate) const WINDOWS: ContainerOs = ContainerOs {
+    enclosure: Enclosure::WindowsContainer,
+    network_driver: "nat",
+    volume: false,
+    archive_root: "C:\\",
+    sysctls: &[],
+    courier_target: "pc-windows-msvc",
+    courier_file: "courier.exe",
 };
 
 impl ContainerOs {
