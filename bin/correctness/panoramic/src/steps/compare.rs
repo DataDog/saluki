@@ -998,6 +998,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_span_on_one_side_only_leaves_the_other_spans_and_the_stats_compared() {
+        let fields = "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false, \
+            min_stats_groups: 1, known_differences: [{gap: gap/top-level, issue: 1, paths: [span.metrics._top_level], \
+            kinds: [missing], when: {resource: [GET /]}, reason: no top-level mark}]}}";
+        let mut baseline_spans = spans_with_metrics(10, json!({"_top_level": 1.0}));
+        baseline_spans.push(span_json("api", "web.request", "GET /lost", 3, 30, false));
+        let baseline = tracing(baseline_spans, &fixture_groups());
+
+        // The comparison lacks one span and holds another, a field of a span on both sides differs, and so does a
+        // stats group. The known difference still covers only its field.
+        let mut comparison_spans = spans_with_metrics(11, json!({"_dd.measured": 1.0}));
+        comparison_spans.push(span_json("api", "web.request", "GET /new", 4, 40, false));
+        let comparison = tracing(
+            comparison_spans,
+            &[
+                stats_group_json(1, "api", "web.request", "GET /"),
+                stats_group_json(3, "db", "db.query", "SELECT 2"),
+            ],
+        );
+
+        let report = compare(fields, &comparison, &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        for expected in [
+            "span 11 (service=\"db\" name=\"db.query\" resource=\"SELECT 1\"):\n    metrics._dd.measured: \
+             baseline=<missing> comparison=1.0",
+            "span 30 (service=\"api\" name=\"web.request\" resource=\"GET /lost\"):\n    only in baseline",
+            "span 40 (service=\"api\" name=\"web.request\" resource=\"GET /new\"):\n    only in comparison",
+            "stats group service=\"db\" name=\"db.query\" resource=\"SELECT 1\":\n    only in baseline",
+            "stats group service=\"db\" name=\"db.query\" resource=\"SELECT 2\":\n    only in comparison",
+        ] {
+            assert!(report.message.contains(expected), "{}:\n{}", expected, report.message);
+        }
+        assert!(!report.message.contains("span 10"), "{}", report.message);
+        assert!(!report.message.contains("no longer occurs"), "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_known_span_difference_is_stale_for_each_named_span_that_no_longer_differs() {
+        let fields = "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false, \
+            min_stats_groups: 2, known_differences: [{gap: gap/top-level, issue: 1, paths: [span.metrics._top_level], \
+            kinds: [missing], when: {resource: [GET /, SELECT 1]}, reason: no top-level mark}]}}";
+        let baseline = tracing(spans_with_metrics(10, json!({"_top_level": 1.0})), &fixture_groups());
+
+        let report = compare(fields, &fixture_traces(), &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "path `span.metrics._top_level` when `resource` is \"SELECT 1\" (no top-level mark). Remove it \
+                 from the case."
+            ),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("is \"GET /\""), "{}", report.message);
+    }
+
+    #[tokio::test]
     async fn span_expectations_of_a_spans_only_comparison_ignore_stats() {
         let direct = "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \
             traces: {min_traces: 2, spans: [{service: api, name: web.request}]}}";

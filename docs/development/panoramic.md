@@ -634,8 +634,9 @@ out of the value comparison. A missing series or an extra type is not a type dif
 The fixture sends another sum, `otlp.cumulative.monotonic`. Its count must still match. To check the values of the
 pair that `compare` left out, the case uses `intake_has_metric` on each intake: count 30 on one, gauge 3 on the other.
 
-**Known differences of traces.** A traces `compare` reports every difference in the APM statistics, not only the
-first. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
+**Known differences of traces.** A traces `compare` reports every difference in the spans and the APM statistics,
+not only the first. A span or a statistics group on one side only does not stop the comparison of the spans and
+groups on both sides. A span on one side only always fails the step. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
 `logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
 `paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
 compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a
