@@ -1099,6 +1099,9 @@ ADP differs in these ways:
   unusual group references: `$01` and `${01}` refer to group 1 rather than expanding to
   nothing, `${}` and `${ 1}` expand to nothing rather than being kept as they are, and `$é` is
   kept as it is rather than expanding to nothing.
+- For OTLP logs, the Agent matches the rules against content that its JSON encoding escapes:
+  `<` and `>`, for example, become `\u003c` and `\u003e`. ADP matches against the content as it
+  is, so a pattern that relies on those escapes doesn't match in ADP.
 
 ### `logs_enabled`
 
