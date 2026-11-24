@@ -105,6 +105,24 @@ pub fn decode_hex_exact_to_bytes(s: &str, expected_len_bytes: usize) -> Option<V
 /// The depth at which [`flatten_attribute`] renders a map as a string instead of flattening it.
 const FLATTEN_STRING_DEPTH: usize = 10;
 
+/// Where [`flatten_attribute`] writes the properties of a record attribute.
+trait PropertySink {
+    /// Sets a property, overwriting an earlier one with the same key.
+    fn set(&mut self, key: String, value: JsonValue);
+}
+
+impl PropertySink for HashMap<MetaString, JsonValue> {
+    fn set(&mut self, key: String, value: JsonValue) {
+        self.insert(key.into(), value);
+    }
+}
+
+impl PropertySink for Vec<(String, JsonValue)> {
+    fn set(&mut self, key: String, value: JsonValue) {
+        self.push((key, value));
+    }
+}
+
 /// Flattens a record attribute into `out` as `flattenAttribute` in the Agent does, and returns whether any value is a
 /// placeholder for a non-finite double.
 ///
@@ -118,23 +136,8 @@ const FLATTEN_STRING_DEPTH: usize = 10;
 /// JSON can't hold a NaN or an infinite double, and the Agent fails to marshal a log that holds one. A non-finite
 /// double becomes a `null` placeholder, so the caller can drop the log if the placeholder is still there once every
 /// property is set. No other value becomes `null`.
-fn flatten_attribute(key: &str, value: Option<&OtlpValue>, depth: usize, out: &mut Vec<(String, JsonValue)>) -> bool {
-    let leaf = match value {
-        Some(ArrayValue(array)) => {
-            let mut non_finite = false;
-            let mut elements = Vec::with_capacity(array.values.len());
-            for element in &array.values {
-                let mut flattened = Vec::new();
-                non_finite |= flatten_attribute("", element.value.as_ref(), depth + 1, &mut flattened);
-                let element = match flattened.iter().rposition(|(key, _)| key.is_empty()) {
-                    Some(index) => flattened.swap_remove(index).1,
-                    None => JsonValue::Object(flattened.into_iter().collect()),
-                };
-                elements.push(element);
-            }
-            out.push((key.to_string(), JsonValue::Array(elements)));
-            return non_finite;
-        }
+fn flatten_attribute<S: PropertySink>(key: &str, value: Option<&OtlpValue>, depth: usize, out: &mut S) -> bool {
+    match value {
         Some(KvlistValue(map)) if depth != FLATTEN_STRING_DEPTH => {
             let mut non_finite = false;
             for kv in &map.values {
@@ -145,22 +148,53 @@ fn flatten_attribute(key: &str, value: Option<&OtlpValue>, depth: usize, out: &m
                 };
                 non_finite |= flatten_attribute(&nested_key, key_value_value(kv), depth + 1, out);
             }
-            return non_finite;
+            non_finite
         }
-        Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-        Some(IntValue(i)) => JsonValue::from(*i),
-        Some(BoolValue(b)) => JsonValue::Bool(*b),
-        Some(DoubleValue(d)) => match serde_json::Number::from_f64(*d) {
-            Some(number) => JsonValue::Number(number),
-            None => {
-                out.push((key.to_string(), JsonValue::Null));
-                return true;
+        _ => {
+            let (leaf, non_finite) = flattened_value(value, depth);
+            out.set(key.to_string(), leaf);
+            non_finite
+        }
+    }
+}
+
+/// Converts a value that [`flatten_attribute`] doesn't spread into dotted keys, and returns whether it holds a
+/// placeholder for a non-finite double.
+fn flattened_value(value: Option<&OtlpValue>, depth: usize) -> (JsonValue, bool) {
+    match value {
+        Some(ArrayValue(array)) => {
+            let mut non_finite = false;
+            let mut elements = Vec::with_capacity(array.values.len());
+            for element in &array.values {
+                let element = match element.value.as_ref() {
+                    // Only a map element that spreads has keys to look at. Every other element is a single value.
+                    Some(map @ KvlistValue(_)) if depth + 1 != FLATTEN_STRING_DEPTH => {
+                        let mut flattened = Vec::new();
+                        non_finite |= flatten_attribute("", Some(map), depth + 1, &mut flattened);
+                        match flattened.iter().rposition(|(key, _)| key.is_empty()) {
+                            Some(index) => flattened.swap_remove(index).1,
+                            None => JsonValue::Object(flattened.into_iter().collect()),
+                        }
+                    }
+                    other => {
+                        let (element, element_non_finite) = flattened_value(other, depth + 1);
+                        non_finite |= element_non_finite;
+                        element
+                    }
+                };
+                elements.push(element);
             }
+            (JsonValue::Array(elements), non_finite)
+        }
+        Some(OtlpStringValue(s)) => (JsonValue::String(s.clone()), false),
+        Some(IntValue(i)) => (JsonValue::from(*i), false),
+        Some(BoolValue(b)) => (JsonValue::Bool(*b), false),
+        Some(DoubleValue(d)) => match serde_json::Number::from_f64(*d) {
+            Some(number) => (JsonValue::Number(number), false),
+            None => (JsonValue::Null, true),
         },
-        other => JsonValue::String(otlp_value_as_string(other).into_owned()),
-    };
-    out.push((key.to_string(), leaf));
-    false
+        other => (JsonValue::String(otlp_value_as_string(other).into_owned()), false),
+    }
 }
 
 /// Returns whether a property holds the placeholder that [`flatten_attribute`] writes for a non-finite double.
@@ -295,11 +329,7 @@ pub fn transform_log_record(
             }
             // Default: flatten maps, keep arrays, and insert every value.
             _ => {
-                let mut flattened = Vec::new();
-                non_finite |= flatten_attribute(&kv.key, key_value_value(kv), 1, &mut flattened);
-                for (key, val) in flattened {
-                    additional_properties.insert(key.into(), val);
-                }
+                non_finite |= flatten_attribute(&kv.key, key_value_value(kv), 1, &mut additional_properties);
             }
         }
     }

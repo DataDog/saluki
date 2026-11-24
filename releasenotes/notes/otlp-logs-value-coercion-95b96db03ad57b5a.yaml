@@ -4,4 +4,5 @@ fixes:
     OTLP logs handled natively now convert attribute values as the Datadog Agent does. Resource and scope attributes,
     the body, ``service.name``, and the ``message``, ``status``, and ``ddtags`` attributes become strings, so
     non-string values are no longer dropped or ignored. Bytes become base64 and empty values become empty strings. Log
-    attribute arrays stay JSON arrays. A log with a NaN or infinite log attribute is dropped, as the Agent drops it.
+    attribute arrays stay JSON arrays. As in the Agent, a log is dropped when a log attribute holds a NaN or infinite
+    number that no resource or scope attribute with the same key overwrites.
