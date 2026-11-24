@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use tracing::warn;
 
@@ -356,6 +356,11 @@ impl ForwarderConfiguration {
     /// intake delivers for the primary target, because it replaces the primary endpoint for metrics.
     pub(crate) fn build_routable_endpoints(&self) -> Result<Vec<RoutableEndpoint>, GenericError> {
         let mut endpoints = self.build_unlabeled_endpoints()?;
+        if endpoints.is_empty() {
+            return Err(generic_error!(
+                "No endpoint to send to: the primary endpoint is skipped and no additional endpoint has an API key."
+            ));
+        }
         if let Some(catalog) = &self.routing_targets {
             endpoints = endpoints
                 .into_iter()
@@ -378,10 +383,12 @@ impl ForwarderConfiguration {
     fn build_unlabeled_endpoints(&self) -> Result<Vec<RoutableEndpoint>, GenericError> {
         // Label each endpoint so the I/O loop can route metrics to OPW and non-metrics to the normal primary.
         let mut endpoints = Vec::new();
-        endpoints.push(RoutableEndpoint::new(
-            EndpointRoute::Primary,
-            self.endpoint.build_primary_endpoint()?,
-        ));
+        if self.endpoint.sends_to_primary() {
+            endpoints.push(RoutableEndpoint::new(
+                EndpointRoute::Primary,
+                self.endpoint.build_primary_endpoint()?,
+            ));
+        }
 
         if let Some(selected) = self.opw_metrics.selected_endpoint() {
             let trimmed_url = selected.url.trim();
@@ -712,6 +719,37 @@ mod tests {
             vec![ADDITIONAL_URI],
             endpoint_urls_by_route(&config, EndpointRoute::Additional)
         );
+    }
+
+    #[test]
+    fn the_primary_endpoint_can_be_skipped() {
+        let mut config = forwarder_config_for(
+            DATADOG_URL,
+            HashMap::from([(ADDITIONAL_URL.to_string(), vec!["extra-api-key".to_string()])]),
+        );
+        config.endpoint = config.endpoint.without_primary();
+
+        assert!(endpoint_urls_by_route(&config, EndpointRoute::Primary).is_empty());
+        assert_eq!(
+            vec![ADDITIONAL_URI],
+            endpoint_urls_by_route(&config, EndpointRoute::Additional)
+        );
+    }
+
+    #[test]
+    fn skipping_the_primary_endpoint_without_an_additional_one_fails_closed() {
+        let mut config = forwarder_config_for(DATADOG_URL, HashMap::new());
+        config.endpoint = config.endpoint.without_primary();
+
+        assert!(config.build_routable_endpoints().is_err());
+
+        config.endpoint = EndpointConfiguration::new(
+            "api-key".to_string(),
+            DATADOG_URL.to_string(),
+            HashMap::from([(ADDITIONAL_URL.to_string(), vec![" ".to_string()])]),
+        )
+        .without_primary();
+        assert!(config.build_routable_endpoints().is_err());
     }
 
     #[test]

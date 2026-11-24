@@ -20,6 +20,7 @@ members = [
   "lib/datadog-agent/metrics-v3",
   "lib/datadog-agent/remote-config",
   "lib/datadog-agent/runtime",
+  "lib/datadog-agent/tag-normalization",
   "lib/ddsketch",
   "lib/go-duration",
   "lib/ottl",
@@ -69,6 +70,7 @@ datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-
 datadog-agent-metrics-v3 = { path = "lib/datadog-agent/metrics-v3" }
 datadog-agent-remote-config = { path = "lib/datadog-agent/remote-config" }
 datadog-agent-runtime = { path = "lib/datadog-agent/runtime" }
+datadog-agent-tag-normalization = { path = "lib/datadog-agent/tag-normalization" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
@@ -147,6 +149,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
   "rustls-native-certs",
 ] }
 hyper-util = { version = "0.1.20", default-features = false }
+icu_properties = { version = "2", default-features = false, features = ["compiled_data"] }
 indexmap = { version = "2", default-features = false }
 memchr = { version = "2.8", default-features = false }
 metrics = { version = "0.24", default-features = false }

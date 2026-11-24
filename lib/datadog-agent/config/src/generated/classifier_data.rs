@@ -47,20 +47,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         presence_matters: false,
     },
     ClassifierEntry {
-        yaml_path: "apm_config.apm_dd_url",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
-        default: DefaultValue::Json("\"\""),
-        presence_matters: false,
-    },
-    ClassifierEntry {
-        yaml_path: "apm_config.traces_send_to_main_endpoint",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
-        default: DefaultValue::Json("true"),
-        presence_matters: false,
-    },
-    ClassifierEntry {
         yaml_path: "config_id",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,

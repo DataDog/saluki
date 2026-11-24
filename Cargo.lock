@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-data-plane"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "agent-data-plane-config",
  "agent-data-plane-config-system",
@@ -34,6 +34,7 @@ dependencies = [
  "datadog-agent-config",
  "datadog-agent-config-docs",
  "datadog-agent-runtime",
+ "datadog-agent-tag-normalization",
  "datadog-protos",
  "derive-where",
  "futures",
@@ -1501,6 +1502,15 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "datadog-agent-tag-normalization"
+version = "0.1.0"
+dependencies = [
+ "icu_properties",
+ "proptest",
+ "simdutf8",
 ]
 
 [[package]]
@@ -5853,6 +5863,7 @@ dependencies = [
  "anymap3",
  "async-trait",
  "bitmask-enum",
+ "bytes",
  "bytesize",
  "criterion",
  "crossbeam-queue",

@@ -27,8 +27,6 @@ tracking.
 
 | Config Key                                                      | Description                                       | Issue   |
 | --------------------------------------------------------------- | ------------------------------------------------- | ------- |
-| `apm_config.apm_dd_url`                                         | APM intake URL override                           | [#2419] |
-| `apm_config.traces_send_to_main_endpoint`                       | Send traces and stats to the main endpoint        | [#2419] |
 | `dogstatsd_client_drop_detection.dropped_ratio_threshold`       | Client drop ratio that marks a client unhealthy   | [#3088] |
 | `dogstatsd_client_drop_detection.enabled`                       | DogStatsD client drop detection                   | [#3088] |
 | `dogstatsd_client_drop_detection.recovery_confirmation_window`  | Time below threshold before a client recovers     | [#3088] |
@@ -656,8 +654,8 @@ does.
 ADP also sends logs to these endpoints, which the core Agent never does: the Agent sends logs only
 to the endpoints configured under `logs_config`, including `logs_config.additional_endpoints`.
 Only the logs ADP handles itself are affected: native OTLP logs, when it doesn't relay them to the
-core Agent, and check logs. ADP sends native traces to these endpoints too, where the core Agent
-uses `apm_config.additional_endpoints`.
+core Agent, and check logs. ADP doesn't send traces to these endpoints: native traces go to
+`apm_config.additional_endpoints` instead.
 
 ### `aggregator_stop_timeout`
 
@@ -1300,7 +1298,20 @@ This ADP-only key is independent from `metric_tag_filterlist`. Remote Config upd
 
 Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value tag such as `customer_id:` is a value and is subject to the allow-list; include `""` in `values` to retain it. An empty `values` list treats every key/value tag as a mismatch.
 
-Distinct metric prefixes must not overlap, even when the rules target different tags. Multiple rules may use the same prefix when they target different tags. ADP rejects overlapping rules at startup so each metric matches at most one prefix. ADP also rejects empty metric prefixes and tag names, duplicate prefix and tag pairs, and tag names containing `:`. As with `metric_tag_filterlist`, ADP does not trim configured strings: prefixes, tag names, values, and replacements preserve whitespace and match exactly. Configure a replacement that cannot collide with a real tag value.
+Like `metric_tag_filterlist`, ADP compares `tag_name` with tag keys as Datadog stores them, normalizing both, so `tag_name: Customer ID` applies to `customer_id:top-1` and `CUSTOMER_ID:top-1`. Values are still matched exactly, so `customer_id:Top-1` does not match a configured `top-1`. A replacement tag uses the normalized tag name, such as `customer_id:other`. See `SPEC.md` in the `datadog-agent-tag-normalization` crate (`lib/datadog-agent/tag-normalization/`) for the rules.
+
+Multiple rules may use the same prefix when they target different tags. Metric prefixes are compared exactly, without normalization. ADP rejects the configuration at startup when:
+
+- distinct metric prefixes overlap, even when the rules target different tags, so that each metric matches at most one prefix
+- a metric prefix or tag name is empty
+- a tag name contains `:`
+
+ADP ignores, with a warning:
+
+- a rule whose tag name is 200 bytes or more once normalized, since Datadog never stores such a tag with a value
+- a rule whose tag name normalizes to the same key as an earlier rule for the same prefix, such as `Customer ID` after `customer_id`
+
+ADP does not trim configured strings: prefixes, values, and replacements preserve whitespace and match exactly. Whitespace in a tag name is normalized like any other character, so a trailing space becomes `_`. Configure a replacement that cannot collide with a real tag value.
 
 ### `dogstatsd_permissive_decoding`
 
@@ -1345,8 +1356,10 @@ The following settings work in ADP with the same behavior as the core agent.
 | `agent_ipc.grpc_max_message_size`                                                          | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                                                     | Relax backend tag validation via HTTP header       |
 | `api_key`                                                                                  | API key for endpoint auth                          |
+| `apm_config.additional_endpoints`                                                          | Dual-ship traces and stats to extra endpoints      |
 | `apm_config.analyzed_rate_by_service`                                                      | Legacy per-service event extraction rates          |
 | `apm_config.analyzed_spans`                                                                | Per service|operation APM event extraction rates   |
+| `apm_config.apm_dd_url`                                                                    | APM intake URL override                            |
 | `apm_config.apm_non_local_traffic`                                                         | Accept non-local traffic on the APM receiver       |
 | `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
@@ -1387,6 +1400,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.receiver_socket`                                                               | APM receiver Unix domain socket path               |
 | `apm_config.replace_tags`                                                                  | Regex-based trace tag replacement rules            |
 | `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |
+| `apm_config.traces_send_to_main_endpoint`                                                  | Send traces and stats to the main endpoint         |
 | `auth_token_file_path`                                                                     | Agent authentication token file path               |
 | `autoscaling.failover.enabled`                                                             | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                                             | Metric names forwarded to DCA for failover         |
@@ -1505,6 +1519,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `observability_pipelines_worker.metrics.enabled`                                           | Route metrics to OPW instance                      |
 | `observability_pipelines_worker.metrics.url`                                               | OPW metrics intake URL                             |
 | `observability_pipelines_worker.metrics.use_v3_api.series`                                 | Use V3 series for OPW                              |
+| `observability_pipelines_worker.traces.enabled`                                            | Route traces and stats to OPW                      |
+| `observability_pipelines_worker.traces.url`                                                | OPW traces intake URL                              |
 | `origin_detection_unified`                                                                 | Unified origin detection mode                      |
 | `otlp_config.metrics.delta_ttl`                                                            | TTL (seconds) for cached delta-conversion points   |
 | `otlp_config.metrics.enabled`                                                              | Accept OTLP metrics                                |
@@ -1582,6 +1598,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `vector.metrics.enabled`                                                                   | Route metrics to OPW (legacy alias)                |
 | `vector.metrics.url`                                                                       | OPW metrics intake URL (legacy alias)              |
 | `vector.metrics.use_v3_api.series`                                                         | Use V3 series for Vector                           |
+| `vector.traces.enabled`                                                                    | Route traces to OPW (legacy alias)                 |
+| `vector.traces.url`                                                                        | OPW traces intake URL (legacy alias)               |
 | `vsock_addr`                                                                               | vsock address for Agent IPC endpoint               |
 
 
@@ -1900,6 +1918,21 @@ metric.
 The empty `prefix` matches every stored metric name. The empty `except_prefix` keeps every
 stored metric name, making the rule a no-op.
 
+### `metric_tag_filterlist`
+
+ADP matches `metric_tag_filterlist` rules against metric names and tag keys as Datadog stores
+them, which is what you see in Datadog. Both the configured strings and incoming metrics are
+normalized for comparison, so a rule for `my-service.requests` with the tag key `Env` applies to
+the metric `my_service.requests` and removes tags such as `env:prod` and `ENV:Prod`. Rules whose
+metric names normalize to the same name are merged; if they configure both `include` and
+`exclude`, ADP keeps only the `exclude` rules and logs a warning. ADP ignores, with a warning,
+a rule whose metric name Datadog never stores, such as `123`. It also ignores any tag key
+containing `:`, since tag keys can't contain one: list the key only, such as `env`.
+Whitespace in a tag key is normalized like any other character, so `"env "` becomes `env_`
+and no longer matches `env`. Tags that are kept are sent unchanged. See
+`SPEC.md` in the `datadog-agent-tag-normalization` crate (`lib/datadog-agent/tag-normalization/`)
+for the rules.
+
 ### `otlp_config.metrics.delta_ttl`
 
 Controls how long previously seen data points are kept in memory when converting cumulative
@@ -2103,7 +2136,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
-[#2419]: https://github.com/DataDog/saluki/issues/2419
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559
