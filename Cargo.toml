@@ -39,6 +39,7 @@ members = [
   "lib/saluki-io",
   "lib/saluki-metadata",
   "lib/saluki-metric-kernels",
+  "lib/saluki-metric-plan",
   "lib/saluki-metrics",
   "lib/saluki-metrics-macros",
   "lib/saluki-tls",
@@ -87,6 +88,7 @@ saluki-error = { path = "lib/saluki-error" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metadata = { path = "lib/saluki-metadata" }
 saluki-metric-kernels = { path = "lib/saluki-metric-kernels" }
+saluki-metric-plan = { path = "lib/saluki-metric-plan" }
 saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-metrics-macros = { path = "lib/saluki-metrics-macros" }
 saluki-tls = { path = "lib/saluki-tls" }

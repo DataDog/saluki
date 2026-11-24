@@ -6018,6 +6018,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "saluki-metric-plan"
+version = "0.1.0"
+dependencies = [
+ "saluki-core",
+ "saluki-error",
+ "saluki-metric-kernels",
+ "serde",
+ "serde_json",
+ "snafu",
+]
+
+[[package]]
 name = "saluki-metrics"
 version = "0.1.0"
 dependencies = [
