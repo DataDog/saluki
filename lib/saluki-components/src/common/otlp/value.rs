@@ -158,6 +158,10 @@ pub(crate) fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
 /// Renders a double like `pcommon`'s `float64AsString`: ES6 number-to-string, which is decimal from 1e-6 up to 1e21 and
 /// exponent form outside that range, with `NaN`, `Infinity`, and `-Infinity` spelled out. `encoding/json` writes finite
 /// doubles the same way.
+///
+/// The digits are the shortest that round-trip, as Go's `strconv.FormatFloat` writes them with precision -1. When two
+/// candidates are equally close, Go keeps the even last digit. Ryu does the same, but Rust's own formatting doesn't:
+/// it writes `1888570120608320.3` where Go writes `1888570120608320.2`. So the digits come from Ryu, in Go's layout.
 fn float64_as_string(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -165,17 +169,71 @@ fn float64_as_string(value: f64) -> String {
     if value.is_infinite() {
         return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
     }
+    if value == 0.0 {
+        return if value.is_sign_negative() { "-0" } else { "0" }.to_string();
+    }
+
+    let mut buffer = ryu::Buffer::new();
+    let (digits, point) = decimal_digits(buffer.format_finite(value.abs()));
+    let mut out = String::with_capacity(digits.len() + 8);
+    if value < 0.0 {
+        out.push('-');
+    }
 
     let magnitude = value.abs();
-    if magnitude != 0.0 && !(1e-6..1e21).contains(&magnitude) {
-        // Rust writes `1e21` and `1.5e-7`; ES6 writes a sign on positive exponents, as in `1e+21`.
-        let exponent_form = format!("{value:e}");
-        return match exponent_form.split_once('e') {
-            Some((mantissa, exponent)) if !exponent.starts_with('-') => format!("{mantissa}e+{exponent}"),
-            _ => exponent_form,
-        };
+    if !(1e-6..1e21).contains(&magnitude) {
+        // Go writes `d.ddde±x`, with a sign but no padding on the exponent, as in `1e+21` and `1.5e-7`.
+        out.push_str(&digits[..1]);
+        if digits.len() > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        let exponent = point - 1;
+        let _ = write!(
+            out,
+            "e{}{}",
+            if exponent < 0 { '-' } else { '+' },
+            exponent.unsigned_abs()
+        );
+    } else if point <= 0 {
+        out.push_str("0.");
+        out.extend(std::iter::repeat_n('0', point.unsigned_abs() as usize));
+        out.push_str(&digits);
+    } else {
+        let point = point as usize;
+        if point >= digits.len() {
+            out.push_str(&digits);
+            out.extend(std::iter::repeat_n('0', point - digits.len()));
+        } else {
+            out.push_str(&digits[..point]);
+            out.push('.');
+            out.push_str(&digits[point..]);
+        }
     }
-    value.to_string()
+    out
+}
+
+/// Splits the output of Ryu for a positive double into its significant digits and the position of the decimal point.
+///
+/// The value is `0.<digits> × 10^point`. The digits have no leading or trailing zeros. Ryu writes forms such as `1.0`,
+/// `0.001`, `1e21`, and `1.5e-7`.
+fn decimal_digits(formatted: &str) -> (String, i32) {
+    let (mantissa, exponent) = match formatted.split_once('e') {
+        Some((mantissa, exponent)) => (
+            mantissa,
+            exponent.parse::<i32>().expect("Ryu writes a decimal exponent"),
+        ),
+        None => (formatted, 0),
+    };
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+
+    let mut digits = String::with_capacity(integer.len() + fraction.len());
+    digits.push_str(integer);
+    digits.push_str(fraction);
+    let leading_zeros = digits.len() - digits.trim_start_matches('0').len();
+    let digits = digits.trim_start_matches('0').trim_end_matches('0').to_string();
+    let point = integer.len() as i32 + exponent - leading_zeros as i32;
+    (digits, point)
 }
 
 /// Renders an OTLP value as a string for trace metadata. Arrays and maps become JSON.
@@ -291,6 +349,10 @@ mod tests {
             (f64::NAN, "NaN"),
             (f64::INFINITY, "Infinity"),
             (f64::NEG_INFINITY, "-Infinity"),
+            // Equally close candidates keep the even last digit, as Go does.
+            (f64::from_bits(0x431a_d693_fcb0_6901), "1888570120608320.2"),
+            (1e15 + 0.25, "1000000000000000.2"),
+            (1e15 + 0.75, "1000000000000000.8"),
         ] {
             assert_eq!(float64_as_string(value), expected, "{value:?}");
         }

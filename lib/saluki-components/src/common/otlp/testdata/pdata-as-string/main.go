@@ -78,7 +78,7 @@ func main() {
 
 	// Doubles from random bits, to cover the float layout broadly. The seed is fixed, so the vectors are stable.
 	rng := rand.New(rand.NewPCG(1, 2))
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 32; i++ {
 		add(fmt.Sprintf("random doubles %d", i), func(v pcommon.Value) {
 			s := v.SetEmptySlice()
 			for len := 0; len < 32; {
@@ -225,6 +225,13 @@ func doubles() []float64 {
 		2.2250738585072014e-308,
 		float64(math.MaxInt64),
 		9007199254740993,
+		// Two shortest candidates are equally close to each of these, and Go keeps the even last digit.
+		math.Float64frombits(0x431ad693fcb06901),
+		1e15+0.25,
+		1e15+0.75,
+		-(1e15 + 0.25),
+		4503599627370495.5,
+		4503599627370494.5,
 	)
 }
 
