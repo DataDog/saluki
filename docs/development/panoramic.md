@@ -530,7 +530,7 @@ include a `metrics` section:
   optionally `tags`, `tags_match`, `metric_type` and `value`. See
   [Checking a metric at the intake](#checking-a-metric-at-the-intake).
 - `known_differences`: series whose type differs between the sides because of an open gap. An entry has `gap`,
-  `issue`, `paths: [type]`, `when: {name: [...]}`, `kinds` (optional) and `reason`. A series of a listed name that each
+  `issue`, `paths: [type]`, `when: {name: [...]}`, `kinds` (optional, only `value`) and `reason`. A series of a listed name that each
   side holds with a different type is left out of the comparison on both sides, and the other series are still
   compared by value. A difference that no entry covers fails the step, and so does an entry that matches no series.
 

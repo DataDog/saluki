@@ -51,8 +51,8 @@ impl MetricsOptions {
     ///
     /// # Errors
     ///
-    /// If the section sets no expectation, or if an entry names no issue, has a path other than `type`, or is not scoped
-    /// to series names with `when: {name: [...]}`, an error is returned.
+    /// If the section sets no expectation, or if an entry names no issue, has a path other than `type` or a kind other
+    /// than `value`, or is not scoped to series names with `when: {name: [...]}`, an error is returned.
     pub fn validate(&self) -> Result<(), String> {
         if self.min_series.is_none() && self.series.is_empty() {
             return Err("'metrics' sets no expectation: set 'min_series' or 'series'".to_string());
@@ -65,6 +65,13 @@ impl MetricsOptions {
                 return Err(format!(
                     "known difference '{}' has the path '{}': a metrics known difference covers only the '{}' path",
                     entry.gap, path, TYPE_PATH
+                ));
+            }
+            if entry.kinds.iter().any(|kind| *kind != DiffKind::Value) {
+                return Err(format!(
+                    "known difference '{}' has a kind other than 'value': a type difference is always a 'value' \
+                     difference",
+                    entry.gap
                 ));
             }
             if entry.when.keys().ne([NAME_FIELD]) {
@@ -556,6 +563,7 @@ mod tests {
         };
 
         assert!(validate("{gap: g, issue: 1, paths: [type], when: {name: [m]}, reason: r}").is_ok());
+        assert!(validate("{gap: g, issue: 1, paths: [type], kinds: [value], when: {name: [m]}, reason: r}").is_ok());
         let cases = [
             (
                 "{gap: g, paths: [type], when: {name: [m]}, reason: r}",
@@ -564,6 +572,10 @@ mod tests {
             (
                 "{gap: g, issue: 1, paths: [value], when: {name: [m]}, reason: r}",
                 "covers only the 'type' path",
+            ),
+            (
+                "{gap: g, issue: 1, paths: [type], kinds: [missing], when: {name: [m]}, reason: r}",
+                "a kind other than 'value'",
             ),
             ("{gap: g, issue: 1, paths: [type], reason: r}", "when: {name: [...]}"),
             (
