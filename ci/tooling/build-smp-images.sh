@@ -20,8 +20,9 @@
 #   `.resolve-smp-build-image`). The script hash covers the rest of the build recipe. The key
 #   doesn't include the credentials for the compiler cache: they change on each run, and they don't
 #   change the output.
-# - SMP key: the ADP image digest and the Agent image, which `.datadog-agent-version.json` pins by
-#   digest.
+# - SMP key: the ADP commit, the ADP image digest, the Agent image, which
+#   `.datadog-agent-version.json` pins by digest, and the hash of this script. The converged build
+#   takes its Dockerfile and its files from the ADP commit.
 #
 # Some inputs are outside the key, for example the packages that `apt-get install` gets during the
 # build, and the BuildKit version. So the script reuses an image only while it is younger than
@@ -217,7 +218,7 @@ adp_ref="${adp_img}"
 if [[ "${reuse}" == "true" ]]; then
     if adp_ref="$(pin_digest "${adp_img}")"; then
         smp_build_args=("DD_AGENT_IMAGE=${agent_image}" "ADP_IMAGE=${adp_ref}")
-        smp_key="$(printf '%s\n' "v2" "${smp_build_args[@]}" | sha256 | cut -c1-40)"
+        smp_key="$(printf '%s\n' "v3" "${adp_sha}" "${smp_build_args[@]}" "${recipe_hash}" | sha256 | cut -c1-40)"
         smp_img="${image_repo}:agent-adp-reuse-${smp_key}"
     else
         log "Couldn't resolve ${adp_img} to a digest; not reusing the converged image."
