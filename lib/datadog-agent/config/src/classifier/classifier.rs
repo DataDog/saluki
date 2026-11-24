@@ -104,6 +104,18 @@ mod tests {
     }
 
     #[test]
+    fn dogstatsd_metrics_stats_enable_is_not_classified() {
+        // ADP writes the debug log and serves statistics either way, so neither value is a finding.
+        let c = classifier();
+        assert!(c
+            .classify("dogstatsd_metrics_stats_enable", &Value::Bool(true))
+            .is_none());
+        assert!(c
+            .classify("dogstatsd_metrics_stats_enable", &Value::Bool(false))
+            .is_none());
+    }
+
+    #[test]
     fn partial_non_default() {
         let c = classifier();
         let result = c

@@ -244,6 +244,20 @@ topology, but only collects data during a time-bounded request. To collect stati
 window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
 same API and renders the result as either summary or cardinality analysis.
 
+ADP's per-metric statistics differ from the core agent's in these ways:
+
+- ADP collects statistics on demand, for a fixed window. The core agent keeps a cumulative map
+  for as long as `dogstatsd_metrics_stats_enable` is `true`. ADP counts only the samples that
+  arrive during the requested window, and keeps nothing between requests.
+- `dogstatsd_metrics_stats_enable` does not control the ADP statistics API. The API is always
+  available. In ADP, the key only controls the DogStatsD metric debug log.
+- Use `agent-data-plane dogstatsd stats` to read ADP's statistics. The core agent's
+  `agent dogstatsd-stats` command reads the core agent's own statistics, not ADP's.
+- ADP does not log the core agent's warning about a burst of metrics.
+- ADP records each metric before metric mapping (`dogstatsd_mapper_profiles`) and enrichment.
+  The core agent records each metric after them, so metric names and tags can differ between
+  the two outputs.
+
 ADP also exposes aggregate DogStatsD counters through its internal telemetry scrape endpoint. This
 endpoint is separate from `/dogstatsd/stats`: it does not return the per-metric count and last-seen
 map, and it is not controlled by the core agent's `dogstatsd_stats_*` keys. See
@@ -422,7 +436,6 @@ default values.
 | `apm_config.features`                        | Beta APM feature flags                          |
 | `cri_socket_path`                            | containerd/CRI socket path                      |
 | `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                    |
-| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                   |
 | `dogstatsd_workers_count`                    | Number of DSD processing workers                |
 | `env`                                        | Agent environment name                          |
 | `forwarder_apikey_validation_interval`       | API key check interval (minutes)                |
@@ -499,10 +512,6 @@ the regex evaluation cost without amortization.
 
 If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the
 mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
-
-### `dogstatsd_metrics_stats_enable`
-
-See `dogstatsd_stats_enable`
 
 ### `dogstatsd_workers_count`
 
@@ -1016,6 +1025,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_log_file_max_size`                                                              | DSD log file max size                              |
 | `dogstatsd_logging_enabled`                                                                | Enables DSD metric logging                         |
 | `dogstatsd_mapper_profiles`                                                                | Metric mapping profile definitions                 |
+| `dogstatsd_metrics_stats_enable`                                                           | Enable per-metric debug stats                      |
 | `dogstatsd_no_aggregation_pipeline`                                                        | Enable no-agg timestamped path                     |
 | `dogstatsd_non_local_traffic`                                                              | Accept non-localhost UDP/TCP                       |
 | `dogstatsd_origin_detection`                                                               | Enable UDS origin detection                        |
@@ -1256,6 +1266,10 @@ them. This lets runtime configuration changes start and stop the debug log witho
 the topology. This feature is for support and troubleshooting. It does not change normal
 metric forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
 
+The destination records each metric before metric mapping (`dogstatsd_mapper_profiles`) and
+enrichment. The core agent records each metric after them, so metric names and tags in the
+file can differ from the core agent's.
+
 Use these settings to control the file:
 
 | Config Key                     | Behavior                                                                                    |
@@ -1273,6 +1287,13 @@ The default `dogstatsd_log_file` path is
 This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded
 metric summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic
 for packet-level investigation, and they remain tracked separately under [#1381].
+
+### `dogstatsd_metrics_stats_enable`
+
+When `true`, ADP writes the DogStatsD metric debug log, as the core agent does. The DogStatsD
+metric debug log section describes the file. ADP's DogStatsD statistics API is always
+available, whatever the value of this key. The DogStatsD statistics section describes how
+ADP's statistics differ from the core agent's `agent dogstatsd-stats` output.
 
 ### UDS origin detection on macOS
 
