@@ -118,7 +118,8 @@ struct Fields {
     otlp_direct_analysis_mode: Option<bool>,
     /// Traces only: more span fields to leave out of the comparison.
     additional_span_ignore_fields: Option<Vec<String>>,
-    /// Traces only: the differences expected, each with the gap and the issue that explain it.
+    /// Traces only: what each side must hold, whether it needs Single Step Instrumentation metadata, and the
+    /// differences expected, each with the gap and the issue that explain it.
     traces: Option<TracesOptions>,
     /// Logs only: how logs are paired and counted, and the differences expected.
     logs: Option<LogsAnalysisOptions>,
@@ -208,8 +209,10 @@ impl Step for Compare {
                 tokio::try_join!(self.dump(cx, &self.comparison), self.dump(cx, &self.baseline))?;
             let traces = TracesAnalysisOptions {
                 otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
+                require_ssi: self.traces.require_ssi.unwrap_or(true),
                 additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
                 known_differences: self.traces.known_differences.clone(),
+                expectations: self.traces.expectations(),
             };
             let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, Some(traces))
                 .with_logs_options(self.logs.clone())
@@ -386,6 +389,32 @@ mod tests {
         run_with_peer(&CompareFactory, fields, comparison, baseline, &observation()).await
     }
 
+    /// A fixture that a case withholds from one side or both, and what the failure must say about it.
+    struct Withheld<'a> {
+        label: &'a str,
+        comparison: &'a Scripted,
+        baseline: &'a Scripted,
+        /// Text that the failure holds, one entry for each side that lacks the fixture.
+        names: &'a [&'a str],
+        /// Text that the failure leaves out, because it names a side that holds the fixture.
+        omits: Option<&'a str>,
+    }
+
+    impl Withheld<'_> {
+        /// Asserts that `fields` fails on the sides, names each expected side, and holds every text of `always`.
+        async fn assert_fails(&self, fields: &str, always: &[&str]) {
+            let report = compare(fields, self.comparison, self.baseline).await;
+            let label = self.label;
+            assert_eq!(report.status, StepStatus::Failed, "{}: {}", label, report.message);
+            for expected in self.names.iter().chain(always) {
+                assert!(report.message.contains(expected), "{}: {}", label, report.message);
+            }
+            if let Some(omitted) = self.omits {
+                assert!(!report.message.contains(omitted), "{}: {}", label, report.message);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn a_fixture_that_each_side_holds_passes_whatever_internal_telemetry_comes_with_it() {
         let comparison = with_internal(&fixture());
@@ -404,52 +433,39 @@ mod tests {
         // A side that sends nothing at all, not even internal telemetry.
         let silent = dumping(json!({"metrics": []}));
 
-        let cases: [(&str, &Scripted, &Scripted, &[&str], Option<&str>); 4] = [
-            (
-                "the comparison",
-                &withheld,
-                &held,
-                &["The comparison holds 0 series"],
-                Some("The baseline holds"),
-            ),
-            (
-                "the baseline",
-                &held,
-                &withheld,
-                &["The baseline holds 0 series"],
-                Some("The comparison holds"),
-            ),
-            (
-                "both sides",
-                &withheld,
-                &withheld,
-                &["The comparison holds 0 series", "The baseline holds 0 series"],
-                None,
-            ),
-            (
-                "a silent side",
-                &silent,
-                &held,
-                &["The comparison holds 0 series"],
-                Some("The baseline holds"),
-            ),
+        let cases = [
+            Withheld {
+                label: "the comparison",
+                comparison: &withheld,
+                baseline: &held,
+                names: &["The comparison holds 0 series"],
+                omits: Some("The baseline holds"),
+            },
+            Withheld {
+                label: "the baseline",
+                comparison: &held,
+                baseline: &withheld,
+                names: &["The baseline holds 0 series"],
+                omits: Some("The comparison holds"),
+            },
+            Withheld {
+                label: "both sides",
+                comparison: &withheld,
+                baseline: &withheld,
+                names: &["The comparison holds 0 series", "The baseline holds 0 series"],
+                omits: None,
+            },
+            Withheld {
+                label: "a silent side",
+                comparison: &silent,
+                baseline: &held,
+                names: &["The comparison holds 0 series"],
+                omits: Some("The baseline holds"),
+            },
         ];
-        for (label, comparison, baseline, named, unnamed) in cases {
-            let report = compare(EXPECTING_FIXTURE, comparison, baseline).await;
-            assert_eq!(report.status, StepStatus::Failed, "{}: {}", label, report.message);
-            for expected in named {
-                assert!(report.message.contains(expected), "{}: {}", label, report.message);
-            }
-            assert!(
-                report.message.contains("`min_series` is 2"),
-                "{}: {}",
-                label,
-                report.message
-            );
-            assert!(report.message.contains("`series[0]`"), "{}: {}", label, report.message);
-            if let Some(unnamed) = unnamed {
-                assert!(!report.message.contains(unnamed), "{}: {}", label, report.message);
-            }
+        for case in cases {
+            case.assert_fails(EXPECTING_FIXTURE, &["`min_series` is 2", "`series[0]`"])
+                .await;
         }
 
         // Without expectations, two sides that hold only internal telemetry are equal.
@@ -530,6 +546,333 @@ mod tests {
                 "{telemetry: metrics, comparison: app, baseline: peer, \
                  metrics: {series: [{name: m, metric_type: sketch, value: 1}]}}",
                 "can't combine `value` with `metric_type: sketch`",
+            ),
+        ];
+        for (fields, expected) in cases {
+            let error = CompareFactory
+                .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
+                .unwrap_err();
+            assert!(error.contains(expected), "{}: {}", fields, error);
+        }
+    }
+
+    /// What every trace case below expects of each side: two traces with three spans, two named spans, and two groups of
+    /// stats. Stats are compared, and Single Step Instrumentation metadata is not required.
+    const EXPECTING_TRACES: &str = "{telemetry: traces, comparison: app, baseline: peer, \
+        traces: {require_ssi: false, min_traces: 2, min_spans: 3, min_stats_groups: 2, \
+        spans: [{service: api, name: web.request}, {service: db, resource: SELECT 1}]}}";
+
+    /// Spans are equal across the sides only when they share a trace ID and span ID.
+    fn span_json(service: &str, name: &str, resource: &str, trace_id: u64, span_id: u64, ssi: bool) -> Value {
+        let meta = if ssi {
+            json!({"_dd.install.id": "install"})
+        } else {
+            json!({})
+        };
+        json!({
+            "agent_metadata": {
+                "hostname": "host", "env": "", "tags": {}, "agent_version": "", "target_tps": 10.0, "error_tps": 10.0,
+                "rare_sampler_enabled": false,
+            },
+            "tracer_metadata": {
+                "container_id": "", "language_name": "", "language_version": "", "tracer_version": "",
+                "runtime_id": "", "tags": {}, "env": "", "hostname": "", "app_version": "",
+            },
+            "trace_chunk_metadata": {"priority": 1, "origin": "", "tags": {}, "dropped_trace": false},
+            "service": service, "name": name, "resource": resource, "trace_id": trace_id, "span_id": span_id,
+            "parent_id": 0, "start": 0, "duration": 1, "error": 0, "meta": meta, "metrics": {}, "type_": "",
+            "meta_struct": {}, "span_links": [], "span_events": [],
+        })
+    }
+
+    /// An empty DDSketch with a relative accuracy of 0.01, as a dump encodes the sketches of stats.
+    const EMPTY_SKETCH: &str = "CgkJ/UqBWr9S8D8=";
+
+    /// One group of stats, as the aggregator holds it, keyed by `key`. Its sketches are empty.
+    fn stats_group_json(key: u64, service: &str, name: &str, resource: &str) -> Value {
+        json!({
+            "agent_metadata": {"hostname": "host", "env": "", "agent_version": "", "client_computed": false},
+            "tracer_metadata": {
+                "hostname": "", "env": "", "version": "", "service": "", "language": "", "tracer_version": "",
+                "runtime_id": "", "sequence": 0, "agent_aggregation": "", "container_id": "", "tags": [],
+                "git_commit_sha": "", "image_tag": "", "process_tags_hash": 0, "process_tags": "",
+            },
+            "buckets": {"[0,10]": {
+                "service": service, "name": name, "resource": resource, "type_": "", "hits": 1, "errors": 0,
+                "duration_ns": 1, "ok_summary": EMPTY_SKETCH, "error_summary": EMPTY_SKETCH, "synthetics": false, "top_level_hits": 1,
+                "span_kind": "", "peer_tags": [], "is_trace_root": null, "db_type": "", "grpc_status_code": "",
+                "http_status_code": 0, "http_method": "", "http_endpoint": "",
+            }},
+        })
+        .as_object()
+        .map(|group| json!({key.to_string(): group}))
+        .expect("a group is an object")
+    }
+
+    /// An intake that holds `spans`, and `groups` of stats.
+    fn tracing(spans: Vec<Value>, groups: &[Value]) -> Scripted {
+        let groups = groups
+            .iter()
+            .flat_map(|group| group.as_object().expect("a group is an object").clone())
+            .collect::<serde_json::Map<_, _>>();
+        dumping(json!({"spans": spans, "trace_stats": {"groups": groups}}))
+    }
+
+    fn fixture_spans(ssi: bool) -> Vec<Value> {
+        vec![
+            span_json("api", "web.request", "GET /", 1, 10, ssi),
+            span_json("db", "db.query", "SELECT 1", 1, 11, ssi),
+            span_json("api", "web.request", "GET /x", 2, 20, ssi),
+        ]
+    }
+
+    fn fixture_groups() -> Vec<Value> {
+        vec![
+            stats_group_json(1, "api", "web.request", "GET /"),
+            stats_group_json(2, "db", "db.query", "SELECT 1"),
+        ]
+    }
+
+    fn fixture_traces() -> Scripted {
+        tracing(fixture_spans(false), &fixture_groups())
+    }
+
+    #[tokio::test]
+    async fn a_trace_fixture_that_each_side_holds_passes_with_stats_and_no_ssi_metadata() {
+        let report = compare(EXPECTING_TRACES, &fixture_traces(), &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_trace_fixture_withheld_from_one_side_or_both_fails_and_names_each_side() {
+        let held = fixture_traces();
+        let withheld = tracing(vec![], &[]);
+        let cases = [
+            Withheld {
+                label: "the comparison",
+                comparison: &withheld,
+                baseline: &held,
+                names: &["The comparison holds 0 traces, but `min_traces` is 2."],
+                omits: Some("The baseline holds"),
+            },
+            Withheld {
+                label: "the baseline",
+                comparison: &held,
+                baseline: &withheld,
+                names: &["The baseline holds 0 traces, but `min_traces` is 2."],
+                omits: Some("The comparison holds"),
+            },
+            Withheld {
+                label: "both sides",
+                comparison: &withheld,
+                baseline: &withheld,
+                names: &[
+                    "The comparison holds 0 traces, but `min_traces` is 2.",
+                    "The baseline holds 0 traces, but `min_traces` is 2.",
+                ],
+                omits: None,
+            },
+        ];
+        for case in cases {
+            case.assert_fails(
+                EXPECTING_TRACES,
+                &[
+                    "`min_spans` is 3",
+                    "`min_stats_groups` is 2",
+                    "`spans[0]`",
+                    "`spans[1]`",
+                ],
+            )
+            .await;
+        }
+
+        // Without expectations, two sides that hold no spans and no stats are equal.
+        let report = compare(
+            "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false}}",
+            &withheld,
+            &withheld,
+        )
+        .await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn unrelated_spans_that_meet_the_counts_fail_the_named_check() {
+        let unrelated = tracing(
+            vec![
+                span_json("other", "other.a", "a", 1, 10, false),
+                span_json("other", "other.b", "b", 1, 11, false),
+                span_json("api", "other.c", "c", 2, 20, false),
+            ],
+            &fixture_groups(),
+        );
+
+        let report = compare(EXPECTING_TRACES, &unrelated, &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        for count in ["`min_traces`", "`min_spans`", "`min_stats_groups`"] {
+            assert!(!report.message.contains(count), "{}", report.message);
+        }
+        assert!(
+            report.message.contains(
+                "The comparison holds no span that meets `spans[0]` (service=api, name=web.request): \
+                 1 span(s) have that service, with the names other.c."
+            ),
+            "{}",
+            report.message
+        );
+        assert!(
+            report.message.contains(
+                "The comparison holds no span that meets `spans[1]` (service=db, resource=SELECT 1): \
+                 no span has that service."
+            ),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn spans_without_the_expected_stats_groups_fail_the_stats_check_without_ssi_metadata() {
+        let no_stats = tracing(fixture_spans(false), &[]);
+
+        let report = compare(EXPECTING_TRACES, &no_stats, &no_stats).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        for side in ["comparison", "baseline"] {
+            let expected = format!("The {} holds 0 stats groups, but `min_stats_groups` is 2.", side);
+            assert!(report.message.contains(&expected), "{}", report.message);
+        }
+        for met in ["`min_traces`", "`min_spans`", "`spans["] {
+            assert!(!report.message.contains(met), "{}", report.message);
+        }
+
+        // Stats missing from one side name that side only.
+        let report = compare(EXPECTING_TRACES, &no_stats, &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains("The comparison holds 0 stats groups"),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+
+        // Without expectations, the same two sides are equal: only `min_stats_groups` fails them.
+        let report = compare(
+            "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false}}",
+            &no_stats,
+            &no_stats,
+        )
+        .await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn ssi_metadata_is_required_unless_the_case_opts_out() {
+        let without = tracing(fixture_spans(false), &fixture_groups());
+        let with = tracing(fixture_spans(true), &fixture_groups());
+        let by_default = "{telemetry: traces, comparison: app, baseline: peer}";
+        let opted_out = "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false}}";
+        let direct = "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true}";
+
+        let report = compare(by_default, &without, &without).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        let report = compare(by_default, &with, &with).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+        let report = compare(opted_out, &without, &without).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+        let report = compare(direct, &without, &without).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_known_difference_never_satisfies_the_stats_expectation() {
+        let known = "known_differences: [{gap: gap/no-stats, issue: 1, paths: [stats.groups], kinds: [missing], \
+            reason: ADP sends no stats}]";
+        let without_expectations = format!(
+            "{{telemetry: traces, comparison: app, baseline: peer, traces: {{require_ssi: false, {}}}}}",
+            known
+        );
+        let expecting = format!(
+            "{{telemetry: traces, comparison: app, baseline: peer, \
+             traces: {{require_ssi: false, min_stats_groups: 2, {}}}}}",
+            known
+        );
+        let no_stats = tracing(fixture_spans(false), &[]);
+
+        // The gap covers every group that the comparison lacks, so the sides match.
+        let report = compare(&without_expectations, &no_stats, &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // The expectation counts the groups that a side holds. The gap does not excuse a side that holds too few.
+        let report = compare(&expecting, &no_stats, &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains("The comparison holds 0 stats groups, but `min_stats_groups` is 2."),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+
+        // When both sides meet the expectation, the step checks the known difference as before. This one is stale.
+        let report = compare(&expecting, &fixture_traces(), &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(report.message.contains("gap/no-stats"), "{}", report.message);
+        assert!(!report.message.contains("`min_stats_groups`"), "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn span_expectations_of_a_spans_only_comparison_ignore_stats() {
+        let direct = "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \
+            traces: {min_traces: 2, spans: [{service: api, name: web.request}]}}";
+        let no_stats = tracing(fixture_spans(false), &[]);
+
+        let report = compare(direct, &no_stats, &no_stats).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        let report = compare(direct, &tracing(vec![], &[]), &no_stats).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains("The comparison holds 0 traces"),
+            "{}",
+            report.message
+        );
+    }
+
+    #[test]
+    fn trace_options_that_do_not_fit_the_step_are_rejected() {
+        let cases = [
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, traces: {min_spans: 1}}",
+                "'traces' sets expectations, so it must set 'min_stats_groups' while the step compares stats",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \
+                 traces: {min_stats_groups: 1}}",
+                "'traces.min_stats_groups' has no effect with 'otlp_direct_analysis_mode'",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \
+                 traces: {require_ssi: false}}",
+                "'traces.require_ssi' has no effect with 'otlp_direct_analysis_mode'",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, traces: {min_series: 1}}",
+                "unknown field `min_series`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api}]}}",
+                "a span of service 'api' needs a `name` or a `resource`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{name: web.request}]}}",
+                "missing field `service`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, traces: {min_traces: 0}}",
+                "invalid value: integer `0`",
             ),
         ];
         for (fields, expected) in cases {

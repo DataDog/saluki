@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
+    num::NonZeroUsize,
     time::Duration,
 };
 
@@ -12,6 +13,7 @@ use stele::{AggregationKey, BucketedClientStatistics, Span};
 use tracing::{error, info};
 use treediff::value::Key;
 
+use super::expectations::{ExpectedSpan, HeldTraces, TracesExpectations};
 use super::ratchet::{DiffKind, FieldDiff, KnownDifference, Ratchet};
 use crate::steps::analysis::TracesAnalysisOptions;
 use crate::steps::intake::CollectedData;
@@ -71,6 +73,9 @@ where
 const STATS_PREFIX: &str = "stats.";
 
 /// Options for traces analysis, set in the `traces` section of a `compare` step.
+///
+/// The expectations (`min_traces`, `min_spans`, `spans` and `min_stats_groups`) say what each side must hold. The
+/// step checks them before it compares the sides, and a known difference never excuses an unmet expectation.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesOptions {
@@ -80,6 +85,33 @@ pub struct TracesOptions {
     /// requires removing its entries.
     #[serde(default)]
     pub known_differences: Vec<KnownDifference>,
+
+    /// Whether each side must hold a span with Single Step Instrumentation metadata.
+    ///
+    /// Set it to `false` to compare the stats of a load that has no such metadata. Defaults to `true`. It has no
+    /// effect with `otlp_direct_analysis_mode`, so the step rejects it there.
+    #[serde(default)]
+    pub require_ssi: Option<bool>,
+
+    /// Fewest traces that each side holds. A trace is a distinct trace ID among the spans of a side.
+    #[serde(default)]
+    pub min_traces: Option<NonZeroUsize>,
+
+    /// Fewest spans that each side holds.
+    #[serde(default)]
+    pub min_spans: Option<NonZeroUsize>,
+
+    /// Spans that each side must hold, one entry for each. An entry has a `service`, and a `name` or a `resource` or
+    /// both, and a span of the side must match every field of the entry.
+    #[serde(default)]
+    pub spans: Vec<ExpectedSpan>,
+
+    /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
+    ///
+    /// A step that compares stats and sets other expectations must set it, so that two sides with no stats do not
+    /// match. It has no effect with `otlp_direct_analysis_mode`, so the step rejects it there.
+    #[serde(default)]
+    pub min_stats_groups: Option<NonZeroUsize>,
 }
 
 impl TracesOptions {
@@ -88,11 +120,36 @@ impl TracesOptions {
     /// # Errors
     ///
     /// If an entry names no issue or a path outside the trace statistics, or if `otlp_direct_analysis_mode` skips the
-    /// statistics comparison that the entries apply to, an error is returned.
+    /// statistics comparison that an option applies to, or if a step that compares stats sets expectations and no
+    /// `min_stats_groups`, an error is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
-        if otlp_direct_analysis_mode && !self.known_differences.is_empty() {
+        if otlp_direct_analysis_mode {
+            let compares_nothing = "which compares no stats";
+            if !self.known_differences.is_empty() {
+                return Err(
+                    "'otlp_direct_analysis_mode' skips the trace stats comparison, so it takes no 'known_differences'"
+                        .to_string(),
+                );
+            }
+            if self.require_ssi.is_some() {
+                return Err(format!(
+                    "'traces.require_ssi' has no effect with 'otlp_direct_analysis_mode', {} and checks no Single \
+                     Step Instrumentation metadata",
+                    compares_nothing
+                ));
+            }
+            if self.min_stats_groups.is_some() {
+                return Err(format!(
+                    "'traces.min_stats_groups' has no effect with 'otlp_direct_analysis_mode', {}",
+                    compares_nothing
+                ));
+            }
+        } else if self.min_stats_groups.is_none()
+            && (self.min_traces.is_some() || self.min_spans.is_some() || !self.spans.is_empty())
+        {
             return Err(
-                "'otlp_direct_analysis_mode' skips the trace stats comparison, so it takes no 'known_differences'"
+                "'traces' sets expectations, so it must set 'min_stats_groups' while the step compares \
+                 stats. Set 'otlp_direct_analysis_mode' to compare spans only"
                     .to_string(),
             );
         }
@@ -108,6 +165,16 @@ impl TracesOptions {
             }
         }
         Ok(())
+    }
+
+    /// Returns what each side must hold.
+    pub fn expectations(&self) -> TracesExpectations {
+        TracesExpectations {
+            min_traces: self.min_traces,
+            min_spans: self.min_spans,
+            spans: self.spans.clone(),
+            min_stats_groups: self.min_stats_groups,
+        }
     }
 }
 
@@ -203,6 +270,21 @@ impl TracesAnalyzer {
         let mut stats_samples: Vec<String> = Vec::new();
         let mut all_span_details: Vec<String> = Vec::new();
         let mut all_stats_details: Vec<String> = Vec::new();
+
+        // Each side must hold what the case expects before we compare the sides: two sides that hold no spans and no
+        // stats are equal.
+        self.options.expectations.check(
+            &HeldTraces {
+                spans: &self.baseline_spans,
+                traces: self.baseline_total_traces,
+                stats_groups: self.baseline_trace_stats.len(),
+            },
+            &HeldTraces {
+                spans: &self.comparison_spans,
+                traces: self.comparison_total_traces,
+                stats_groups: self.comparison_trace_stats.len(),
+            },
+        )?;
 
         // We should have an identical number of traces and spans.
         if self.baseline_total_traces != self.comparison_total_traces {
@@ -338,8 +420,8 @@ impl TracesAnalyzer {
         }
 
         // Ensure that we observe at least one span on each side where Single Step Instrumentation-related metadata is
-        // present (when not in OTLP-direct mode).
-        if !self.options.otlp_direct_analysis_mode {
+        // present (when not in OTLP-direct mode, and when the case doesn't opt out).
+        if !self.options.otlp_direct_analysis_mode && self.options.require_ssi {
             if !self.baseline_ssi_metadata_present {
                 error!("No Single Step Instrumentation metadata found in baseline spans.");
                 error_count += 1;
