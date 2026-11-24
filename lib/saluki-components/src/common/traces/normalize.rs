@@ -136,7 +136,7 @@ pub fn normalize_name_with_reason(mut name: MetaString) -> (MetaString, Option<N
 fn normalize_name_slow(name: MetaString) -> Option<MetaString> {
     // Normalize the name according to the following rules:
     // 1. Skip non-alphabetic characters at the start.
-    // 2. Replace non-alphanumeric characters (except '.' and '_') with '_'.
+    // 2. Replace non-alphanumeric characters (except '.') with '_'.
     // 3. Avoid consecutive underscores.
     // 4. Avoid underscores after periods.
     // 5. Avoid trailing underscores.
@@ -169,12 +169,10 @@ fn normalize_name_slow(name: MetaString) -> Option<MetaString> {
             if prev_char == '_' {
                 // Overwrite underscore with period
                 normalized.pop();
-                normalized.push('.');
-                prev_char = '.';
-            } else if prev_char != '.' {
-                normalized.push('.');
-                prev_char = '.';
             }
+            // Consecutive periods are kept, as the trace-agent does.
+            normalized.push('.');
+            prev_char = '.';
         } else {
             // Treat as underscore
             if prev_char != '.' && prev_char != '_' {
@@ -711,6 +709,9 @@ mod tests {
                 ),
             ),
             (MetaString::from("double..point"), MetaString::from("double..point")),
+            // Consecutive periods survive a repair too.
+            (MetaString::from("http..request!"), MetaString::from("http..request")),
+            (MetaString::from("a_..b!"), MetaString::from("a..b")),
             (
                 MetaString::from("other_^.character^^_than_underscore"),
                 MetaString::from("other.character_than_underscore"),
