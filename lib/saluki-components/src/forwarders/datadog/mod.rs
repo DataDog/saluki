@@ -179,12 +179,13 @@ impl MemoryBounds for DatadogForwarderConfiguration {
             })
             .count();
         if shadow_endpoint_count != 0 {
-            let request_slots = self
-                .forwarder_config
+            // Shadow workers run with a reduced configuration, so size them from that configuration.
+            let shadow_config = self.forwarder_config.for_sketch_shadow();
+            let request_slots = shadow_config
                 .endpoint_buffer_size
                 .saturating_add(ENDPOINT_CHANNEL_CAPACITY)
-                .saturating_add(self.forwarder_config.effective_endpoint_concurrency());
-            let per_endpoint_bytes = (self.forwarder_config.retry.queue_max_size_bytes as usize)
+                .saturating_add(shadow_config.effective_endpoint_concurrency());
+            let per_endpoint_bytes = (shadow_config.retry.queue_max_size_bytes as usize)
                 .saturating_add(request_slots.saturating_mul(DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT));
             builder.firm().with_fixed_amount(
                 "sketch shadow queues and in-flight payloads",

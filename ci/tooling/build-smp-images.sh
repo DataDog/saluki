@@ -13,9 +13,13 @@
 # has an image with that key:
 #
 # - ADP key: the ADP commit, the ADP build arguments, and the hash of this script. The commit fixes
-#   the build context, which includes the Dockerfile and the Rust toolchain. The build arguments
-#   include the build profile and target, and the base images resolved to digests, because their
-#   tags move. The script hash covers the rest of the build recipe.
+#   the build context, which includes the Dockerfile and the Rust toolchain version. The build
+#   arguments include the build profile and target, the compiler cache settings, and the images
+#   that the build starts from, resolved to digests because their tags move. These images include
+#   the slim SMP build image, which has the toolchain and comes from the pipeline commit (see
+#   `.resolve-smp-build-image`). The script hash covers the rest of the build recipe. The key
+#   doesn't include the credentials for the compiler cache: they change on each run, and they don't
+#   change the output.
 # - SMP key: the ADP image digest and the Agent image, which `.datadog-agent-version.json` pins by
 #   digest.
 #
@@ -37,8 +41,9 @@
 # the key, and not the pipeline that built the image. An image under a pipeline-scoped tag also gets
 # labels for its branch, pipeline, and job.
 #
-# Expects the environment from `.setup-smp-env` in `.gitlab/benchmark.yml`, AWS credentials, and a
-# Docker login to `${SMP_ECR_HOST}`.
+# Expects the environment from `.setup-smp-env` and `.smp-adp-image-build` in `.gitlab/benchmark.yml`,
+# AWS credentials, a Docker login to `${SMP_ECR_HOST}`, the `adp-builder` builder, and
+# `SMP_BUILD_IMAGE` from `.resolve-smp-build-image`.
 
 set -euo pipefail
 
@@ -47,7 +52,6 @@ role_upper="$(echo "${role}" | tr '[:lower:]' '[:upper:]')"
 
 reuse="${SMP_IMAGE_REUSE:-true}"
 max_age_days="${SMP_IMAGE_REUSE_MAX_AGE_DAYS:-7}"
-build_target="x86_64-unknown-linux-gnu"
 image_repo="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,7 +96,8 @@ adp_sha="$("${script_dir}/compute-smp-sha.sh" "${role}")"
 # the pipeline checkout.
 agent_image="$(jq -er '.integration.linux.image' .datadog-agent-version.json)"
 
-build_image="${ADP_PUBLIC_BASE_IMAGE}"
+build_image="${SMP_BUILD_IMAGE}"
+buildcache_image="${SALUKI_BUILDCACHE_CI_IMAGE}"
 spdx_image="${SPDX_LICENSES_IMAGE}"
 app_image="${GBI_BASE_IMAGE}"
 
@@ -101,11 +106,13 @@ if [[ "${reuse}" == "true" ]]; then
         log "Agent image ${agent_image} isn't pinned by digest; not reusing images."
         reuse=false
     elif pinned_build="$(pin_digest "${build_image}")" \
+        && pinned_buildcache="$(pin_digest "${buildcache_image}")" \
         && pinned_spdx="$(pin_digest "${spdx_image}")" \
         && pinned_app="$(pin_digest "${app_image}")"; then
         # Build from the pinned references, so that the image matches its key if a tag moves during
         # the build.
         build_image="${pinned_build}"
+        buildcache_image="${pinned_buildcache}"
         spdx_image="${pinned_spdx}"
         app_image="${pinned_app}"
     else
@@ -117,8 +124,11 @@ fi
 # The ADP key includes all of these arguments, so a change to them makes a new key.
 adp_build_args=(
     "BUILD_PROFILE=${SMP_BUILD_PROFILE}"
-    "BUILD_TARGET=${build_target}"
+    "BUILD_TARGET=${BUILD_TARGET}"
     "BUILD_IMAGE=${build_image}"
+    "BUILD_BASE=build-prepped"
+    "BUILDCACHE_IMAGE=${buildcache_image}"
+    "BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}"
     "SPDX_LICENSES_IMAGE=${spdx_image}"
     "APP_IMAGE=${app_image}"
     "APP_GIT_HASH=${adp_sha}"
@@ -139,22 +149,27 @@ done
 log "${role}: Agent image ${agent_image}"
 log "${role}: ADP image ${adp_img}"
 
-# Prepare a build, once. The build uses a separate worktree of the ADP commit, so that this script
-# and the Agent version file stay at the pipeline commit.
+# Prepare a build, once. The build uses a separate worktree of the ADP commit, so that this script,
+# the Agent version file, and the SMP build image stay at the pipeline commit.
 src_dir=""
 prepare_build() {
     [[ -z "${src_dir}" ]] || return 0
     src_dir="$(mktemp -d)/adp-src"
     git worktree add --detach "${src_dir}" "${adp_sha}" >&2
-    docker buildx create --name adp-builder --driver docker-container --use >&2
 }
 
 # Run `docker buildx build` and push the image. Arguments: the Dockerfile, the tag, the image key
-# (`none` for a pipeline-scoped tag), and the build arguments.
+# (`none` for a pipeline-scoped tag), any extra `docker buildx build` flags, `--`, and the build
+# arguments.
 build_and_push() {
     local dockerfile="$1" tag="$2" key="$3" arg label flags=()
     local labels=("git.repository=${CI_PROJECT_NAME}" "git.commit=${adp_sha}" "smp.image_key=${key}")
     shift 3
+    while [[ "$1" != "--" ]]; do
+        flags+=("$1")
+        shift
+    done
+    shift
     if [[ "${key}" == "none" ]]; then
         labels+=("git.branch=${CI_COMMIT_REF_NAME}" "ci.pipeline_id=${CI_PIPELINE_ID}" "ci.job_id=${CI_JOB_ID}")
     fi
@@ -172,7 +187,11 @@ build_and_push() {
 }
 
 if [[ "${reuse}" != "true" ]] || ! fresh_image_exists "${adp_img}"; then
-    build_and_push Dockerfile.agent-data-plane "${adp_img}" "${adp_key}" "${adp_build_args[@]}"
+    # Temporary credentials for the shared compiler cache, from the IAM role of the runner and not
+    # from the SMP profile. A build secret keeps them out of the image layers.
+    "${script_dir}/get-temporary-aws-credentials.sh" >&2
+    build_and_push Dockerfile.agent-data-plane "${adp_img}" "${adp_key}" \
+        --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh -- "${adp_build_args[@]}"
 fi
 
 # The converged image refers to the ADP image by digest, and the SMP key includes that digest. So a
@@ -202,7 +221,7 @@ log "${role}: SMP image ${smp_img}, from ${adp_ref}"
 # every experiment runs against the converged image. The experiments that don't need the Core Agent
 # override the command to run ADP by itself.
 if [[ "${reuse}" != "true" ]] || ! fresh_image_exists "${smp_img}"; then
-    build_and_push Dockerfile.datadog-agent "${smp_img}" "${smp_key}" "${smp_build_args[@]}"
+    build_and_push Dockerfile.datadog-agent "${smp_img}" "${smp_key}" -- "${smp_build_args[@]}"
 fi
 
 {

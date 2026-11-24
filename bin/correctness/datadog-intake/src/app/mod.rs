@@ -1,11 +1,14 @@
+use std::convert::Infallible;
+
 use axum::{
-    extract::{DefaultBodyLimit, Request},
-    http::{HeaderMap, StatusCode, Uri},
+    extract::{DefaultBodyLimit, FromRequestParts, Request},
+    http::{request::Parts, HeaderMap, StatusCode, Uri},
     middleware::{self, Next},
     response::Response,
     routing::get,
     Router,
 };
+use stele::IntakeRequest;
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing::info;
 
@@ -15,6 +18,8 @@ mod logs;
 mod metrics;
 mod misc;
 mod service_checks;
+#[cfg(test)]
+mod test_util;
 mod traces;
 
 pub use self::dogstatsd_forwarding::DogStatsDForwardingState;
@@ -48,6 +53,44 @@ pub fn initialize_app_router(dogstatsd_forwarding_state: DogStatsDForwardingStat
 /// The request headers as the client sent them, before any layer modified them.
 #[derive(Clone)]
 pub struct OriginalHeaders(pub HeaderMap);
+
+/// The path and headers of a request, with the headers as the client sent them.
+pub struct RequestHead {
+    path: String,
+    headers: HeaderMap,
+}
+
+impl RequestHead {
+    /// Turns the head into a record of the request that carried `items`.
+    pub fn into_request<T>(self, items: T) -> IntakeRequest<T> {
+        let headers = self
+            .headers
+            .iter()
+            .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str(), value)));
+
+        IntakeRequest::new(self.path, headers, items)
+    }
+}
+
+impl<S> FromRequestParts<S> for RequestHead
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // Only a request that skipped `capture_original_headers` has no `OriginalHeaders`.
+        let headers = match parts.extensions.get::<OriginalHeaders>() {
+            Some(OriginalHeaders(headers)) => headers.clone(),
+            None => parts.headers.clone(),
+        };
+
+        Ok(Self {
+            path: parts.uri.path().to_string(),
+            headers,
+        })
+    }
+}
 
 async fn capture_original_headers(mut request: Request, next: Next) -> Response {
     let headers = request.headers().clone();

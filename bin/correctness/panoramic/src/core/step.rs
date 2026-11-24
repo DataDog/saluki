@@ -74,8 +74,6 @@ pub(crate) enum Need {
     /// A participant and one of its processes.
     Process(String, String),
     /// A participant and one of its named commands.
-    // TODO: remove the dead_code allowance once a step runs a named command.
-    #[allow(dead_code)]
     Command(String, String),
     /// A participant and one of its operations.
     Operation(String, String),
@@ -109,8 +107,6 @@ pub(crate) trait Operation: fmt::Debug + Send + Sync {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Uses {
     /// One of the participant's named commands.
-    // TODO: remove the dead_code allowance once an operation runs a named command.
-    #[allow(dead_code)]
     Command(&'static str),
     /// A request to one of the participant's endpoints.
     Request(&'static str),

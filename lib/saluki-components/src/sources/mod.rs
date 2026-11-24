@@ -5,9 +5,11 @@ pub use self::checks_ipc::ChecksIPCConfiguration;
 
 mod dogstatsd;
 pub use self::dogstatsd::{
-    DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration, DogStatsDReplayAPIHandler,
-    DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement, OriginEnrichmentConfiguration,
-    ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
+    CaptureTriggerBody, CaptureTriggerResponseBody, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl,
+    DogStatsDConfiguration, DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration,
+    ListenerRequirement, OriginEnrichmentConfiguration, ReplayControlError, ReplaySession, ReplaySessionResponseBody,
+    TimestampResolution, TrafficCaptureReader, CAPTURE_TRIGGER_ROUTE, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
+    REPLAY_SESSION_ROUTE,
 };
 
 mod heartbeat;
@@ -16,10 +18,12 @@ pub use self::heartbeat::HeartbeatConfiguration;
 mod otlp;
 pub use self::otlp::{
     CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings,
-    OtlpMetricsSettings, SummaryMode,
+    OtlpDebugVerbosity, OtlpMetricsSettings, SummaryMode,
 };
 pub use crate::common::otlp::{
+    proxy::OtlpProxyDestinations,
     receiver::{GrpcTransport, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive, OtlpReceiver, OtlpReceiverTls},
     traces::translator::{ContainerTagPromotion, OtlpTracesSettings},
-    CorsConfiguration,
+    CorsConfiguration, OtlpRoute, OtlpRoutes,
 };
+pub use crate::common::proxy::{listener_reached_by, Destination as ProxyDestination};

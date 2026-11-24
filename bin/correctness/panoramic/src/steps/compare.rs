@@ -87,7 +87,7 @@ impl StepFactory for CompareFactory {
     }
 }
 
-/// The step's fields. The options are the legacy comparison case's keys of the same names.
+/// The step's fields.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fields {

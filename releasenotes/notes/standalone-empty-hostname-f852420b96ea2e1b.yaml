@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    In standalone mode, Agent Data Plane no longer fails to start when ``hostname`` is unset or empty. It now sends
+    data without a host, as the Datadog Agent does in sidecar deployments such as ECS Fargate and EKS Fargate. This
+    fixes the Datadog Agent's Agent Data Plane pre-flight check, which failed on every Fargate deployment.

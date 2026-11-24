@@ -2,7 +2,7 @@
 # child pipeline (see ci/tooling/generate-correctness-pipeline.sh).
 #
 # Why mixins: the generator emits one stanza per test that is identical except
-# for CORRECTNESS_TEST_CASE and (optionally) the baseline-image override.
+# for CORRECTNESS_TEST_CASE.
 
 # Common to every correctness-test job.
 .test-correctness-definition:
@@ -26,12 +26,7 @@
     KUBERNETES_MEMORY_LIMIT: "48Gi"
     DD_LOG_LEVEL: "panoramic=debug,info"
     PANORAMIC_LOG_DIR: "panoramic-logs"
-    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
-    # Use the parent pipeline's bundled Agent image. Panoramic takes one
-    # comma-separated list of <container>=<image>; the container names are the ones
-    # `panoramic list --json` reports per test.
-    PANORAMIC_IMAGE_OVERRIDES: "millstone=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},datadog-intake=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},comparison=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"
-    # The same images for participant cases, which name them by reference and
+    # The parent pipeline's images. Cases name their images by reference and
     # take the replacements with --set. Comparison cases name the Agent image on
     # both sides, so one entry replaces the baseline and the comparison.
     PANORAMIC_SET: "saluki-images/datadog-agent:testing-release=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID},saluki-images/correctness-tools:latest=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"
@@ -42,18 +37,9 @@
     - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' "${BUNDLED_IMAGE}"
     - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui
 
-# Added when the test's config.yaml names a saluki-images/ baseline (a
-# placeholder valid only locally). Replaces it with the CI-built image.
-#
-# `extends` merges variables one key at a time, so this restates the whole
-# override list rather than adding the baseline to it.
-.test-correctness-adp-baseline:
-  variables:
-    PANORAMIC_IMAGE_OVERRIDES: "millstone=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},datadog-intake=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},comparison=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID},baseline=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"
-
 # Common to every kind-based correctness-test job. Extends .test-correctness-definition
 # with a longer timeout. Cluster creation, image loading, and teardown are managed by
-# panoramic itself via the kind lifecycle in k8s.rs.
+# panoramic itself, driven by the cases' plans (see kind.rs).
 .test-correctness-kind-definition:
   extends: .test-correctness-definition
   timeout: 20m
