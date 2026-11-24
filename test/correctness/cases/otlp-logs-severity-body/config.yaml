@@ -13,7 +13,6 @@ participants:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "false"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
-      # Handle every OTLP signal in ADP rather than proxying it to the core Agent.
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "false"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"
       DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "false"
