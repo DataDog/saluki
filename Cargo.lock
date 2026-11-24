@@ -6021,6 +6021,7 @@ dependencies = [
 name = "saluki-metric-plan"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "saluki-core",
  "saluki-error",
  "saluki-metric-kernels",
