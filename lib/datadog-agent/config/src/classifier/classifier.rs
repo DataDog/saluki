@@ -10,6 +10,12 @@ pub struct Classification {
     pub support_level: SupportLevel,
     /// Whether the value matches the schema default.
     pub is_default: bool,
+    /// Whether the core Agent's behavior depends on whether the key is set, not only on its value.
+    ///
+    /// This is true when the overlay marks the key with `presence_matters`, and for every key without
+    /// a schema default: such a key exists in the Agent's configuration only when something sets it,
+    /// so its presence alone can change what the Agent does.
+    pub presence_matters: bool,
     /// Which pipelines this key's incompatibility warning applies to.
     pub pipeline_affinity: PipelineAffinity,
 }
@@ -44,6 +50,7 @@ impl ConfigClassifier {
         Some(Classification {
             support_level: entry.support_level,
             is_default: is_default_value(entry.default, value),
+            presence_matters: entry.presence_matters || entry.default == DefaultValue::Missing,
             pipeline_affinity: entry.pipeline_affinity,
         })
     }
@@ -99,6 +106,30 @@ mod tests {
         let c = classifier();
         assert!(c.classify("dogstatsd_port", &Value::Number(9999.into())).is_none());
         assert!(c.classify("log_payloads", &Value::Bool(true)).is_none());
+    }
+
+    #[test]
+    fn presence_matters_for_overlay_marked_keys_and_keys_without_a_schema_default() {
+        let c = classifier();
+        // The overlay marks `logs_config.compression_kind`: the Agent falls back to gzip for
+        // additional endpoints only when the key is not set.
+        let marked = c
+            .classify("logs_config.compression_kind", &Value::String("zstd".into()))
+            .unwrap();
+        assert!(marked.is_default);
+        assert!(marked.presence_matters);
+
+        // An OTLP receiver TLS key has no schema default; any value creates the `tls` section.
+        let no_default = c
+            .classify(
+                "otlp_config.receiver.protocols.http.tls.cert_pem",
+                &Value::String("".into()),
+            )
+            .unwrap();
+        assert!(no_default.presence_matters);
+
+        let unmarked = c.classify("heroku_dyno", &Value::Bool(false)).unwrap();
+        assert!(!unmarked.presence_matters);
     }
 
     #[test]

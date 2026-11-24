@@ -21,8 +21,9 @@ pub(crate) fn classifier() -> &'static ConfigClassifier {
 }
 
 impl ConfigurationSystem {
-    /// Checks settings that an input set explicitly to a non-default value and that affect active
-    /// pipelines, logging the severity of each.
+    /// Checks settings that an input set explicitly and that affect active pipelines, logging the
+    /// severity of each. A setting at its default value is skipped, unless the Agent's behavior
+    /// depends on whether the key is set.
     ///
     /// # Errors
     ///
@@ -63,8 +64,11 @@ impl ConfigurationSystem {
         Ok(())
     }
 
-    /// Returns each classified key that an input set explicitly to a non-default value and that
-    /// affects an active pipeline, with its support level.
+    /// Returns each classified key that an input set explicitly and that affects an active pipeline,
+    /// with its support level.
+    ///
+    /// A key set to its default value is left out, unless the Agent's behavior depends on whether the
+    /// key is set.
     fn compatibility_findings(&self, active_pipelines: &HashSet<Pipeline>) -> Vec<(String, SupportLevel)> {
         let classifier = classifier();
         let mut findings = Vec::new();
@@ -90,8 +94,9 @@ impl ConfigurationSystem {
 
             // A key set explicitly to its schema default asks for the behavior ADP has when nobody
             // sets it. The comparison can miss a default written in another form, such as a duration
-            // or a coerced scalar. A miss reports the key, so the check fails safe.
-            if classification.is_default {
+            // or a coerced scalar. A miss reports the key, so the check fails safe. A key whose
+            // presence alone changes the Agent's behavior is reported at its default too.
+            if classification.is_default && !classification.presence_matters {
                 trace!(key = %key, "Configuration key is set to its default value.");
                 continue;
             }
@@ -202,17 +207,32 @@ mod tests {
     fn a_high_severity_key_set_to_its_default_value_is_skipped() {
         // A key written at its schema default asks for the behavior ADP has when nobody sets it, so
         // it isn't an incompatibility.
-        let system = system_with(otlp_tls_settings("", ""));
+        let system = system_with(json!({ "heroku_dyno": false }));
 
         system
-            .check_compatibility(&pipelines(&[Pipeline::Otlp]))
-            .expect("a key set to its default value is not an incompatibility");
-        assert!(system.compatibility_findings(&pipelines(&[Pipeline::Otlp])).is_empty());
-
-        let cross_cutting = system_with(json!({ "heroku_dyno": false }));
-        cross_cutting
             .check_compatibility(&pipelines(&[]))
-            .expect("a cross-cutting key set to its default value is not an incompatibility");
+            .expect("a key set to its default value is not an incompatibility");
+        assert!(system.compatibility_findings(&pipelines(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_key_whose_presence_matters_is_reported_at_its_default_value() {
+        // Any value under `tls`, an empty one included, makes the Agent's OTLP receiver configure TLS.
+        let no_schema_default = system_with(otlp_tls_settings("", ""));
+        let error = no_schema_default
+            .check_compatibility(&pipelines(&[Pipeline::Otlp]))
+            .expect_err("a key without a schema default is checked whatever its value");
+        assert!(error.to_string().contains("2 incompatible configuration detected"));
+
+        // With additional endpoints, the Agent falls back to gzip only when `compression_kind` is not set.
+        let marked = system_with(json!({ "logs_config": { "compression_kind": "zstd" } }));
+        assert_eq!(
+            marked.compatibility_findings(&pipelines(&[Pipeline::Logs])),
+            vec![(
+                "logs_config.compression_kind".to_string(),
+                SupportLevel::Incompatible(Severity::Medium)
+            )]
+        );
     }
 
     #[test]

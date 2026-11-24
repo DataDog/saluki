@@ -4,4 +4,5 @@ fixes:
     Agent Data Plane no longer logs a compatibility warning, or refuses to start, because of a
     configuration key that is set explicitly to its default value. A key set to its default value
     gets the same behavior as a key that is not set. Keys set to any other value are still
-    reported.
+    reported, and so are keys whose presence alone changes the core Agent's behavior, such as the
+    OTLP receiver ``tls`` settings and ``logs_config.compression_kind``.
