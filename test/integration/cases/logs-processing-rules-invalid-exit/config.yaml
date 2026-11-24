@@ -4,31 +4,32 @@
 # ADP handles OTLP logs natively here, so it runs the logs pipeline. The `ADP_` prefix gives the rules to ADP alone,
 # so that the core Agent in the image keeps running.
 
-type: integration
-name: "logs-processing-rules-invalid-exit"
 description: "Verify ADP exits on an invalid logs processing rule when it runs the logs pipeline"
 timeout: 120s
-runtimes: [linux]
+subject_os: [linux]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-logs-processing-rules-invalid-exit"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
-  DD_DATA_PLANE_OTLP_ENABLED: "true"
-  DD_OTLP_CONFIG_LOGS_ENABLED: "true"
-  # Handle OTLP logs natively in ADP rather than relaying them to the core Agent. Proxying any signal also proxies
-  # logs, so this turns off the proxy for every signal.
-  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "false"
-  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"
-  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "false"
-  ADP_DD_LOGS_ENABLED: "true"
-  ADP_DD_LOGS_CONFIG_PROCESSING_RULES: '[{"type": "exclude_at_match", "name": "no_pattern"}]'
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-logs-processing-rules-invalid-exit"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_LOGS_ENABLED: "true"
+      # Handle OTLP logs natively in ADP rather than relaying them to the core Agent. Proxying any signal also
+      # proxies logs, so this turns off the proxy for every signal.
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "false"
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "false"
+      ADP_DD_LOGS_ENABLED: "true"
+      ADP_DD_LOGS_CONFIG_PROCESSING_RULES: '[{"type": "exclude_at_match", "name": "no_pattern"}]'
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "no pattern provided for processing rule: no_pattern"
     timeout: 60s
-  - assertion: adp_exits_with
-    expected_code: 1
-    timeout: 60s
+  - {step: exits_with, on: adp, process: adp, code: 1, timeout: 60s}
