@@ -574,8 +574,7 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
 /// Checks, in order: the literal `host` attribute, `datadog.host.name`, ECS Fargate (which has no
 /// hostname), the cloud provider's hostname, the Kubernetes node name, `host.id`, and `host.name`.
 fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
-    // A literal `host` of any type stops resolution, rendered as `Value.AsString` in `pdata` does. Only
-    // the JSON layout of arrays and maps is approximate.
+    // A literal `host` of any type stops resolution, rendered as `Value.AsString` in `pdata` does.
     if let Some(hostname) = first_attribute(attributes, ATTRIBUTE_HOST) {
         return Some(otlp_value_as_string(hostname));
     }
