@@ -164,20 +164,33 @@ impl SourceBuilder for OtlpConfiguration {
             ));
         }
 
-        let grpc_listen_str = format!(
-            "{}://{}",
-            self.receiver.grpc.transport.as_str(),
-            self.receiver.grpc.endpoint
-        );
-        let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
-            .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
+        self.receiver.check_endpoints()?;
+
+        // An empty endpoint turns its server off.
+        let grpc_endpoint = if self.receiver.grpc.endpoint.is_empty() {
+            None
+        } else {
+            let grpc_listen_str = format!(
+                "{}://{}",
+                self.receiver.grpc.transport.as_str(),
+                self.receiver.grpc.endpoint
+            );
+            let address = ListenAddress::try_from(grpc_listen_str.as_str())
+                .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
+            Some(address)
+        };
 
         let http_endpoint_str = &self.receiver.http.endpoint;
-        let http_socket_addr = http_endpoint_str
-            .to_socket_addrs()
-            .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
-            .next()
-            .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
+        let http_endpoint = if http_endpoint_str.is_empty() {
+            None
+        } else {
+            let http_socket_addr = http_endpoint_str
+                .to_socket_addrs()
+                .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
+                .next()
+                .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
+            Some(ListenAddress::Tcp(http_socket_addr))
+        };
 
         let origin_tag_resolver = OtlpOriginTagResolver::new(Arc::clone(&self.workload_provider));
 
@@ -192,8 +205,7 @@ impl SourceBuilder for OtlpConfiguration {
         let grpc_http2_config = self.receiver.grpc.http2_config();
         let http_max_request_body_size = self.receiver.http.max_request_body_size;
         let cors = self.receiver.http.cors.clone();
-        let http_tls_config = self.receiver.http.tls.build()?;
-        let grpc_tls_config = self.receiver.grpc.tls.build()?;
+        let (http_tls_config, grpc_tls_config) = self.receiver.tls_configurations()?;
         let metrics = build_metrics(context.component_context());
         let translator_metrics =
             metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
@@ -204,7 +216,7 @@ impl SourceBuilder for OtlpConfiguration {
             context_resolver,
             origin_tag_resolver,
             grpc_endpoint,
-            http_endpoint: ListenAddress::Tcp(http_socket_addr),
+            http_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_http2_config,
             http_max_request_body_size,
@@ -237,8 +249,8 @@ impl MemoryBounds for OtlpConfiguration {
 pub struct Otlp {
     context_resolver: ContextResolver,
     origin_tag_resolver: OtlpOriginTagResolver,
-    grpc_endpoint: ListenAddress,
-    http_endpoint: ListenAddress,
+    grpc_endpoint: Option<ListenAddress>,
+    http_endpoint: Option<ListenAddress>,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
@@ -581,6 +593,7 @@ mod tests {
     use saluki_core::data_model::event::Event;
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
+    use saluki_core::runtime::NodeSnapshot;
     use saluki_io::net::BoundListenAddress;
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -913,6 +926,92 @@ mod tests {
             ("reason", "decode"),
         ];
         assert_eq!(recorder.counter(("component_errors_total", decode_tags)), Some(0));
+    }
+
+    #[tokio::test]
+    async fn an_empty_endpoint_leaves_its_server_unbound() {
+        let mut config = source_configuration();
+        config.receiver.logs_enabled = true;
+        config.receiver.grpc.endpoint = String::new();
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
+
+        let (control, _outputs) = TestComponentDriver::source(config)
+            .await
+            .expect("source should build with only an HTTP endpoint");
+
+        let mut bound = control
+            .supervisor()
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-http"));
+        match bound.recv().await {
+            Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(_))) => {}
+            update => panic!("expected the HTTP server to bind, got {update:?}"),
+        }
+
+        let grpc = control
+            .supervisor()
+            .dataspace()
+            .current_values::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-grpc"));
+        assert!(grpc.is_empty(), "the gRPC server should not bind, got {grpc:?}");
+
+        // A gRPC server that was spawned but hasn't bound yet would pass the check above, so also look at the
+        // servers that are running. The source spawns gRPC before HTTP, so it has started by the time HTTP binds.
+        // The servers are children of the source, not dynamic children of the test supervisor, so
+        // `active_children` can't count them.
+        fn http_servers(node: &NodeSnapshot, names: &mut Vec<String>) {
+            for child in &node.children {
+                if child.name.starts_with("http_server_") {
+                    names.push(child.name.to_string());
+                }
+                http_servers(child, names);
+            }
+        }
+        let mut servers = Vec::new();
+        http_servers(&control.supervisor().tree_handle().snapshot().root, &mut servers);
+        assert_eq!(servers, ["http_server_otlp-http"]);
+
+        control.shutdown().await.expect("source should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn an_empty_endpoint_leaves_its_tls_settings_unused() {
+        // The server with no endpoint doesn't start, so these settings are neither valid nor readable and don't matter.
+        let mut config = source_configuration();
+        config.receiver.logs_enabled = true;
+        config.receiver.grpc.endpoint = String::new();
+        config.receiver.grpc.tls.cert_file = "/missing/cert.pem".to_string();
+        config.receiver.grpc.tls.ca_file = "/missing/ca.pem".to_string();
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
+
+        let (control, _outputs) = TestComponentDriver::source(config)
+            .await
+            .expect("source should build when only the unused server has bad TLS settings");
+
+        let mut bound = control
+            .supervisor()
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-http"));
+        match bound.recv().await {
+            Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(_))) => {}
+            update => panic!("expected the HTTP server to bind, got {update:?}"),
+        }
+
+        control.shutdown().await.expect("source should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn build_fails_when_both_endpoints_are_empty() {
+        let mut config = source_configuration();
+        config.receiver.logs_enabled = true;
+
+        let error = TestComponentDriver::source(config)
+            .await
+            .err()
+            .expect("source should fail to build without an endpoint");
+        assert!(
+            format!("{error:#}").contains("receiver endpoints are both empty"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[tokio::test]
