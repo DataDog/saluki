@@ -385,38 +385,50 @@ impl HttpClientBuilder {
             None => self.tls_builder.build()?,
         };
         let connector = self.connector_builder.build(tls_config)?;
-        let tls_handshake_timeout = connector.tls_handshake_timeout();
-        // The inner connector verifies HTTPS proxies; this separate config verifies destinations through CONNECT.
-        // Keep native roots and verification enabled here even if the inner connector uses an insecure local config.
-        let mut proxy_tls_config = ClientTLSConfigBuilder::new()
-            .with_root_cert_store(load_platform_root_certificates_inner()?)
-            .build()?;
-        if http_protocol == HttpProtocol::Http2 {
-            // The proxy connector can't report a negotiated `h2`. Advertise `h2` only when the client requires it.
-            proxy_tls_config.alpn_protocols = http_protocol_alpns(http_protocol);
-        }
-        let mut proxy_connector = hyper_http_proxy::ProxyConnector::unsecured(connector);
-        proxy_connector.set_tls(Some(TlsConnector::from(Arc::new(proxy_tls_config))));
-        // A zero timeout means the handshake deadline is disabled, matching `HttpsCapableConnector`'s own
-        // handling of `Duration::ZERO` for direct connections.
-        let proxy_tls_handshake_timeout = (!tls_handshake_timeout.is_zero()).then_some(tls_handshake_timeout);
-        proxy_connector.set_tls_handshake_timeout(proxy_tls_handshake_timeout);
-        if let Some(proxies) = &self.proxies {
-            for proxy in proxies {
-                proxy_connector.add_proxy(proxy.to_owned());
-            }
-        }
         let mut hyper_builder = self.hyper_builder;
         if http_protocol == HttpProtocol::Http2 {
             hyper_builder.http2_only(true);
         }
-        let client = hyper_builder.build(proxy_connector);
 
-        let inner = ServiceBuilder::new()
-            .option_layer(self.request_timeout.map(TimeoutLayer::new))
-            .option_layer(self.endpoint_telemetry)
-            .service(client.map_err(BoxError::from))
-            .boxed_clone();
+        let has_proxies = self.proxies.as_ref().is_some_and(|proxies| !proxies.is_empty());
+        let inner = if has_proxies {
+            let tls_handshake_timeout = connector.tls_handshake_timeout();
+            // The inner connector verifies HTTPS proxies; this separate config verifies destinations through CONNECT.
+            // Keep native roots and verification enabled here even if the inner connector uses an insecure local
+            // config.
+            let mut proxy_tls_config = ClientTLSConfigBuilder::new()
+                .with_root_cert_store(load_platform_root_certificates_inner()?)
+                .build()?;
+            if http_protocol == HttpProtocol::Http2 {
+                // The proxy connector can't report a negotiated `h2`. Advertise `h2` only when the client requires it.
+                proxy_tls_config.alpn_protocols = http_protocol_alpns(http_protocol);
+            }
+            let mut proxy_connector = hyper_http_proxy::ProxyConnector::unsecured(connector);
+            proxy_connector.set_tls(Some(TlsConnector::from(Arc::new(proxy_tls_config))));
+            // A zero timeout means the handshake deadline is disabled, matching `HttpsCapableConnector`'s own
+            // handling of `Duration::ZERO` for direct connections.
+            let proxy_tls_handshake_timeout = (!tls_handshake_timeout.is_zero()).then_some(tls_handshake_timeout);
+            proxy_connector.set_tls_handshake_timeout(proxy_tls_handshake_timeout);
+            if let Some(proxies) = &self.proxies {
+                for proxy in proxies {
+                    proxy_connector.add_proxy(proxy.to_owned());
+                }
+            }
+
+            let client = hyper_builder.build(proxy_connector);
+            ServiceBuilder::new()
+                .option_layer(self.request_timeout.map(TimeoutLayer::new))
+                .option_layer(self.endpoint_telemetry)
+                .service(client.map_err(BoxError::from))
+                .boxed_clone()
+        } else {
+            let client = hyper_builder.build(connector);
+            ServiceBuilder::new()
+                .option_layer(self.request_timeout.map(TimeoutLayer::new))
+                .option_layer(self.endpoint_telemetry)
+                .service(client.map_err(BoxError::from))
+                .boxed_clone()
+        };
 
         Ok(HttpClient { inner })
     }
