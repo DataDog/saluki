@@ -57,6 +57,7 @@ dependencies = [
  "saluki-error",
  "saluki-io",
  "saluki-metadata",
+ "saluki-metric-kernels",
  "saluki-metrics",
  "saluki-tls",
  "serde",
@@ -5801,6 +5802,7 @@ dependencies = [
  "saluki-error",
  "saluki-io",
  "saluki-metadata",
+ "saluki-metric-kernels",
  "saluki-metrics",
  "saluki-tls",
  "serde",
@@ -5994,6 +5996,25 @@ name = "saluki-metadata"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "saluki-metric-kernels"
+version = "0.1.0"
+dependencies = [
+ "ddsketch",
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
+ "regex",
+ "saluki-antithesis",
+ "saluki-common",
+ "saluki-core",
+ "saluki-error",
+ "serde",
+ "simdutf8",
+ "smallvec",
+ "stringtheory",
+ "tracing",
 ]
 
 [[package]]

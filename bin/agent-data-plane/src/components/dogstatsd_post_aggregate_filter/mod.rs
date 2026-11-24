@@ -3,27 +3,23 @@
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
 use async_trait::async_trait;
 use saluki_common::sync::live::Live;
-use saluki_components::transforms::HistogramConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{
-        metric::{Metric, MetricValues},
-        EventType,
-    },
+    data_model::event::{metric::Metric, EventType},
     observability::ComponentMetricsExt,
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::filterlist::PostAggregateFilterKernel;
 use saluki_metrics::MetricsBuilder;
-use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
-use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist, MetricNameFilter};
+use crate::components::dogstatsd_filterlist::MetricNameFilter;
 
 mod telemetry;
 
@@ -35,7 +31,8 @@ use self::telemetry::Telemetry;
 /// aggregate transform has expanded histograms into scalar metrics.
 pub struct DogStatsDPostAggregateFilterConfiguration {
     metric_filter: Live<MetricNameFilter>,
-    histogram_suffixes: HistogramSuffixes,
+    histogram_aggregates: Vec<String>,
+    histogram_percentiles: Vec<String>,
 }
 
 impl DogStatsDPostAggregateFilterConfiguration {
@@ -47,7 +44,8 @@ impl DogStatsDPostAggregateFilterConfiguration {
     ) -> Self {
         Self {
             metric_filter,
-            histogram_suffixes: HistogramSuffixes::new(histogram_aggregates, histogram_percentiles),
+            histogram_aggregates: histogram_aggregates.to_vec(),
+            histogram_percentiles: histogram_percentiles.to_vec(),
         }
     }
 }
@@ -65,13 +63,16 @@ impl TransformBuilder for DogStatsDPostAggregateFilterConfiguration {
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        let mut filter = DogStatsDPostAggregateFilter {
-            matcher: Blocklist::default(),
+        let kernel = PostAggregateFilterKernel::new(
+            &self.metric_filter,
+            &self.histogram_aggregates,
+            &self.histogram_percentiles,
+        );
+        let filter = DogStatsDPostAggregateFilter {
+            kernel,
             metric_filter: self.metric_filter.clone(),
-            histogram_suffixes: self.histogram_suffixes.clone(),
             telemetry: Telemetry::new(&metrics_builder),
         };
-        filter.sync_matcher();
 
         Ok(Box::new(filter))
     }
@@ -85,68 +86,19 @@ impl MemoryBounds for DogStatsDPostAggregateFilterConfiguration {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct HistogramSuffixes {
-    values: Vec<MetaString>,
-}
-
-impl HistogramSuffixes {
-    /// Builds the suffixes of histogram aggregate outputs, matching the Agent's histogram filterlist:
-    /// <https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/comp/filterlist/impl/filterlist.go#L203-L215>
-    ///
-    /// Like the Agent, every configured aggregate is a suffix, and a percentile that isn't a number between 0 and 1 is
-    /// skipped rather than failing the configuration:
-    /// <https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/pkg/metrics/histogram.go#L60-L78>
-    ///
-    /// Percentiles are parsed by the aggregate transform's histogram configuration, so these suffixes always match the
-    /// percentile series it emits. Skipped percentiles aren't logged here: that configuration logs each one.
-    fn new(aggregates: &[String], percentiles: &[String]) -> Self {
-        let mut values = aggregates
-            .iter()
-            .map(|aggregate| MetaString::from(aggregate.as_str()))
-            .collect::<Vec<_>>();
-        values.extend(HistogramConfiguration::percentile_suffixes(percentiles));
-
-        Self { values }
-    }
-
-    /// Returns whether the filterlist entry targets a generated histogram aggregate output.
-    ///
-    /// Post-aggregate filtering only owns entries shaped like `<metric>.<aggregate>`. Other filterlist entries remain
-    /// the listener filter's responsibility in `dogstatsd_prefix_filter`.
-    fn contains_filter_entry(&self, value: &str) -> bool {
-        self.values.iter().any(|suffix| {
-            let suffix: &str = suffix.as_ref();
-            value
-                .strip_suffix(suffix)
-                .map(|prefix| prefix.ends_with('.'))
-                .unwrap_or(false)
-        })
-    }
-}
-
-fn is_scalar_series_metric(metric: &Metric) -> bool {
-    matches!(
-        metric.values(),
-        MetricValues::Counter(_) | MetricValues::Rate(_, _) | MetricValues::Gauge(_) | MetricValues::Set(_)
-    )
-}
-
 struct DogStatsDPostAggregateFilter {
-    matcher: Blocklist,
+    kernel: PostAggregateFilterKernel,
     metric_filter: Live<MetricNameFilter>,
-    histogram_suffixes: HistogramSuffixes,
     telemetry: Telemetry,
 }
 
 impl DogStatsDPostAggregateFilter {
     fn sync_matcher(&mut self) {
-        let (matcher, _) = compile_metric_filter(&self.metric_filter);
-        self.matcher = matcher.restrict_exact(|value| self.histogram_suffixes.contains_filter_entry(value));
+        self.kernel.update_filter(&self.metric_filter);
     }
 
     fn should_filter_metric(&self, metric: &Metric) -> bool {
-        is_scalar_series_metric(metric) && self.matcher.contains(metric.context().name())
+        self.kernel.should_filter(metric)
     }
 
     fn transform_buffer(&self, buffer: &mut EventsBuffer) {
@@ -225,21 +177,18 @@ mod tests {
             .into_iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        let histogram_suffixes = HistogramSuffixes::new(&histogram_aggregates, &histogram_percentiles);
         let metric_filter = MetricNameFilter {
             values: values.into_iter().map(ToString::to_string).collect(),
             match_prefix,
             prefix_rules: Vec::new(),
         };
 
-        let mut filter = DogStatsDPostAggregateFilter {
-            matcher: Blocklist::default(),
+        let kernel = PostAggregateFilterKernel::new(&metric_filter, &histogram_aggregates, &histogram_percentiles);
+        DogStatsDPostAggregateFilter {
+            kernel,
             metric_filter: Live::new_fixed(metric_filter),
-            histogram_suffixes,
             telemetry,
-        };
-        filter.sync_matcher();
-        filter
+        }
     }
 
     fn noop_filter(values: Vec<&str>, match_prefix: bool) -> DogStatsDPostAggregateFilter {
@@ -308,7 +257,6 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/comp/filterlist/impl/filterlist_test.go#L19
     #[test]
     fn prefix_rules_apply_to_histogram_outputs_with_global_exceptions() {
-        let histogram_suffixes = HistogramSuffixes::new(&["avg".to_string()], &[]);
         let metric_filter = MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
@@ -319,13 +267,12 @@ mod tests {
             }],
         };
 
-        let mut filter = DogStatsDPostAggregateFilter {
-            matcher: Blocklist::default(),
+        let kernel = PostAggregateFilterKernel::new(&metric_filter, &["avg".to_string()], &[]);
+        let filter = DogStatsDPostAggregateFilter {
+            kernel,
             metric_filter: Live::new_fixed(metric_filter),
-            histogram_suffixes,
             telemetry: Telemetry::noop(),
         };
-        filter.sync_matcher();
 
         let names = filter_metric_names(
             &filter,
@@ -416,12 +363,12 @@ mod tests {
         // Like the Agent's `ParsePercentiles`, a value that isn't a number, or a number outside [0.0, 1.0], is skipped
         // and the valid percentiles around it still apply. Aggregates are kept as configured.
         let to_strings = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-        let suffixes = HistogramSuffixes::new(
+        let suffixes = saluki_metric_kernels::filterlist::HistogramSuffixes::new(
             &to_strings(&["max", "p99"]),
             &to_strings(&["abc", "0.95", "1.1", "-0.1"]),
         );
 
-        let values = suffixes.values.iter().map(|v| v.as_ref()).collect::<Vec<&str>>();
+        let values = suffixes.values().iter().map(|v| v.as_ref()).collect::<Vec<&str>>();
         assert_eq!(values, ["max", "p99", "95percentile"]);
     }
 

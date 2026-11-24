@@ -4,10 +4,7 @@ use async_trait::async_trait;
 use metrics::{Counter, Gauge};
 use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::data_model::event::{
-    metric::{Metric, MetricValues},
-    EventType,
-};
+use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -17,8 +14,8 @@ use saluki_core::{
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::filterlist::PrefixFilterKernel;
 use saluki_metrics::MetricsBuilder;
-use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error, warn};
 
@@ -63,18 +60,14 @@ impl TransformBuilder for DogStatsDPrefixFilterConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        // Ensure our metric prefix has a trailing period so that we don't have to check for, and possibly add it, when we're
-        // actually processing metrics.
-        let mut metric_prefix = self.metric_prefix.clone();
-        if !metric_prefix.is_empty() && !metric_prefix.ends_with(".") {
-            metric_prefix.push('.');
-        }
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = FilterlistTelemetry::new(&metrics_builder);
         let mut filter = DogStatsDPrefixFilter {
-            metric_prefix,
-            metric_prefix_blocklist: self.metric_prefix_blocklist.clone(),
-            matcher: Blocklist::default(),
+            kernel: PrefixFilterKernel::new(
+                self.metric_prefix.clone(),
+                self.metric_prefix_blocklist.clone(),
+                Blocklist::default(),
+            ),
             metric_filter: self.metric_filter.clone(),
             telemetry,
         };
@@ -132,15 +125,9 @@ impl FilterlistTelemetry {
 }
 
 struct DogStatsDPrefixFilter {
-    metric_prefix: String,
-    metric_prefix_blocklist: Vec<String>,
-    matcher: Blocklist,
+    kernel: PrefixFilterKernel,
     metric_filter: Live<MetricNameFilter>,
     telemetry: FilterlistTelemetry,
-}
-
-fn is_histogram_metric(metric: &Metric) -> bool {
-    matches!(metric.values(), MetricValues::Histogram(_))
 }
 
 impl DogStatsDPrefixFilter {
@@ -177,64 +164,19 @@ impl DogStatsDPrefixFilter {
         }
 
         self.telemetry.set_filterlist_size(matcher.len());
-        self.matcher = matcher;
+        self.kernel.set_matcher(matcher);
         if count_update {
             self.telemetry.increment_filterlist_updates();
         }
     }
 
     fn process_metric(&self, metric: &mut Metric) -> bool {
-        // Metrics that keep their submitted name are passed through without touching their context.
-        //
-        // This is the common case, covering deployments with no namespace prefix configured as well as metrics that
-        // are already prefixed. Rebuilding the context here would clone the host, tags, and origin tags, and
-        // recalculate the context key, for every metric, so the name is only rewritten when prefixing changes it.
-        if self.metric_prefix.is_empty() || self.has_excluded_prefix(metric.context().name().as_ref()) {
-            return !self.is_filtered(metric, metric.context().name().as_ref());
+        let kept = self.kernel.apply(metric);
+        if !kept {
+            self.telemetry.increment_listener_filtered_points();
+            debug!("Metric {} excluded due to blocklist.", metric.context().name());
         }
-
-        let mut prefixed_metric_name = self.metric_prefix.clone();
-        prefixed_metric_name.push_str(metric.context().name().as_ref());
-        let new_metric_name = MetaString::from(prefixed_metric_name);
-
-        if self.is_filtered(metric, &new_metric_name) {
-            return false;
-        }
-
-        // Update metric with the new prefixed name.
-        let new_context = metric.context().with_name(new_metric_name);
-        let existing_context = metric.context_mut();
-        *existing_context = new_context;
-
-        true
-    }
-
-    /// Returns whether `metric` is filtered out by the metric filterlist.
-    ///
-    /// `name` is the name the metric carries once prefixing has been applied, since that is the name the filterlist
-    /// is written against. Histogram inputs are kept when an aggregate output below their namespace is excepted,
-    /// because the aggregate transform still needs the input to generate that excepted output.
-    fn is_filtered(&self, metric: &Metric, name: &str) -> bool {
-        if !self.matcher.contains(name) {
-            return false;
-        }
-
-        if is_histogram_metric(metric) && self.matcher.has_descendant_exception(name) {
-            return false;
-        }
-
-        self.telemetry.increment_listener_filtered_points();
-        debug!("Metric {} excluded due to blocklist.", name);
-
-        true
-    }
-
-    fn has_excluded_prefix(&self, metric_name: &str) -> bool {
-        !self.metric_prefix.is_empty()
-            && self
-                .metric_prefix_blocklist
-                .iter()
-                .any(|prefix| metric_name.starts_with(prefix))
+        kept
     }
 }
 
@@ -335,16 +277,8 @@ mod tests {
         }
 
         fn build(self) -> DogStatsDPrefixFilter {
-            // `DogStatsDPrefixFilterConfiguration::build` adds the same trailing period.
-            let mut metric_prefix = self.metric_prefix;
-            if !metric_prefix.is_empty() && !metric_prefix.ends_with('.') {
-                metric_prefix.push('.');
-            }
-
             DogStatsDPrefixFilter {
-                metric_prefix,
-                metric_prefix_blocklist: self.metric_prefix_blocklist,
-                matcher: self.matcher,
+                kernel: PrefixFilterKernel::new(self.metric_prefix, self.metric_prefix_blocklist, self.matcher),
                 metric_filter: self.metric_filter,
                 telemetry: self.telemetry,
             }
@@ -375,7 +309,7 @@ mod tests {
     #[test]
     fn metric_on_blocklist_is_dropped_and_others_pass() {
         let filter = FilterBuilder::new()
-            .matcher(Blocklist::new(["foobar", "test"], false))
+            .matcher(Blocklist::from_normalized(["foobar", "test"], false))
             .build();
 
         let mut metric = Metric::gauge("foobar", 1.0);
@@ -389,7 +323,9 @@ mod tests {
     /// Metrics that keep their submitted name must pass through without their context being rebuilt.
     #[test]
     fn passthrough_metric_does_not_rebuild_its_context() {
-        let filter = FilterBuilder::new().matcher(Blocklist::new(["blocked"], false)).build();
+        let filter = FilterBuilder::new()
+            .matcher(Blocklist::from_normalized(["blocked"], false))
+            .build();
         let mut metric = Metric::gauge("passes.through", 1.0);
         let original_context = metric.context().clone();
 
@@ -422,7 +358,9 @@ mod tests {
         }
 
         let token = ResourceGroupRegistry::global().register_resource_group(GROUP);
-        let filter = FilterBuilder::new().matcher(Blocklist::new(["blocked"], false)).build();
+        let filter = FilterBuilder::new()
+            .matcher(Blocklist::from_normalized(["blocked"], false))
+            .build();
         let mut metric = Metric::gauge("passes.through", 1.0);
 
         // Run once outside the measured window so that any one-time lazy initialization is not counted.
@@ -448,7 +386,7 @@ mod tests {
     fn blocklist_matches_against_the_prefixed_name() {
         let filter = FilterBuilder::new()
             .prefix("foo.")
-            .matcher(Blocklist::new(["foo.bar", "test"], false))
+            .matcher(Blocklist::from_normalized(["foo.bar", "test"], false))
             .build();
 
         // `bar` is prefixed to `foo.bar`, which the blocklist matches.
@@ -466,7 +404,7 @@ mod tests {
     #[test]
     fn prefix_matching_blocklist_drops_metrics_by_prefix() {
         let filter = FilterBuilder::new()
-            .matcher(Blocklist::new(["b", "test"], true))
+            .matcher(Blocklist::from_normalized(["b", "test"], true))
             .build();
 
         // Match-prefix mode is enabled, so `bar` matches prefix `b`.
@@ -482,7 +420,7 @@ mod tests {
     fn prefix_matching_blocklist_applies_after_prefixing() {
         let filter = FilterBuilder::new()
             .prefix("foo")
-            .matcher(Blocklist::new(["foo.", "test"], true))
+            .matcher(Blocklist::from_normalized(["foo.", "test"], true))
             .build();
 
         // The computed name is `foo.bar`; with match-prefix mode enabled, it matches prefix `foo.`.
@@ -709,7 +647,7 @@ mod tests {
 
         let telemetry = FilterlistTelemetry::new(&MetricsBuilder::default());
         let filter = FilterBuilder::new()
-            .matcher(Blocklist::new(["foo", "bar"], true))
+            .matcher(Blocklist::from_normalized(["foo", "bar"], true))
             .telemetry(telemetry)
             .build();
 
