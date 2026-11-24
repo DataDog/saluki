@@ -697,9 +697,9 @@ to it.
 With the experimental native trace intake
 (`data_plane.experimental.apm.native_trace_intake`), ADP decodes at most this many payloads
 at once on the trace endpoints it serves, `/v1.0/traces`. The trace-agent behind the APM
-relay applies the limit to the trace endpoints ADP forwards to it. As in the trace-agent, `0` means half the available parallelism, and at
-least one. ADP reads a negative value as `0`, with a warning, where the trace-agent fails to
-start.
+relay applies the limit to the trace endpoints ADP forwards to it. As in the trace-agent, `0`
+means half the available parallelism, and at least one. ADP reads a negative value as `0`,
+with a warning, where the trace-agent fails to start.
 
 ### `apm_config.features`
 
@@ -716,10 +716,17 @@ ADP recognizes these values:
 - `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
   does.
 - `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
-- `429` and `component2name` apply to the traces of the experimental native trace intake
-  (`data_plane.experimental.apm.native_trace_intake`), as they do in the trace-agent. The
-  trace-agent behind the APM relay applies every feature to the trace endpoints ADP forwards
-  to it.
+- `429`: with the experimental native trace intake
+  (`data_plane.experimental.apm.native_trace_intake`), a payload that waits longer than
+  `apm_config.decoder_timeout` for a free decoder is answered with `429 Too Many Requests`
+  instead of `200 OK`. A tracer can ask for the same on a single request with the
+  `Datadog-Send-Real-Http-Status` header.
+- `component2name`: with the experimental native trace intake, trace normalization replaces
+  the operation name of a span that has a `component` tag with that tag. Unlike the
+  trace-agent, ADP doesn't apply it to OTLP traces.
+
+The trace-agent behind the APM relay applies every feature to the trace endpoints ADP forwards
+to it.
 
 Every other value is ignored by ADP, without a warning: the flag inventory is not stable across
 agent versions, so unrecognized entries are inert rather than errors.
