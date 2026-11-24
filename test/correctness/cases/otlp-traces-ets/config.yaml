@@ -48,7 +48,6 @@ procedure:
         # Error Tracking Standalone keeps the traces without an error, marked as dropped. The intake holds all 2000 traces
         # of the load, as in `otlp-traces`.
         traces:
-          require_ssi: false
           min_traces: 2000
           min_spans: 4000
           spans:
