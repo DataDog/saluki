@@ -13,10 +13,9 @@
 
 mod telemetry;
 
-use std::{collections::hash_map::Entry, num::NonZeroUsize, time::Duration};
+use std::{num::NonZeroUsize, time::Duration};
 
 use async_trait::async_trait;
-use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_common::sync::live::Live;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -25,255 +24,32 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::{
-        event::{
-            metric::{
-                context::{Context, TagSetMutViewState},
-                Metric, MetricValues,
-            },
-            EventType,
+    data_model::event::{
+        metric::{
+            context::{Context, TagSetMutViewState},
+            Metric,
         },
-        tags::Tag,
+        EventType,
     },
     observability::ComponentMetricsExt,
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::tag_filter::{
+    compile_filters_with_values, filter_metric_tags, is_tag_filter_eligible, CompiledFilters,
+    CompiledValuePrefixFilters,
+};
+pub use saluki_metric_kernels::tag_filter::{
+    FilterAction, FilterMetricTagsOutcome, MetricTagFilterEntry, MetricTagValueAllowlistEntry, TagValueMismatchAction,
+};
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
-
-/// One whole-tag filter entry.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetricTagFilterEntry {
-    /// Metric name the entry applies to. An entry with an empty name is ignored.
-    pub metric_name: String,
-
-    /// Whether the listed tags are kept or removed.
-    pub action: FilterAction,
-
-    /// Tag keys the action applies to.
-    pub tags: Vec<String>,
-}
-
-/// Whether a whole-tag filter entry keeps or removes its tags.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FilterAction {
-    /// Keep only the listed tags.
-    Include,
-
-    /// Remove the listed tags.
-    Exclude,
-}
-
-/// One tag value allow-list entry.
-///
-/// Matching is exact and case-sensitive, including any whitespace.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetricTagValueAllowlistEntry {
-    /// Metric-name prefix the entry applies to.
-    pub metric_prefix: String,
-
-    /// Tag key whose values are constrained. Bare tags have no value and are not changed.
-    pub tag_name: String,
-
-    /// Tag values retained unchanged. An empty list treats every key/value tag as a mismatch.
-    pub values: Vec<String>,
-
-    /// Action applied when a tag value is absent from `values`.
-    pub on_miss: TagValueMismatchAction,
-
-    /// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace], emitted as configured.
-    pub replacement: String,
-}
-
-/// Action applied when a tag value is absent from its allow-list.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TagValueMismatchAction {
-    /// Removes the tag.
-    Remove,
-
-    /// Replaces the tag value with the entry's replacement.
-    Replace,
-}
 
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
 
 use self::telemetry::Telemetry;
-
-#[derive(Clone, Eq, PartialEq)]
-enum CompiledMismatchAction {
-    Remove,
-    Replace(Tag),
-}
-
-#[derive(Clone)]
-struct CompiledTagValueAllowlist {
-    allowed_values: FastHashSet<String>,
-    on_miss: CompiledMismatchAction,
-}
-
-struct CompiledKeyFilter {
-    is_exclude: bool,
-    tag_names: FastHashSet<String>,
-}
-
-#[derive(Clone)]
-struct CompiledValuePrefixFilter {
-    metric_prefix: String,
-    value_allowlists: FastHashMap<String, CompiledTagValueAllowlist>,
-}
-
-#[derive(Clone, Default)]
-struct CompiledValuePrefixFilters(Vec<CompiledValuePrefixFilter>);
-
-impl CompiledValuePrefixFilters {
-    fn sort(&mut self) {
-        self.0
-            .sort_unstable_by(|left, right| left.metric_prefix.cmp(&right.metric_prefix));
-    }
-
-    fn get(&self, metric_name: &str) -> Option<&CompiledValuePrefixFilter> {
-        find_matching_prefix(&self.0, metric_name, |filter| filter.metric_prefix.as_str())
-    }
-
-    fn rule_count(&self) -> usize {
-        self.0.iter().map(|filter| filter.value_allowlists.len()).sum()
-    }
-}
-
-fn find_matching_prefix<'a, T>(entries: &'a [T], value: &str, prefix: impl Fn(&T) -> &str) -> Option<&'a T> {
-    match entries.binary_search_by(|candidate| prefix(candidate).cmp(value)) {
-        Ok(index) => Some(&entries[index]),
-        Err(index) if index > 0 && value.starts_with(prefix(&entries[index - 1])) => Some(&entries[index - 1]),
-        _ => None,
-    }
-}
-
-/// Compiled exact-name whole-tag filters and metric-prefix value filters.
-#[derive(Default)]
-pub struct CompiledFilters {
-    key_filters: FastHashMap<String, CompiledKeyFilter>,
-    value_prefix_filters: CompiledValuePrefixFilters,
-}
-
-impl CompiledFilters {
-    fn rule_count(&self) -> usize {
-        self.key_filters.len() + self.value_prefix_filters.rule_count()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Outcome of attempting to apply tag filter rules to a metric.
-pub enum FilterMetricTagsOutcome {
-    /// No rule existed for the metric name.
-    RuleMiss,
-    /// A rule existed, but applying it didn't change any tags.
-    NoChange,
-    /// A rule existed and removed one or more tags.
-    Modified {
-        /// Total number of instrumented and origin tags removed.
-        removed_tags: usize,
-    },
-}
-
-/// Compile a slice of filter entries into an O(1)-lookup table.
-///
-/// Merge rules:
-/// - Same metric name + same action → union of tag key sets.
-/// - Same metric name + conflicting actions → `exclude` wins.
-pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
-    let mut filters = CompiledFilters::default();
-
-    for entry in entries {
-        if entry.metric_name.is_empty() {
-            continue;
-        }
-
-        let is_exclude = entry.action == FilterAction::Exclude;
-        let mut tag_set = FastHashSet::default();
-        tag_set.reserve(entry.tags.len());
-        tag_set.extend(entry.tags.iter().cloned());
-
-        match filters.key_filters.entry(entry.metric_name.clone()) {
-            Entry::Vacant(vacant) => {
-                vacant.insert(CompiledKeyFilter {
-                    is_exclude,
-                    tag_names: tag_set,
-                });
-            }
-            Entry::Occupied(mut occupied) => {
-                let existing = occupied.get_mut();
-                if existing.is_exclude == is_exclude {
-                    existing.tag_names.extend(tag_set);
-                } else if is_exclude {
-                    existing.is_exclude = true;
-                    existing.tag_names = tag_set;
-                }
-            }
-        }
-    }
-
-    filters
-}
-
-/// Adds value allow-list entries to a compiled filter table.
-///
-/// Distinct metric prefixes must not overlap, ensuring that each metric matches at most one prefix. Multiple rules may
-/// use the same prefix when they target different tags. The configuration boundary validates entries; this does not.
-pub fn add_value_allowlists(filters: &mut CompiledFilters, entries: &[MetricTagValueAllowlistEntry]) {
-    for entry in entries {
-        let on_miss = match entry.on_miss {
-            TagValueMismatchAction::Remove => CompiledMismatchAction::Remove,
-            TagValueMismatchAction::Replace => {
-                CompiledMismatchAction::Replace(Tag::from(format!("{}:{}", entry.tag_name, entry.replacement)))
-            }
-        };
-
-        let mut allowed_values = FastHashSet::default();
-        allowed_values.reserve(entry.values.len());
-        allowed_values.extend(entry.values.iter().cloned());
-        let allowlist = CompiledTagValueAllowlist {
-            allowed_values,
-            on_miss,
-        };
-
-        if let Some(filter) = filters
-            .value_prefix_filters
-            .0
-            .iter_mut()
-            .find(|filter| filter.metric_prefix == entry.metric_prefix)
-        {
-            filter.value_allowlists.insert(entry.tag_name.clone(), allowlist);
-        } else {
-            let mut value_allowlists = FastHashMap::default();
-            value_allowlists.insert(entry.tag_name.clone(), allowlist);
-            filters.value_prefix_filters.0.push(CompiledValuePrefixFilter {
-                metric_prefix: entry.metric_prefix.clone(),
-                value_allowlists,
-            });
-        }
-    }
-
-    filters.value_prefix_filters.sort();
-}
-
-fn compile_all_filters(
-    entries: &[MetricTagFilterEntry], value_allowlists: &[MetricTagValueAllowlistEntry],
-) -> CompiledFilters {
-    let mut filters = compile_filters(entries);
-    add_value_allowlists(&mut filters, value_allowlists);
-    filters
-}
-
-fn compile_filters_with_values(
-    entries: &[MetricTagFilterEntry], value_prefix_filters: CompiledValuePrefixFilters,
-) -> CompiledFilters {
-    let mut filters = compile_filters(entries);
-    filters.value_prefix_filters = value_prefix_filters;
-    filters
-}
 
 /// Metric Tag Filterlist transform.
 ///
@@ -308,7 +84,7 @@ impl TagFilterlistConfiguration {
         entries: Live<Vec<MetricTagFilterEntry>>, value_allowlists: &[MetricTagValueAllowlistEntry],
         context_cache_capacity: usize,
     ) -> Self {
-        let value_prefix_filters = compile_all_filters(&[], value_allowlists).value_prefix_filters;
+        let value_prefix_filters = CompiledValuePrefixFilters::compile(value_allowlists);
         Self {
             entries,
             value_prefix_filters,
@@ -390,9 +166,7 @@ impl Transform for TagFilterlist {
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
                         for metric in events.events_mut::<Metric>() {
-                            if metric.values().is_sketch()
-                                || matches!(metric.values(), MetricValues::Counter(_))
-                            {
+                            if is_tag_filter_eligible(metric) {
                                 let original_context = metric.context().clone();
 
                                 if let Some(cached) = self.context_cache.get(&original_context) {
@@ -445,92 +219,6 @@ impl Transform for TagFilterlist {
     }
 }
 
-#[inline]
-fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &FastHashSet<String>) -> bool {
-    is_exclude != names.contains(tag.as_borrowed().name())
-}
-
-#[inline]
-fn filter_tag(
-    tag: &Tag, key_filter: Option<&CompiledKeyFilter>, value_filter: Option<&CompiledValuePrefixFilter>,
-    replacements: &mut Vec<Tag>,
-) -> bool {
-    if let Some(key_filter) = key_filter {
-        if !should_keep_tag(tag, key_filter.is_exclude, &key_filter.tag_names) {
-            return false;
-        }
-    }
-
-    let tag = tag.as_borrowed();
-
-    let Some(value) = tag.value() else {
-        return true;
-    };
-    let Some(allowlist) = value_filter.and_then(|filter| filter.value_allowlists.get(tag.name())) else {
-        return true;
-    };
-    if allowlist.allowed_values.contains(value) {
-        return true;
-    }
-
-    match &allowlist.on_miss {
-        CompiledMismatchAction::Remove => false,
-        CompiledMismatchAction::Replace(replacement) if replacement.as_str() == tag.as_ref() => true,
-        CompiledMismatchAction::Replace(replacement) => {
-            replacements.push(replacement.clone());
-            false
-        }
-    }
-}
-
-/// Filters the tags of a metric according to the compiled filter table.
-///
-/// Both instrumented tags and origin tags are filtered using the same key and value rules. Whole-tag filtering runs
-/// first, so an `include` rule must include a value-filtered tag key for its allow-list to apply. Configuration
-/// validation ensures that a metric and tag match at most one value rule. Value rules leave bare tags unchanged;
-/// empty-string values are processed and can be retained by including `""` in the configured values.
-///
-/// The caller applies this function only to counters and sketch-backed metrics. If the metric name doesn't have an
-/// exact whole-tag rule or a matching value-rule prefix, the metric is unchanged. If filtering would not change any
-/// tags, the metric context is left untouched (zero allocations).
-#[inline]
-pub fn filter_metric_tags(
-    metric: &mut Metric, state: &mut TagSetMutViewState, filters: &CompiledFilters,
-) -> FilterMetricTagsOutcome {
-    let metric_name = metric.context().name().clone();
-    let key_filter = filters.key_filters.get(metric_name.as_ref());
-    let value_filter = filters.value_prefix_filters.get(metric_name.as_ref());
-    if key_filter.is_none() && value_filter.is_none() {
-        return FilterMetricTagsOutcome::RuleMiss;
-    }
-
-    let mut tag_replacements = Vec::new();
-    let mut origin_tag_replacements = Vec::new();
-    let mut tag_set_view = metric.context_mut().tags_mut_view(state);
-    tag_set_view.retain_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut tag_replacements));
-    tag_set_view.retain_origin_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut origin_tag_replacements));
-    let total_removed = tag_set_view.finish();
-
-    if !tag_replacements.is_empty() || !origin_tag_replacements.is_empty() {
-        metric.context_mut().with_tag_sets_mut(|tags, origin_tags| {
-            for replacement in tag_replacements {
-                tags.insert_tag(replacement);
-            }
-            for replacement in origin_tag_replacements {
-                origin_tags.insert_tag(replacement);
-            }
-        });
-    }
-
-    if total_removed == 0 {
-        FilterMetricTagsOutcome::NoChange
-    } else {
-        FilterMetricTagsOutcome::Modified {
-            removed_tags: total_removed,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use saluki_core::{
@@ -547,6 +235,7 @@ mod tests {
         },
         topology::EventsBuffer,
     };
+    use saluki_metric_kernels::tag_filter::{compile_all_filters, compile_filters};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
@@ -1028,8 +717,8 @@ mod tests {
         ];
         let filters = compile_filters(&entries);
 
-        assert!(!filters.key_filters.contains_key(""));
-        assert!(filters.key_filters.contains_key("my.dist"));
+        assert!(!filters.has_key_filter(""));
+        assert!(filters.has_key_filter("my.dist"));
     }
 
     #[test]
