@@ -42,7 +42,19 @@ procedure:
   - {step: process_stable_for, on: load, duration: 32s}
   # ADP sends the fixture's metrics itself, and does not proxy them to the Agent.
   - parallel:
-      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: compare
+        telemetry: metrics
+        comparison: intake-adp
+        baseline: intake-agent
+        # The fixture has four hosts of `otlphost.metric` and 18 `otlpsource.*` gauges.
+        metrics:
+          min_series: 22
+          series:
+            - {name: otlphost.metric, tags: ["host:correctness-testing"]}
+            - {name: otlphost.metric, tags: ["host:custom"]}
+            - {name: otlphost.metric, tags: ["host:azure-vm-id"]}
+            - {name: otlphost.metric, tags: ["host:azure-host-name"]}
+            - {name: otlpsource.host_name, tags: ["host:source-host"]}
       - step: intake_from
         on: intake-adp
         telemetry: metrics

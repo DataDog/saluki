@@ -41,7 +41,14 @@ procedure:
   - {step: process_stable_for, on: load, duration: 32s}
   # ADP sends the fixture's metrics itself, and does not proxy them to the Agent.
   - parallel:
-      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: compare
+        telemetry: metrics
+        comparison: intake-adp
+        baseline: intake-agent
+        metrics:
+          min_series: 1
+          series:
+            - {name: otlp.scope.metric, tags: ["instrumentation_scope:my-instrument", "instrumentation_scope_version:1.0.0"]}
       - step: intake_from
         on: intake-adp
         telemetry: metrics
