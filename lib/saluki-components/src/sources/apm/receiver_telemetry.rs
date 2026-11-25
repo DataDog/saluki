@@ -1,11 +1,9 @@
 //! Receiver telemetry of the native trace intake.
 //!
-//! Mirrors the trace-agent's per-tag receiver stats (`ReceiverStats` and `TagStats` in `pkg/trace/info/stats.go`), which
-//! `handleTracesV1` (`pkg/trace/api/api.go`) counts into and the receiver publishes as `datadog.trace_agent.receiver.*`,
-//! and the `datadog.trace_agent.receiver.error` counts of `responses.go`. As with the trace normalizer and sampler,
-//! counts accumulate for one window and are reported as metric events on the source's `metrics` output, so the metrics
-//! reach the backend under the trace-agent's names. Only the native intake counts: the trace-agent counts the payloads
-//! forwarded to it.
+//! Matches the trace-agent's per-tag receiver stats, which it publishes as `datadog.trace_agent.receiver.*`, and its
+//! `datadog.trace_agent.receiver.error` counts. As with the trace normalizer and sampler, counts accumulate for one
+//! window and are reported as metric events on the source's `metrics` output, so the metrics reach the backend under
+//! the trace-agent's names. Only the native intake counts: the trace-agent counts the payloads forwarded to it.
 //!
 //! `serve_traces_ms` and `rate_response_bytes` are histograms the trace-agent sends through DogStatsD, so they are
 //! reported as DogStatsD reports histograms: as the configured aggregates and percentiles (`histogram_aggregates`,
@@ -26,7 +24,7 @@ use saluki_core::data_model::event::Event;
 use saluki_core::data_model::tags::TagSet;
 use stringtheory::MetaString;
 
-use crate::common::datadog::traces::telemetry_window_interval;
+use crate::common::traces::telemetry_window_interval;
 use crate::transforms::HistogramConfiguration;
 
 /// How long a telemetry window accumulates counts before reporting.
@@ -44,7 +42,7 @@ const METRIC_SERVE_TRACES_MS: &str = "datadog.trace_agent.receiver.serve_traces_
 const METRIC_RATE_RESPONSE_BYTES: &str = "datadog.trace_agent.receiver.rate_response_bytes";
 const METRIC_ERROR: &str = "datadog.trace_agent.receiver.error";
 
-/// The tags receiver stats are kept under, the reference's `info.Tags`.
+/// The tags receiver stats are kept under, as the trace-agent keys them.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(super) struct ReceiverTags {
     pub lang: MetaString,
@@ -71,7 +69,7 @@ impl ReceiverTags {
         }
     }
 
-    /// Assembles the tag set, in the order of the reference's `Tags.toArray`, omitting empty tags as it does.
+    /// Assembles the tag set in the trace-agent's tag order, omitting empty tags as it does.
     fn tag_set(&self, extra: Option<&str>) -> TagSet {
         let mut tag_set = TagSet::with_capacity(9);
         for (name, value) in [
@@ -95,15 +93,15 @@ impl ReceiverTags {
     }
 }
 
-/// Why a payload was dropped before its traces reached the pipeline, the receiver's share of the reference's
-/// `TracesDropped` reasons.
+/// Why a payload was dropped before its traces reached the pipeline, the receiver's share of the trace-agent's
+/// dropped-trace reasons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DropReason {
     DecodingError,
     PayloadTooLarge,
     Timeout,
     UnexpectedEof,
-    /// The MessagePack body ended before the value being read was complete, the reference's `msgp.ErrShortBytes`.
+    /// The MessagePack body ended before the value being read was complete.
     MsgpShortBytes,
 }
 
@@ -127,9 +125,9 @@ impl DropReason {
         }
     }
 
-    /// Returns the `error` tag value of `receiver.error`, as `httpDecodingError` names it.
+    /// Returns the `error` tag value of `receiver.error`, as the trace-agent names it.
     ///
-    /// `httpDecodingError` doesn't single out `msgp.ErrShortBytes`, so it is a `decoding-error` there.
+    /// The trace-agent doesn't single out short input in this tag, so it is a `decoding-error`.
     pub(super) fn error_tag(self) -> &'static str {
         match self {
             Self::DecodingError | Self::MsgpShortBytes => "decoding-error",
@@ -140,7 +138,7 @@ impl DropReason {
     }
 }
 
-/// Counts for one tag combination, the reference's `info.Stats` fields the receiver updates.
+/// Counts for one tag combination, the trace-agent's receiver stats.
 #[derive(Default)]
 pub(super) struct TagStats {
     pub traces_received: i64,
@@ -181,7 +179,7 @@ impl TagStats {
 struct Window {
     started: Instant,
     stats: FastHashMap<ReceiverTags, TagStats>,
-    /// `receiver.error` counts, keyed by endpoint version and error tag, which the reference doesn't tag by tracer.
+    /// `receiver.error` counts, keyed by endpoint version and error tag, which the trace-agent doesn't tag by tracer.
     errors: FastHashMap<(&'static str, &'static str), i64>,
     /// `receiver.error` counts of payloads in a media type their endpoint doesn't take, keyed by endpoint version.
     format_errors: FastHashMap<&'static str, i64>,
@@ -231,14 +229,14 @@ impl ReceiverTelemetry {
         *window.errors.entry((version, reason.error_tag())).or_default() += 1;
     }
 
-    /// Counts a `receiver.error` for a payload in a media type the endpoint of `version` doesn't take, as
-    /// `httpFormatError` does.
+    /// Counts a `receiver.error` for a payload in a media type the endpoint of `version` doesn't take, as the
+    /// trace-agent does.
     pub(super) fn record_format_error(&self, version: &'static str) {
         let mut window = self.window.lock().unwrap_or_else(PoisonError::into_inner);
         *window.format_errors.entry(version).or_default() += 1;
     }
 
-    /// Reports the window's counts, in the order of the reference's `publishAndReset`, then resets the window.
+    /// Reports the window's counts, in the trace-agent's order, then resets the window.
     ///
     /// Counts are reported as rates over the window, as DogStatsD flushes the trace-agent's counts.
     pub(super) fn take_window_events(&self) -> Vec<Event> {
@@ -248,7 +246,7 @@ impl ReceiverTelemetry {
 
         for (tags, mut stats) in window.stats {
             let tag_set = tags.tag_set(None);
-            // Like the reference without `send_all_internal_stats`, the less used counts are only reported when
+            // Like the trace-agent without `send_all_internal_stats`, the less used counts are only reported when
             // positive.
             let mut count = |name: &'static str, value: i64, always: bool| {
                 if always || value > 0 {
@@ -331,7 +329,7 @@ impl ReceiverTelemetry {
             events.push(counter(METRIC_ERROR, tag_set, value, interval));
         }
 
-        // `httpFormatError` tags its count differently from `httpDecodingError`.
+        // The trace-agent tags media type errors differently from decoding errors.
         for (version, value) in window.format_errors {
             let mut tag_set = TagSet::with_capacity(2);
             tag_set.insert_tag(MetaString::from_static("error:format-error"));

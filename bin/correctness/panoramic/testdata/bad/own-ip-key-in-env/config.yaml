@@ -1,0 +1,12 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_BIND_HOST: x
+    with:
+      own_ip:
+        env: [DD_BIND_HOST]
+procedure: []

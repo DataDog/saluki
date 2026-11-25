@@ -18,8 +18,8 @@
 //!   out of range is a type error.
 //! - `meta_struct` values (`[]byte`) are standard base64 with padding, ignoring line breaks, or arrays of bytes.
 //! - Lone surrogate escapes become U+FFFD. Invalid UTF-8 is repaired before decoding, one U+FFFD per byte.
-//! - `null` spans, span links, span events and attribute values are dropped, as `ConvertToIdx` drops them, and traces
-//!   without spans are dropped as it drops chunks without spans.
+//! - `null` spans, span links, span events and attribute values are dropped, as the trace-agent drops them, and
+//!   traces without spans are dropped as it drops chunks without spans.
 //!
 //! A type error ends decoding, where Go carries on and reports it at the end: either way the payload is rejected.
 
@@ -78,7 +78,7 @@ impl<'de> Visitor<'de> for TracesVisitor {
         let mut chunks = Vec::new();
         while let Some(spans) = seq.next_element_seed(TraceSeed)? {
             if !spans.is_empty() {
-                // As `traceChunksFromTraces` builds them.
+                // As the trace-agent builds them.
                 chunks.push(TraceChunk {
                     priority: PRIORITY_NONE,
                     spans,
@@ -92,9 +92,9 @@ impl<'de> Visitor<'de> for TracesVisitor {
 
 /// Decodes a JSON `[]*pb.Span` value, the body of `/v0.1/spans`, into one chunk per trace ID.
 ///
-/// The chunks are grouped as `traceChunksFromSpans` groups them: `nil` spans are skipped, the spans of a chunk keep
-/// their order in the list, and each chunk gets no priority and no tags. Go builds the chunks from a map, so their
-/// order varies from one request to the next; here they come in the order their trace IDs first appear.
+/// The chunks are grouped as the trace-agent groups them: `nil` spans are skipped, the spans of a chunk keep their
+/// order in the list, and each chunk gets no priority and no tags. The trace-agent builds the chunks from a map, so
+/// their order varies from one request to the next; here they come in the order their trace IDs first appear.
 ///
 /// The input must be one syntactically valid JSON value in valid UTF-8, so that any error is a type error.
 pub(super) fn decode_spans(json: &[u8]) -> Result<Vec<TraceChunk>, serde_json::Error> {

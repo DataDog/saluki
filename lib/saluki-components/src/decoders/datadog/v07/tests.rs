@@ -100,7 +100,7 @@ fn small_inputs_with_huge_counts_allocate_little() {
 #[test]
 fn nil_and_empty_elements_allocate_in_proportion_to_their_bytes() {
     // 100,000 spans of one byte each: `nil`, which costs one pointer until the payload is decoded, and an empty map,
-    // which costs a span as the reference's `new(Span)` does.
+    // which costs a span as it does in the trace-agent.
     const SPANS: usize = 100_000;
     for (name, element, per_element) in [
         ("nil", 0xc0, 2 * std::mem::size_of::<usize>()),

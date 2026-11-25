@@ -1,0 +1,971 @@
+//! Trace normalization helpers, matching the Datadog Agent's trace normalization.
+
+use std::borrow::Cow;
+use std::char;
+
+use saluki_common::strings::StringBuilder;
+use stringtheory::MetaString;
+use tracing::debug;
+
+// Max length in bytes.
+pub const MAX_NAME_LEN: usize = 100;
+pub const MAX_SERVICE_LEN: usize = 100;
+pub const MAX_TAG_LEN: usize = 200;
+
+/// Maximum length of `span.type`, mirroring `MaxTypeLen` (`pkg/trace/agent/normalizer.go`).
+pub const MAX_TYPE_LEN: usize = 100;
+
+// Above this, start+duration would overflow a signed 64-bit integer.
+const MAX_START_PLUS_DURATION: u64 = i64::MAX as u64;
+
+/// Below this, a start timestamp predates the reference's `Year2000NanosecTS` floor and is replaced.
+///
+/// `time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()` (`pkg/trace/agent/normalizer.go`).
+/// Used as the fallback when the system clock is unavailable, so a rewritten start still clears the
+/// year-2000 floor it exists to enforce.
+pub const YEAR_2000_NANOSEC_TS: u64 = 946_684_800_000_000_000;
+
+// Attribute key and value caps, from the trace-agent's truncator.
+pub const MAX_META_KEY_LEN: usize = 200;
+pub const MAX_META_VAL_LEN: usize = 25_000;
+pub const MAX_METRICS_KEY_LEN: usize = 200;
+const ELLIPSIS: &str = "...";
+
+// Structured meta tag suffixes, which also name the serialization format in use.
+const STRUCTURED_SUFFIXES: [&str; 3] = [".json", ".msgpack", ".protobuf"];
+
+// default service name we assign a span if it's missing and we have no reasonable fallback
+const DEFAULT_OTLP_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
+// default span name we assign a span if it's missing and we have no reasonable fallback
+const DEFAULT_SPAN_NAME: MetaString = MetaString::from_static("unnamed_operation");
+
+// lookup tables for fast lookups of ASCII characters
+static IS_ALPHA_LOOKUP: [bool; 256] = {
+    let mut lookup = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        lookup[i] = (i as u8 as char).is_ascii_alphabetic();
+        i += 1;
+    }
+    lookup
+};
+static IS_ALPHA_NUM_LOOKUP: [bool; 256] = {
+    let mut lookup = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        lookup[i] = (i as u8 as char).is_ascii_alphanumeric();
+        i += 1;
+    }
+    lookup
+};
+static IS_VALID_ASCII_START_CHAR_LOOKUP: [bool; 256] = {
+    let mut lookup = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        lookup[i] = is_valid_ascii_start_char(i as u8 as char);
+        i += 1;
+    }
+    lookup
+};
+static IS_VALID_ASCII_TAG_CHAR_LOOKUP: [bool; 256] = {
+    let mut lookup = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        lookup[i] = is_valid_ascii_tag_char(i as u8 as char);
+        i += 1;
+    }
+    lookup
+};
+
+/// Normalizes a span name.
+///
+/// This function truncates the name to `MAX_NAME_LEN`, replaces invalid characters with underscores,
+/// and handles consecutive underscores and underscores after periods. An already-normalized name is
+/// returned unchanged, without allocating.
+pub fn normalize_name(mut name: MetaString) -> MetaString {
+    if name.is_empty() {
+        debug!(
+            "normalize_name: name is empty, returning default span name: {}",
+            DEFAULT_SPAN_NAME
+        );
+        return DEFAULT_SPAN_NAME.clone();
+    }
+    if name.len() > MAX_NAME_LEN {
+        name = MetaString::from(truncate_utf8(&name, MAX_NAME_LEN));
+        debug!("normalize_name: name is too long,truncated name: {}", name);
+    }
+
+    // Fast path: already normalized, so return the input without allocating.
+    if is_valid_metric_name(&name) {
+        return name;
+    }
+
+    normalize_name_slow(name).unwrap_or(DEFAULT_SPAN_NAME)
+}
+
+/// Repairs a non-empty name that failed the fast-path check.
+///
+/// Returns `None` when the name has no alphabetic character, so nothing valid survives.
+fn normalize_name_slow(name: MetaString) -> Option<MetaString> {
+    // Normalize the name according to the following rules:
+    // 1. Skip non-alphabetic characters at the start.
+    // 2. Replace non-alphanumeric characters (except '.') with '_'.
+    // 3. Avoid consecutive underscores.
+    // 4. Avoid underscores after periods.
+    // 5. Avoid trailing underscores.
+    let mut normalized = String::with_capacity(name.len());
+    // Skip non-alphabetic characters at start
+    let mut i = 0;
+    let name_bytes = name.as_bytes();
+    while i < name_bytes.len() && !IS_ALPHA_LOOKUP[name_bytes[i] as usize] {
+        i += 1;
+    }
+
+    if i >= name_bytes.len() {
+        return None;
+    }
+    if is_valid_metric_name(&name.as_ref()[i..]) {
+        if name.ends_with('_') {
+            return Some(MetaString::from(&name.as_ref()[i..(name.len() - 1)]));
+        }
+        return Some(MetaString::from(&name.as_ref()[i..]));
+    }
+    let mut prev_char = '\0';
+
+    while i < name_bytes.len() {
+        let c = name_bytes[i] as char;
+        i += 1;
+        if (c as u32) < 256 && IS_ALPHA_NUM_LOOKUP[c as usize] {
+            normalized.push(c);
+            prev_char = c;
+        } else if c == '.' {
+            if prev_char == '_' {
+                // Overwrite underscore with period
+                normalized.pop();
+            }
+            // Consecutive periods are kept, as the trace-agent does.
+            normalized.push('.');
+            prev_char = '.';
+        } else {
+            // Treat as underscore
+            if prev_char != '.' && prev_char != '_' {
+                normalized.push('_');
+                prev_char = '_';
+            }
+        }
+    }
+
+    if normalized.ends_with('_') {
+        normalized.pop();
+    }
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    Some(MetaString::from(normalized))
+}
+
+/// Normalizes an OTLP service name into `out`, substituting `otlpresourcenoservicename` when nothing survives.
+///
+/// The output is always written from a cleared buffer.
+pub(crate) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I>) {
+    out.clear();
+
+    if service.is_empty() {
+        let _ = out.push_str(DEFAULT_OTLP_SERVICE_NAME.as_ref());
+        return;
+    }
+
+    let truncated = truncate_utf8_str(service, MAX_SERVICE_LEN);
+    if is_normalized_ascii_tag(truncated, false) {
+        let _ = out.push_str(truncated);
+        return;
+    }
+    normalize_unchecked(truncated, false, out);
+
+    if out.as_str().is_empty() {
+        let _ = out.push_str(DEFAULT_OTLP_SERVICE_NAME.as_ref());
+    }
+}
+
+/// How a peer service name changed while being normalized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PeerServiceChange {
+    /// Value already conformed.
+    Unchanged,
+    /// Value exceeded `MAX_SERVICE_LEN` and was truncated.
+    Truncated,
+    /// Nothing survived normalization; the value is empty.
+    Invalid,
+}
+
+/// Normalizes a peer service name into `out`.
+///
+/// The value is capped at `MAX_SERVICE_LEN` and normalized as a tag value; unlike a span's
+/// service name, nothing is substituted when normalization empties it.
+pub(crate) fn normalize_peer_service_into<I>(value: &str, out: &mut StringBuilder<I>) -> PeerServiceChange {
+    out.clear();
+
+    if value.is_empty() {
+        return PeerServiceChange::Unchanged;
+    }
+
+    let mut change = PeerServiceChange::Unchanged;
+    let value = if value.len() > MAX_SERVICE_LEN {
+        change = PeerServiceChange::Truncated;
+        truncate_utf8_str(value, MAX_SERVICE_LEN)
+    } else {
+        value
+    };
+
+    if is_normalized_tag_value(value) {
+        let _ = out.push_str(value);
+        return change;
+    }
+
+    normalize_tag_value_append_unchecked(value, out);
+
+    if out.as_str().is_empty() {
+        PeerServiceChange::Invalid
+    } else {
+        change
+    }
+}
+
+/// Normalizes `value` into `out`, clearing any existing contents first.
+///
+/// Always runs normalization, even if `value` is already normalized.
+pub(crate) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
+    out.clear();
+    normalize_tag_value_append_unchecked(value, out);
+}
+
+/// Normalizes a tag into `out`, clearing any existing contents first.
+///
+/// Differs from normalizing a tag value by dropping leading characters that
+/// can't start a tag, such as digits.
+pub(crate) fn normalize_tag_into<I>(value: &str, out: &mut StringBuilder<I>) {
+    out.clear();
+    normalize_unchecked(value, true, out);
+}
+
+/// Appends the normalized form of `value` to `out` without clearing it first.
+///
+/// Use this when extending an existing normalized prefix with a value already known to
+/// require normalization.
+pub(crate) fn normalize_tag_value_append_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
+    if value.is_empty() {
+        return;
+    }
+    normalize_unchecked(value, false, out);
+}
+
+pub(crate) fn is_normalized_tag_value(value: &str) -> bool {
+    is_normalized_ascii_tag(value, false)
+}
+
+/// Returns `value` normalized as a tag value.
+///
+/// A value that's already normalized is returned as is, without copying it.
+pub(crate) fn normalized_tag_value(value: &MetaString) -> MetaString {
+    if is_normalized_tag_value(value) {
+        return value.clone();
+    }
+
+    let mut normalized = StringBuilder::new();
+    normalize_tag_value_into_unchecked(value, &mut normalized);
+    MetaString::from(normalized.as_str())
+}
+
+/// Normalization function that writes directly into a [`StringBuilder`].
+///
+/// Characters are emitted as they're processed: valid characters are pushed directly,
+/// runs of illegal characters are collapsed into a single `_`, and trailing illegal
+/// characters are dropped.
+fn normalize_unchecked<I>(value: &str, remove_digit_start_char: bool, out: &mut StringBuilder<I>) {
+    let mut chars = 0usize;
+    let mut pending_underscore = false;
+
+    for (idx, mut curr_char) in value.char_indices() {
+        let jump = curr_char.len_utf8();
+
+        if (curr_char as u32) < 256 && IS_VALID_ASCII_START_CHAR_LOOKUP[curr_char as usize] {
+            if pending_underscore {
+                let _ = out.push('_');
+                pending_underscore = false;
+            }
+            let _ = out.push(curr_char);
+            chars += 1;
+        } else if curr_char.is_ascii_uppercase() {
+            if pending_underscore {
+                let _ = out.push('_');
+                pending_underscore = false;
+            }
+            let _ = out.push(curr_char.to_ascii_lowercase());
+            chars += 1;
+        } else {
+            if curr_char.is_uppercase() {
+                let mut lowercase = curr_char.to_lowercase();
+                if let Some(lower_char) = lowercase.next() {
+                    if lower_char.len_utf8() == jump {
+                        curr_char = lower_char;
+                    }
+                }
+            }
+
+            if curr_char.is_alphabetic() {
+                if pending_underscore {
+                    let _ = out.push('_');
+                    pending_underscore = false;
+                }
+                let _ = out.push(curr_char);
+                chars += 1;
+            } else if remove_digit_start_char && chars == 0 {
+                let end_idx = idx + jump;
+                if end_idx >= 2 * MAX_TAG_LEN {
+                    break;
+                }
+                continue;
+            } else if is_decimal_digit(curr_char) || matches!(curr_char, '.' | '/' | '-') {
+                if pending_underscore {
+                    let _ = out.push('_');
+                    pending_underscore = false;
+                }
+                let _ = out.push(curr_char);
+                chars += 1;
+            } else {
+                // illegal character
+                chars += 1;
+                pending_underscore = true;
+            }
+        }
+
+        let end_idx = idx + jump;
+        if end_idx >= 2 * MAX_TAG_LEN || chars >= MAX_TAG_LEN {
+            break;
+        }
+    }
+    // Trailing illegal chars (pending_underscore=true) are intentionally dropped.
+}
+
+/// Non-ASCII ranges of the Unicode decimal digit category (`Nd`), as of Unicode 15.0.0.
+///
+/// The trace-agent keeps any `Nd` character in a tag value, through Go's `unicode.IsDigit`. These ranges were
+/// generated from that function in Go 1.26, so they follow the Unicode version the trace-agent is built with.
+const NON_ASCII_DECIMAL_DIGITS: &[(char, char)] = &[
+    ('\u{0660}', '\u{0669}'),
+    ('\u{06F0}', '\u{06F9}'),
+    ('\u{07C0}', '\u{07C9}'),
+    ('\u{0966}', '\u{096F}'),
+    ('\u{09E6}', '\u{09EF}'),
+    ('\u{0A66}', '\u{0A6F}'),
+    ('\u{0AE6}', '\u{0AEF}'),
+    ('\u{0B66}', '\u{0B6F}'),
+    ('\u{0BE6}', '\u{0BEF}'),
+    ('\u{0C66}', '\u{0C6F}'),
+    ('\u{0CE6}', '\u{0CEF}'),
+    ('\u{0D66}', '\u{0D6F}'),
+    ('\u{0DE6}', '\u{0DEF}'),
+    ('\u{0E50}', '\u{0E59}'),
+    ('\u{0ED0}', '\u{0ED9}'),
+    ('\u{0F20}', '\u{0F29}'),
+    ('\u{1040}', '\u{1049}'),
+    ('\u{1090}', '\u{1099}'),
+    ('\u{17E0}', '\u{17E9}'),
+    ('\u{1810}', '\u{1819}'),
+    ('\u{1946}', '\u{194F}'),
+    ('\u{19D0}', '\u{19D9}'),
+    ('\u{1A80}', '\u{1A89}'),
+    ('\u{1A90}', '\u{1A99}'),
+    ('\u{1B50}', '\u{1B59}'),
+    ('\u{1BB0}', '\u{1BB9}'),
+    ('\u{1C40}', '\u{1C49}'),
+    ('\u{1C50}', '\u{1C59}'),
+    ('\u{A620}', '\u{A629}'),
+    ('\u{A8D0}', '\u{A8D9}'),
+    ('\u{A900}', '\u{A909}'),
+    ('\u{A9D0}', '\u{A9D9}'),
+    ('\u{A9F0}', '\u{A9F9}'),
+    ('\u{AA50}', '\u{AA59}'),
+    ('\u{ABF0}', '\u{ABF9}'),
+    ('\u{FF10}', '\u{FF19}'),
+    ('\u{104A0}', '\u{104A9}'),
+    ('\u{10D30}', '\u{10D39}'),
+    ('\u{11066}', '\u{1106F}'),
+    ('\u{110F0}', '\u{110F9}'),
+    ('\u{11136}', '\u{1113F}'),
+    ('\u{111D0}', '\u{111D9}'),
+    ('\u{112F0}', '\u{112F9}'),
+    ('\u{11450}', '\u{11459}'),
+    ('\u{114D0}', '\u{114D9}'),
+    ('\u{11650}', '\u{11659}'),
+    ('\u{116C0}', '\u{116C9}'),
+    ('\u{11730}', '\u{11739}'),
+    ('\u{118E0}', '\u{118E9}'),
+    ('\u{11950}', '\u{11959}'),
+    ('\u{11C50}', '\u{11C59}'),
+    ('\u{11D50}', '\u{11D59}'),
+    ('\u{11DA0}', '\u{11DA9}'),
+    ('\u{11F50}', '\u{11F59}'),
+    ('\u{16A60}', '\u{16A69}'),
+    ('\u{16AC0}', '\u{16AC9}'),
+    ('\u{16B50}', '\u{16B59}'),
+    ('\u{1D7CE}', '\u{1D7FF}'),
+    ('\u{1E140}', '\u{1E149}'),
+    ('\u{1E2F0}', '\u{1E2F9}'),
+    ('\u{1E4F0}', '\u{1E4F9}'),
+    ('\u{1E950}', '\u{1E959}'),
+    ('\u{1FBF0}', '\u{1FBF9}'),
+];
+
+/// Returns whether `c` is a Unicode decimal digit, as Go's `unicode.IsDigit` does.
+fn is_decimal_digit(c: char) -> bool {
+    if c.is_ascii() {
+        return c.is_ascii_digit();
+    }
+    NON_ASCII_DECIMAL_DIGITS
+        .binary_search_by(|&(start, end)| {
+            if end < c {
+                std::cmp::Ordering::Less
+            } else if start > c {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+fn is_valid_metric_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    let mut chars = name.chars();
+    if let Some(c) = chars.next() {
+        if (c as u32) >= 256 || !IS_ALPHA_LOOKUP[c as usize] {
+            return false;
+        }
+    }
+
+    let mut prev_char = name.chars().next().unwrap_or_default();
+
+    for c in chars {
+        if (c as u32) < 256 && IS_ALPHA_NUM_LOOKUP[c as usize] {
+            prev_char = c;
+            continue;
+        }
+        if c == '.' {
+            if prev_char == '_' {
+                return false;
+            }
+            prev_char = c;
+            continue;
+        }
+        if c == '_' {
+            if prev_char == '_' {
+                return false;
+            }
+            prev_char = c;
+            continue;
+        }
+        return false;
+    }
+
+    if prev_char == '_' {
+        return false;
+    }
+
+    true
+}
+
+fn is_normalized_ascii_tag(tag: &str, check_valid_start_char: bool) -> bool {
+    if tag.is_empty() {
+        return true;
+    }
+    if tag.len() > MAX_TAG_LEN {
+        return false;
+    }
+    let bytes = tag.as_bytes();
+    let mut i = 0;
+    if check_valid_start_char {
+        if (bytes[0] as u32) < 256 && !IS_VALID_ASCII_START_CHAR_LOOKUP[bytes[0] as usize] {
+            return false;
+        }
+        i += 1;
+    }
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        // TODO: Attempt to optimize this check using SIMD/vectorization.
+        if (b as u32) < 256 && IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
+            i += 1;
+            continue;
+        }
+        if b == b'_' {
+            // an underscore is only valid if it is followed by a valid non-underscore character.
+            i += 1;
+            if i == bytes.len() || ((bytes[i] as u32) < 256 && !IS_VALID_ASCII_TAG_CHAR_LOOKUP[bytes[i] as usize]) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    true
+}
+
+const fn is_valid_ascii_start_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c == ':'
+}
+
+const fn is_valid_ascii_tag_char(c: char) -> bool {
+    is_valid_ascii_start_char(c) || (c >= '0' && c <= '9') || c == '.' || c == '/' || c == '-'
+}
+
+/// Mirrors `validateAndFixDurationV1` (`pkg/trace/agent/normalizer.go`): a duration that would overflow
+/// a signed 64-bit integer when added to `start` becomes zero.
+///
+/// The reference computes `duration > math.MaxInt64 - uint64(start)` in wrapping `uint64` arithmetic.
+/// When `start > math.MaxInt64`, that subtraction wraps around to a very large number, so the
+/// comparison is false for any realistic duration and the duration survives untouched. This uses
+/// `wrapping_sub` rather than `saturating_sub` for exactly that reason: `saturating_sub` would clamp to
+/// zero for `start > i64::MAX`, making the comparison `duration > 0` and zeroing any non-zero
+/// duration—the opposite of the reference for that boundary. See the regression test at the boundary
+/// below.
+pub(crate) fn validate_and_fix_duration(start: u64, duration: u64) -> u64 {
+    if duration > MAX_START_PLUS_DURATION.wrapping_sub(start) {
+        0
+    } else {
+        duration
+    }
+}
+
+/// Mirrors `validateAndFixStartTimeV1` (`pkg/trace/agent/normalizer.go`): a start timestamp before the
+/// year-2000 floor is replaced with the receive time minus `duration`, clamped to the receive time if
+/// that subtraction would go negative.
+pub(crate) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
+    if start >= YEAR_2000_NANOSEC_TS {
+        return start;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        // If the clock is unavailable or predates the epoch, fall back to the year-2000 floor itself
+        // rather than `0`, so the replacement still clears the floor it exists to enforce.
+        .unwrap_or(YEAR_2000_NANOSEC_TS);
+
+    now.checked_sub(duration).unwrap_or(now)
+}
+
+/// Truncate string to `max_len` bytes, respecting UTF-8 boundaries.
+pub(crate) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
+    truncate_utf8_str(s, max_len)
+}
+
+/// Returns `true` when the key is a structured meta tag, which is never truncated.
+///
+/// Structured meta tags carry serialized payloads. They are prefixed with `_dd.` and suffixed with
+/// the serialization format in use.
+pub fn is_structured_meta_key(key: &str) -> bool {
+    key.starts_with("_dd.") && STRUCTURED_SUFFIXES.iter().any(|suffix| key.ends_with(suffix))
+}
+
+/// Truncates `s` to at most `max_len` bytes, appending an ellipsis when truncation happens.
+///
+/// Returns the input borrowed when it is already within the limit, so only repairs allocate.
+pub fn truncate_with_ellipses<'a>(s: &'a str, max_len: usize) -> Cow<'a, str> {
+    if s.len() <= max_len {
+        return Cow::Borrowed(s);
+    }
+    let mut truncated = truncate_utf8_str(s, max_len).to_owned();
+    truncated.push_str(ELLIPSIS);
+    Cow::Owned(truncated)
+}
+
+/// Returns `true` when a span name needs repair by [`normalize_name`].
+///
+/// Use this on borrowed names to avoid allocating a `MetaString` for names that are already fine.
+pub fn needs_name_normalization(name: &str) -> bool {
+    name.is_empty() || name.len() > MAX_NAME_LEN || !is_valid_metric_name(name)
+}
+
+pub(crate) fn truncate_utf8_str(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len {
+        return s;
+    }
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+#[cfg(test)]
+mod tests {
+    use std::char;
+
+    use super::*;
+
+    fn normalize_tag(value: &str) -> MetaString {
+        let mut sb = StringBuilder::new();
+        normalize_tag_into(value, &mut sb);
+        MetaString::from(sb.as_str())
+    }
+
+    // Test cases taken from the agent codebase
+    // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize_test.go#L17
+    #[test]
+    fn test_normalize_tag() {
+        let many_dogs = {
+            let mut s = String::from("a");
+            for _ in 0..799 {
+                s.push('🐶');
+            }
+            s.push('b');
+            MetaString::from(s)
+        };
+
+        let invalid_utf8 = MetaString::from(String::from_utf8_lossy(b"test\x99\x8faaa").into_owned());
+        let invalid_utf8_short = MetaString::from(String::from_utf8_lossy(b"test\x99\x8f").into_owned());
+
+        const LONG_ALPHANUM_INPUT: &str = "A00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 000000000000";
+        const LONG_ALPHANUM_OUTPUT: &str = "a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000_0";
+
+        let replacement = char::REPLACEMENT_CHARACTER;
+
+        let cases: Vec<(MetaString, MetaString)> = vec![
+            (
+                MetaString::from("#test_starting_hash"),
+                MetaString::from("test_starting_hash"),
+            ),
+            (MetaString::from("TestCAPSandSuch"), MetaString::from("testcapsandsuch")),
+            (
+                MetaString::from("Test Conversion Of Weird !@#$%^&**() Characters"),
+                MetaString::from("test_conversion_of_weird_characters"),
+            ),
+            (MetaString::from("$#weird_starting"), MetaString::from("weird_starting")),
+            (MetaString::from("allowed:c0l0ns"), MetaString::from("allowed:c0l0ns")),
+            (MetaString::from("1love"), MetaString::from("love")),
+            // Non-ASCII decimal digits are kept, other numeric characters are not, as in Go's `unicode.IsDigit`.
+            (MetaString::from("api\u{0662}"), MetaString::from("api\u{0662}")),
+            (MetaString::from("a\u{FF11}b"), MetaString::from("a\u{FF11}b")),
+            (
+                MetaString::from("x\u{1D7CE}\u{1D7FF}"),
+                MetaString::from("x\u{1D7CE}\u{1D7FF}"),
+            ),
+            (MetaString::from("api\u{00B2}"), MetaString::from("api")),
+            (MetaString::from("ünicöde"), MetaString::from("ünicöde")),
+            (MetaString::from("ünicöde:metäl"), MetaString::from("ünicöde:metäl")),
+            (
+                MetaString::from("Data🐨dog🐶 繋がっ⛰てて"),
+                MetaString::from("data_dog_繋がっ_てて"),
+            ),
+            (MetaString::from(" spaces   "), MetaString::from("spaces")),
+            (
+                MetaString::from(" #hashtag!@#spaces #__<>#  "),
+                MetaString::from("hashtag_spaces"),
+            ),
+            (MetaString::from(":testing"), MetaString::from(":testing")),
+            (MetaString::from("_foo"), MetaString::from("foo")),
+            (MetaString::from(":::test"), MetaString::from(":::test")),
+            (
+                MetaString::from("contiguous_____underscores"),
+                MetaString::from("contiguous_underscores"),
+            ),
+            (MetaString::from("foo_"), MetaString::from("foo")),
+            (
+                MetaString::from("\u{017F}odd_\u{017F}case\u{017F}"),
+                MetaString::from("\u{017F}odd_\u{017F}case\u{017F}"),
+            ),
+            (MetaString::from(""), MetaString::from("")),
+            (MetaString::from(" "), MetaString::from("")),
+            (MetaString::from("ok"), MetaString::from("ok")),
+            (MetaString::from("™Ö™Ö™™Ö™"), MetaString::from("ö_ö_ö")),
+            (MetaString::from("AlsO:ök"), MetaString::from("also:ök")),
+            (MetaString::from(":still_ok"), MetaString::from(":still_ok")),
+            (MetaString::from("___trim"), MetaString::from("trim")),
+            (MetaString::from("12.:trim@"), MetaString::from(":trim")),
+            (MetaString::from("12.:trim@@"), MetaString::from(":trim")),
+            (MetaString::from("fun:ky__tag/1"), MetaString::from("fun:ky_tag/1")),
+            (MetaString::from("fun:ky@tag/2"), MetaString::from("fun:ky_tag/2")),
+            (MetaString::from("fun:ky@@@tag/3"), MetaString::from("fun:ky_tag/3")),
+            (MetaString::from("tag:1/2.3"), MetaString::from("tag:1/2.3")),
+            (
+                MetaString::from("---fun:k####y_ta@#g/1_@@#"),
+                MetaString::from("fun:k_y_ta_g/1"),
+            ),
+            (MetaString::from("AlsO:œ#@ö))œk"), MetaString::from("also:œ_ö_œk")),
+            (
+                MetaString::from("a".repeat(888)),
+                MetaString::from("a".repeat(MAX_TAG_LEN)),
+            ),
+            (many_dogs, MetaString::from("a")),
+            (MetaString::from(format!("a{}", replacement)), MetaString::from("a")),
+            (MetaString::from(format!("a{0}{0}", replacement)), MetaString::from("a")),
+            (
+                MetaString::from(format!("a{0}{0}b", replacement)),
+                MetaString::from("a_b"),
+            ),
+            (invalid_utf8, MetaString::from("test_aaa")),
+            (invalid_utf8_short, MetaString::from("test")),
+            (
+                MetaString::from(LONG_ALPHANUM_INPUT),
+                MetaString::from(LONG_ALPHANUM_OUTPUT),
+            ),
+        ];
+
+        for (input, expected) in cases.iter() {
+            let normalized = normalize_tag(input.as_ref());
+            assert_eq!(normalized.as_ref(), expected.as_ref(), "input {}", input);
+        }
+    }
+
+    #[test]
+    fn test_normalize_name() {
+        let cases: Vec<(MetaString, MetaString)> = vec![
+            (MetaString::from(""), DEFAULT_SPAN_NAME.clone()),
+            (MetaString::from("good"), MetaString::from("good")),
+            (
+                MetaString::from("last.underscore_trunc_"),
+                MetaString::from("last.underscore_trunc"),
+            ),
+            (
+                MetaString::from("last.double_underscore_trunc__"),
+                MetaString::from("last.double_underscore_trunc"),
+            ),
+            (
+                MetaString::from(
+                    "Too-Long-.Too-Long-.Too-Long-.Too-Long-.Too-Long-.Too-Long-.Too-Long-.Too-Long-.Too-Long-.Too-Long-.Too-Long-.",
+                ),
+                MetaString::from(
+                    "Too_Long.Too_Long.Too_Long.Too_Long.Too_Long.Too_Long.Too_Long.Too_Long.Too_Long.Too_Long.",
+                ),
+            ),
+            (MetaString::from("double..point"), MetaString::from("double..point")),
+            // Consecutive periods survive a repair too.
+            (MetaString::from("http..request!"), MetaString::from("http..request")),
+            (MetaString::from("a_..b!"), MetaString::from("a..b")),
+            (
+                MetaString::from("other_^.character^^_than_underscore"),
+                MetaString::from("other.character_than_underscore"),
+            ),
+            (MetaString::from("bad-name"), MetaString::from("bad_name")),
+            (
+                MetaString::from("^^_.non_alpha.prefix"),
+                MetaString::from("non_alpha.prefix"),
+            ),
+            (
+                MetaString::from("_"),
+                MetaString::from("unnamed_operation"),
+            ),
+            // Multi-byte leading characters are repaired away, never a panic.
+            (MetaString::from("中文query"), MetaString::from("query")),
+            (MetaString::from("日本語"), MetaString::from("unnamed_operation")),
+            (MetaString::from("éxample"), MetaString::from("xample")),
+        ];
+
+        for (name, expected) in cases.iter() {
+            let normalized = normalize_name(name.clone());
+            assert_eq!(normalized.as_ref(), expected.as_ref(), "name {}", name);
+        }
+    }
+
+    #[test]
+    fn test_normalize_service() {
+        let mut sb = StringBuilder::new();
+        for (service, expected) in base_service_cases().iter() {
+            normalize_service_into(service, &mut sb);
+            assert_eq!(sb.as_str(), expected.as_ref(), "service {}", service);
+        }
+
+        normalize_service_into("", &mut sb);
+        assert_eq!(sb.as_str(), DEFAULT_OTLP_SERVICE_NAME.as_ref());
+    }
+
+    fn base_service_cases() -> Vec<(MetaString, MetaString)> {
+        vec![
+            (MetaString::from("good"), MetaString::from("good")),
+            (MetaString::from("127.0.0.1"), MetaString::from("127.0.0.1")),
+            (
+                MetaString::from("127.site.platform-db-replica1"),
+                MetaString::from("127.site.platform-db-replica1"),
+            ),
+            (
+                MetaString::from("hyphenated-service-name"),
+                MetaString::from("hyphenated-service-name"),
+            ),
+            (
+                MetaString::from("🐨animal-db🐶"),
+                MetaString::from("_animal-db"),
+            ),
+            (
+                MetaString::from("🐨1animal-db🐶"),
+                MetaString::from("_1animal-db"),
+            ),
+            (
+                MetaString::from("1🐨1animal-db🐶"),
+                MetaString::from("1_1animal-db"),
+            ),
+            (
+                MetaString::from(
+                    "Too$Long$.Too$Long$.Too$Long$.Too$Long$.Too$Long$.Too$Long$.Too$Long$.Too$Long$.Too$Long$.Too$Long$.Too$Long$.",
+                ),
+                MetaString::from(
+                    "too_long_.too_long_.too_long_.too_long_.too_long_.too_long_.too_long_.too_long_.too_long_.too_long_.",
+                ),
+            ),
+            (
+                MetaString::from("bad$service"),
+                MetaString::from("bad_service"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_truncate_with_ellipses() {
+        // Within the limit: borrowed, unchanged, no ellipsis.
+        assert_eq!(truncate_with_ellipses("short", 200).as_ref(), "short");
+        assert_eq!(truncate_with_ellipses("", 0).as_ref(), "");
+
+        // Over the limit: truncated to the limit, then the ellipsis is appended.
+        let long = "a".repeat(250);
+        let truncated = truncate_with_ellipses(&long, 200);
+        assert_eq!(truncated.len(), 200 + 3);
+        assert_eq!(truncated.as_ref(), format!("{}{}", "a".repeat(200), "..."));
+
+        // Truncation respects UTF-8 boundaries: a 2-byte character straddling the limit is dropped.
+        let unicode = "é".repeat(150); // 300 bytes
+        assert_eq!(
+            truncate_with_ellipses(&unicode, 201).as_ref(),
+            format!("{}...", "é".repeat(100))
+        );
+    }
+
+    #[test]
+    fn test_is_structured_meta_key() {
+        for key in ["_dd.appsec.json", "_dd.iast.msgpack", "_dd.something.protobuf"] {
+            assert!(is_structured_meta_key(key), "{key} should be structured");
+        }
+        for key in [
+            "_dd.span_links",
+            "_dd.p.dm",
+            "http.url",
+            "_dd.appsec.jsonx",
+            "dd.appsec.json",
+            "_dd.appsec.json.payload",
+        ] {
+            assert!(!is_structured_meta_key(key), "{key} should not be structured");
+        }
+    }
+
+    #[test]
+    fn test_needs_name_normalization() {
+        assert!(!needs_name_normalization("good.name"));
+        assert!(!needs_name_normalization("a"));
+        assert!(needs_name_normalization(""));
+        assert!(needs_name_normalization("bad name"));
+        assert!(needs_name_normalization("中文query"));
+        assert!(needs_name_normalization("a".repeat(101).as_str()));
+        assert!(!needs_name_normalization("a".repeat(100).as_str()));
+        assert!(needs_name_normalization("trailing_"));
+    }
+
+    #[test]
+    fn test_truncate_utf8() {
+        let e_acute = MetaString::from("é");
+        assert!("é".len() == 2);
+        assert_eq!(truncate_utf8(&e_acute, 1), "");
+        assert_eq!(truncate_utf8(&e_acute, 2), "é");
+
+        let crab = MetaString::from("🦀");
+        assert!("🦀".len() == 4);
+        assert_eq!(truncate_utf8(&crab, 1), "");
+        assert_eq!(truncate_utf8(&crab, 2), "");
+        assert_eq!(truncate_utf8(&crab, 3), "");
+        assert_eq!(truncate_utf8(&crab, 4), "🦀");
+
+        let a_crab_b = MetaString::from("a🦀b");
+        assert!("a🦀b".len() == 6);
+        assert_eq!(truncate_utf8(&a_crab_b, 1), "a");
+        assert_eq!(truncate_utf8(&a_crab_b, 2), "a");
+        assert_eq!(truncate_utf8(&a_crab_b, 3), "a");
+        assert_eq!(truncate_utf8(&a_crab_b, 4), "a");
+        assert_eq!(truncate_utf8(&a_crab_b, 5), "a🦀");
+        assert_eq!(truncate_utf8(&a_crab_b, 6), "a🦀b");
+
+        let empty = MetaString::from("");
+        assert_eq!(truncate_utf8(&empty, 5), "");
+    }
+
+    #[test]
+    fn validate_and_fix_duration_zeroes_overflowing_duration() {
+        // A wrapped duration (end before start) is astronomically large and overflows `start +
+        // duration`, so it becomes zero.
+        let start = YEAR_2000_NANOSEC_TS;
+        assert_eq!(validate_and_fix_duration(start, u64::MAX), 0);
+        assert_eq!(validate_and_fix_duration(start, u64::MAX - start), 0);
+
+        // A duration that fits in the signed headroom survives.
+        assert_eq!(validate_and_fix_duration(start, 100), 100);
+    }
+
+    #[test]
+    fn validate_and_fix_duration_survives_when_start_exceeds_i64_max() {
+        // Pins the reference's wrapping `uint64` arithmetic: `MaxInt64 - start` wraps around to a huge
+        // number when `start > MaxInt64`, so the overflow check is false and the duration is
+        // preserved. `saturating_sub` would instead clamp that subtraction to zero, making any
+        // non-zero duration look like an overflow and zeroing it—the opposite of the reference.
+        let start = u64::MAX;
+        assert_eq!(validate_and_fix_duration(start, 100), 100);
+        // A duration that's still too large for even the wrapped headroom is zeroed, matching the
+        // reference's own behavior for a duration that overflows twice over.
+        assert_eq!(validate_and_fix_duration(start, u64::MAX), 0);
+    }
+
+    #[test]
+    fn validate_and_fix_start_time_leaves_valid_start_untouched() {
+        let start = YEAR_2000_NANOSEC_TS + 1_000_000_000;
+        assert_eq!(validate_and_fix_start_time(start, 1_000_000), start);
+        assert_eq!(
+            validate_and_fix_start_time(YEAR_2000_NANOSEC_TS, 0),
+            YEAR_2000_NANOSEC_TS
+        );
+    }
+
+    #[test]
+    fn validate_and_fix_start_time_replaces_pre_year_2000_start() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let duration = 1_000_000_000;
+
+        let start = validate_and_fix_start_time(1, duration);
+        assert!(
+            start >= YEAR_2000_NANOSEC_TS,
+            "replaced start must clear the year-2000 floor"
+        );
+        assert!(
+            start <= now && now - start < 5_000_000_000,
+            "start: {start}, now: {now}"
+        );
+    }
+
+    #[test]
+    fn validate_and_fix_start_time_clamps_when_duration_exceeds_now() {
+        // A duration larger than the current time cannot be subtracted; the reference clamps to the
+        // receive time rather than wrapping to a far-future timestamp.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let start = validate_and_fix_start_time(1, u64::MAX);
+        assert!(
+            start >= YEAR_2000_NANOSEC_TS,
+            "clamped start must clear the year-2000 floor"
+        );
+        assert!(start.abs_diff(now) < 5_000_000_000, "start: {start}, now: {now}");
+    }
+}

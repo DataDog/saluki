@@ -1,45 +1,48 @@
 //! Native trace intake.
 //!
-//! Serves the trace endpoints the way the trace-agent's receiver does (`handleWithVersion` and `handleTracesV1` in
-//! `pkg/trace/api/api.go`): it rejects cross-site requests, bounds the body size, decodes at most `decoders` payloads
-//! at once, and answers with the status codes of `responses.go`. Each request's receiver metadata (client flags, the
-//! tracer's container and process tags, the connection) is resolved once and shared by every trace of the payload.
+//! Serves the trace endpoints the way the trace-agent's receiver does: it rejects cross-site requests, bounds the body
+//! size, decodes at most `decoders` payloads at once, and answers with the trace-agent's status codes. Each request's
+//! receiver metadata (client flags, the tracer's container and process tags, the connection) is resolved once and
+//! shared by every trace of the payload.
 //!
 //! Status codes, in the order a request can meet them:
 //!
-//! | Condition | Status | Go |
-//! |---|---|---|
-//! | A MessagePack body sent to `/v0.1/spans`, `/spans` or `/v0.2/traces` | 415 | `handleWithVersion`, `httpFormatError` |
-//! | `Sec-Fetch-Site: cross-site` | 403 | `handleWithVersion` |
-//! | `receiver_timeout` elapses waiting for a decoder | 429, no body | `handleTracesV1`, `req.Context().Done()` |
-//! | `decoder_timeout` elapses waiting for a decoder | 200, or 429 with feature `429` or `Datadog-Send-Real-Http-Status`, after draining the body | `handleTracesV1`, `time.After(DecoderTimeout)` |
-//! | `Content-Length` over `max_request_bytes` | 413 | `reserveBodySize` |
-//! | Body reaches `max_request_bytes` | 413 | `LimitedReader` |
-//! | `receiver_timeout` elapses reading the body | 408 | `ReadTimeout`, `httpDecodingError` |
-//! | The body ends early, or ends before its JSON value does | 400 `unexpected-eof` | `httpDecodingError` |
-//! | The payload doesn't decode | 400 | `httpDecodingError` |
-//! | The strings every trace carries, times the traces, exceed 512 times the body (at least 1 MiB) | 400 | None: the trace-agent has no such limit |
-//! | Accepted | 200 | `replyOK` |
+//! | Condition                                                                                     | Status                                    |
+//! |-----------------------------------------------------------------------------------------------|-------------------------------------------|
+//! | A MessagePack body sent to `/v0.1/spans`, `/spans` or `/v0.2/traces`                          | 415                                       |
+//! | `Sec-Fetch-Site: cross-site`                                                                  | 403                                       |
+//! | `receiver_timeout` elapses waiting for a decoder                                              | 429, no body                              |
+//! | `decoder_timeout` elapses waiting for a decoder                                               | 200, or 429 when opted in                 |
+//! | `Content-Length` over `max_request_bytes`                                                     | 413                                       |
+//! | Body reaches `max_request_bytes`                                                              | 413                                       |
+//! | `receiver_timeout` elapses reading the body                                                   | 408                                       |
+//! | The body ends early, or ends before its JSON value does                                       | 400 `unexpected-eof`                      |
+//! | The payload doesn't decode                                                                    | 400                                       |
+//! | The strings every trace carries, times the traces, exceed 512 times the body (at least 1 MiB) | 400, a limit the trace-agent doesn't have |
+//! | Accepted                                                                                      | 200                                       |
 //!
-//! Accepted payloads, and those refused for want of a decoder, are answered as `replyOK` answers them: `OK` on
-//! `/v0.1/spans`, `/spans`, `/v0.2/traces` and `/v0.3/traces`, and the [sampling rates by
-//! service](crate::common::datadog::traces::rates) the priority sampler publishes on the other endpoints.
+//! A request opts in to 429 with the `429` APM feature or the `Datadog-Send-Real-Http-Status` header. Either way, the
+//! body is drained first.
+//!
+//! Accepted payloads, and those refused for want of a decoder, are answered as the trace-agent answers them: `OK` on
+//! `/v0.1/spans`, `/spans`, `/v0.2/traces` and `/v0.3/traces`, and the
+//! [sampling rates by service](crate::common::traces::rates) the priority sampler publishes on the other endpoints.
 //!
 //! # Media types
 //!
 //! `/v1.0/traces` decodes any body as v1.0, `/v0.7/traces` any body as a MessagePack `TracerPayload`, `/v0.5/traces`
 //! any body as a v0.5 dictionary payload, and `/v0.1/spans` and `/spans` any body but MessagePack as a JSON span list,
-//! grouped into traces by trace ID (`traceChunksFromSpans`). The other v0.x endpoints decode a body by its
-//! [format](super::media_type), as `decodeConvertedTracerPayload` does:
+//! grouped into traces by trace ID. The other v0.x endpoints decode a body by its [format](super::media_type), as the
+//! trace-agent does:
 //!
-//! | `Content-Type` | Decoded as | Go |
-//! |---|---|---|
-//! | `application/msgpack`, with any parameters | MessagePack, as `UnmarshalMsgConverted` | `getMediaType`, `case "application/msgpack"` |
-//! | `application/json`, `text/json`, absent, or a value that doesn't parse | JSON, as `ConvertToIdx` | `getMediaType` defaults to `application/json` |
-//! | Any other media type | JSON, or else MessagePack from where the JSON decoder stopped reading | `default: // do our best` |
+//! | `Content-Type` | Decoded as |
+//! |---|---|
+//! | `application/msgpack`, with any parameters | MessagePack |
+//! | `application/json`, `text/json`, absent, or a value that doesn't parse | JSON |
+//! | Any other media type | JSON, or else MessagePack from where the JSON decoder stopped reading |
 //!
 //! Each outcome but the cross-site rejection is counted in the [receiver telemetry](super::receiver_telemetry), as
-//! `handleTracesV1` counts it.
+//! the trace-agent counts it.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -63,7 +66,7 @@ use tracing::debug;
 use super::container_tags::ContainerTagsHasher;
 use super::media_type::{payload_format, PayloadFormat};
 use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
-use crate::common::datadog::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
+use crate::common::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
 use crate::decoders::datadog::{
     attribute_string_bytes, decode_v01_json, decode_v04_any, decode_v04_json, decode_v04_payload, decode_v05_payload,
     decode_v07_payload, decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export, resolved_limit,
@@ -85,7 +88,7 @@ const DROPPED_P0_SPANS_HEADER: HeaderName = HeaderName::from_static("datadog-cli
 const TRACE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-datadog-trace-count");
 const SEND_REAL_HTTP_STATUS_HEADER: HeaderName = HeaderName::from_static("datadog-send-real-http-status");
 
-/// Longest `Datadog-Meta-*` value kept, in bytes, as the trace-agent's `truncateMetaValue` bounds them.
+/// Longest `Datadog-Meta-*` value kept, in bytes, as the trace-agent bounds them.
 const MAX_META_VALUE_LEN: usize = 200;
 
 const RATES_PAYLOAD_VERSION_HEADER: HeaderName = HeaderName::from_static("datadog-rates-payload-version");
@@ -152,25 +155,25 @@ impl EndpointVersion {
         }
     }
 
-    /// Returns whether the endpoint rejects MessagePack bodies, as `handleWithVersion` does below v0.3.
+    /// Returns whether the endpoint rejects MessagePack bodies, as the trace-agent does below v0.3.
     fn rejects_msgpack(self) -> bool {
         matches!(self, Self::V01 | Self::V02)
     }
 
-    /// Returns whether the endpoint answers `OK` rather than the rates, as `replyOK` does below v0.4.
+    /// Returns whether the endpoint answers `OK` rather than the rates, as the trace-agent does below v0.4.
     fn replies_ok(self) -> bool {
         matches!(self, Self::V01 | Self::V02 | Self::V03)
     }
 }
 
-/// Body of the `415 Unsupported Media Type` answer to a MessagePack body on an endpoint that doesn't take one, as
-/// `httpFormatError` writes it.
+/// Body of the `415 Unsupported Media Type` answer to a MessagePack body on an endpoint that doesn't take one, as the
+/// trace-agent writes it.
 const UNSUPPORTED_MSGPACK_MESSAGE: &str = "unsupported media type: \"application/msgpack\"";
 
-/// Body of the `400 Bad Request` answer to a body that ends early, as `httpDecodingError` writes it.
+/// Body of the `400 Bad Request` answer to a body that ends early, as the trace-agent writes it.
 const UNEXPECTED_EOF_MESSAGE: &str = "unexpected-eof";
 
-/// Body of the `400 Bad Request` answer to a MessagePack body that ends early, `msgp.ErrShortBytes`'s message.
+/// Body of the `400 Bad Request` answer to a MessagePack body that ends early, the trace-agent's message.
 const MSGP_SHORT_BYTES_MESSAGE: &str = "msgp: too few bytes left to read object";
 
 /// Handles trace intake requests, and hands their traces to the source.
@@ -201,7 +204,7 @@ impl TraceIntake {
     pub(super) async fn handle(
         &self, version: EndpointVersion, request: AxumRequest, container_tags: &ContainerTagsHasher,
     ) -> Response {
-        // Go's server read timeout runs from the arrival of the request.
+        // As in the trace-agent, the read timeout runs from the arrival of the request.
         let deadline = Instant::now() + self.config.receiver_timeout;
         let (parts, body) = request.into_parts();
         let headers = &parts.headers;
@@ -257,11 +260,11 @@ impl TraceIntake {
 
         let decoded = match (version, format) {
             (EndpointVersion::V10, _) => decode_v1_payload(&body),
-            // As `decodeConvertedTracerPayload`'s `v01` case, which decodes JSON whatever the media type.
+            // As in the trace-agent, a v0.1 body is decoded as JSON whatever the media type.
             (EndpointVersion::V01, _) => decode_v01_json(&body),
-            // As `decodeConvertedTracerPayload`'s `v05` case, which decodes a v0.5 payload whatever the media type.
+            // As in the trace-agent, a v0.5 payload is decoded whatever the media type.
             (EndpointVersion::V05, _) => decode_v05_payload(&body),
-            // As `decodeConvertedTracerPayload`'s `V07` case, which decodes a `TracerPayload` whatever the media type.
+            // As in the trace-agent, a v0.7 `TracerPayload` is decoded whatever the media type.
             (EndpointVersion::V07, _) => decode_v07_payload(&body),
             // `/v0.2/traces` never gets here with MessagePack: it is rejected above.
             (_, PayloadFormat::MessagePack) => decode_v04_payload(&body),
@@ -269,14 +272,14 @@ impl TraceIntake {
             (_, PayloadFormat::Unknown) => decode_v04_any(&body),
         };
         // The decoded traces own their data, so the body is released before they wait for the pipeline, as the
-        // trace-agent returns its buffer to the pool before `sendPayload`.
+        // trace-agent releases its buffer before sending the payload on.
         drop(body);
         let decoded = match decoded {
             Ok(decoded) => decoded,
             Err(error) => {
                 debug!(%error, "Cannot decode {version:?} traces payload.");
-                // `msgp.ErrShortBytes` and the JSON decoder's `io.EOF` are counted apart, and answered with their own
-                // messages.
+                // Short MessagePack input and a JSON body that ends early are counted apart, and answered with their
+                // own messages.
                 let (reason, message) = match error {
                     DecodeError::ShortBytes { .. } => (DropReason::MsgpShortBytes, MSGP_SHORT_BYTES_MESSAGE.into()),
                     DecodeError::UnexpectedEof => (DropReason::UnexpectedEof, UNEXPECTED_EOF_MESSAGE.into()),
@@ -288,8 +291,8 @@ impl TraceIntake {
         };
         let mut traces = decoded.traces;
 
-        // A v0.x payload other than v0.7 has no tracer fields of its own: as `decodeConvertedTracerPayload`, they come
-        // from the request headers, as sent. The receiver telemetry takes them from the headers for every version.
+        // A v0.x payload other than v0.7 has no tracer fields of its own: as in the trace-agent, they come from the
+        // request headers, as sent. The receiver telemetry takes them from the headers for every version.
         if !matches!(version, EndpointVersion::V07 | EndpointVersion::V10) {
             let header = |name: &HeaderName| shared_meta(header_str(headers, name).unwrap_or_default());
             let (lang, lang_version, tracer_version) = (
@@ -305,8 +308,8 @@ impl TraceIntake {
         }
 
         // A v1.0 payload's own container ID wins over the request's. A v0.x payload has none, so its container is
-        // the request's, as `decodeConvertedTracerPayload` sets it. A v0.7 payload's container is its own only: the
-        // reference doesn't look the request's up.
+        // the request's, as in the trace-agent. A v0.7 payload's container is its own only: the trace-agent doesn't
+        // look the request's up.
         let payload_container_id = traces.first().map(|trace| trace.payload.container_id.clone());
         let container = match payload_container_id {
             Some(container_id) if !container_id.is_empty() => {
@@ -380,19 +383,19 @@ impl TraceIntake {
         response
     }
 
-    /// Answers a payload as `replyOK` does, with `OK` or the rates by version, and returns the body's length.
+    /// Answers a payload as the trace-agent does, with `OK` or the rates by version, and returns the body's length.
     fn reply_ok(
         &self, version: EndpointVersion, status: StatusCode, headers: &HeaderMap, send_version: bool,
     ) -> (Response, usize) {
         if version.replies_ok() {
-            // As `httpOK`, with the `Content-Type` Go's server sniffs from the body.
+            // As in the trace-agent, with the `Content-Type` its server sniffs from the body.
             const OK_BODY: &str = "OK\n";
             return ((status, OK_BODY).into_response(), OK_BODY.len());
         }
         self.rate_by_service(status, headers, send_version)
     }
 
-    /// Answers with the sampling rates by service, as `httpRateByService`, and returns the body's length.
+    /// Answers with the sampling rates by service, as the trace-agent does, and returns the body's length.
     ///
     /// A client that sends the version of the rates it has gets the current version back, if `send_version`, and `{}`
     /// rather than the rates when it already has them.
@@ -420,13 +423,13 @@ impl TraceIntake {
         ((status, response_headers, body).into_response(), len)
     }
 
-    /// Counts a payload that couldn't be read or decoded, as `handleTracesV1` does.
+    /// Counts a payload that couldn't be read or decoded, as the trace-agent does.
     fn record_rejection(
         &self, version: EndpointVersion, headers: &HeaderMap, connection: Option<&ConnectInfo<ConnectionAddress>>,
         start: Instant, reason: DropReason,
     ) {
         self.telemetry.record_error(version.as_str(), reason);
-        // As `traceCount`, a missing or unparseable `X-Datadog-Trace-Count` counts no trace.
+        // As in the trace-agent, a missing or unparseable `X-Datadog-Trace-Count` counts no trace.
         let dropped = header_count(headers, &TRACE_COUNT_HEADER).unwrap_or(0);
         self.telemetry
             .record(header_tags(version, headers, connection), |stats| {
@@ -436,8 +439,7 @@ impl TraceIntake {
     }
 }
 
-/// Returns the receiver telemetry tags that come from the request alone, as the trace-agent's `tagStats` with no
-/// service.
+/// Returns the receiver telemetry tags that come from the request alone, as the trace-agent tags them, with no service.
 fn header_tags(
     version: EndpointVersion, headers: &HeaderMap, connection: Option<&ConnectInfo<ConnectionAddress>>,
 ) -> ReceiverTags {
@@ -454,7 +456,7 @@ fn header_tags(
     }
 }
 
-/// Returns the service of the payload's first span, truncated as the trace-agent's `tagStats` truncates it.
+/// Returns the service of the payload's first span, truncated as the trace-agent truncates it.
 fn first_service(traces: &[Trace]) -> MetaString {
     let service = first_span(traces).map(|span| span.service()).unwrap_or_default();
     shared_meta(truncate_utf8_str(service, MAX_SERVICE_LEN))
@@ -484,6 +486,7 @@ fn per_trace_string_bytes(
         env,
         hostname,
         app_version,
+        container_tags: payload_container_tags,
         receiver: _,
     } = payload;
     let ReceiverMetadata {
@@ -525,13 +528,16 @@ fn per_trace_string_bytes(
         connection_type,
     ];
     strings.iter().map(|s| s.len()).sum::<usize>()
+        + payload_container_tags
+            .as_deref()
+            .map_or(0, |tags| tags.iter().map(|tag| tag.len()).sum::<usize>())
         + payload_attributes
             .iter()
             .map(|(key, value)| key.len() + attribute_string_bytes(value))
             .sum::<usize>()
 }
 
-/// Returns a header's value parsed as a count, as `strconv.ParseInt`, if it parses.
+/// Returns a header's value parsed as a signed 64-bit count, if it parses.
 fn header_count(headers: &HeaderMap, name: &HeaderName) -> Option<i64> {
     header_str(headers, name).and_then(|value| value.parse::<i64>().ok())
 }
@@ -567,7 +573,7 @@ fn receiver_metadata(
     }
 }
 
-/// Returns the connection type of the trace-agent's `GetConnectionType`.
+/// Returns the connection type the trace-agent reports for a connection.
 fn connection_type(connection: Option<&ConnectInfo<ConnectionAddress>>) -> MetaString {
     MetaString::from_static(match connection {
         Some(ConnectInfo(ConnectionAddress::SocketLike(_))) => "tcp",
@@ -585,9 +591,9 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Option<&'a str> 
         .and_then(|value| simdutf8::basic::from_utf8(value.as_bytes()).ok())
 }
 
-/// Returns whether a header value is set and not false, as the trace-agent's `isHeaderTrue`.
+/// Returns whether a header value is set and not false, as the trace-agent reads boolean headers.
 ///
-/// The false values are those Go's `strconv.ParseBool` reads as false. A value it can't parse is true.
+/// The false values are the ones the trace-agent parses as false. A value it can't parse is true.
 fn is_header_true(value: Option<&str>) -> bool {
     match value {
         None | Some("") => false,
@@ -641,12 +647,12 @@ impl IntoResponse for BodyError {
 
 /// Reads a request body of fewer than `limit` bytes before `deadline`, keeping it only if `keep` is set.
 ///
-/// As the trace-agent's `LimitedReader`, a body is too large once it reaches the limit, so a body of exactly `limit`
+/// As in the trace-agent, a body is too large once it reaches the limit, so a body of exactly `limit`
 /// bytes is rejected too; a `Content-Length` over the limit is rejected before reading.
 async fn read_body(
     headers: &HeaderMap, body: Body, limit: u64, deadline: Instant, keep: bool,
 ) -> Result<Bytes, BodyError> {
-    // As `reserveBodySize`, an unparseable `Content-Length` is ignored.
+    // As in the trace-agent, an unparseable `Content-Length` is ignored.
     let content_length = header_str(headers, &CONTENT_LENGTH).and_then(|value| value.parse::<u64>().ok());
     if content_length.is_some_and(|length| length > limit) {
         return Err(BodyError::TooLarge);
@@ -683,7 +689,7 @@ async fn read_body(
         .unwrap_or(Err(BodyError::Timeout))
 }
 
-/// Answers with an error, as Go's `http.Error` does.
+/// Answers with an error, as the trace-agent does.
 fn http_error(status: StatusCode, message: &str) -> Response {
     (
         status,
@@ -704,7 +710,7 @@ mod tests {
     use http::Request;
     use rmp::encode;
     use saluki_core::data_model::event::metric::MetricValues;
-    use saluki_core::data_model::event::trace::AttributeValue;
+    use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _};
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::data_model::tags::{SharedTagSet, Tag, TagSet};
     use saluki_env::workload::origin::{ResolvedExternalData, ResolvedOrigin};
@@ -712,7 +718,7 @@ mod tests {
     use saluki_io::net::ProcessCredentials;
 
     use super::*;
-    use crate::common::datadog::traces::rates::RateByService;
+    use crate::common::traces::rates::RateByService;
 
     const LIMIT: u64 = 4096;
 
@@ -852,8 +858,7 @@ mod tests {
 
     const MSGPACK: (&str, &str) = ("Content-Type", "application/msgpack");
 
-    // `decodeConvertedTracerPayload`'s `v05` case, which reads no media type, and `replyOK`, which answers v0.5 with
-    // the rates.
+    // As in the trace-agent, a v0.5 body is decoded whatever its media type, and answered with the rates.
     #[tokio::test]
     async fn a_v05_payload_is_decoded_whatever_its_media_type() {
         for content_type in [
@@ -896,10 +901,9 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    /// `testutil.GetTestTraces(1, 1, false)` as `json.Marshal` writes it.
+    /// A test trace, as Go's `json.Marshal` writes it.
     const GO_TEST_TRACES_JSON: &str = r#"[[{"service":"fennel_IS amazing!","name":"something &&<@# that should be a metric!","resource":"NOT touched because it is going to be hashed","trace_id":42,"span_id":52,"parent_id":42,"start":9223372036854775807,"duration":9223372036854775807,"error":0,"meta":{"http.host":"192.168.0.1"},"metrics":{"http.monitor":41.99},"type":"web","span_links":[{"trace_id":42,"trace_id_high":32,"span_id":52,"attributes":{"a1":"v1","a2":"v2"},"tracestate":"dd=s:2;o:rum,congo=baz123","flags":2147483649}]}]]"#;
 
-    // `TestReceiverJSONDecoder` in `api_test.go`.
     #[tokio::test]
     async fn json_payloads_are_decoded_on_every_v0_endpoint() {
         for version in [EndpointVersion::V02, EndpointVersion::V03, EndpointVersion::V04] {
@@ -975,7 +979,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
-    // `TestReceiverDecodingError` in `api_test.go`, and `io.ErrUnexpectedEOF` from the JSON decoder.
+    // A body the JSON decoder can't decode, and one that ends early (`io.ErrUnexpectedEOF`).
     #[tokio::test]
     async fn json_decoding_errors_are_classified_as_http_decoding_error_does() {
         let cases: [(&[u8], &str, &str, &str); 4] = [
@@ -1013,12 +1017,11 @@ mod tests {
         }
     }
 
-    // `TestHandleWithVersionRejectCrossSite` and the v0.2 case of `TestReceiverMsgpackDecoder` in `api_test.go`.
     #[tokio::test]
     async fn a_msgpack_payload_on_v02_is_an_unsupported_media_type() {
         let (intake, mut traces) = intake(config());
 
-        // As `handleWithVersion`, the media type is checked before the cross-site header.
+        // As in the trace-agent, the media type is checked before the cross-site header.
         let headers = [MSGPACK, ("Sec-Fetch-Site", "cross-site")];
         let (status, response_headers, body) =
             send_to(&intake, EndpointVersion::V02, sized_request(&headers, v04_payload(1))).await;
@@ -1034,7 +1037,7 @@ mod tests {
         assert_eq!(errors, 1.0);
     }
 
-    // The v0.1 case of `TestReceiverMsgpackDecoder` in `api_test.go`: `/v0.1/spans` and `/spans` are both `v01`.
+    // `/v0.1/spans` and `/spans` are both `v01`.
     #[tokio::test]
     async fn a_msgpack_payload_on_v01_is_an_unsupported_media_type() {
         let (intake, mut traces) = intake(config());
@@ -1109,7 +1112,7 @@ mod tests {
         assert_eq!(body, PUBLISHED_RATES_BODY);
         assert_eq!(traces.try_recv().unwrap().len(), 1);
 
-        // `replyOK` sizes `OK` too.
+        // The `OK` reply is sized too.
         let events = intake.telemetry.take_window_events();
         let endpoints: Vec<_> = events
             .iter()
@@ -1222,8 +1225,8 @@ mod tests {
         buf
     }
 
-    // `decodeConvertedTracerPayload`'s `V07` case, which reads no media type, keeps the payload's own tracer fields
-    // and container ID, and doesn't look up the request's container; and `replyOK`, which answers with the rates.
+    // As in the trace-agent, a v0.7 payload is decoded whatever its media type, keeps its own tracer fields and
+    // container ID, doesn't look up the request's container, and is answered with the rates.
     #[tokio::test]
     async fn a_v07_payload_is_decoded_whatever_its_media_type_and_keeps_its_own_fields() {
         let container_tags = ContainerTagsHasher::new(None, Some(Arc::new(TaggingProvider)));
@@ -1482,7 +1485,7 @@ mod tests {
         ));
         let receiver = traces[0].payload.receiver();
         assert_eq!(receiver.endpoint_version, "v1.0");
-        // Resolved from the first span, as `getProcessTagsV1` does.
+        // Resolved from the first span, as in the trace-agent.
         assert_eq!(receiver.process_tags, "entrypoint.name:app");
     }
 
@@ -1527,7 +1530,6 @@ mod tests {
         }
     }
 
-    // `TestHTTPRateByService` in `responses_test.go`.
     #[tokio::test]
     async fn a_client_version_gets_the_empty_version_before_the_first_rates() {
         let (intake, _traces) = intake(config());
@@ -1767,7 +1769,7 @@ mod tests {
         let (status, _, _) = send(&intake, request(&[], body)).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 
-        // As Go's `LimitedReader`, a body of exactly the limit is too large.
+        // As in the trace-agent, a body of exactly the limit is too large.
         let (status, _, _) = send(&intake, request(&[], Body::from(vec![0u8; LIMIT as usize]))).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }

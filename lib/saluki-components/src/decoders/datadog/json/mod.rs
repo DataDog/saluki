@@ -2,9 +2,8 @@
 //! `/v0.3/traces` and `/v0.2/traces` with a JSON media type, and for the v0.1 format, the `[]Span` body of
 //! `/v0.1/spans` and `/spans`.
 //!
-//! [`decode_v04_json`] mirrors the JSON branch of the reference receiver's `decodeConvertedTracerPayload`
-//! (`pkg/trace/api/api.go`): `json.NewDecoder(body).Decode` into `pb.Traces`, then `traceChunksFromTraces` and
-//! `ConvertToIdx`. It decodes in three steps:
+//! [`decode_v04_json`] decodes these bodies as the trace-agent's receiver does: `json.NewDecoder(body).Decode` into
+//! `pb.Traces`, then a conversion to the v1.0 model. It decodes in three steps:
 //!
 //! 1. A [syntax pass](scan) over the first JSON value, which stops where `json.Decoder` stops: the body ending early is
 //!    [`DecodeError::UnexpectedEof`], as Go's `io.EOF` and `io.ErrUnexpectedEOF`, a syntax error wins over a type
@@ -12,10 +11,10 @@
 //! 2. [Deserialization](de) into the classic protos, as `encoding/json` decodes into `pb.Traces`.
 //! 3. [Conversion](super::convert) into unified traces.
 //!
-//! [`decode_v04_any`] is the reference's "do our best" branch for any other media type: JSON first, then MessagePack.
+//! [`decode_v04_any`] is the trace-agent's "do our best" branch for any other media type: JSON first, then MessagePack.
 //!
-//! [`decode_v01_json`] mirrors the reference's `v01` branch the same way, with `traceChunksFromSpans` grouping the
-//! spans into chunks by trace ID. The reference decodes a v0.1 body as JSON whatever its media type.
+//! [`decode_v01_json`] decodes v0.1 bodies the same way, grouping the spans into chunks by trace ID. The trace-agent
+//! decodes a v0.1 body as JSON whatever its media type.
 //!
 //! # Limits
 //!
@@ -51,7 +50,7 @@ pub fn decode_v04_json(body: &[u8]) -> Result<DecodedV1, DecodeError> {
 
 /// Decodes a v0.4 trace payload of an unknown media type, as JSON if it is JSON, and as MessagePack otherwise.
 ///
-/// This mirrors the reference's "do our best" branch with its quirk: the MessagePack decoder only gets what the JSON
+/// This matches the trace-agent's "do our best" branch with its quirk: the MessagePack decoder only gets what the JSON
 /// decoder left of the body. Go's `json.Decoder` reads the body 512, then 1,024, then 2,048 bytes at a time, and so on,
 /// so a MessagePack body is decoded from the end of the read in which the JSON decoder gave up. One of up to 512 bytes
 /// is always [`DecodeError::ShortBytes`].

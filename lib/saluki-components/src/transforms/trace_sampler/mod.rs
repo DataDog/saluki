@@ -13,6 +13,7 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use datadog_agent_apm::sampling::{RemoteSampling, SamplerSettings, TraceSamplingSubscription};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
@@ -357,7 +358,7 @@ impl TraceSampler {
             if let Some(p) = root
                 .attributes
                 .get(SAMPLING_PRIORITY_METRIC_KEY)
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
             {
                 return Some(p as i32);
             }
@@ -366,7 +367,7 @@ impl TraceSampler {
         spans.iter().find_map(|span| {
             span.attributes
                 .get(SAMPLING_PRIORITY_METRIC_KEY)
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
                 .map(|p| p as i32)
         })
     }
@@ -612,7 +613,7 @@ impl TraceSampler {
             // The receiver's decision is the chunk's priority, so the priority sampler counts the trace, and publishes
             // a rate for its service, as the trace-agent's does for an OTLP chunk.
             // The receiver marks only a keep with the probabilistic decision maker, so a drop records under the
-            // priority sampler, as `traceChunkContainsProbabilitySamplingV1` reads it in the trace-agent.
+            // priority sampler, as in the trace-agent.
             sampler_name = if priority == PRIORITY_AUTO_KEEP || Self::trace_chunk_contains_probability_sampling(trace) {
                 telemetry::SamplerName::Probabilistic
             } else {
@@ -703,7 +704,7 @@ impl TraceSampler {
         }
 
         // A client that computed top-level spans keeps its marks, with its `_dd.top_level` flags promoted to
-        // `_top_level`; otherwise they are computed here (agent.go `ProcessV1`). The OTLP translator sets the flag
+        // `_top_level`; otherwise they are computed here. The OTLP translator sets the flag
         // from `enable_otlp_compute_top_level_by_span_kind`.
         if trace.payload.receiver().client_computed_top_level {
             let ingest_info = trace.ingest_info();
@@ -1147,7 +1148,7 @@ mod tests {
                 .unwrap()
                 .attributes
                 .get(crate::common::datadog::TOP_LEVEL_KEY)
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
         };
         assert_eq!(top_level(1), Some(1.0), "root spans are marked");
         assert_eq!(
@@ -1188,7 +1189,7 @@ mod tests {
             .unwrap()
             .attributes
             .get(crate::common::datadog::TOP_LEVEL_KEY)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
     }
 
     #[test]
@@ -1267,7 +1268,7 @@ mod tests {
             ]
         };
 
-        // Datadog traces read the flag as `AsDoubleValue` does: numbers, numeric strings, and bools.
+        // Datadog traces read the flag from numbers, numeric strings, and bools.
         let mut trace = with_receiver(create_test_trace(spans()), client_computed_top_level());
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
         sampler.backfill_trace_metadata(&mut trace, root_idx);
@@ -1276,7 +1277,7 @@ mod tests {
         assert_eq!(top_level_mark(&trace, 4), Some(1.0));
         assert_eq!(top_level_mark(&trace, 5), None);
 
-        // OTLP traces read it as a number only, as Go reads span metrics.
+        // OTLP traces read it as a number only, as the trace-agent reads span metrics.
         let mut trace = with_receiver(create_otlp_test_trace(spans(), 1.0, 1), client_computed_top_level());
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
         sampler.backfill_trace_metadata(&mut trace, root_idx);
@@ -1311,8 +1312,8 @@ mod tests {
         }
     }
 
-    // In the trace-agent, the OTLP receiver's decision is the chunk's priority, which `runSamplersV1` hands to the
-    // priority sampler, so OTLP services take part in the rates it publishes.
+    // In the trace-agent, the OTLP receiver's decision is the chunk's priority, which it hands to the priority sampler,
+    // so OTLP services take part in the rates it publishes.
     #[test]
     fn otlp_receiver_decisions_feed_the_priority_sampler() {
         for trace_id in [OTLP_RECEIVER_KEPT_TRACE_ID, OTLP_RECEIVER_DROPPED_TRACE_ID] {
@@ -1328,8 +1329,7 @@ mod tests {
 
             let kept = trace_id == OTLP_RECEIVER_KEPT_TRACE_ID;
             assert_eq!(outcome.keep, kept);
-            // `_dd.p.dm:-9` marks only a kept chunk, so a drop records under the priority sampler (`otlp.go`
-            // `createChunks`, `agent.go` `runSamplersV1`).
+            // `_dd.p.dm:-9` marks only a kept chunk, so a drop records under the priority sampler.
             let expected = if kept {
                 telemetry::SamplerName::Probabilistic
             } else {

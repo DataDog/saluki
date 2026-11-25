@@ -1,10 +1,9 @@
 //! Decoder for the Datadog v0.4 APM trace wire format, the MessagePack `[][]Span` body that tracers send to
 //! `/v0.4/traces` (and to `/v0.3/traces` and `/v0.2/traces` with a MessagePack content type).
 //!
-//! [`decode_v04_payload`] mirrors the reference receiver's `InternalTracerPayload.UnmarshalMsgConverted`
-//! (`pkg/proto/pbgo/trace/idx/span.go`), which decodes these bodies straight into the v1.0 model. It produces the
-//! same output as [`decode_v1_payload`](super::decode_v1_payload): one [`Trace`] per chunk, plus the payload
-//! attributes.
+//! [`decode_v04_payload`] decodes these bodies straight into the v1.0 model, as the trace-agent's receiver does. It
+//! produces the same output as [`decode_v1_payload`](super::decode_v1_payload): one [`Trace`] per chunk, plus the
+//! payload attributes.
 //!
 //! # Promoted fields
 //!
@@ -21,45 +20,44 @@
 //!   and `meta["_dd.git.commit.sha"]` and `meta["_dd.apm_mode"]` set payload attributes.
 //!
 //! A value that doesn't parse (`_dd.p.tid`, `_dd.p.dm`) is ignored. Every span also gets a `_dd.convertedv1: v04`
-//! attribute (`span.go:1469`).
+//! attribute.
 //!
-//! # Differences from `ConvertToIdx`
+//! # Differences from the trace-agent's other v0.x conversion
 //!
-//! The reference converts the other v0.x bodies (JSON, v0.1, v0.7) with `ConvertToIdx`
-//! (`pkg/trace/api/converter.go`), which differs from this decoder in ways that are visible downstream. This decoder
-//! follows `UnmarshalMsgConverted`:
+//! The trace-agent converts the other v0.x bodies (JSON, v0.1, v0.7) to the v1.0 model in a separate step, which
+//! differs from this decoder in ways that are visible downstream. This decoder follows the trace-agent's v0.4
+//! decoding:
 //!
-//! 1. Promoted tags (`env`, `version`, `component`, `span.kind`) stay in the span's attributes (`span.go:1300-1303`).
-//!    `ConvertToIdx` drops them (`converter.go:62-64`).
-//! 2. Promoted fields are taken from the *last* span that carries them in a chunk (`span.go:1846-1896`), and from the
-//!    last chunk that carries them in a payload (`span.go:1080-1091`). An empty `env` or `version` value on a later
-//!    span clears an earlier one within the chunk. `ConvertToIdx` takes the first span in a chunk.
-//! 3. Chunks without spans are kept (`span.go:1052-1059`): the receiver counts them, and the normalizer drops them.
-//!    `ConvertToIdx` drops them (`converter.go:38-40`). `nil` spans are dropped by both (`span.go:1115-1121`).
-//! 4. The chunk's trace ID comes from the last span with a `trace_id` (`span.go:1189-1202`), not the first.
-//! 5. `meta` and `metrics` share one attribute map, so on a key clash the map that comes later on the wire wins
-//!    (`span.go:1303`, `span.go:1345`). `ConvertToIdx` always lets `metrics` win (`converter.go:84-91`).
-//! 6. An invalid `_dd.p.dm` is ignored, keeping an earlier span's mechanism (`span.go:1880-1889`), where
-//!    `ConvertToIdx` resets it to 0. A `float32` metric is a type error (`parseFloat64Bytes`, `span.go:2125-2161`).
-//!    There are no chunk tags to fall back on for the priority or the mechanism.
+//! 1. Promoted tags (`env`, `version`, `component`, `span.kind`) stay in the span's attributes. The other conversion
+//!    drops them.
+//! 2. Promoted fields are taken from the *last* span that carries them in a chunk, and from the last chunk that
+//!    carries them in a payload. An empty `env` or `version` value on a later span clears an earlier one within the
+//!    chunk. The other conversion takes the first span in a chunk.
+//! 3. Chunks without spans are kept: the receiver counts them, and the normalizer drops them. The other conversion
+//!    drops them. `nil` spans are dropped by both.
+//! 4. The chunk's trace ID comes from the last span with a `trace_id`, not the first.
+//! 5. `meta` and `metrics` share one attribute map, so on a key clash the map that comes later on the wire wins. The
+//!    other conversion always lets `metrics` win.
+//! 6. An invalid `_dd.p.dm` is ignored, keeping an earlier span's mechanism, where the other conversion resets it to
+//!    0. A `float32` metric is a type error. There are no chunk tags to fall back on for the priority or the
+//!    mechanism.
 //!
-//! # Other reference behaviors kept
+//! # Other trace-agent behaviors kept
 //!
-//! - Numbers are as tolerant as the reference's `parseXBytes` helpers: see the `v0_*` helpers in
-//!   [`read`](super::read).
+//! - Numbers are as tolerant as the trace-agent's: see the `v0_*` helpers in [`read`](super::read).
 //! - Strings may be `str` or `bin`, and `nil` reads as the empty string. Invalid UTF-8 is repaired one byte at a time.
 //! - A `nil` `trace_id` after a non-zero one in the same chunk is an error only when it is the last field of its span,
-//!   because the reference overwrites the error with the next field's (`span.go:1190-1196`).
-//! - Bytes after the trace list are ignored (`span.go:1061`).
-//! - Short input maps to [`DecodeError::ShortBytes`] wherever the reference returns `msgp.ErrShortBytes`, including
-//!   a collection header that declares more entries than bytes remain.
+//!   because the trace-agent overwrites the error with the next field's.
+//! - Bytes after the trace list are ignored.
+//! - Short input maps to [`DecodeError::ShortBytes`] wherever the trace-agent reports short input, including a
+//!   collection header that declares more entries than bytes remain.
 //!
-//! Unknown fields are skipped with a nesting limit of 64, where the reference's `msgp.Skip` allows 100,000.
+//! Unknown fields are skipped with a nesting limit of 64, where the trace-agent allows 100,000.
 //!
 //! # Performance
 //!
 //! Strings are interned per payload: short strings are inlined in the [`MetaString`] itself, and longer ones are
-//! shared through one allocation per distinct value, as the reference interns into its string table.
+//! shared through one allocation per distinct value, as the trace-agent interns into its string table.
 
 use std::sync::Arc;
 
@@ -76,7 +74,7 @@ use super::DecodedV1;
 #[cfg(test)]
 pub(super) mod tests;
 
-/// The reference's `sampler.PriorityNone`: no sampling priority.
+/// No sampling priority, as the trace-agent marks it.
 pub(super) const PRIORITY_NONE: i32 = i8::MIN as i32;
 
 /// The OTel span kinds, as `Span::kind` stores them.
@@ -86,7 +84,7 @@ const SPAN_KIND_CLIENT: u32 = 3;
 const SPAN_KIND_PRODUCER: u32 = 4;
 const SPAN_KIND_CONSUMER: u32 = 5;
 
-/// Maximum span event attribute nesting depth, the reference's `maxAnyValueDepth`.
+/// Maximum span event attribute nesting depth, as in the trace-agent.
 const MAX_ANY_VALUE_DEPTH: usize = 64;
 
 pub(super) const TAG_CONVERTED_V1: MetaString = MetaString::from_static("_dd.convertedv1");
@@ -170,10 +168,10 @@ impl<'a> Strings<'a> {
     }
 }
 
-/// A string field promoted to a chunk or payload, which is taken only when set, as the reference takes a non-zero
+/// A string field promoted to a chunk or payload, which is taken only when set, as the trace-agent takes a non-zero
 /// string reference.
 ///
-/// The v0.4 decoder promotes strings, which are set when non-empty, as every empty string is the reference's string
+/// The v0.4 decoder promotes strings, which are set when non-empty, as every empty string is the trace-agent's string
 /// reference 0. The v0.5 decoder promotes its dictionary references themselves, since a dictionary may hold the empty
 /// string at a non-zero reference.
 pub(super) trait Promoted: Default {
@@ -192,7 +190,7 @@ impl Promoted for u32 {
     }
 }
 
-/// Fields promoted from a chunk's spans to the chunk, the reference's `SpanConvertedFields`.
+/// Fields promoted from a chunk's spans to the chunk.
 pub(super) struct ChunkPromoted<S = MetaString> {
     pub(super) trace_id_low: u64,
     pub(super) trace_id_high: u64,
@@ -223,7 +221,7 @@ impl<S: Default> Default for ChunkPromoted<S> {
     }
 }
 
-/// Fields promoted from the chunks to the payload, the reference's `ChunkConvertedFields`.
+/// Fields promoted from the chunks to the payload.
 #[derive(Default)]
 pub(super) struct PayloadPromoted<S = MetaString> {
     pub(super) env: S,
@@ -234,7 +232,7 @@ pub(super) struct PayloadPromoted<S = MetaString> {
 }
 
 impl<S: Promoted> PayloadPromoted<S> {
-    /// Takes every set field of a decoded chunk, mirroring `InternalTraceChunk.ApplyPromotedFields`.
+    /// Takes every set field of a decoded chunk.
     pub(super) fn apply(&mut self, chunk: &mut ChunkPromoted<S>) {
         for (to, from) in [
             (&mut self.env, &mut chunk.env),
@@ -250,7 +248,7 @@ impl<S: Promoted> PayloadPromoted<S> {
     }
 }
 
-/// The reference's `RootSamplingMergeState`: once a root span has a priority, it overrides the later spans'.
+/// Root sampling state: once a root span has a priority, it overrides the later spans'.
 #[derive(Default)]
 pub(super) struct RootPriority {
     priority: Option<i32>,
@@ -266,7 +264,7 @@ impl RootPriority {
     }
 }
 
-/// Decodes one trace chunk, a list of spans, mirroring `InternalTraceChunk.UnmarshalMsgConverted`.
+/// Decodes one trace chunk, a list of spans.
 fn decode_chunk<'a>(
     r: &mut &'a [u8], strings: &mut Strings<'a>, payload: &mut PayloadPromoted,
 ) -> Result<Trace, DecodeError> {
@@ -308,7 +306,7 @@ fn decode_span_list<'a>(
     Ok(spans)
 }
 
-/// Decodes one span, a map keyed by field name, mirroring `InternalSpan.UnmarshalMsgConverted`.
+/// Decodes one span, a map keyed by field name.
 fn decode_span<'a>(
     r: &mut &'a [u8], strings: &mut Strings<'a>, promoted: &mut ChunkPromoted,
 ) -> Result<Span, DecodeError> {
@@ -400,7 +398,7 @@ impl Default for PromotedSpanFields {
     }
 }
 
-/// Decodes a span's `meta` map into its attributes, applying the promoted fields as `handlePromotedMetaFields` does.
+/// Decodes a span's `meta` map into its attributes, applying the promoted fields.
 fn decode_meta<'a>(
     r: &mut &'a [u8], strings: &mut Strings<'a>, attributes: &mut FastHashMap<MetaString, AttributeValue>,
     fields: &mut PromotedSpanFields, promoted: &mut ChunkPromoted,
@@ -472,7 +470,7 @@ fn decode_metrics<'a>(
         let key_bytes = read::v0_read_str_bytes(r, "span metrics key")?;
         let value = read::v0_parse_f64(r, "span metrics value")?;
         if key_bytes == KEY_SAMPLING_PRIORITY {
-            // Go's `int32(float64)`; out-of-range values saturate here, where Go's result is platform-dependent.
+            // Out-of-range values saturate here, where the trace-agent's conversion is platform-dependent.
             promoted.sampling_priority = value as i32;
         }
         attributes.insert(strings.get(key_bytes), AttributeValue::Float(value));
@@ -482,7 +480,7 @@ fn decode_metrics<'a>(
 }
 
 /// Decodes a span's `meta_struct` map, whose values are opaque `bin` blobs, into its attributes. Unlike `meta` and
-/// `metrics`, a `nil` map is an error, as it is in the reference.
+/// `metrics`, a `nil` map is an error, as it is in the trace-agent.
 fn decode_meta_struct<'a>(
     r: &mut &'a [u8], strings: &mut Strings<'a>, attributes: &mut FastHashMap<MetaString, AttributeValue>,
 ) -> Result<(), DecodeError> {
@@ -522,7 +520,7 @@ fn decode_span_links<'a>(
     Ok(())
 }
 
-/// Decodes one span link, mirroring `SpanLink.UnmarshalMsgConverted`.
+/// Decodes one span link.
 fn decode_span_link<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<SpanLink, DecodeError> {
     let mut trace_id_low = 0;
     let mut trace_id_high = 0;
@@ -582,7 +580,7 @@ fn decode_span_events<'a>(
     Ok(())
 }
 
-/// Decodes one span event, mirroring `SpanEvent.UnmarshalMsgConverted`.
+/// Decodes one span event.
 fn decode_span_event<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<SpanEvent, DecodeError> {
     let mut time = 0;
     let mut name = MetaString::empty();
@@ -616,11 +614,10 @@ fn decode_span_event<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<
     Ok(SpanEvent::new(time, name).with_attributes(attributes))
 }
 
-/// Decodes a span event attribute value, a map holding a `type` and the matching `*_value` field, mirroring
-/// `AnyValue.UnmarshalMsgConverted`.
+/// Decodes a span event attribute value, a map holding a `type` and the matching `*_value` field.
 ///
-/// Returns `None` for an unknown type. The reference keeps such a value as an empty `AnyValue`, which has no
-/// equivalent here.
+/// Returns `None` for an unknown type. The trace-agent keeps such a value as an empty value, which has no equivalent
+/// here.
 fn decode_any_value<'a>(
     r: &mut &'a [u8], strings: &mut Strings<'a>, depth: usize,
 ) -> Result<Option<AttributeValue>, DecodeError> {
@@ -684,7 +681,7 @@ fn decode_any_value<'a>(
     })
 }
 
-/// Maps a `span.kind` value to the span kind, defaulting to internal as the reference does.
+/// Maps a `span.kind` value to the span kind, defaulting to internal as the trace-agent does.
 pub(super) fn span_kind(value: &[u8]) -> u32 {
     match value {
         b"server" => SPAN_KIND_SERVER,
@@ -695,7 +692,7 @@ pub(super) fn span_kind(value: &[u8]) -> u32 {
     }
 }
 
-/// Parses an unsigned 64-bit integer as Go's `strconv.ParseUint(s, radix, 64)` does, which rejects a sign.
+/// Parses an unsigned 64-bit integer in the given radix, rejecting a sign as the trace-agent does.
 pub(super) fn parse_unsigned(value: &[u8], radix: u32) -> Option<u64> {
     let value = simdutf8::basic::from_utf8(value).ok()?;
     if value.starts_with('+') {

@@ -14,13 +14,12 @@ pub(crate) mod sketch_shadow;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_util;
-pub mod traces;
 pub mod transaction;
 pub mod validation;
 pub(crate) mod version_data;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt, Span, Trace, TraceIngestInfo};
 use stringtheory::MetaString;
 use tracing::debug;
 
@@ -126,9 +125,9 @@ pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
 
 /// Returns the env a trace is sampled under.
 ///
-/// A Datadog trace is sampled under its tracer payload's env, as `processedTraceV1` sets `TracerEnv` from
-/// `TracerPayload.Env()` (`agent.go`): the env attributes a v0.x payload's spans keep are ignored. An OTLP trace is
-/// sampled under its root span's env, else the first span env, else the payload env, as `traceutil.GetEnv`.
+/// A Datadog trace is sampled under its tracer payload's env, as in the trace-agent: the env attributes a v0.x
+/// payload's spans keep are ignored. An OTLP trace is sampled under its root span's env, else the first span env, else
+/// the payload env, as the trace-agent does.
 pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
     if trace.ingest_info() == TraceIngestInfo::Datadog {
         return (!trace.payload.env.is_empty()).then_some(&trace.payload.env);
@@ -208,12 +207,12 @@ pub fn get_root_span_index(spans: &[Span]) -> Option<usize> {
 /// Marks the spans the tracer flagged as top-level (`_dd.top_level` = 1) with `_top_level`, in-place.
 ///
 /// Used instead of [`compute_top_level`] when the client already computed top-level spans. Datadog traces read the
-/// flag as Go's `traceutil.UpdateTracerTopLevelV1` does, through [`as_double_value`]. OTLP traces read it as a number
-/// only, as `traceutil.UpdateTracerTopLevel` reads span metrics on Go's OTLP path.
+/// flag through [`as_double_value`]. OTLP traces read it as a number only, as the trace-agent reads span metrics on
+/// its OTLP path.
 pub fn update_tracer_top_level(spans: &mut [Span], ingest_info: TraceIngestInfo) {
     let read_flag = match ingest_info {
         TraceIngestInfo::Datadog => as_double_value,
-        TraceIngestInfo::Otlp { .. } => AttributeValue::as_num,
+        TraceIngestInfo::Otlp { .. } => AttributeValue::as_f64,
     };
     for span in spans {
         if span.attributes.get(TRACER_TOP_LEVEL_KEY).and_then(read_flag) == Some(1.0) {
@@ -223,11 +222,11 @@ pub fn update_tracer_top_level(spans: &mut [Span], ingest_info: TraceIngestInfo)
     }
 }
 
-/// Reads an attribute as a float the way Go's `idx.AnyValue.AsDoubleValue` does: numbers as-is, a string parsed as a
-/// float, and a bool as 1 or 0. Other types read as `None`.
+/// Reads an attribute as a float the way the trace-agent does: numbers as-is, a string parsed as a float, and a bool
+/// as 1 or 0. Other types read as `None`.
 ///
-/// shortcut: Rust's float parsing rejects Go's hexadecimal (`0x1p0`) and underscore forms, upgrade if a tracer sends
-/// them.
+/// shortcut: Rust's float parsing rejects the hexadecimal (`0x1p0`) and underscore forms the trace-agent accepts,
+/// upgrade if a tracer sends them.
 pub fn as_double_value(value: &AttributeValue) -> Option<f64> {
     match value {
         AttributeValue::String(s) => s.parse().ok(),
@@ -349,7 +348,7 @@ mod tests {
             receiver_sampling_rate: 1.0,
         };
 
-        // A v0.4 span keeps its `env` tag as an attribute; the normalized payload env wins, as `TracerEnv` does.
+        // A v0.4 span keeps its `env` tag as an attribute; the normalized payload env wins, as in the trace-agent.
         let datadog = trace(TraceIngestInfo::Datadog, "payload-env");
         assert_eq!(get_trace_env(&datadog, 0).map(|env| env.as_ref()), Some("payload-env"));
         assert_eq!(get_trace_env(&trace(TraceIngestInfo::Datadog, ""), 0), None);

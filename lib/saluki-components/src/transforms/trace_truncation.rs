@@ -17,7 +17,7 @@ use saluki_core::{
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
-use crate::common::datadog::traces::normalize::{
+use crate::common::traces::normalize::{
     is_structured_meta_key, truncate_utf8_str, truncate_with_ellipses, MAX_META_KEY_LEN, MAX_META_VAL_LEN,
     MAX_METRICS_KEY_LEN,
 };
@@ -206,6 +206,7 @@ fn truncate_span(span: &mut Span, max_resource_len: usize, legacy: bool, memo: &
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use saluki_core::data_model::event::trace::AttributeValueExt as _;
 
     use super::*;
 

@@ -3,12 +3,11 @@
 //! Each helper operates on a `&mut &[u8]` cursor: reads advance the slice in place, mirroring the
 //! byte-slice threading (`o []byte`) used by the reference Go decoder. Failures are mapped to
 //! [`DecodeError`] with a static context string naming the field being read. Input that ends early
-//! maps to [`DecodeError::ShortBytes`], so that callers can count it apart, as the reference counts
-//! `msgp.ErrShortBytes`.
+//! maps to [`DecodeError::ShortBytes`], so that callers can count it apart, as the trace-agent counts
+//! short input apart.
 //!
-//! The `v0_*` helpers reproduce the reference's v0.x reads (`parseUint64Bytes` and friends in
-//! `pkg/proto/pbgo/trace/idx/span.go`, and the `msgp.Read*Bytes` functions it calls), including
-//! which numeric types they tolerate and which failures count as short input.
+//! The `v0_*` helpers reproduce the trace-agent's v0.x reads, including which numeric types they
+//! tolerate and which failures count as short input.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -20,16 +19,15 @@ use rmp::decode::{bytes::BytesReadError, DecodeStringError, NumValueReadError, V
 use super::error::DecodeError;
 
 /// Maximum string count of a string table: the v1.0 tracer payload's, and the v0.5 dictionary's. Matches the
-/// reference decoder's `maxStringTableSize` (25,000,000).
+/// trace-agent's decoder.
 pub const MAX_SIZE: u32 = 25_000_000;
 
-/// Maximum element count of any other array or map header of the v1.0 format. Matches the reference decoder's
-/// `maxCollectionSize` (500,000).
+/// Maximum element count of any other array or map header of the v1.0 format. Matches the trace-agent's decoder.
 ///
 /// Protects the decoder from payloads that declare an enormous collection size to force large allocations. This alone
 /// doesn't stop a tiny payload from claiming a count near this ceiling: [`read_array_len`] additionally rejects counts
 /// that couldn't possibly be backed by the remaining input, via [`check_slab_count`], and [`read_map_len`] counts
-/// larger than the remaining input, as the reference does.
+/// larger than the remaining input, as the trace-agent does.
 pub const MAX_COLLECTION_SIZE: u32 = 500_000;
 
 /// Maximum number of elements pre-allocated from a wire count.
@@ -175,8 +173,8 @@ fn mp<E: ReadError>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
     }
 }
 
-/// The error of the reference's `UnmarshalStreamingString` for a payload that ends where a string is expected:
-/// "Expected streaming string but EOF", a decoding error rather than `msgp.ErrShortBytes`.
+/// The trace-agent's error for a payload that ends where a string is expected: "Expected streaming string but EOF",
+/// a decoding error rather than short input.
 pub fn missing_streaming_string(context: &'static str) -> DecodeError {
     invalid(context, "expected a streaming string but found the end of the payload")
 }
@@ -200,7 +198,7 @@ fn invalid(context: &'static str, detail: impl Into<String>) -> DecodeError {
 /// # Errors
 ///
 /// Returns [`DecodeError::ShortBytes`] if `len` exceeds the number of bytes remaining on the cursor,
-/// as the reference's `readBoundedHeaderBytes` does, or [`DecodeError::ImplausibleHeaderCount`] if
+/// as the trace-agent does, or [`DecodeError::ImplausibleHeaderCount`] if
 /// only `len * min_bytes_per_entry` does.
 fn check_slab_count(
     len: u32, min_bytes_per_entry: u32, remaining: &[u8], context: &'static str,
@@ -259,8 +257,8 @@ pub fn read_array_len_with_minimum(
 /// # Errors
 ///
 /// Returns an error if the next value is not a map header, if the declared length exceeds
-/// [`MAX_COLLECTION_SIZE`], or [`DecodeError::ShortBytes`] if it exceeds the number of bytes remaining, as the reference's
-/// `readBoundedHeaderBytes` does.
+/// [`MAX_COLLECTION_SIZE`], or [`DecodeError::ShortBytes`] if it exceeds the number of bytes remaining, as the
+/// trace-agent does.
 pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
     if len > MAX_COLLECTION_SIZE {
@@ -270,8 +268,8 @@ pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeE
             max: MAX_COLLECTION_SIZE,
         });
     }
-    // Unlike arrays, a map's count sizes no allocation, so it takes no tighter bound than the reference's: a map of
-    // fewer entries than bytes remain reads its entries until they fail, with the reference's error.
+    // Unlike arrays, a map's count sizes no allocation, so it takes no tighter bound than the trace-agent's: a map
+    // of fewer entries than bytes remain reads its entries until they fail, with the trace-agent's error.
     if u64::from(len) > r.len() as u64 {
         return Err(DecodeError::ShortBytes { context });
     }
@@ -305,7 +303,7 @@ pub fn read_bool(r: &mut &[u8], context: &'static str) -> Result<bool, DecodeErr
 
 /// Reads a string's bytes, borrowing from the input for the lifetime of the underlying buffer.
 ///
-/// As the reference's `msgp.ReadStringBytes`, the bytes aren't validated as UTF-8: the
+/// As the trace-agent's `msgp.ReadStringBytes`, the bytes aren't validated as UTF-8: the
 /// [string table](super::string_table::StringTable) repairs invalid ones rather than failing the payload.
 pub fn read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
     let len = rmp::decode::read_str_len(r).map_err(mp(context))?;
@@ -476,27 +474,24 @@ fn skip_seq(r: &mut &[u8], count: usize, context: &'static str, depth: usize) ->
     Ok(())
 }
 
-/// Element-count limit of the reference's v0.x decoders (`maxCollectionSize`), which matches the
-/// `msgp:limit` directive on its generated decoders.
+/// Element-count limit of the trace-agent's v0.x decoders.
 pub const V0_MAX_COLLECTION_SIZE: u32 = 500_000;
 
-/// Reads an array header as the reference's `safeReadHeaderBytes(bts, msgp.ReadArrayHeaderBytes)`
-/// does: `nil` is a type error, a count over [`V0_MAX_COLLECTION_SIZE`] is too long, and a count
-/// over the remaining bytes is short input.
+/// Reads an array header as the trace-agent does: `nil` is a type error, a count over
+/// [`V0_MAX_COLLECTION_SIZE`] is too long, and a count over the remaining bytes is short input.
 pub fn v0_read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
     v0_check_header_len(len, V0_MAX_COLLECTION_SIZE, r, context)
 }
 
-/// Reads a string table's array header, the v0.5 dictionary's or the v1.0 tracer payload's, as the reference's
-/// `safeReadDictionaryHeaderBytes` and `limitedReadStringTableHeaderBytes` do: as [`v0_read_array_len`], but with the
-/// string table's larger limit, [`MAX_SIZE`] (`maxStringTableSize`).
+/// Reads a string table's array header, the v0.5 dictionary's or the v1.0 tracer payload's, as the trace-agent does:
+/// as [`v0_read_array_len`], but with the string table's larger limit, [`MAX_SIZE`].
 pub fn v0_read_dictionary_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
     v0_check_header_len(len, MAX_SIZE, r, context)
 }
 
-/// Reads a map header as the reference's `safeReadHeaderBytes(bts, msgp.ReadMapHeaderBytes)` does.
+/// Reads a map header as the trace-agent does, with the same checks as [`v0_read_array_len`].
 pub fn v0_read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
     v0_check_header_len(len, V0_MAX_COLLECTION_SIZE, r, context)
@@ -512,8 +507,8 @@ fn v0_check_header_len(len: u32, max: u32, remaining: &[u8], context: &'static s
     Ok(len)
 }
 
-/// Checks a map's entry count against the remaining bytes, as the reference's `checkSlabCount` does
-/// before it pre-allocates the entries: each entry takes at least two bytes.
+/// Checks a map's entry count against the remaining bytes, as the trace-agent does before it
+/// pre-allocates the entries: each entry takes at least two bytes.
 pub fn v0_check_slab_count(len: u32, remaining: &[u8], context: &'static str) -> Result<(), DecodeError> {
     if u64::from(len) * u64::from(MIN_BYTES_PER_MAP_ENTRY) > remaining.len() as u64 {
         return Err(DecodeError::ImplausibleHeaderCount {
@@ -536,8 +531,8 @@ pub fn skip_nil(r: &mut &[u8]) {
     *r = &r[1..];
 }
 
-/// An integer as the reference's `msgp.NextType` classifies it: signed (`IntType`, which includes
-/// positive fixints) or unsigned (`UintType`, the `uint8` to `uint64` markers).
+/// An integer as the trace-agent classifies it: signed (which includes positive fixints) or
+/// unsigned (the `uint8` to `uint64` markers).
 enum WireInt {
     Signed(i64),
     Unsigned(u64),
@@ -569,9 +564,9 @@ fn read_wire_int(r: &mut &[u8], context: &'static str) -> Result<WireInt, Decode
     })
 }
 
-/// The leading step of the reference's `parseXBytes` helpers: `nil` reads as zero, and a value that
-/// isn't an integer is a type error. An empty cursor is a type error too, not short input, because
-/// `msgp.NextType` reports it as an invalid type.
+/// The leading step of the trace-agent's v0.x number reads: `nil` reads as zero, and a value that
+/// isn't an integer is a type error. An empty cursor is a type error too, not short input, as in the
+/// trace-agent.
 fn v0_parse_int(r: &mut &[u8], context: &'static str) -> Result<Option<WireInt>, DecodeError> {
     match r.first() {
         Some(0xc0) => {
@@ -584,7 +579,7 @@ fn v0_parse_int(r: &mut &[u8], context: &'static str) -> Result<Option<WireInt>,
     }
 }
 
-/// Reads a `uint64` as the reference's `parseUint64Bytes`: `nil` is zero, and a signed integer is
+/// Reads a `uint64` as the trace-agent does: `nil` is zero, and a signed integer is
 /// reinterpreted as unsigned, since some tracers have no unsigned types.
 pub fn v0_parse_u64(r: &mut &[u8], context: &'static str) -> Result<u64, DecodeError> {
     Ok(match v0_parse_int(r, context)? {
@@ -594,7 +589,7 @@ pub fn v0_parse_u64(r: &mut &[u8], context: &'static str) -> Result<u64, DecodeE
     })
 }
 
-/// Reads an `int64` as the reference's `parseInt64Bytes`: `nil` is zero, and an unsigned integer
+/// Reads an `int64` as the trace-agent does: `nil` is zero, and an unsigned integer
 /// above `i64::MAX` is an error.
 pub fn v0_parse_i64(r: &mut &[u8], context: &'static str) -> Result<i64, DecodeError> {
     match v0_parse_int(r, context)? {
@@ -604,7 +599,7 @@ pub fn v0_parse_i64(r: &mut &[u8], context: &'static str) -> Result<i64, DecodeE
     }
 }
 
-/// Reads an `int32` as the reference's `parseInt32Bytes`: `nil` is zero, and a value outside the
+/// Reads an `int32` as the trace-agent does: `nil` is zero, and a value outside the
 /// `int32` range is an error.
 pub fn v0_parse_i32(r: &mut &[u8], context: &'static str) -> Result<i32, DecodeError> {
     match v0_parse_int(r, context)? {
@@ -614,8 +609,8 @@ pub fn v0_parse_i32(r: &mut &[u8], context: &'static str) -> Result<i32, DecodeE
     }
 }
 
-/// Reads a `float64` as the reference's `parseFloat64Bytes`: `nil` is zero and integers of any width
-/// convert, but a `float32` is a type error, as `msgp.NextType` reports it as `Float32Type`.
+/// Reads a `float64` as the trace-agent does: `nil` is zero and integers of any width convert, but a
+/// `float32` is a type error.
 pub fn v0_parse_f64(r: &mut &[u8], context: &'static str) -> Result<f64, DecodeError> {
     if r.first() == Some(&0xcb) {
         *r = &r[1..];
@@ -658,9 +653,9 @@ pub fn v0_read_i64(r: &mut &[u8], context: &'static str) -> Result<i64, DecodeEr
     }
 }
 
-/// Reads a `float64` as `msgp.ReadFloat64Bytes`: a `float64` or a `float32`, but not an integer.
+/// Reads a `float64` strictly, as the trace-agent does for some fields: a `float64` or a `float32`, but not an integer.
 ///
-/// Like the reference, it checks the length before the marker: with fewer than nine bytes left, anything but a
+/// Like the trace-agent, it checks the length before the marker: with fewer than nine bytes left, anything but a
 /// complete `float32` is short input, whatever its marker.
 pub fn v0_read_f64(r: &mut &[u8], context: &'static str) -> Result<f64, DecodeError> {
     if r.len() < 9 && !(r.len() >= 5 && r[0] == 0xca) {
@@ -698,9 +693,8 @@ fn read_str_or_bin_len(r: &mut &[u8], context: &'static str) -> Result<Option<us
     read_len(r, width, context).map(Some)
 }
 
-/// Reads a string's raw bytes as the reference's `parseStringBytesRef`: `nil` is the empty string,
-/// and both `str` and `bin` values are accepted. The bytes may not be valid UTF-8. An empty cursor
-/// is a type error, as `msgp.NextType` reports it as an invalid type.
+/// Reads a string's raw bytes as the trace-agent does: `nil` is the empty string, and both `str` and
+/// `bin` values are accepted. The bytes may not be valid UTF-8. An empty cursor is a type error.
 pub fn v0_read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
     if peek_is_nil(r) {
         skip_nil(r);
@@ -712,7 +706,7 @@ pub fn v0_read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<
     }
 }
 
-/// Reads a map key's raw bytes as `msgp.ReadMapKeyZC`: a `str` or `bin` value. `nil` is an error.
+/// Reads a map key's raw bytes as the trace-agent does: a `str` or `bin` value. `nil` is an error.
 pub fn v0_read_map_key<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
     if r.is_empty() {
         return Err(DecodeError::ShortBytes { context });
@@ -723,7 +717,7 @@ pub fn v0_read_map_key<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'
     }
 }
 
-/// Converts bytes to a string as the reference's `repairUTF8` does: each byte that doesn't start a
+/// Converts bytes to a string as the trace-agent does: each byte that doesn't start a
 /// valid UTF-8 sequence becomes one U+FFFD replacement character. This differs from
 /// `String::from_utf8_lossy`, which replaces a whole invalid sequence with a single character.
 pub fn repair_utf8(mut bytes: &[u8]) -> String {
@@ -744,8 +738,7 @@ pub fn repair_utf8(mut bytes: &[u8]) -> String {
     }
 }
 
-/// Element-count limit of the reference's generated `msgp` decoders for the classic tracer payload model
-/// (`za0d4ccedlimitArrays`, `za0d4ccedlimitMaps`).
+/// Element-count limit of the trace-agent's generated `msgp` decoders for the classic tracer payload model.
 pub const MSGP_MAX_COLLECTION_SIZE: u32 = 500_000;
 
 /// Reads an array header as a generated `msgp` decoder does: `msgp.ReadArrayHeaderBytes`, then `ErrLimitExceeded`

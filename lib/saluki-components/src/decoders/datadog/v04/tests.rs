@@ -1,9 +1,7 @@
 //! Tests for the v0.4 decoder.
 //!
 //! Payloads are built with a small MessagePack value tree, so each test can pick exact wire encodings (integer widths,
-//! `bin` versus `str`, field order). The scenarios port the reference's tests of `UnmarshalMsgConverted`
-//! (`pkg/proto/pbgo/trace/convert_test.go`, `idx/span_test.go`, `idx/tracer_payload_test.go`,
-//! `idx/string_intern_test.go`) and `parseFloat64Bytes` (`decoder_bytes_test.go`).
+//! `bin` versus `str`, field order). The scenarios cover the trace-agent's v0.4 decoding and its number reads.
 
 use proptest::prelude::*;
 use rmp::encode;
@@ -120,7 +118,7 @@ pub(in crate::decoders::datadog) fn string_attr(value: &str) -> AttributeValue {
     AttributeValue::String(ms(value))
 }
 
-/// The span of `TestConvertedSpan`, with the fields in the order the reference's v0.4 encoder writes them.
+/// A reference span, with the fields in the order the trace-agent's v0.4 encoder writes them.
 fn reference_span(meta: &[(&str, &str)], metrics: &[(&str, f64)], trace_id: u64) -> Vec<(&'static str, V)> {
     vec![
         ("service", s("my-service")),
@@ -305,7 +303,7 @@ fn root_span_priority_wins_over_later_spans() {
     }
 }
 
-// The six differences from `ConvertToIdx` listed in the module documentation.
+// The six differences from the trace-agent's other v0.x conversion listed in the module documentation.
 
 #[test]
 fn difference_1_promoted_tags_stay_in_attributes() {
@@ -641,7 +639,7 @@ fn strings_accept_bin_and_repair_invalid_utf8() {
         assert_eq!(trace.spans()[0].resource(), expected, "{value:?}");
     }
 
-    // Each byte of an invalid sequence becomes its own replacement character, as Go's `ReadRune` does.
+    // Each byte of an invalid sequence becomes its own replacement character, as in the trace-agent.
     let truncated_emoji = b"a\xf0\x9f\x98b".to_vec();
     let mut raw = vec![0xa0 | truncated_emoji.len() as u8];
     raw.extend_from_slice(&truncated_emoji);
@@ -689,8 +687,8 @@ fn short_input_is_distinguishable() {
         assert!(matches!(error, DecodeError::ShortBytes { .. }), "{name}: {error:?}");
     }
 
-    // As in the reference, input that ends exactly where a number or string value should start is a type error,
-    // because `msgp.NextType` reports the end of input as an invalid type.
+    // As in the trace-agent, input that ends exactly where a number or string value should start is a type error,
+    // not short input.
     let error = decode_v04_payload(&[0x91, 0x91, 0x81, 0xa7, b's', b'p', b'a', b'n', b'_', b'i', b'd']).unwrap_err();
     assert!(matches!(error, DecodeError::Msgpack { .. }), "{error:?}");
 

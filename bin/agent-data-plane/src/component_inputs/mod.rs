@@ -20,7 +20,9 @@ use saluki_core::data_model::origin::OriginTagCardinality;
 pub(crate) use self::apm::apm_source_configuration;
 pub(crate) use self::datadog::{datadog_metrics_configuration, forwarder_configuration, mrf_configuration};
 pub(crate) use self::dogstatsd::{metric_mirroring, metric_name_filter, tag_filter_entries, tag_value_allowlist};
-pub(crate) use self::otlp::{otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings};
+pub(crate) use self::otlp::{
+    otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
+};
 pub(crate) use self::static_tags::resolve_static_tags;
 pub(crate) use self::traces::{
     apm_stats_configuration, effective_max_resource_len, obfuscation_configuration, ottl_error_mode,

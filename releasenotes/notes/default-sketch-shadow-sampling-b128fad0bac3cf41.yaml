@@ -1,0 +1,6 @@
+enhancements:
+  - |
+    Agent Data Plane now samples 0.1% of eligible V2 sketch batches for V3
+    validation by default. V2 delivery remains authoritative. Set
+    ``serializer_experimental_use_v3_api.sketches.shadow_sample_rate``
+    to ``0`` to disable shadowing.

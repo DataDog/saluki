@@ -23,8 +23,8 @@ pub fn read_streaming_string(
     r: &mut &[u8], strings: &mut StringTable, context: &'static str,
 ) -> Result<MetaString, DecodeError> {
     if r.is_empty() {
-        // The reference's `UnmarshalStreamingString` reports its own error here, so the payload is dropped as a
-        // decoding error rather than as `msgp.ErrShortBytes`.
+        // The trace-agent reports its own error here, so the payload is dropped as a decoding error rather than as
+        // short input.
         return Err(read::missing_streaming_string(context));
     }
     if read::peek_is_str(r) {

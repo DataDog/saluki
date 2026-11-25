@@ -8,8 +8,7 @@ use snafu::Snafu;
 pub enum DecodeError {
     /// The input ended before the value being read was complete.
     ///
-    /// The counterpart of the reference decoder's `msgp.ErrShortBytes`, which the receiver counts apart from other
-    /// decoding errors (`reason:msgp_short_bytes`).
+    /// The trace-agent's receiver counts short input apart from other decoding errors (`reason:msgp_short_bytes`).
     #[snafu(display("failed to read {context}: unexpected end of input"))]
     ShortBytes {
         /// The field or structure being read when the input ran out.
@@ -18,8 +17,8 @@ pub enum DecodeError {
 
     /// A JSON body ended before its first value was complete.
     ///
-    /// The counterpart of the `io.EOF` and `io.ErrUnexpectedEOF` that the reference's JSON decoder returns, which the
-    /// receiver counts apart from other decoding errors (`error:unexpected-eof`).
+    /// The counterpart of the `io.EOF` and `io.ErrUnexpectedEOF` that Go's JSON decoder returns, which the
+    /// trace-agent's receiver counts apart from other decoding errors (`error:unexpected-eof`).
     #[snafu(display("unexpected end of JSON input"))]
     UnexpectedEof,
 

@@ -1,21 +1,20 @@
 //! Decoder for the Datadog v0.7 APM trace wire format, the MessagePack-encoded `TracerPayload` that tracers send to
 //! `/v0.7/traces`.
 //!
-//! [`decode_v07_payload`] mirrors the reference receiver's `decodeConvertedTracerPayload` `V07` case
-//! (`pkg/trace/api/api.go`): it decodes the body into the classic tracer payload model as the generated
-//! `TracerPayload.UnmarshalMsg` does (`pkg/proto/pbgo/trace/tracer_payload_gen.go`, `span_gen.go`), then converts it
-//! with [`convert_tracer_payload`] as `ConvertToIdx(payload, "v07-pb")` does. The payload's own container ID, tracer
-//! language and versions are kept: unlike the other v0.x formats, v0.7 carries them in its body.
+//! [`decode_v07_payload`] decodes these bodies as the trace-agent's receiver does: into the classic tracer payload
+//! model, as the trace-agent's generated `msgp` decoder does, then converted with [`convert_tracer_payload`], with
+//! `v07-pb` as the original format. The payload's own container ID, tracer language and versions are kept: unlike the
+//! other v0.x formats, v0.7 carries them in its body.
 //!
 //! # The generated decoder
 //!
 //! Every message is a map keyed by field name (`container_id`, `chunks`, `spans`, `span_links`, and so on). The
-//! decoder is as strict or as tolerant as the reference, field by field:
+//! decoder is as strict or as tolerant as the trace-agent, field by field:
 //!
-//! - A span's strings, IDs, times, error and `meta` and `metrics` entries go through the reference's `parseXBytes`
-//!   helpers: `nil` reads as zero or empty, `str` and `bin` both read as strings, invalid UTF-8 is repaired one byte at
-//!   a time, a signed integer is reinterpreted as unsigned, and a `float32` metric is a type error. A `nil` `meta` or
-//!   `metrics` is an empty map. A span event's name, and a span link's trace and span IDs, are as tolerant.
+//! - A span's strings, IDs, times, error and `meta` and `metrics` entries are read as tolerantly as the trace-agent
+//!   reads them: `nil` reads as zero or empty, `str` and `bin` both read as strings, invalid UTF-8 is repaired one byte
+//!   at a time, a signed integer is reinterpreted as unsigned, and a `float32` metric is a type error. A `nil` `meta`
+//!   or `metrics` is an empty map. A span event's name, and a span link's trace and span IDs, are as tolerant.
 //! - Every other field is read with the strict `msgp` readers: strings must be `str` (not `nil` or `bin`), integers
 //!   must be in range, and `nil` is a type error. The bytes of a strict string aren't checked: invalid UTF-8 is
 //!   repaired as above.
@@ -24,20 +23,20 @@
 //!   isn't checked against the bytes left: the input runs out first.
 //! - `container_debug` is decoded and discarded.
 //! - Bytes after the payload are ignored.
-//! - Short input maps to [`DecodeError::ShortBytes`] wherever the reference returns `msgp.ErrShortBytes`.
+//! - Short input maps to [`DecodeError::ShortBytes`] wherever the trace-agent reports short input.
 //!
 //! A field that appears twice in a message decodes as it does there: a scalar takes the last value, and a map the last
 //! entries. A list of messages decodes into the elements an earlier occurrence left, merging into them, when it has
-//! no more elements than were ever allocated for the field (`cap(z.Spans) >= n`), and into new ones otherwise.
+//! no more elements than were ever allocated for the field, and into new ones otherwise.
 //!
 //! # Conversion
 //!
-//! `nil` chunks, spans, span links, span events, span event attributes and array elements are dropped, as
-//! `ConvertToIdx` drops them. They are held until the payload is decoded, since a repeated field can still fill their
+//! `nil` chunks, spans, span links, span events, span event attributes and array elements are dropped, as the
+//! trace-agent drops them. They are held until the payload is decoded, since a repeated field can still fill their
 //! slot, at one pointer each. Chunks left without spans are dropped. A chunk without a `priority` has priority 0, not
 //! none, since the field defaults to 0. See [`convert_tracer_payload`] for the rest.
 //!
-//! Unknown fields are skipped with a nesting limit of 64, where the reference's `msgp.Skip` allows 100,000.
+//! Unknown fields are skipped with a nesting limit of 64, where the trace-agent's `msgp.Skip` allows 100,000.
 //!
 //! # Resolved string bytes
 //!
@@ -149,7 +148,7 @@ fn skip(r: &mut &[u8]) -> Result<(), DecodeError> {
     read::skip_value(r, "unknown field")
 }
 
-/// Converts string bytes, repairing invalid UTF-8 as the reference's `parseStringBytes` does.
+/// Converts string bytes, repairing invalid UTF-8 as the trace-agent does.
 fn string(bytes: &[u8]) -> String {
     match simdutf8::basic::from_utf8(bytes) {
         Ok(s) => s.to_owned(),
@@ -162,7 +161,7 @@ fn strict_string(r: &mut &[u8], context: &'static str) -> Result<String, DecodeE
     read::msgp_read_str_bytes(r, context).map(string)
 }
 
-/// Reads a string as the reference's `parseStringBytes`.
+/// Reads a string as tolerantly as the trace-agent reads a span's strings.
 fn tolerant_string(r: &mut &[u8], context: &'static str) -> Result<String, DecodeError> {
     read::v0_read_str_bytes(r, context).map(string)
 }
@@ -247,7 +246,7 @@ impl Payload {
     }
 }
 
-/// Decodes a `ContainerDebug`, which the conversion doesn't use, checking its fields as the reference does.
+/// Decodes a `ContainerDebug`, which the conversion doesn't use, checking its fields as the trace-agent does.
 fn decode_container_debug(r: &mut &[u8]) -> Result<(), DecodeError> {
     decode_message(r, "container_debug", |key, r| {
         match key {

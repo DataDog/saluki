@@ -2,6 +2,7 @@
 
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use saluki_common::collections::FastHashMap;
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::data_model::{
     event::{
         trace::{AttributeValue, Span, TraceIngestInfo},
@@ -212,7 +213,7 @@ impl SpanConcentrator {
         if span
             .attributes
             .get(METRIC_TOP_LEVEL)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
             .is_some_and(|v| v == 1.0)
         {
             return true;
@@ -220,7 +221,7 @@ impl SpanConcentrator {
         if span
             .attributes
             .get(METRIC_MEASURED)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
             .is_some_and(|v| v == 1.0)
         {
             return true;
@@ -248,7 +249,7 @@ impl SpanConcentrator {
         let is_top_level = span
             .attributes
             .get(METRIC_TOP_LEVEL)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
             .is_some_and(|v| v == 1.0);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 
@@ -344,7 +345,7 @@ fn align_ts(ts: u64, bsize: u64) -> u64 {
     ts - ts % bsize
 }
 
-/// Returns the start of the bucket a span counts in, as the trace-agent's `addSpan` computes it.
+/// Returns the start of the bucket a span counts in, as the trace-agent computes it.
 ///
 /// The trace-agent's stat spans hold `int64` times, so a start past `i64::MAX` is negative there, and the end wraps
 /// rather than overflows; `%` truncates toward zero in both languages. An end before the oldest bucket counts in the
@@ -362,9 +363,8 @@ fn bucket_time(start: u64, duration: u64, bsize: u64, oldest_ts: u64, now: u64) 
 
 /// Returns the kind of a span, of a trace ingested through `ingest_info`.
 ///
-/// Datadog traces use the span's kind field only, as the reference agent's `NewStatSpanFromV1` does through
-/// `InternalSpan.SpanKind`: an unspecified or unrecognized kind is `unknown`, which no kind-based rule selects. OTLP
-/// spans carry their kind as the `span.kind` attribute.
+/// Datadog traces use the span's kind field only, as the trace-agent does: an unspecified or unrecognized kind is
+/// `unknown`, which no kind-based rule selects. OTLP spans carry their kind as the `span.kind` attribute.
 fn span_kind(span: &Span, ingest_info: TraceIngestInfo) -> Option<MetaString> {
     if let TraceIngestInfo::Otlp { .. } = ingest_info {
         return span
@@ -395,7 +395,7 @@ fn is_partial_snapshot(span: &Span) -> bool {
     match span
         .attributes
         .get(METRIC_PARTIAL_VERSION)
-        .and_then(AttributeValue::as_num)
+        .and_then(AttributeValue::as_f64)
     {
         Some(v) => v >= 0.0,
         None => false,
@@ -533,7 +533,6 @@ mod tests {
         assert_eq!(buckets, [align_ts(now, B)]);
     }
 
-    // `TestConcentratorFutureClamp` in `concentrator_test.go`.
     #[test]
     fn a_span_that_ends_in_the_future_counts_in_the_current_bucket() {
         let now = 1_000 * BUCKET_DURATION_NS + 3;

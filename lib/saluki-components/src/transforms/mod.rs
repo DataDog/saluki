@@ -30,7 +30,7 @@ mod trace_sampler;
 #[cfg(test)]
 pub(crate) use self::trace_sampler::sampler_configuration;
 pub use self::trace_sampler::TraceSamplerConfiguration;
-pub use crate::common::datadog::traces::rates::ServiceRates;
+pub use crate::common::traces::rates::ServiceRates;
 
 pub(crate) mod apm_stats;
 pub use self::apm_stats::ApmStatsTransformConfiguration;

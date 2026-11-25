@@ -1,9 +1,8 @@
 //! Tests for the v0.5 decoder.
 //!
 //! The primary test is a table-driven run over `testdata/v05_cases.json`, whose expected values are what the
-//! trace-agent's receiver decodes from each body (see `test/trace-agent-oracle/`). The other tests port the
-//! reference's tests of `UnmarshalMsgDictionary` (`pkg/proto/pbgo/trace/idx/span_v05_test.go` and
-//! `pkg/proto/pbgo/trace/decoder_v05_test.go`), and bound what a decode allocates.
+//! trace-agent's receiver decodes from each body (see `test/trace-agent-oracle/`). The other tests cover the
+//! trace-agent's size limits and string references, and bound what a decode allocates.
 
 use proptest::prelude::*;
 use saluki_core::data_model::event::trace::{AttributeValue, Span};
@@ -154,7 +153,7 @@ fn dictionary_is_rebuilt_as_the_reference_string_table() {
 
 #[test]
 fn reference_size_limits_and_string_refs_are_enforced() {
-    // TestUnmarshalMsgDictionaryLimitsSize: Go's "too long payload".
+    // The trace-agent's "too long payload" limits.
     let limited: [&[u8]; 4] = [
         b"\x92\xdd\xff\xff\xff\xff",
         b"\x96\x97\xa40000\xa6000000\xa6000000\xa6000000\xa6000000\xa6000000\xa6000000\x96\x94\x9c\x00\x00\x0000\xd100000\xdf0000",

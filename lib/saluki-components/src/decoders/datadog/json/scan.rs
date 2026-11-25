@@ -61,7 +61,7 @@ pub(super) fn decoder_read(examined: usize, len: usize) -> usize {
     read.min(len)
 }
 
-/// Whitespace as the reference's scanner reads it.
+/// Whitespace as Go's JSON scanner reads it.
 fn is_space(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\r' | b'\n')
 }

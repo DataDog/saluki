@@ -1,8 +1,8 @@
 //! Priority sampler for trace sampling based on service rates.
 //!
-//! Mirrors the trace-agent's `PrioritySampler` (`pkg/trace/sampler/prioritysampler.go`): it keeps the decision the
-//! tracer made, and feeds the auto-priority traces into a TPS feedback loop whose rates, by service and environment,
-//! it publishes to the [`ServiceRates`] the trace intake answers tracers with.
+//! As the trace-agent's priority sampler, it keeps the decision the tracer made, and feeds the auto-priority traces
+//! into a TPS feedback loop whose rates, by service and environment, it publishes to the [`ServiceRates`] the trace
+//! intake answers tracers with.
 #![allow(dead_code)]
 use std::time::SystemTime;
 
@@ -18,8 +18,8 @@ use super::{
     signature::{ServiceSignature, Signature},
     PRIORITY_AUTO_DROP, PRIORITY_AUTO_KEEP, PRIORITY_USER_KEEP,
 };
-use crate::common::datadog::traces::rates::{RateByService, ServiceRates};
 use crate::common::datadog::{as_double_value, get_trace_env};
+use crate::common::traces::rates::{RateByService, ServiceRates};
 
 const DEPRECATED_RATE_KEY: &str = "_sampling_priority_rate_v1";
 const AGENT_RATE_KEY: &str = "_dd.agent_psr";
@@ -102,7 +102,7 @@ impl PrioritySampler {
         sampled
     }
 
-    /// Publishes the rates of every cataloged service, as the trace-agent's `updateRates`.
+    /// Publishes the rates of every cataloged service, as the trace-agent does.
     fn update_rates(&mut self) {
         let (rates, default_rate) = self.sampler.get_all_signature_sample_rates();
         let by_service = self.catalog.rates_by_service(&self.agent_env, &rates, default_rate);
@@ -119,7 +119,7 @@ impl PrioritySampler {
             return 1.0;
         }
 
-        // A rate the tracer already applied wins, as in the trace-agent's `applyRateV1`.
+        // A rate the tracer already applied wins, as in the trace-agent.
         for key in [AGENT_RATE_KEY, RULE_RATE_KEY, DEPRECATED_RATE_KEY] {
             if let Some(rate) = root.attributes.get(key).and_then(as_double_value) {
                 return rate;
@@ -237,7 +237,7 @@ mod tests {
         String::from_utf8(rates.load().body.to_vec()).unwrap()
     }
 
-    // `updateRates` in `prioritysampler.go`: rates are published each time the sliding window moves.
+    // Rates are published each time the sliding window moves.
     #[test]
     fn rates_are_published_when_the_window_moves() {
         let rates = ServiceRates::default();
@@ -279,7 +279,6 @@ mod tests {
         );
     }
 
-    // `applyRateV1` in `prioritysampler.go`.
     #[test]
     fn a_rate_the_tracer_applied_is_kept() {
         for key in [AGENT_RATE_KEY, RULE_RATE_KEY, DEPRECATED_RATE_KEY] {

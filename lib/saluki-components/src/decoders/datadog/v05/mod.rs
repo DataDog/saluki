@@ -19,21 +19,19 @@
 //! | 10 | metrics | map of string index to `float64` |
 //! | 11 | type | string index |
 //!
-//! [`decode_v05_payload`] mirrors the reference receiver's `InternalTracerPayload.UnmarshalMsgDictionary`
-//! (`pkg/proto/pbgo/trace/idx/span_v05.go`), which decodes these bodies straight into the v1.0 model. It produces the
-//! same output as [`decode_v1_payload`](super::decode_v1_payload): one [`Trace`] per chunk, plus the payload
-//! attributes.
+//! [`decode_v05_payload`] decodes these bodies straight into the v1.0 model, as the trace-agent's receiver does. It
+//! produces the same output as [`decode_v1_payload`](super::decode_v1_payload): one [`Trace`] per chunk, plus the
+//! payload attributes.
 //!
 //! # The dictionary
 //!
-//! The reference rebuilds the dictionary into a v1.0 string table, which must hold the empty string at index 0
-//! (`buildStringTable`):
+//! The trace-agent rebuilds the dictionary into a v1.0 string table, which must hold the empty string at index 0:
 //!
 //! - If the dictionary starts with the empty string, it is kept as it is.
 //! - Otherwise, if it holds the empty string, its first one swaps places with the dictionary's first string.
 //! - Otherwise, the first string is moved to the end of the table and the empty string takes its place.
 //!
-//! A reference to index 0 then reads the moved string (`readV05StringRef`). A reference to the index the empty string
+//! A reference to index 0 then reads the moved string. A reference to the index the empty string
 //! was swapped from reads the moved string too, not the empty string. This decoder keeps that quirk, as tracers put
 //! the empty string first, if at all. An index at or past the dictionary's length is an error
 //! ([`DecodeError::DictionaryIndexOutOfRange`]).
@@ -47,38 +45,37 @@
 //! 1 MiB), and a payload past it fails to decode ([`DecodeError::ResolvedStringsTooLarge`]), as a v1.0 payload does.
 //! Each resolved string is hashed into an attribute map here and again downstream, so without the bound a small
 //! payload that references one large string from many spans would cost work out of all proportion to its size. The
-//! reference keeps its references as indexes and has no such bound: this is a deliberate deviation, which only
+//! trace-agent keeps its references as indexes and has no such bound: this is a deliberate deviation, which only
 //! payloads built to amplify meet. The payload's env, hostname, app version and attributes are charged once per
 //! trace, as every trace carries them.
 //!
 //! # Promoted fields
 //!
-//! The same fields are promoted to the span, chunk and payload as for v0.4 (see [`decode_v04_payload`]), by the same
-//! `handlePromotedMetaFields` and `ApplyPromotedFields` code, and so with the same *last* span and *last* chunk wins
-//! rules. The differences:
+//! The same fields are promoted to the span, chunk and payload as for v0.4 (see [`decode_v04_payload`]), with the
+//! same *last* span and *last* chunk wins rules. The differences:
 //!
-//! - Only the payload's first span gets the `_dd.convertedv1: v05` attribute (`span_v05.go:96-103`).
-//! - A span without a `span.kind` has kind 0, unspecified, rather than internal: the reference's v0.5 spans start
-//!   empty (`span_v05.go:93`).
+//! - Only the payload's first span gets the `_dd.convertedv1: v05` attribute.
+//! - A span without a `span.kind` has kind 0, unspecified, rather than internal: the trace-agent's v0.5 spans start
+//!   empty.
 //! - The chunk's low trace ID comes from the last span, whatever it holds: a `nil` trace ID reads as 0.
 //! - A promoted field is set by a non-zero dictionary reference, rather than by a non-empty string: an empty string at
 //!   a non-zero index overrides an earlier chunk's value, and sets an empty `_dd.git.commit.sha` or `_dd.apm_mode`
 //!   payload attribute.
 //! - `metrics` is always read after `meta`, so on a key clash the metric wins.
-//! - Two dictionary entries with the same string are distinct keys in the reference's attribute map. Here they are
+//! - Two dictionary entries with the same string are distinct keys in the trace-agent's attribute map. Here they are
 //!   one, the later entry winning.
 //!
-//! # Other reference behaviors kept
+//! # Other trace-agent behaviors kept
 //!
-//! - Numbers are as tolerant as the reference's `parseXBytes` helpers, and string indexes as strict as
-//!   `msgp.ReadUint32Bytes`: see the `v0_*` helpers in [`read`](super::read).
+//! - Numbers are as tolerant as the trace-agent's, and string indexes as strict: see the `v0_*` helpers in
+//!   [`read`](super::read).
 //! - Dictionary strings may be `str` or `bin`, and `nil` reads as the empty string. Invalid UTF-8 is repaired one byte
 //!   at a time.
 //! - `nil` spans, `meta` and `metrics` are type errors, as are spans of any other length than 12.
 //! - Chunks without spans are kept: the receiver counts them, and the normalizer drops them.
 //! - The outer array's length isn't checked, and bytes after the trace list are ignored.
-//! - Short input maps to [`DecodeError::ShortBytes`] wherever the reference returns `msgp.ErrShortBytes`, including
-//!   a collection header that declares more entries than bytes remain.
+//! - Short input maps to [`DecodeError::ShortBytes`] wherever the trace-agent reports short input, including a
+//!   collection header that declares more entries than bytes remain.
 //!
 //! [`decode_v04_payload`]: super::decode_v04_payload
 
@@ -99,7 +96,7 @@ use super::{charge_per_trace, DecodedV1};
 #[cfg(test)]
 pub(super) mod tests;
 
-/// The number of fields of a span, the reference's `spanPropertyCount`.
+/// The number of fields of a span.
 const SPAN_PROPERTY_COUNT: u32 = 12;
 
 const CONVERTED_V1_VALUE: MetaString = MetaString::from_static("v05");
@@ -137,7 +134,7 @@ pub fn decode_v05_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
         ..PayloadFields::default()
     };
 
-    // As `InternalTracerPayload.ApplyPromotedFields`, a set reference makes an attribute, even to an empty string.
+    // As in the trace-agent, a set reference makes an attribute, even to an empty string.
     let mut payload_attributes = FastHashMap::default();
     if promoted.git_commit_sha != 0 {
         payload_attributes.insert(
@@ -161,20 +158,20 @@ pub fn decode_v05_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
     })
 }
 
-/// A payload's dictionary, rebuilt as the reference's string table (`buildStringTable`).
+/// A payload's dictionary, rebuilt as the trace-agent's string table.
 struct Dictionary {
     /// The string table: the dictionary with the empty string moved to index 0.
     strings: Vec<MetaString>,
-    /// The number of strings on the wire, which bounds the references (`dictSize`).
+    /// The number of strings on the wire, which bounds the references.
     wire_len: u32,
-    /// Where the dictionary's first string moved to, or 0 if it didn't move (`newZeroRef`).
+    /// Where the dictionary's first string moved to, or 0 if it didn't move.
     zero_ref: u32,
     /// The bytes the payload's references may still resolve to.
     resolved: ResolvedBytes,
 }
 
 impl Dictionary {
-    /// Reads the dictionary of a payload of `payload_len` bytes, as the first half of `UnmarshalMsgDictionary`.
+    /// Reads the dictionary of a payload of `payload_len` bytes.
     fn read(r: &mut &[u8], payload_len: usize) -> Result<Self, DecodeError> {
         let wire_len = read::v0_read_dictionary_len(r, "dictionary")?;
         // The count is backed by as many bytes, but a string takes more memory than its one-byte encoding: the table
@@ -207,7 +204,7 @@ impl Dictionary {
         })
     }
 
-    /// Reads a string reference, mirroring `readV05StringRef`.
+    /// Reads a string reference.
     fn read_ref(&self, r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
         let index = read::v0_read_u32(r, context)?;
         if index >= self.wire_len {
@@ -233,7 +230,7 @@ impl Dictionary {
     }
 }
 
-/// Converts a dictionary string, as the reference's `parseStringBytes`: short strings are inlined, and longer ones get
+/// Converts a dictionary string, as the trace-agent does: short strings are inlined, and longer ones get
 /// one shared allocation.
 fn meta_string(bytes: &[u8]) -> MetaString {
     match simdutf8::basic::from_utf8(bytes) {
@@ -242,7 +239,7 @@ fn meta_string(bytes: &[u8]) -> MetaString {
     }
 }
 
-/// Decodes one trace chunk, a list of spans, as the loop body of `UnmarshalMsgDictionary`. With `tag_converted`, the
+/// Decodes one trace chunk, a list of spans. With `tag_converted`, the
 /// chunk's first span gets the `_dd.convertedv1` attribute.
 fn decode_chunk(
     r: &mut &[u8], dictionary: &Dictionary, payload: &mut PayloadPromoted<u32>, mut tag_converted: bool,
@@ -272,7 +269,7 @@ fn decode_chunk(
     Ok(trace)
 }
 
-/// Decodes one span, a 12-element array, mirroring `InternalSpan.UnmarshalMsgDictionaryConverted`.
+/// Decodes one span, a 12-element array.
 fn decode_span(r: &mut &[u8], dictionary: &Dictionary, promoted: &mut ChunkPromoted<u32>) -> Result<Span, DecodeError> {
     let len = read::v0_read_array_len(r, "span")?;
     if len != SPAN_PROPERTY_COUNT {
@@ -308,7 +305,7 @@ fn decode_span(r: &mut &[u8], dictionary: &Dictionary, promoted: &mut ChunkPromo
     Ok(span.with_span_type(span_type))
 }
 
-/// Decodes a span's `meta` map into its attributes, applying the promoted fields as `handlePromotedMetaFields` does.
+/// Decodes a span's `meta` map into its attributes, applying the promoted fields.
 fn decode_meta(
     r: &mut &[u8], dictionary: &Dictionary, span: &mut Span, promoted: &mut ChunkPromoted<u32>,
 ) -> Result<(), DecodeError> {
@@ -371,7 +368,7 @@ fn decode_metrics(
         let key = dictionary.read_string(r, "span metrics key")?;
         let value = read::v0_parse_f64(r, "span metrics value")?;
         if key.as_ref() == "_sampling_priority_v1" {
-            // Go's `int32(float64)`; out-of-range values saturate here, where Go's result is platform-dependent.
+            // Out-of-range values saturate here, where the trace-agent's conversion is platform-dependent.
             promoted.sampling_priority = value as i32;
         }
         attributes.insert(key, AttributeValue::Float(value));

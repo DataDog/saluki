@@ -22,6 +22,9 @@ use serde::Serialize;
 use crate::defaults::{DEFAULT_APM_NATIVE_TRACE_INTAKE, DEFAULT_APM_PROXY_DESTINATION};
 use crate::ConfigValue;
 
+/// The trace-agent's receiver request timeout, applied when `apm_config.receiver_timeout` is `0`.
+const DEFAULT_RECEIVER_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Resolved APM configuration.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
@@ -150,7 +153,7 @@ impl Domain {
     /// Resolves the receiver's request timeout, where `0` means the trace-agent's default of 5 seconds.
     pub fn effective_receiver_timeout(&self) -> Duration {
         match self.receiver_timeout {
-            0 => Duration::from_secs(5),
+            0 => DEFAULT_RECEIVER_TIMEOUT,
             secs => Duration::from_secs(u64::from(secs)),
         }
     }
@@ -262,7 +265,7 @@ mod tests {
     #[test]
     fn receiver_timeout_zero_means_five_seconds() {
         let mut apm = Domain::default();
-        assert_eq!(apm.effective_receiver_timeout(), Duration::from_secs(5));
+        assert_eq!(apm.effective_receiver_timeout(), DEFAULT_RECEIVER_TIMEOUT);
         apm.receiver_timeout = 7;
         assert_eq!(apm.effective_receiver_timeout(), Duration::from_secs(7));
     }

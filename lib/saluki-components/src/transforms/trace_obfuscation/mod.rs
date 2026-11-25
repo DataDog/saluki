@@ -13,6 +13,7 @@ mod sql_tokenizer;
 
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::trace::{AttributeValue, Span, Trace},
@@ -338,7 +339,7 @@ mod tests {
     // Obfuscation then truncation keeps one allocation per distinct value across 1,000 spans.
     #[test]
     fn obfuscated_then_truncated_spans_share_allocations() {
-        use crate::common::datadog::traces::normalize::MAX_META_VAL_LEN;
+        use crate::common::traces::normalize::MAX_META_VAL_LEN;
         use crate::transforms::trace_truncation::{truncate_spans, Memo};
 
         let ident = "c".repeat(MAX_META_VAL_LEN + 1_000);
@@ -374,7 +375,7 @@ mod tests {
     // resource and meta cuts of one source are distinct results.
     #[test]
     fn resource_and_meta_cuts_of_one_shared_query_stay_distinct() {
-        use crate::common::datadog::traces::normalize::MAX_META_VAL_LEN;
+        use crate::common::traces::normalize::MAX_META_VAL_LEN;
         use crate::transforms::trace_truncation::{truncate_spans, Memo};
 
         let query = format!("SELECT {} FROM t", "c".repeat(MAX_META_VAL_LEN + 1_000));

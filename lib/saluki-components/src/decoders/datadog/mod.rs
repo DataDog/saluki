@@ -5,7 +5,7 @@
 //! [`decode_v07_payload`](datadog::decode_v07_payload) the v0.7 MessagePack `TracerPayload` format,
 //! [`decode_v04_json`](datadog::decode_v04_json) the v0.4 format in JSON, and
 //! [`decode_v01_json`](datadog::decode_v01_json) the v0.1 JSON `[]Span` format, into the same output as the v1.0
-//! decoder; see their modules for how they mirror the reference.
+//! decoder; see their modules for how they match the trace-agent.
 //! [`convert_tracer_payload`](datadog::convert_tracer_payload) converts the classic tracer payload model the same way.
 //! The rest of this page covers the v1.0 format (also called the `idx`/`etp` format).
 //!
@@ -62,7 +62,7 @@ use self::string_table::StringTable;
 pub use self::v04::decode_v04_payload;
 pub use self::v05::decode_v05_payload;
 pub use self::v07::decode_v07_payload;
-use crate::common::datadog::traces::attribute_as_string;
+use crate::common::traces::attribute_as_string;
 
 /// Plausible minimum average wire size of a trace chunk containing a span list and 16-byte trace ID.
 const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
@@ -76,7 +76,7 @@ pub struct DecodedV1 {
     /// One trace per trace chunk. Each trace's attributes are its chunk's attributes only.
     pub traces: Vec<Trace>,
     /// The tracer payload's own attributes, kept apart from the chunk attributes so that payload-level values win
-    /// where the reference receiver reads only the payload (`getProcessTagsV1`, `getSDKOtlpExportV1`), and so that
+    /// where the trace-agent's receiver reads only the payload (process tags, SDK export mode), and so that
     /// they can be written back on the tracer payload rather than on every chunk.
     pub payload_attributes: FastHashMap<MetaString, AttributeValue>,
 }
@@ -92,7 +92,7 @@ pub struct DecodedV1 {
 /// Returns a [`DecodeError`] if the input is not a well-formed v1.0 tracer payload (truncated,
 /// malformed MessagePack, oversized headers, out-of-range string references, and so on).
 pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
-    // As the reference's `UnmarshalMsg`, whose leftover bytes the receiver ignores, what follows the payload is ignored.
+    // As in the trace-agent, what follows the payload is ignored.
     let payload = decode_tracer_payload(&mut &bytes[..])?;
 
     let payload_fields = PayloadFields {
@@ -115,7 +115,7 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
         trace.origin = chunk.origin;
         trace.payload = payload_fields.clone();
         trace.attributes = Arc::new(chunk.attributes);
-        // As the reference's `GetSamplingPriorityV1`, which reads `PriorityNone` as no priority.
+        // As in the trace-agent, the no-priority marker reads as no priority.
         trace.priority = (chunk.priority != v04::PRIORITY_NONE).then_some(chunk.priority);
         trace.dropped_trace = chunk.dropped_trace;
         trace.sampling_mechanism = chunk.sampling_mechanism;
@@ -134,7 +134,7 @@ const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
 /// Payload attribute recording whether the SDK exports its telemetry through OTLP.
 const TAG_SDK_OTLP_EXPORT: &str = "_dd.sdk.otlp_export";
 
-/// Returns the first span of the first non-empty trace, mirroring `getFirstSpan` in the reference receiver.
+/// Returns the first span of the first non-empty trace, as the trace-agent's receiver picks it.
 pub fn first_span(traces: &[Trace]) -> Option<&Span> {
     traces.iter().find_map(|trace| trace.spans().first())
 }
@@ -142,9 +142,8 @@ pub fn first_span(traces: &[Trace]) -> Option<&Span> {
 /// Resolves a payload's process tags for
 /// [`ReceiverMetadata::process_tags`](saluki_core::data_model::event::trace::ReceiverMetadata::process_tags).
 ///
-/// Mirrors `getProcessTags` in the reference receiver (`pkg/trace/api/api.go`): the payload attribute wins, then the
-/// first span's attribute, then the `X-Datadog-Process-Tags` header. An attribute that is present but empty still
-/// wins, as it does there.
+/// As in the trace-agent's receiver, the payload attribute wins, then the first span's attribute, then the
+/// `X-Datadog-Process-Tags` header. An attribute that is present but empty still wins.
 pub fn resolve_process_tags(
     payload_attributes: &FastHashMap<MetaString, AttributeValue>, first_span: Option<&Span>, header: Option<&str>,
 ) -> MetaString {
@@ -158,8 +157,8 @@ pub fn resolve_process_tags(
 /// Resolves a payload's SDK export mode for
 /// [`ReceiverMetadata::sdk_otlp_export`](saluki_core::data_model::event::trace::ReceiverMetadata::sdk_otlp_export).
 ///
-/// Mirrors `getSDKOtlpExport` in the reference receiver: the payload attribute wins, then the first span's
-/// attribute. The span attribute is left in place, as it is there.
+/// As in the trace-agent's receiver, the payload attribute wins, then the first span's attribute. The span attribute
+/// is left in place.
 pub fn resolve_sdk_otlp_export(
     payload_attributes: &FastHashMap<MetaString, AttributeValue>, first_span: Option<&Span>,
 ) -> MetaString {
@@ -194,7 +193,7 @@ struct DecodedPayload {
 
 /// Intermediate representation of a decoded trace chunk.
 struct DecodedChunk {
-    /// Zero when the payload omits it, as the reference's chunk keeps its zero value.
+    /// Zero when the payload omits it, as the trace-agent's chunk keeps its zero value.
     priority: i32,
     origin: MetaString,
     attributes: FastHashMap<MetaString, AttributeValue>,
@@ -311,7 +310,7 @@ pub fn attribute_string_bytes(value: &AttributeValue) -> usize {
 
 /// Decodes the string table array (field 1 of the tracer payload).
 ///
-/// As the reference's `unmarshalStringTable`, each entry takes an index of its own, duplicates included, but the empty
+/// As in the trace-agent, each entry takes an index of its own, duplicates included, but the empty
 /// string, which index 0 already holds.
 fn decode_string_table(r: &mut &[u8], strings: &mut StringTable) -> Result<(), DecodeError> {
     let num_strings = read::v0_read_dictionary_len(r, "string table")?;
