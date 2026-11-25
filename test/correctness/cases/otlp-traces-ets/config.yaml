@@ -45,9 +45,9 @@ procedure:
         telemetry: traces
         comparison: intake-adp
         baseline: intake-agent
-        # ADP emits http.status_code as a numeric (float) metric, matching the DD agent. For
-        # string-typed sources the agent additionally keeps a string copy in meta (separate
-        # Meta/Metrics maps); ADP holds only the numeric value, so ignore the agent-only meta variant.
+        # TODO(#3433): for a string HTTP status code, the Agent sends `meta.http.status_code` next to
+        # `metrics.http.status_code`, and ADP sends the number only. Remove this ignore once the gap is fixed,
+        # or once a known difference scoped to the HTTP spans replaces it.
         additional_span_ignore_fields:
           - meta.http.status_code
       - step: intake_from
