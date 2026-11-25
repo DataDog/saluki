@@ -625,8 +625,11 @@ fn apply_container_tags(
 ) -> Vec<ClientStatsPayload> {
     ready.extend(released.drain(..).map(|Released { item, resolution }| match resolution {
         Resolution::Tags(provider_tags) => {
+            // Insert each tag, so a tag that the payload and the provider both carry appears once.
             let mut tags = item.tags().clone();
-            tags.merge_shared(&provider_tags);
+            for tag in &provider_tags {
+                tags.insert_tag(tag.clone());
+            }
             item.with_tags(tags)
         }
         // A container that the provider doesn't know loses its ID and tags, as in the Agent.
@@ -678,8 +681,10 @@ mod tests {
     use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
+    use saluki_core::data_model::tags::{SharedTagSet, Tag};
     use saluki_env::workload::providers::TestWorkloadProvider;
     use saluki_metrics::test::TestRecorder;
+    use tokio::time::Instant;
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -2198,4 +2203,115 @@ mod tests {
             }
         }
     }
+
+    /// Runs the transform over one trace of the given container, and returns the container ID and tags of each stats
+    /// payload that it sends. Closing the input triggers the final flush.
+    async fn stats_for_container(
+        provider: &Arc<crate::common::datadog::container_tags::test_util::ScriptedProvider>, buffered: bool,
+        container_id: &str,
+    ) -> Vec<(String, Vec<String>)> {
+        let config = ApmStatsTransformConfiguration {
+            workload_provider: Some(provider.clone()),
+            container_tags_buffer: buffered.then(|| ContainerTagsBuffer::new(1_000_000)),
+            ..stats_configuration(AgentEnv::resolve(None, None, &[], &[]))
+        };
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the transform should start");
+
+        let span = make_top_level_span(
+            align_ts(now_nanos(), BUCKET_DURATION_NS),
+            1,
+            100,
+            0,
+            "svc",
+            "resource",
+            0,
+            None,
+        );
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from(container_id);
+        control.send_event(Event::Trace(trace)).await;
+        control.shutdown().await.expect("the transform should stop cleanly");
+
+        let mut payloads = Vec::new();
+        for event in outputs.default_output().collect_events().await {
+            let Event::TraceStats(stats) = event else {
+                panic!("unexpected event: {event:?}");
+            };
+            for payload in stats.stats() {
+                let mut tags: Vec<_> = payload.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
+                tags.sort();
+                payloads.push((payload.container_id().to_string(), tags));
+            }
+        }
+        payloads
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stats_of_a_container_the_provider_does_not_know_lose_the_container_id_and_tags() {
+        use crate::common::datadog::container_tags::test_util::ScriptedProvider;
+
+        for buffered in [false, true] {
+            let provider = Arc::new(ScriptedProvider::default());
+            let start = Instant::now();
+
+            let payloads = stats_for_container(&provider, buffered, "cid-unknown").await;
+
+            assert_eq!(vec![(String::new(), Vec::<String>::new())], payloads, "buffered: {buffered}");
+            assert!(start.elapsed() < Duration::from_secs(5), "buffered: {buffered}: the transform waited");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stats_of_a_known_container_carry_its_tags_once_the_buffer_flushes_on_shutdown() {
+        use crate::common::datadog::container_tags::test_util::ScriptedProvider;
+
+        // The container has no `kube_` tag, so the buffer would hold its stats. The final flush sends them at once.
+        let provider = Arc::new(ScriptedProvider::default());
+        provider.set_tags("cid-1", &["image_tag:1"]);
+        let start = Instant::now();
+
+        let payloads = stats_for_container(&provider, true, "cid-1").await;
+
+        assert_eq!(vec![("cid-1".to_string(), vec!["image_tag:1".to_string()])], payloads);
+        assert!(start.elapsed() < Duration::from_secs(5), "the transform waited");
+    }
+
+    #[test]
+    fn applied_container_tags_join_the_tags_of_the_payload_without_repeating_one() {
+        let payload = ClientStatsPayload::default()
+            .with_container_id("cid-1")
+            .with_tags(TagSet::from_iter(["team:core".into(), "image_tag:1".into()]));
+        let provider_tags: SharedTagSet = ["team:core", "kube_namespace:prod"].into_iter().map(Tag::from).collect();
+        let mut released = vec![Released {
+            item: payload,
+            resolution: Resolution::Tags(provider_tags),
+        }];
+
+        let applied = apply_container_tags(&mut released, Vec::new());
+
+        assert!(released.is_empty());
+        let mut tags: Vec<_> = applied[0].tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
+        tags.sort();
+        assert_eq!(vec!["image_tag:1", "kube_namespace:prod", "team:core"], tags);
+        assert_eq!("cid-1", applied[0].container_id());
+    }
+
+    #[test]
+    fn a_failed_resolution_clears_the_container_id_and_the_tags_of_the_payload() {
+        let payload = ClientStatsPayload::default()
+            .with_container_id("cid-1")
+            .with_tags(TagSet::from_iter(["team:core".into()]));
+        let mut released = vec![Released {
+            item: payload,
+            resolution: Resolution::Failed,
+        }];
+
+        let applied = apply_container_tags(&mut released, Vec::new());
+
+        assert_eq!("", applied[0].container_id());
+        assert_eq!(0, applied[0].tags().len());
+    }
+
 }
