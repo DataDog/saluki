@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -34,6 +35,7 @@ MARKDOWN_PATTERNS = (
 # intentional rather than a mistake.
 RST_INLINE_LITERAL_RE = re.compile(r"``[^`]+``")
 RELEASE_NOTE_CONFIG_PATH = "releasenotes/config.yaml"
+RELEASE_NOTES_DIRECTORY = "releasenotes/notes"
 
 
 def is_release_tag(version: str) -> bool:
@@ -137,6 +139,52 @@ def is_empty_reno_report(error: subprocess.CalledProcessError, version: str) -> 
     return bool(re.search(rf"KeyError: ['\"]{re.escape(version)}['\"]\s*$", error.stderr or ""))
 
 
+def release_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def find_notes_shipped_off_history(version: str, repository: Path, run) -> list[str]:
+    """Return notes that an earlier release already shipped, but that Reno would also list under `version`.
+
+    Background: Reno decides which release a note belongs to by walking the history of the tag being released. A note
+    belongs to the first release tag that comes after the commit that added it. Notes added before an earlier tag in
+    that history belong to that earlier release, so Reno leaves them out.
+
+    The problem: each release line is cut to `releases/X.Y.x` before its first tag, and tagged there, so `X.Y.0` isn't
+    in `main`'s history. When Reno walks back from the next minor's tag, it never meets `X.Y.0`, so it would list every
+    note that `X.Y.0` already shipped a second time.
+
+    The fix: find the newest earlier release. If it isn't in `version`'s history, the notes it shipped from `main` are
+    the ones present both where the two histories meet, the commit where its release branch was cut, and in that
+    release's own tree. A note removed from the release branch before its tag didn't ship there, so it stays in
+    `version`. Leave out the notes that Reno already gives to a release in `version`'s history, and return the rest for
+    Reno to ignore.
+
+    Releases whose newest earlier release is in their history, such as patch releases and lines tagged on `main`,
+    return nothing and render as before. A change merged to `main` after the cut and backported to the line isn't in
+    the cut, so its note still appears in both lines.
+    """
+
+    def release_tags(*arguments: str) -> list[str]:
+        listed = run(["git", "tag", "--list", *arguments]).stdout.split()
+        return [tag for tag in listed if is_release_tag(tag) and release_key(tag) < release_key(version)]
+
+    def notes_at(revision: str) -> set[str]:
+        listed = run(["git", "ls-tree", "-r", "--name-only", revision, "--", RELEASE_NOTES_DIRECTORY]).stdout.split()
+        return {Path(path).name for path in listed if path.endswith(".yaml")}
+
+    earlier = release_tags()
+    if not earlier:
+        return []
+    reachable = release_tags("--merged", f"refs/tags/{version}")
+    previous = max(earlier, key=release_key)
+    if previous in reachable:
+        return []
+    base = run(["git", "merge-base", f"refs/tags/{previous}", f"refs/tags/{version}"]).stdout.strip()
+    released = notes_at(f"refs/tags/{max(reachable, key=release_key)}") if reachable else set()
+    return sorted((notes_at(base) & notes_at(f"refs/tags/{previous}")) - released)
+
+
 def render_release_notes(version: str, repository: Path) -> str:
     """Render one tagged release's Reno notes as GitHub-flavored Markdown."""
     if not is_release_tag(version):
@@ -158,24 +206,32 @@ def render_release_notes(version: str, repository: Path) -> str:
             "curated release notes cannot be repaired before their adoption"
         ) from error
 
-    reno = shutil.which("reno") or str(Path(sys.executable).with_name("reno"))
     try:
-        rst = run(
-            [
-                reno,
-                "report",
-                "--ignore-cache",
-                "--no-show-source",
-                "--version",
-                version,
-                "--branch",
-                version,
-            ]
-        ).stdout
+        shipped = find_notes_shipped_off_history(version, repository, run)
+        if shipped:
+            config = run(["git", "show", f"refs/tags/{version}:{RELEASE_NOTE_CONFIG_PATH}"]).stdout
+            git_dir = run(["git", "rev-parse", "--absolute-git-dir"]).stdout.strip()
     except subprocess.CalledProcessError as error:
-        if is_empty_reno_report(error, version):
-            return ""
-        raise RuntimeError(f"could not render release notes for {version}: {get_error_detail(error)}") from error
+        raise RuntimeError(f"could not inspect release history for {version}: {get_error_detail(error)}") from error
+
+    reno = shutil.which("reno") or str(Path(sys.executable).with_name("reno"))
+    command = [reno, "report", "--ignore-cache", "--no-show-source", "--version", version, "--branch", version]
+    with tempfile.TemporaryDirectory() as override_root:
+        if shipped:
+            # Reno reads `ignore_notes` only from its configuration file. This root points Git at the repository and
+            # holds the tag's configuration plus the already-shipped notes, leaving the checkout untouched.
+            settings = yaml.safe_load(config) or {}
+            settings["ignore_notes"] = sorted(set(settings.get("ignore_notes") or []) | set(shipped))
+            (Path(override_root) / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+            (Path(override_root) / "releasenotes").mkdir()
+            (Path(override_root) / RELEASE_NOTE_CONFIG_PATH).write_text(yaml.safe_dump(settings), encoding="utf-8")
+            command.append(override_root)
+        try:
+            rst = run(command).stdout
+        except subprocess.CalledProcessError as error:
+            if is_empty_reno_report(error, version):
+                return ""
+            raise RuntimeError(f"could not render release notes for {version}: {get_error_detail(error)}") from error
 
     if not rst.strip():
         return ""

@@ -581,6 +581,14 @@ fn add_data_plane_version_prefix(endpoint: Url) -> Result<Url, EndpointError> {
     add_version_prefix(endpoint, &get_data_plane_version_prefix())
 }
 
+/// Returns the base path of `endpoint`, without trailing slashes.
+///
+/// A request path, which starts with `/`, is appended to the base path as is: `https://proxy.example.com/prefix/` and
+/// `/api/v2/series` give `/prefix/api/v2/series`. An endpoint with no path, or only `/`, gives an empty base path.
+pub(crate) fn endpoint_base_path(endpoint: &Url) -> &str {
+    endpoint.path().trim_end_matches('/')
+}
+
 /// Replaces the leftmost label of the host of `endpoint` with `prefix`, if it is an official Datadog application host.
 ///
 /// This differentiates traffic between versions of the sending application: `app.datadoghq.com` becomes

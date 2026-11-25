@@ -1,16 +1,20 @@
 //! Run reports and their durable artifacts.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 
-use chrono::Local;
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 use serde::Serialize;
 use tracing::warn;
 
+use crate::core::observe::Collected;
+use crate::core::participant::Os;
 use crate::core::record::StepStatus;
 use crate::core::result::{
-    DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
+    DurationMs, Issue, ParticipantRun, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult,
+    TimeoutAttribution,
 };
 
 /// Reported when the build could not read a repository to get a revision from.
@@ -73,12 +77,14 @@ pub struct RunReport {
     pub build_revision: String,
     /// Test-case directories the run discovered from.
     pub suite_dirs: Vec<PathBuf>,
-    /// Integration-test runtime the run was scoped to.
+    /// The runtime name of the run's subject OS: `linux`, `mac` or `windows`.
     pub runtime: String,
+    /// The images participant cases run in place of those they name, by the name as written.
+    pub(crate) set: BTreeMap<String, String>,
     /// How many tests ran concurrently.
     pub parallelism: usize,
-    /// When the run started, as an RFC 3339 timestamp.
-    pub started_at: String,
+    /// When the run started, as an RFC 3339 timestamp, or `null` if the system clock was out of range.
+    pub started_at: Option<String>,
     /// Elapsed milliseconds at the last report update.
     pub duration_ms: u64,
     /// Absolute path of the run's log directory.
@@ -144,6 +150,8 @@ pub struct RunTotals {
     pub errored: usize,
     /// Tests that exceeded their timeout.
     pub timed_out: usize,
+    /// Tests that do not run on the selected subject OS.
+    pub skipped: usize,
     /// Selected tests that never started.
     pub not_run: usize,
 }
@@ -175,6 +183,18 @@ pub struct TestReport {
     pub reclaim: Vec<ReclaimEntry>,
     /// Problems after the verdict or during cleanup. They never change `outcome`.
     pub issues: Vec<Issue>,
+    /// Why the test was skipped, when `outcome` is `skipped`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) skip_reason: Option<String>,
+    /// The subject OS a participant case ran for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) subject_os: Option<Os>,
+    /// Each participant of a participant case: its realization and, once it started, each process's exit and output.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) participants: BTreeMap<String, ParticipantRun>,
+    /// The files collected from a participant case that its outcome keeps.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) collected: Vec<Collected>,
     /// Captured output lines worth reading first. Empty for a passing test.
     pub diagnostic_lines: Vec<DiagnosticLine>,
     /// Whether `diagnostic_lines` was capped.
@@ -311,8 +331,11 @@ impl RunReport {
             build_revision: build_revision(),
             suite_dirs,
             runtime,
+            set: BTreeMap::new(),
             parallelism,
-            started_at: Local::now().to_rfc3339(),
+            started_at: Timestamp::now()
+                .ok()
+                .map(|now| now.format(TimestampFormat::Rfc3339(TimeZone::system())).to_string()),
             duration_ms: 0,
             log_dir,
             totals: RunTotals::new(&[], selected.len()),
@@ -333,6 +356,7 @@ impl RunTotals {
             failed: count(|outcome| *outcome == TestOutcome::Failed),
             errored: count(TestOutcome::is_error),
             timed_out: count(|outcome| *outcome == TestOutcome::TimedOut),
+            skipped: count(|outcome| *outcome == TestOutcome::Skipped),
             not_run,
         }
     }
@@ -373,12 +397,12 @@ impl TestReport {
 
         let artifacts = result.log_dir.as_deref().map(list_artifacts).unwrap_or_default();
 
-        // Only non-passing tests get their output scanned. Error-looking lines are common in output
+        // Only failing tests get their output scanned. Error-looking lines are common in output
         // that every assertion accepted.
-        let (diagnostic_lines, diagnostic_lines_truncated) = if result.outcome.is_passed() {
-            (Vec::new(), false)
-        } else {
+        let (diagnostic_lines, diagnostic_lines_truncated) = if result.outcome.is_failure() {
             collect_diagnostic_lines(&artifacts)
+        } else {
+            (Vec::new(), false)
         };
 
         Self {
@@ -394,6 +418,10 @@ impl TestReport {
             cause: result.cause.clone(),
             reclaim: result.reclaim.clone(),
             issues: result.issues.clone(),
+            skip_reason: result.skip_reason.clone(),
+            subject_os: result.subject_os,
+            participants: result.participants.clone(),
+            collected: result.collected.clone(),
             diagnostic_lines,
             diagnostic_lines_truncated,
             assertions,
@@ -599,32 +627,23 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::collector::RunCollector;
     use crate::core::result::{ErrorKind, TestOutcome, TimeoutAttribution};
     use crate::events::TestEvent;
-
-    fn assertion(name: &str, status: AssertionStatus) -> AssertionResult {
-        AssertionResult {
-            name: name.to_string(),
-            status,
-            message: "message".to_string(),
-            duration: Duration::from_millis(5),
-        }
-    }
+    use crate::reporter::test_support::step;
 
     #[test]
     fn test_report_pins_the_contract_field_names() {
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(3),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
+            vec![step(0, "telemetry matches", StepStatus::Failed)],
             vec![PhaseTiming {
                 phase: "analysis".to_string(),
                 duration: Duration::from_millis(20),
             }],
-        )
-        .with_assertion_details(vec![vec!["one".to_string(), "two".to_string()]]);
+        );
+        result.assertion_details = vec![vec!["one".to_string(), "two".to_string()]];
         result.case_path = Some(PathBuf::from("/cases/dsd-plain"));
         result.log_dir = Some(PathBuf::from("/logs/correctness/dsd-plain"));
 
@@ -683,13 +702,13 @@ mod tests {
     fn assertion_details_are_capped_inline_and_complete_on_disk() {
         let details: Vec<String> = (0..DETAIL_LINE_CAP + 25).map(|i| format!("line {}", i)).collect();
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
+            vec![step(0, "telemetry matches", StepStatus::Failed)],
             Vec::new(),
-        )
-        .with_assertion_details(vec![details]);
+        );
+        result.assertion_details = vec![details];
         result.log_dir = Some(log_dir.path().to_path_buf());
 
         let nested_log_dir = log_dir.path().join("comparison");
@@ -778,10 +797,10 @@ mod tests {
 
     #[test]
     fn cancelled_test_report_carries_no_timeout_attribution() {
-        let result = TestResult::from_assertions(
+        let result = TestResult::from_steps(
             "cancelled",
             Duration::from_secs(1),
-            vec![assertion("cancelled", AssertionStatus::Failed)],
+            vec![step(0, "cancelled", StepStatus::Failed)],
             Vec::new(),
         )
         .with_harness_error(ErrorKind::Internal, "Test was cancelled.");
@@ -814,10 +833,10 @@ mod tests {
         )
         .expect("result log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Failed)],
+            vec![step(0, "log_contains", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -864,10 +883,10 @@ mod tests {
         )
         .expect("millstone log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
+            vec![step(0, "telemetry matches", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -906,10 +925,10 @@ mod tests {
         std::fs::write(log_dir.path().join("stdout.log"), "ERROR failed to bind socket\n")
             .expect("stdout log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Passed)],
+            vec![step(0, "log_contains", StepStatus::Passed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -927,10 +946,10 @@ mod tests {
         let lines: Vec<String> = (0..DIAGNOSTIC_LINE_CAP + 10).map(|_| long_line.clone()).collect();
         std::fs::write(log_dir.path().join("stdout.log"), lines.join("\n")).expect("stdout log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Failed)],
+            vec![step(0, "log_contains", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -976,16 +995,16 @@ mod tests {
     #[test]
     fn run_report_totals_separate_failures_from_errors() {
         let results = [
-            TestResult::from_assertions(
+            TestResult::from_steps(
                 "a",
                 Duration::from_secs(1),
-                vec![assertion("x", AssertionStatus::Passed)],
+                vec![step(0, "x", StepStatus::Passed)],
                 Vec::new(),
             ),
-            TestResult::from_assertions(
+            TestResult::from_steps(
                 "b",
                 Duration::from_secs(1),
-                vec![assertion("x", AssertionStatus::Failed)],
+                vec![step(0, "x", StepStatus::Failed)],
                 Vec::new(),
             ),
             TestResult::errored("c", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new()),

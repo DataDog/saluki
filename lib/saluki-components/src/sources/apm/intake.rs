@@ -7,19 +7,22 @@
 //!
 //! Status codes, in the order a request can meet them:
 //!
-//! | Condition | Status |
-//! |---|---|
-//! | A MessagePack body sent to `/v0.1/spans`, `/spans` or `/v0.2/traces` | 415 |
-//! | `Sec-Fetch-Site: cross-site` | 403 |
-//! | `receiver_timeout` elapses waiting for a decoder | 429, no body |
-//! | `decoder_timeout` elapses waiting for a decoder | 200, or 429 with feature `429` or `Datadog-Send-Real-Http-Status`, after draining the body |
-//! | `Content-Length` over `max_request_bytes` | 413 |
-//! | Body reaches `max_request_bytes` | 413 |
-//! | `receiver_timeout` elapses reading the body | 408 |
-//! | The body ends early, or ends before its JSON value does | 400 `unexpected-eof` |
-//! | The payload doesn't decode | 400 |
+//! | Condition                                                                                     | Status                                    |
+//! |-----------------------------------------------------------------------------------------------|-------------------------------------------|
+//! | A MessagePack body sent to `/v0.1/spans`, `/spans` or `/v0.2/traces`                          | 415                                       |
+//! | `Sec-Fetch-Site: cross-site`                                                                  | 403                                       |
+//! | `receiver_timeout` elapses waiting for a decoder                                              | 429, no body                              |
+//! | `decoder_timeout` elapses waiting for a decoder                                               | 200, or 429 when opted in                 |
+//! | `Content-Length` over `max_request_bytes`                                                     | 413                                       |
+//! | Body reaches `max_request_bytes`                                                              | 413                                       |
+//! | `receiver_timeout` elapses reading the body                                                   | 408                                       |
+//! | The body ends early, or ends before its JSON value does                                       | 400 `unexpected-eof`                      |
+//! | The payload doesn't decode                                                                    | 400                                       |
 //! | The strings every trace carries, times the traces, exceed 512 times the body (at least 1 MiB) | 400, a limit the trace-agent doesn't have |
-//! | Accepted | 200 |
+//! | Accepted                                                                                      | 200                                       |
+//!
+//! A request opts in to 429 with the `429` APM feature or the `Datadog-Send-Real-Http-Status` header. Either way, the
+//! body is drained first.
 //!
 //! Accepted payloads, and those refused for want of a decoder, are answered as the trace-agent answers them: `OK` on
 //! `/v0.1/spans`, `/spans`, `/v0.2/traces` and `/v0.3/traces`, and the
@@ -483,6 +486,7 @@ fn per_trace_string_bytes(
         env,
         hostname,
         app_version,
+        container_tags: payload_container_tags,
         receiver: _,
     } = payload;
     let ReceiverMetadata {
@@ -524,6 +528,9 @@ fn per_trace_string_bytes(
         connection_type,
     ];
     strings.iter().map(|s| s.len()).sum::<usize>()
+        + payload_container_tags
+            .as_deref()
+            .map_or(0, |tags| tags.iter().map(|tag| tag.len()).sum::<usize>())
         + payload_attributes
             .iter()
             .map(|(key, value)| key.len() + attribute_string_bytes(value))
@@ -703,7 +710,7 @@ mod tests {
     use http::Request;
     use rmp::encode;
     use saluki_core::data_model::event::metric::MetricValues;
-    use saluki_core::data_model::event::trace::AttributeValue;
+    use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _};
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::data_model::tags::{SharedTagSet, Tag, TagSet};
     use saluki_env::workload::origin::{ResolvedExternalData, ResolvedOrigin};

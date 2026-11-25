@@ -130,6 +130,7 @@ pub enum Pipeline {
     Checks,
     Otlp,
     Traces,
+    Logs,
 }
 
 /// Which pipelines a config key is associated with.
@@ -156,6 +157,7 @@ impl<'de> serde::Deserialize<'de> for PipelineAffinity {
             Checks,
             Otlp,
             Traces,
+            Logs,
         }
 
         let tokens: Vec<Token> = Vec::deserialize(d)?;
@@ -183,6 +185,7 @@ impl<'de> serde::Deserialize<'de> for PipelineAffinity {
                 Token::Checks => Pipeline::Checks,
                 Token::Otlp => Pipeline::Otlp,
                 Token::Traces => Pipeline::Traces,
+                Token::Logs => Pipeline::Logs,
                 Token::CrossCutting => unreachable!(),
             })
             .collect();

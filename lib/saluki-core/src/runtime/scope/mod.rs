@@ -86,8 +86,9 @@
 //!
 //! A child can stop again and again. If one more restart exceeds the restart limit of the scope, the child fails the
 //! owner. The edge of the child has no effect on this, and under a supervisor, the same child stops the supervisor. A
-//! restart is a reset. If a child continues to fail, the failure goes to the next level of the supervision tree, and
-//! that level tries again.
+//! restart is a reset, unless the child keeps its state on purpose, as a
+//! [`ResumableWorker`][crate::runtime::ResumableWorker] does. If a child continues to fail, the failure goes to the
+//! next level of the supervision tree, and that level tries again.
 //!
 //! This also applies to the children of a [nested] scope: they fail the process that the scope belongs to.
 //!

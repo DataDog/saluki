@@ -554,7 +554,7 @@ pub struct V3ApiSettings {
 
     /// Probability of shadowing each eligible V2 sketch batch, independently for each destination.
     ///
-    /// Defaults to `0` (disabled). Zero or negative values disable sampling; values at least `1` sample every batch.
+    /// Defaults to `0.001` (0.1%). Zero or negative values disable sampling; values at least `1` sample every batch.
     pub shadow_sample_rate: f64,
 
     /// Sites eligible for sketch shadow sampling, matched against the resolved V2 destination.

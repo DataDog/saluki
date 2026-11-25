@@ -191,7 +191,7 @@ impl EventProcessor {
 
 /// Reads a sampling-rate attribute, defaulting to 1.0.
 fn rate_attribute(span: &Span, key: &'static str) -> f64 {
-    span.attributes.get(key).and_then(AttributeValue::as_num).unwrap_or(1.0)
+    span.attributes.get(key).and_then(AttributeValue::as_f64).unwrap_or(1.0)
 }
 
 /// Marks a span as a sampled event and stamps its sampling-rate metadata.
@@ -230,7 +230,7 @@ impl Extractor {
             Self::Metric => span
                 .attributes
                 .get(KEY_EVENT_EXTRACTION_RATE)
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
                 .map(|rate| upscale_user_keep(rate, priority)),
             Self::FixedRate(rates_by_service) => {
                 let service = span.service().to_lowercase();
@@ -246,7 +246,7 @@ impl Extractor {
                 let top_level = span
                     .attributes
                     .get(KEY_TOP_LEVEL)
-                    .and_then(AttributeValue::as_num)
+                    .and_then(AttributeValue::as_f64)
                     .is_some_and(|value| value == 1.0);
                 if !top_level {
                     return None;
@@ -538,7 +538,7 @@ mod tests {
         // The root span survived: it is marked analyzed, and no rate keys are written at 1.0.
         let root = trace.spans().first().unwrap();
         assert_eq!(
-            root.attributes.get(KEY_ANALYZED_SPANS).and_then(AttributeValue::as_num),
+            root.attributes.get(KEY_ANALYZED_SPANS).and_then(AttributeValue::as_f64),
             Some(1.0)
         );
         assert!(!root.attributes.contains_key(KEY_EVENT_EXTRACTION_RATE));

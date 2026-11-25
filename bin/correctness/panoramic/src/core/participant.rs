@@ -71,6 +71,12 @@ pub(crate) enum Enclosure {
     HostProcessGroup,
 }
 
+/// The (participant OS, enclosure) pairs of a Linux container and a Kubernetes pod, which most participants support.
+pub(crate) const LINUX_CONTAINER_OR_POD: &[(Os, Enclosure)] = &[
+    (Os::Linux, Enclosure::LinuxContainer),
+    (Os::Linux, Enclosure::KubernetesPod),
+];
+
 impl Enclosure {
     /// The enclosure a subject gets on `os` when the case does not request one.
     pub(crate) fn default_for(os: Os) -> Self {

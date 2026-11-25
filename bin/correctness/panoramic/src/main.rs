@@ -9,47 +9,37 @@ use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
-use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 use crate::core::case::{self, CaseError};
 use crate::core::participant::Os;
 use crate::core::plan::{self, CasePlan};
 use crate::core::registry::Registry;
+use crate::participant_case::KindState;
 use crate::runner::Runner;
+use crate::test::RunnerSettings;
 
 mod kind;
-use self::kind::KindLifecycle;
 
-mod actions;
-mod assertions;
 mod cli;
 mod collector;
+use self::cli::{Cli, Command, LogLevel};
 use self::collector::{
     consume_run, run_teardown, RunCollector, RunDisplay, RunEnd, EXIT_HARNESS_ERROR, EXIT_NO_TESTS_SELECTED,
 };
 
-mod correctness;
-use self::cli::{Cli, Command, LogLevel};
-
-mod config;
 mod core;
-mod dynamic_vars;
-mod integration;
-mod mounts;
-use self::config::{default_host_runtime, discover_tests};
 
 mod events;
 use self::events::create_event_channel;
 
-mod image_override;
-mod intake;
 mod interrupts;
 use self::interrupts::Interrupts;
 
 mod machine_output;
+mod participant_case;
 mod participants;
 use self::machine_output::RunReport;
 
@@ -59,11 +49,7 @@ use self::reporter::{OutputFormat, Reporter};
 mod runner;
 mod steps;
 mod test;
-mod test_env;
-mod traffic;
 mod tui;
-mod unix_runner;
-mod utils;
 
 #[cfg(not(windows))]
 fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
@@ -103,7 +89,7 @@ async fn main() -> ExitCode {
 
     let is_plan = matches!(cli.command, Command::Plan(_));
     let result = match cli.command {
-        Command::Run(cmd) => run_tests(cmd, use_tui).await,
+        Command::Run(cmd) => run_tests(*cmd, use_tui).await,
         Command::List(cmd) => list_tests(cmd).await,
         Command::Plan(cmd) => plan_case(cmd),
     };
@@ -159,15 +145,6 @@ fn resolve_selection(requested: &str, discovered: &[Box<dyn test::Test>]) -> (Ve
 }
 
 async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
-    let settings = cmd.runner_settings();
-    debug!(
-        adp_binary_path = %settings.adp_binary_path.display(),
-        core_agent_binary_path = %settings.core_agent_binary_path.display(),
-        mounts_dir = %settings.mounts_dir.display(),
-        alpine_image = %settings.alpine_image,
-        "Resolved runner settings."
-    );
-
     if cmd.test_dirs.is_empty() {
         let msg = "No test directories specified. Use -d <path> to specify one or more directories.";
         if use_tui {
@@ -178,11 +155,18 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let integration_runtime = cmd
-        .runtime
-        .clone()
-        .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime, &cmd.image_overrides) {
+    let set = match participant_case::replacements(&cmd.set) {
+        Ok(set) => set,
+        Err(e) => {
+            if use_tui {
+                eprintln!("{}", e);
+            } else {
+                error!("{}", e);
+            }
+            return ExitCode::from(2);
+        }
+    };
+    let test_cases = match participant_case::discover(&cmd.test_dirs, cmd.subject_os, &set) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -212,9 +196,9 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             let (selected, unmatched) = resolve_selection(requested, &test_cases);
             if !unmatched.is_empty() {
                 let msg = format!(
-                    "No test matches: {}. Run 'panoramic list' to see the tests in scope for runtime '{}'.",
+                    "No test matches: {}. Run 'panoramic list' to see the tests in scope for subject OS {}.",
                     unmatched.join(", "),
-                    integration_runtime
+                    cmd.subject_os
                 );
                 if use_tui {
                     eprintln!("{}", msg);
@@ -243,10 +227,17 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     };
 
     // Create log directory.
-    let log_dir = match std::path::absolute(cmd.log_dir()) {
+    let log_dir = match cmd
+        .log_dir()
+        .and_then(|log_dir| std::path::absolute(log_dir).map_err(|e| e.to_string()))
+    {
         Ok(path) => path,
         Err(e) => {
-            error!("Failed to resolve log directory: {}", e);
+            if use_tui {
+                eprintln!("Failed to resolve log directory: {}", e);
+            } else {
+                error!("Failed to resolve log directory: {}", e);
+            }
             return ExitCode::from(2);
         }
     };
@@ -259,52 +250,74 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // Install interrupt handlers before starting background work.
+    // Install interrupt handlers before starting background work, which includes the kind setup of the checks.
     let mut interrupts = Interrupts::install();
-    let mut collector = RunCollector::start(
-        RunReport::new(
-            cmd.test_dirs.clone(),
-            integration_runtime.clone(),
-            cmd.parallelism.get(),
-            log_dir.clone(),
-            test_cases.iter().map(|t| t.name()).collect(),
-        ),
-        cmd.fail_fast,
-    );
 
-    // Create the event channel early so the kind setup task can emit status messages.
+    // Once, before the first case and outside any case's timeout: what the selected participant cases need.
+    let plans: Vec<(String, &plan::CasePlan)> = test_cases
+        .iter()
+        .filter_map(|test| {
+            test.participant_case()?
+                .plan
+                .as_ref()
+                .ok()
+                .map(|plan| (test.name(), plan))
+        })
+        .collect();
+    // Created before the checks, so the display shows the progress of the kind setup they run.
     let (tx, rx) = create_event_channel();
+    let kind = participant_case::KindSetup {
+        cluster: cmd.kind_cluster_name.clone(),
+        events: tx.clone(),
+    };
+    let mut kind_state = KindState::default();
+    let checked = tokio::select! {
+        biased;
 
-    // Spawn kind cluster setup in the background so non-kind tests start immediately.
-    // Kind tests will wait on `kind_rx` before doing any work.
-    let kind_images = collect_kind_images(&test_cases);
-    let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
-    let kind_rx = if kind_images.is_empty() {
-        None
-    } else {
-        let (kind_tx, kind_rx) = watch::channel::<Option<Result<(), String>>>(None);
-        let slot = kind_lifecycle_slot.clone();
-        let cluster_name = cmd.kind_cluster_name.clone();
-        let event_tx = tx.clone();
-        tokio::spawn(async move {
-            match KindLifecycle::ensure(cluster_name, kind_images, event_tx).await {
-                Ok(lc) => {
-                    *slot.lock().await = Some(lc);
-                    let _ = kind_tx.send(Some(Ok(())));
-                }
-                Err(e) => {
-                    let _ = kind_tx.send(Some(Err(format!("{:?}", e))));
+        Some(source) = interrupts.recv() => {
+            Err(vec![format!("Received {} during the checks before the first case.", source)])
+        }
+        checked = participant_case::check_before_the_first_case(&plans, kind, &mut kind_state) => checked,
+    };
+    let settings = match checked {
+        Ok(backends) => RunnerSettings { backends },
+        Err(errors) => {
+            for e in errors {
+                if use_tui {
+                    eprintln!("{}", e);
+                } else {
+                    error!("{}", e);
                 }
             }
-        });
-        Some(kind_rx)
+            if participant_case::uses_pods(plans.iter().map(|(_, plan)| *plan)) {
+                let teardown = tear_down_unused_kind(kind_state, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster);
+                tokio::select! {
+                    biased;
+
+                    Some(source) = interrupts.recv() => warn!(
+                        "Received {}; abandoned kind cluster teardown. If cluster '{}' is still running, delete it \
+                         with 'kind delete cluster --name {}'.",
+                        source, cmd.kind_cluster_name, cmd.kind_cluster_name
+                    ),
+                    () = teardown => {}
+                }
+            }
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
     };
+
+    let mut report = RunReport::new(
+        cmd.test_dirs.clone(),
+        participant_case::runtime_of(cmd.subject_os).to_string(),
+        cmd.parallelism.get(),
+        log_dir.clone(),
+        test_cases.iter().map(|t| t.name()).collect(),
+    );
+    report.set = set;
+    let mut collector = RunCollector::start(report, cmd.fail_fast);
 
     // Inject runtime config and build the test registry.
     let mut registry = Runner::new(log_dir.clone(), settings);
-    if let Some(ref rx) = kind_rx {
-        registry = registry.with_kind_ready(rx.clone());
-    }
     for tc in test_cases {
         registry.register(tc).expect("failure to register test");
     }
@@ -331,7 +344,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     } else {
         info!("Starting test run with parallelism of {}...", cmd.parallelism);
-        info!("Container logs will be written to '{}'.", log_dir.display());
+        info!("Logs will be written to '{}'.", log_dir.display());
         if cmd.fail_fast {
             info!("Fail-fast mode enabled; will stop on first failure.");
         }
@@ -349,7 +362,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     }
 
     // Tear down the kind cluster unless the caller asked to keep it.
-    if kind_rx.is_some() {
+    if let KindState::Ready(lifecycle) = kind_state {
         // The TUI has shut down by now, so its notices go to stderr directly.
         let notice = |message: String| {
             if use_tui {
@@ -366,30 +379,18 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                  delete it with 'kind delete cluster --name {}'.",
                 cluster_name, cluster_name
             ));
-        } else {
-            let lifecycle: Option<KindLifecycle> = kind_lifecycle_slot.lock().await.take();
-            if let Some(lifecycle) = lifecycle {
-                if cmd.no_delete_kind_cluster {
-                    info!(
-                        "Skipping kind cluster teardown (--no-delete-kind-cluster). \
-                         Cluster '{}' is still running.",
-                        cluster_name
-                    );
-                } else if let Some(source) = run_teardown(lifecycle.teardown(), &mut collector, &mut interrupts).await {
-                    notice(format!(
-                        "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \
-                         finish. If cluster '{}' is still running, delete it with 'kind delete cluster --name {}'.",
-                        source, cluster_name, cluster_name
-                    ));
-                }
-            } else {
-                // Failed or unfinished setup can leave a cluster behind.
-                notice(format!(
-                    "Kind cluster setup did not complete successfully. \
-                     A kind cluster named '{}' may still be running — run 'kind delete cluster --name {}' to clean it up.",
-                    cluster_name, cluster_name
-                ));
-            }
+        } else if cmd.no_delete_kind_cluster {
+            info!(
+                "Skipping kind cluster teardown (--no-delete-kind-cluster). \
+                 Cluster '{}' is still running.",
+                cluster_name
+            );
+        } else if let Some(source) = run_teardown(lifecycle.teardown(), &mut collector, &mut interrupts).await {
+            notice(format!(
+                "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \
+                 finish. If cluster '{}' is still running, delete it with 'kind delete cluster --name {}'.",
+                source, cluster_name, cluster_name
+            ));
         }
     }
 
@@ -413,18 +414,22 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     collector::exit_code(collector.report())
 }
 
-/// Collects the unique set of images required by all kind-runtime tests in the given list.
-fn collect_kind_images(tests: &[Box<dyn test::Test>]) -> Vec<String> {
-    use std::collections::BTreeSet;
-    let mut images = BTreeSet::new();
-    for test in tests {
-        if test.runtime() == "kubernetes_in_docker" {
-            for (_, image) in test.images() {
-                images.insert(image);
-            }
-        }
+/// Removes the kind cluster of a run that stopped at the checks before its first case, as a finished run would, or says
+/// that setup may have left one.
+async fn tear_down_unused_kind(state: KindState, cluster_name: &str, keep: bool) {
+    match state {
+        KindState::NotStarted => {}
+        KindState::Ready(_) if keep => info!(
+            "Skipping kind cluster teardown (--no-delete-kind-cluster). Cluster '{}' is still running.",
+            cluster_name
+        ),
+        KindState::Ready(lifecycle) => lifecycle.teardown().await,
+        KindState::Started => warn!(
+            "Kind cluster setup did not complete successfully. A kind cluster named '{}' may still be running; run \
+             'kind delete cluster --name {}' to clean it up.",
+            cluster_name, cluster_name
+        ),
     }
-    images.into_iter().collect()
 }
 
 async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
@@ -438,17 +443,15 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let integration_runtime = cmd
-        .runtime
-        .clone()
-        .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime, &[]) {
+    let mut test_cases = match participant_case::discover(&cmd.test_dirs, cmd.subject_os, &BTreeMap::new()) {
         Ok(tests) => tests,
         Err(e) => {
             error!("Failed to discover tests: {}", e);
             return ExitCode::from(2);
         }
     };
+    // A case that does not declare the subject OS has no row for it.
+    test_cases.retain(|test| test.participant_case().is_none_or(|case| case.plan.is_ok()));
 
     if cmd.json {
         let mut test_map = BTreeMap::new();
@@ -456,10 +459,9 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
             test_map.insert(
                 test.name(),
                 serde_json::json!({
-                    "type": test.suite(),
+                    "suite": test.suite(),
                     "runtime": test.runtime(),
                     "timeout": test.timeout(),
-                    "images": test.images(),
                 }),
             );
         }
@@ -499,15 +501,32 @@ fn registry() -> Registry {
     registry
 }
 
-/// Loads a participant case and plans it for every OS it declares.
-fn load_and_plan(dir: &Path) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
+/// Loads a participant case and plans it for every OS it declares, with the run's replacements `set`.
+fn load_and_plan(dir: &Path, set: &BTreeMap<String, String>) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
     let registry = registry();
     let case = case::load(dir, &registry)?;
-    plan::plan_all(&case, &registry)
+    plan::plan_all(&case, &registry, set)
 }
 
 fn plan_case(cmd: cli::PlanCommand) -> ExitCode {
-    let plans = match load_and_plan(&cmd.case_dir) {
+    let planned = participant_case::replacements(&cmd.set)
+        .map_err(|e| vec![e])
+        .and_then(|set| {
+            let plans = load_and_plan(&cmd.case_dir, &set)
+                .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>())?;
+            let references = participant_case::references(plans.values());
+            let unused: Vec<String> = set
+                .keys()
+                .filter(|name| !references.contains(*name))
+                .map(|name| format!("--set names '{}', which the case does not use.", name))
+                .collect();
+            if unused.is_empty() {
+                Ok(plans)
+            } else {
+                Err(unused)
+            }
+        });
+    let plans = match planned {
         Ok(plans) => plans,
         Err(errors) => {
             for error in errors {
@@ -576,7 +595,7 @@ mod tests {
 
         let mut failures = Vec::new();
         for (name, expected) in &expected {
-            let errors = match load_and_plan(&dir.join(name)) {
+            let errors = match load_and_plan(&dir.join(name), &BTreeMap::new()) {
                 Ok(_) => {
                     failures.push(format!("{}: planned without an error", name));
                     continue;
@@ -604,7 +623,7 @@ mod tests {
     #[test]
     fn example_cases_plan_for_every_os_they_declare() {
         for dir in case_dirs(&testdata("examples")) {
-            let plans = load_and_plan(&dir).unwrap_or_else(|errors| {
+            let plans = load_and_plan(&dir, &BTreeMap::new()).unwrap_or_else(|errors| {
                 let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
                 panic!("{}", errors.join("\n"))
             });
@@ -613,9 +632,27 @@ mod tests {
     }
 
     #[test]
+    fn every_real_participant_case_plans_for_every_os_it_declares() {
+        let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test");
+        let mut failures = Vec::new();
+        for suite in ["integration", "correctness"] {
+            for dir in case_dirs(&cases.join(suite).join("cases")) {
+                // A directory with no case file holds files that cases share.
+                if !dir.join(case::CASE_FILE).exists() {
+                    continue;
+                }
+                if let Err(errors) = load_and_plan(&dir, &BTreeMap::new()) {
+                    failures.extend(errors.iter().map(ToString::to_string));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
     fn two_plans_of_one_example_serialize_to_the_same_json() {
         for dir in case_dirs(&testdata("examples")) {
-            let dump = || serde_json::to_string_pretty(&load_and_plan(&dir).unwrap()).unwrap();
+            let dump = || serde_json::to_string_pretty(&load_and_plan(&dir, &BTreeMap::new()).unwrap()).unwrap();
             assert_eq!(dump(), dump(), "{}", dir.display());
         }
     }
@@ -635,44 +672,6 @@ mod tests {
         assert!(directives.contains("airlock=debug"), "directives were '{}'", directives);
         assert!(directives.contains("off"), "directives were '{}'", directives);
         assert!(!directives.contains("hyper"), "directives were '{}'", directives);
-    }
-
-    #[tokio::test]
-    async fn image_override_validation_precedes_name_selection() {
-        let dir = tempfile::tempdir().unwrap();
-        let case_dir = dir.path().join("unselected");
-        std::fs::create_dir(&case_dir).unwrap();
-        std::fs::write(
-            case_dir.join("config.yaml"),
-            r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-baseline: {image: base}
-comparison: {image: comp}
-"#,
-        )
-        .unwrap();
-        for (entry, expected) in [
-            ("millstone=tools:custom", EXIT_NO_TESTS_SELECTED),
-            ("typo=tools:custom", EXIT_HARNESS_ERROR),
-        ] {
-            let cli = Cli::try_parse_from([
-                "panoramic",
-                "run",
-                "-d",
-                dir.path().to_str().unwrap(),
-                "-t",
-                "not-discovered",
-                "--image-override",
-                entry,
-            ])
-            .unwrap();
-            let Command::Run(cmd) = cli.command else {
-                panic!("expected run")
-            };
-            assert_eq!(run_tests(cmd, false).await, ExitCode::from(expected));
-        }
     }
 
     #[test]

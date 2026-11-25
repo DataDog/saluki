@@ -1,9 +1,29 @@
+# For a release line that has adopted `.datadog-agent-version.json`, checks that the tag is on its `releases/X.Y.x`
+# branch, that the ADP crate version matches the tag, and that the file declares the line's target with an Integration
+# version inside it. The branch is read from the remote rather than from the tag, so a tag that deletes the file or
+# `target` is still checked. Lines without the file publish through their existing process.
+check-release-agent-version:
+  stage: test
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  needs: []
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+  variables:
+    # The ancestry check needs the history between the tag and the release branch's tip.
+    GIT_DEPTH: "0"
+  script:
+    - python3 ci/tooling/agent_version.py check-tag --tag "${CI_COMMIT_TAG}" --fetch
+
 # Mixins for defining which jobs must be passing before release artifacts can be pushed.
 #
 # We deliberately take a union of all relevant jobs for a given platform -- different architectures, FIPS vs non-FIPS, etc --
 # as we don't want to allow partially publishing release artifacts for a given platform: it should be all or nothing.
+#
+# `check-release-agent-version` only exists in tag pipelines, hence `optional`.
 .release-gating-linux:
   needs:
+    - job: check-release-agent-version
+      optional: true
     - build-adp-image
     - build-adp-image-fips
     - unit-tests-linux-amd64
@@ -17,6 +37,8 @@
 
 .release-gating-darwin:
   needs:
+    - job: check-release-agent-version
+      optional: true
     - job: build-release-tarball-darwin-amd64
       artifacts: true
     - job: build-release-tarball-darwin-arm64
@@ -33,6 +55,8 @@
 
 .release-gating-windows:
   needs:
+    - job: check-release-agent-version
+      optional: true
     - job: build-release-zip-windows-amd64
       artifacts: true
     - job: build-release-zip-windows-amd64-fips
@@ -44,7 +68,7 @@
     - run-correctness-tests
 
 .docker_publish_job_definition:
-  image: registry.ddbuild.io/agent-delivery/dd-pkg@sha256:8be3aa0cf72ceebe98f1683af84b943fec34d3ca410530f6301f13b6b6894eb1
+  image: registry.ddbuild.io/agent-delivery/dd-pkg:v0.10.0@sha256:8be3aa0cf72ceebe98f1683af84b943fec34d3ca410530f6301f13b6b6894eb1
   variables:
     IMG_SIGNING: "false"
     PUBLIC_IMAGES_PUBLISH_TIMEOUT: "1800"

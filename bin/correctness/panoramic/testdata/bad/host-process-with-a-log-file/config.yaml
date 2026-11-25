@@ -1,0 +1,10 @@
+timeout: 1m
+subject_os: [macos]
+participants:
+  app:
+    subject: true
+    programs:
+      - {name: main, path: sh, args: [-c, "true"]}
+    processes:
+      - {name: main, exit: container, output: {file: main.log}}
+procedure: []
