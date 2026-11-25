@@ -26,7 +26,7 @@ participants:
 procedure:
   - step: log_contains
     on: adp
-    pattern: "Unsupported configuration key with non-default value"
+    pattern: "Unsupported configuration key is set to a value other than its default"
     timeout: 60s
   - step: log_contains
     on: adp
