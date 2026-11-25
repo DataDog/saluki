@@ -105,9 +105,9 @@ allow-git = [
   # Yet-to-be-published version of incremental Protocol Buffers encoding library.
   "https://github.com/tobz/piecemeal.git",
 
-  # Datadog-maintained trace obfuscation crate (`libdd-trace-obfuscation`), shared with Datadog's other trace
-  # obfuscation implementations. The version we need is not on crates.io yet, so it is consumed from GitHub and pinned
-  # to a specific revision in Cargo.toml.
+  # Datadog-maintained trace crates (`libdd-trace-model`, `libdd-trace-normalization`, and `libdd-trace-obfuscation`),
+  # shared with Datadog's other trace implementations. The versions we need are not on crates.io yet, so we consume
+  # them from GitHub and pin them to a specific revision in Cargo.toml.
   "https://github.com/DataDog/libdatadog.git",
 
   # Unmerged fix for byteorder's AIX alignment assertion; see the `[patch.crates-io]` entry in Cargo.toml for details.

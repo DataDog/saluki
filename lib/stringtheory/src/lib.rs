@@ -24,6 +24,9 @@ pub use self::clone::CheapMetaString;
 pub mod interning;
 use self::interning::{InternedString, InternedStringState, Interner};
 
+#[cfg(feature = "libdd-trace-model")]
+mod trace_model;
+
 const ZERO_VALUE: usize = 0;
 const TOP_MOST_BIT: usize = usize::MAX & !(isize::MAX as usize);
 const INLINED_STR_DATA_BUF_LEN: usize = std::mem::size_of::<usize>() * 3;

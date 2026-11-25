@@ -497,7 +497,7 @@ impl OtlpTracesTranslator {
                 if let Some(priority) = dd_span
                     .attributes
                     .get(SAMPLING_PRIORITY_METRIC_KEY)
-                    .and_then(AttributeValue::as_num)
+                    .and_then(AttributeValue::as_f64)
                 {
                     entry.priority = Some(priority as i32);
                 }
@@ -643,7 +643,7 @@ pub(crate) fn translate_custom_status_code(translator: &mut OtlpTracesTranslator
     traces[0].spans()[0]
         .attributes
         .get("http.status_code")
-        .and_then(AttributeValue::as_num)
+        .and_then(AttributeValue::as_f64)
 }
 
 /// Returns a registry document that maps `http.status_code` from `custom.status_code`.
@@ -664,6 +664,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
     use saluki_core::components::ComponentContext;
+    use saluki_core::data_model::event::trace::AttributeValueExt;
     use saluki_core::data_model::tags::TagSet;
     use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
     use saluki_metrics::test::TestRecorder;
@@ -893,7 +894,7 @@ mod tests {
             traces[0].spans()[0]
                 .attributes
                 .get("http.status_code")
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
         };
 
         assert_eq!(

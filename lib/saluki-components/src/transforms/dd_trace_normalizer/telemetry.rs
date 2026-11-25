@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use libdd_trace_normalization::normalizer_v1::{DropReason, MalformedReason, NormalizeObserver};
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::{
     event::{
@@ -30,88 +31,36 @@ pub(super) const MAX_TAG_KEYS: usize = 1_000;
 const METRIC_TRACES_DROPPED: &str = "datadog.trace_agent.normalizer.traces_dropped";
 const METRIC_SPANS_MALFORMED: &str = "datadog.trace_agent.normalizer.spans_malformed";
 
-/// Why a trace chunk was dropped, with the trace-agent's `reason` tag values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DropReason {
-    EmptyTrace,
-    TraceIdZero,
-    SpanIdZero,
-}
-
-impl DropReason {
-    const ALL: [Self; 3] = [Self::EmptyTrace, Self::TraceIdZero, Self::SpanIdZero];
-
-    /// Returns the `reason` tag value.
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            Self::EmptyTrace => "empty_trace",
-            Self::TraceIdZero => "trace_id_zero",
-            Self::SpanIdZero => "span_id_zero",
-        }
+/// Returns the index of `reason` in [`ReasonCounts`].
+///
+/// The match is exhaustive, so a reason that `libdd-trace-normalization` adds doesn't compile until it has an index.
+const fn drop_index(reason: DropReason) -> usize {
+    match reason {
+        DropReason::EmptyTrace => 0,
+        DropReason::TraceIdZero => 1,
+        DropReason::SpanIdZero => 2,
     }
 }
 
-/// Why a span was repaired, with the trace-agent's `reason` tag values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum MalformedReason {
-    DuplicateSpanId,
-    ServiceEmpty,
-    ServiceTruncate,
-    ServiceInvalid,
-    PeerServiceTruncate,
-    PeerServiceInvalid,
-    BaseServiceTruncate,
-    BaseServiceInvalid,
-    SpanNameEmpty,
-    SpanNameTruncate,
-    SpanNameInvalid,
-    ResourceEmpty,
-    TypeTruncate,
-    InvalidStartDate,
-    InvalidDuration,
-    InvalidHttpStatusCode,
-}
-
-impl MalformedReason {
-    const ALL: [Self; 16] = [
-        Self::DuplicateSpanId,
-        Self::ServiceEmpty,
-        Self::ServiceTruncate,
-        Self::ServiceInvalid,
-        Self::PeerServiceTruncate,
-        Self::PeerServiceInvalid,
-        Self::BaseServiceTruncate,
-        Self::BaseServiceInvalid,
-        Self::SpanNameEmpty,
-        Self::SpanNameTruncate,
-        Self::SpanNameInvalid,
-        Self::ResourceEmpty,
-        Self::TypeTruncate,
-        Self::InvalidStartDate,
-        Self::InvalidDuration,
-        Self::InvalidHttpStatusCode,
-    ];
-
-    /// Returns the `reason` tag value.
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            Self::DuplicateSpanId => "duplicate_span_id",
-            Self::ServiceEmpty => "service_empty",
-            Self::ServiceTruncate => "service_truncate",
-            Self::ServiceInvalid => "service_invalid",
-            Self::PeerServiceTruncate => "peer_service_truncate",
-            Self::PeerServiceInvalid => "peer_service_invalid",
-            Self::BaseServiceTruncate => "base_service_truncate",
-            Self::BaseServiceInvalid => "base_service_invalid",
-            Self::SpanNameEmpty => "span_name_empty",
-            Self::SpanNameTruncate => "span_name_truncate",
-            Self::SpanNameInvalid => "span_name_invalid",
-            Self::ResourceEmpty => "resource_empty",
-            Self::TypeTruncate => "type_truncate",
-            Self::InvalidStartDate => "invalid_start_date",
-            Self::InvalidDuration => "invalid_duration",
-            Self::InvalidHttpStatusCode => "invalid_http_status_code",
-        }
+/// Returns the index of `reason` in [`ReasonCounts`]. See [`drop_index`].
+const fn malformed_index(reason: MalformedReason) -> usize {
+    match reason {
+        MalformedReason::ServiceEmpty => 0,
+        MalformedReason::ServiceTruncate => 1,
+        MalformedReason::ServiceInvalid => 2,
+        MalformedReason::PeerServiceTruncate => 3,
+        MalformedReason::PeerServiceInvalid => 4,
+        MalformedReason::BaseServiceTruncate => 5,
+        MalformedReason::BaseServiceInvalid => 6,
+        MalformedReason::SpanNameEmpty => 7,
+        MalformedReason::SpanNameTruncate => 8,
+        MalformedReason::SpanNameInvalid => 9,
+        MalformedReason::ResourceEmpty => 10,
+        MalformedReason::TypeTruncate => 11,
+        MalformedReason::InvalidStartDate => 12,
+        MalformedReason::InvalidDuration => 13,
+        MalformedReason::InvalidHttpStatusCode => 14,
+        MalformedReason::DuplicateSpanId => 15,
     }
 }
 
@@ -124,11 +73,7 @@ pub(super) struct ReasonCounts {
 
 impl ReasonCounts {
     pub(super) fn drop(&mut self, reason: DropReason) {
-        self.dropped[reason as usize] += 1;
-    }
-
-    pub(super) fn malformed(&mut self, reason: MalformedReason) {
-        self.malformed[reason as usize] += 1;
+        self.dropped[drop_index(reason)] += 1;
     }
 
     fn is_empty(&self) -> bool {
@@ -145,6 +90,12 @@ impl ReasonCounts {
         for (total, count) in self.malformed.iter_mut().zip(other.malformed) {
             *total += count;
         }
+    }
+}
+
+impl NormalizeObserver for ReasonCounts {
+    fn malformed(&mut self, reason: MalformedReason) {
+        self.malformed[malformed_index(reason)] += 1;
     }
 }
 
@@ -218,7 +169,8 @@ impl NormalizerWindow {
     pub(super) fn take_window_events(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
         for (tags, counts) in self.counts.drain() {
-            for (reason, count) in DropReason::ALL.iter().zip(counts.dropped) {
+            for reason in DropReason::ALL {
+                let count = counts.dropped[drop_index(reason)];
                 if count > 0 {
                     events.push(counter_event(
                         METRIC_TRACES_DROPPED,
@@ -227,7 +179,8 @@ impl NormalizerWindow {
                     ));
                 }
             }
-            for (reason, count) in MalformedReason::ALL.iter().zip(counts.malformed) {
+            for reason in MalformedReason::ALL {
+                let count = counts.malformed[malformed_index(reason)];
                 if count > 0 {
                     events.push(counter_event(
                         METRIC_SPANS_MALFORMED,
@@ -266,14 +219,14 @@ mod tests {
     }
 
     #[test]
-    fn reason_order_matches_discriminants() {
-        // `ReasonCounts` indexes by discriminant, so `ALL` must list the variants in declaration order.
-        for (i, reason) in DropReason::ALL.iter().enumerate() {
-            assert_eq!(*reason as usize, i);
-        }
-        for (i, reason) in MalformedReason::ALL.iter().enumerate() {
-            assert_eq!(*reason as usize, i);
-        }
+    fn reason_indices_are_distinct() {
+        // `ReasonCounts` holds one count for each reason, so each reason needs its own index.
+        let mut dropped: Vec<_> = DropReason::ALL.into_iter().map(drop_index).collect();
+        dropped.sort_unstable();
+        assert_eq!(dropped, (0..DropReason::ALL.len()).collect::<Vec<_>>());
+        let mut malformed: Vec<_> = MalformedReason::ALL.into_iter().map(malformed_index).collect();
+        malformed.sort_unstable();
+        assert_eq!(malformed, (0..MalformedReason::ALL.len()).collect::<Vec<_>>());
     }
 
     #[test]
