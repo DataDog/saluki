@@ -9,12 +9,14 @@ use std::time::Duration;
 use datadog_protos::traces::{idx, AgentPayload};
 use http_body_util::BodyExt as _;
 use protobuf::Message as _;
+use saluki_core::accounting::{ComponentRegistry, MemoryBounds as _};
 use saluki_core::components::test_util::{ComponentControl, Output, TestComponentDriver};
 use saluki_core::data_model::event::{
-    trace::{Span, Trace, TraceIngestInfo},
+    trace::{AttributeValue, Span, Trace, TraceIngestInfo},
     Event,
 };
 use saluki_core::data_model::payload::Payload;
+use saluki_core::support::SubsystemIdentifier;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use stringtheory::MetaString;
 use tokio::time::Instant;
@@ -29,9 +31,7 @@ type EncoderControl = ComponentControl<EventsBuffer>;
 const CONTAINER_ID: &str = "cid-1";
 
 /// An encoder with a scripted workload provider, and a buffer if `buffered` is set.
-async fn start_encoder(
-    provider: &Arc<ScriptedProvider>, buffered: bool,
-) -> (EncoderControl, Output<PayloadsBuffer>) {
+async fn start_encoder(provider: &Arc<ScriptedProvider>, buffered: bool) -> (EncoderControl, Output<PayloadsBuffer>) {
     let config = DatadogTraceConfiguration {
         flush_timeout: Duration::from_millis(10),
         workload_provider: Some(provider.clone()),
@@ -61,7 +61,12 @@ async fn container_tags(payload: Payload) -> Vec<Option<String>> {
         .try_into_http_payload()
         .expect("traces are sent over HTTP")
         .into_parts();
-    let body = request.into_body().collect().await.expect("body should collect").to_bytes();
+    let body = request
+        .into_body()
+        .collect()
+        .await
+        .expect("body should collect")
+        .to_bytes();
     let body = zstd::stream::decode_all(body.as_ref()).expect("body should decompress");
     let agent_payload = AgentPayload::parse_from_bytes(&body).expect("body should be an agent payload");
     agent_payload
@@ -107,6 +112,33 @@ async fn without_a_buffer_the_encoder_does_not_wait_for_an_unknown_container() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_large_attribute_exceeding_the_byte_cap_does_not_wait() {
+    // A large byte attribute must count against the cap, even though its inline representation is small (#2396).
+    let provider = Arc::new(ScriptedProvider::default());
+    provider.set_tags(CONTAINER_ID, &["image_tag:1"]);
+    let (control, mut payloads) = start_encoder(&provider, true).await;
+    let mut event = trace(1, CONTAINER_ID);
+    let Event::Trace(trace) = &mut event else {
+        unreachable!()
+    };
+    trace.spans_mut()[0].attributes.insert(
+        MetaString::from_static("large"),
+        AttributeValue::Bytes(vec![0; 2_000_000]),
+    );
+    let start = Instant::now();
+
+    control.send_event(event).await;
+    let payload = payloads.next().await.expect("the encoder should send a payload");
+
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "the trace exceeded the cap but waited"
+    );
+    assert_eq!(vec![Some("image_tag:1".to_string())], container_tags(payload).await);
+    control.shutdown().await.expect("encoder should stop cleanly");
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_buffer_holds_a_trace_until_its_container_has_a_kube_tag() {
     let provider = Arc::new(ScriptedProvider::default());
     provider.set_tags(CONTAINER_ID, &["image_tag:1"]);
@@ -120,7 +152,10 @@ async fn the_buffer_holds_a_trace_until_its_container_has_a_kube_tag() {
     let start = Instant::now();
     let payload = payloads.next().await.expect("the encoder should send a payload");
 
-    assert!(start.elapsed() <= Duration::from_secs(2), "the next retry sends the trace");
+    assert!(
+        start.elapsed() <= Duration::from_secs(2),
+        "the next retry sends the trace"
+    );
     assert_eq!(
         vec![Some("image_tag:1,kube_namespace:prod".to_string())],
         container_tags(payload).await
@@ -166,7 +201,10 @@ async fn the_buffer_sends_held_traces_when_the_encoder_stops() {
     let (result, collected) = tokio::join!(control.shutdown(), payloads.collect());
     result.expect("encoder should stop cleanly");
 
-    assert!(start.elapsed() < Duration::from_secs(5), "the stop waited for the container");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "the stop waited for the container"
+    );
     let mut tags = Vec::new();
     for payload in collected {
         tags.extend(container_tags(payload).await);
@@ -187,4 +225,22 @@ async fn a_trace_without_a_container_id_never_waits() {
     assert_eq!(vec![None], container_tags(payload).await);
     assert_eq!(0, provider.lookups(), "a trace without a container needs no lookup");
     control.shutdown().await.expect("encoder should stop cleanly");
+}
+
+#[test]
+fn the_memory_bounds_declare_the_cap_of_the_buffer_once_it_is_on() {
+    let firm_limit = |buffer: Option<ContainerTagsBuffer>| {
+        let config = DatadogTraceConfiguration {
+            container_tags_buffer: buffer,
+            ..trace_configuration(AgentEnv::resolve(None, None, &[], &[]))
+        };
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        registry.as_bounds().total_firm_limit_bytes()
+    };
+
+    let without = firm_limit(None);
+    let with = firm_limit(Some(ContainerTagsBuffer::new(12_345)));
+
+    assert_eq!(without + 12_345, with);
 }

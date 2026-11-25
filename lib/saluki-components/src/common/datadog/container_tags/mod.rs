@@ -25,10 +25,6 @@
 //! - A new item never overtakes the held items of its container. When the new item can't wait, because the container
 //!   is complete, denied, or over the cap, the resolver releases the held items first. The Agent lets the new item
 //!   go first.
-//!
-//! # Missing
-//!
-//! The lookup uses low cardinality tags. The Agent uses high cardinality tags.
 
 use std::{
     sync::{
@@ -70,7 +66,7 @@ const DEFAULT_MAX_PENDING_BYTES: usize = 7_000_000;
 const MAX_PENDING_MEMORY_FRACTION: f64 = 0.1;
 
 /// Cardinality of the tags that the resolver looks up.
-const TAG_CARDINALITY: OriginTagCardinality = OriginTagCardinality::Low;
+const TAG_CARDINALITY: OriginTagCardinality = OriginTagCardinality::High;
 
 /// Prefix of the tags that a Kubernetes workload provider supplies. A container with such a tag is complete.
 const KUBERNETES_TAG_PREFIX: &str = "kube_";
@@ -124,7 +120,9 @@ impl Shared {
     fn try_reserve(&self, size: usize) -> bool {
         self.pending_bytes
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
-                pending.checked_add(size).filter(|total| *total <= self.max_pending_bytes)
+                pending
+                    .checked_add(size)
+                    .filter(|total| *total <= self.max_pending_bytes)
             })
             .is_ok()
     }
@@ -174,7 +172,9 @@ pub(crate) trait ContainerTagsResolver<T>: Send {
     /// Submits an item of the container with the given ID.
     ///
     /// `size` estimates the bytes that the item holds while it waits. `now` is the current time.
-    fn submit(&mut self, container_id: &MetaString, item: T, size: usize, now: Instant, released: &mut Vec<Released<T>>);
+    fn submit(
+        &mut self, container_id: &MetaString, item: T, size: usize, now: Instant, released: &mut Vec<Released<T>>,
+    );
 
     /// Retries the pending containers, and releases the items of each container that resolved or ran out of time.
     fn tick(&mut self, now: Instant, released: &mut Vec<Released<T>>);
@@ -241,9 +241,7 @@ struct ContainerTagLookup {
 impl ContainerTagLookup {
     fn lookup(&self, container_id: &MetaString) -> Lookup {
         let tags = match &self.provider {
-            Some(provider) => {
-                provider.get_tags_for_entity(&EntityId::Container(container_id.clone()), TAG_CARDINALITY)
-            }
+            Some(provider) => provider.get_tags_for_entity(&EntityId::Container(container_id.clone()), TAG_CARDINALITY),
             None => Some(SharedTagSet::default()),
         };
         Lookup { tags }

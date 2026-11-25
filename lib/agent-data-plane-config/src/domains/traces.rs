@@ -180,6 +180,11 @@ pub struct Domain {
     /// older OTLP trace translation.
     pub features: Vec<ApmFeature>,
 
+    /// Whether traces and stats wait for the tags of their container (`apm_config.enable_container_tags_buffer`).
+    ///
+    /// Defaults to `true`. The wait applies only in Kubernetes.
+    pub enable_container_tags_buffer: bool,
+
     /// Whether the rare-span sampler is enabled.
     pub enable_rare_sampler: bool,
 
@@ -270,6 +275,7 @@ impl Default for Domain {
             max_events_per_second: 0.0,
             max_catalog_entries: 0,
             features: Vec::new(),
+            enable_container_tags_buffer: false,
             enable_rare_sampler: false,
             probabilistic_sampler: ProbabilisticSampler::default(),
             obfuscation: Obfuscation::default(),

@@ -108,6 +108,8 @@ pub struct ApmStatsTransformConfiguration {
     /// Without a buffer, the transform looks a container up once and never waits for its tags. With a buffer, the
     /// transform holds a flushed payload whose container has no `kube_` tag yet. It sends the payload when the
     /// container has one, or after 12 seconds. The buffer has no effect without a workload provider.
+    ///
+    /// The trace encoder shares this buffer and its cap, so the encoder declares the cap in its memory bounds.
     pub container_tags_buffer: Option<ContainerTagsBuffer>,
 
     /// Provider of semantic mappings used to choose peer tag names for stats grouping.
@@ -176,12 +178,9 @@ impl MemoryBounds for ApmStatsTransformConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<ApmStats>("component struct");
         // TODO: Think about everything we need to account for here.
-
-        if let Some(buffer) = &self.container_tags_buffer {
-            builder
-                .firm()
-                .with_fixed_amount("container tags buffer", buffer.max_pending_bytes());
-        }
+        //
+        // The pending payloads of the container tags buffer aren't declared here: the trace encoder shares the buffer,
+        // and declares its cap once, which bounds the pending bytes of both components.
     }
 }
 
@@ -531,7 +530,7 @@ impl Transform for ApmStats {
             select! {
                 _ = health.live() => continue,
 
-                _ = retry_ticker.tick(), if self.tag_resolver.has_pending() => {
+                _ = retry_ticker.tick() => {
                     self.tag_resolver.tick(Instant::now().into_std(), &mut released);
                     let ready = apply_container_tags(&mut released, Vec::new());
                     let events = self.split_flushed_stats(ready);
@@ -623,18 +622,20 @@ fn estimated_size(payload: &ClientStatsPayload) -> usize {
 fn apply_container_tags(
     released: &mut Vec<Released<ClientStatsPayload>>, mut ready: Vec<ClientStatsPayload>,
 ) -> Vec<ClientStatsPayload> {
-    ready.extend(released.drain(..).map(|Released { item, resolution }| match resolution {
-        Resolution::Tags(provider_tags) => {
-            // Insert each tag, so a tag that the payload and the provider both carry appears once.
-            let mut tags = item.tags().clone();
-            for tag in &provider_tags {
-                tags.insert_tag(tag.clone());
-            }
-            item.with_tags(tags)
-        }
-        // A container that the provider doesn't know loses its ID and tags, as in the Agent.
-        Resolution::Failed => item.with_container_id("").with_tags(TagSet::default()),
-    }));
+    ready.extend(
+        released
+            .drain(..)
+            .map(|Released { item, resolution }| match resolution {
+                Resolution::Tags(provider_tags) => {
+                    // A refreshed lookup replaces the snapshot captured during aggregation.
+                    let mut tags = TagSet::default();
+                    tags.merge_shared(&provider_tags);
+                    item.with_tags(tags)
+                }
+                // A container that the provider doesn't know loses its ID and tags, as in the Agent.
+                Resolution::Failed => item.with_container_id("").with_tags(TagSet::default()),
+            }),
+    );
     ready
 }
 
@@ -2258,8 +2259,15 @@ mod tests {
 
             let payloads = stats_for_container(&provider, buffered, "cid-unknown").await;
 
-            assert_eq!(vec![(String::new(), Vec::<String>::new())], payloads, "buffered: {buffered}");
-            assert!(start.elapsed() < Duration::from_secs(5), "buffered: {buffered}: the transform waited");
+            assert_eq!(
+                vec![(String::new(), Vec::<String>::new())],
+                payloads,
+                "buffered: {buffered}"
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "buffered: {buffered}: the transform waited"
+            );
         }
     }
 
@@ -2279,11 +2287,14 @@ mod tests {
     }
 
     #[test]
-    fn applied_container_tags_join_the_tags_of_the_payload_without_repeating_one() {
+    fn refreshed_container_tags_replace_the_payload_snapshot() {
         let payload = ClientStatsPayload::default()
             .with_container_id("cid-1")
-            .with_tags(TagSet::from_iter(["team:core".into(), "image_tag:1".into()]));
-        let provider_tags: SharedTagSet = ["team:core", "kube_namespace:prod"].into_iter().map(Tag::from).collect();
+            .with_tags(TagSet::from_iter(["team:core".into(), "image_tag:old".into()]));
+        let provider_tags: SharedTagSet = ["image_tag:new", "kube_namespace:prod"]
+            .into_iter()
+            .map(Tag::from)
+            .collect();
         let mut released = vec![Released {
             item: payload,
             resolution: Resolution::Tags(provider_tags),
@@ -2292,9 +2303,13 @@ mod tests {
         let applied = apply_container_tags(&mut released, Vec::new());
 
         assert!(released.is_empty());
-        let mut tags: Vec<_> = applied[0].tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
+        let mut tags: Vec<_> = applied[0]
+            .tags()
+            .into_iter()
+            .map(|tag| tag.as_str().to_string())
+            .collect();
         tags.sort();
-        assert_eq!(vec!["image_tag:1", "kube_namespace:prod", "team:core"], tags);
+        assert_eq!(vec!["image_tag:new", "kube_namespace:prod"], tags);
         assert_eq!("cid-1", applied[0].container_id());
     }
 
@@ -2313,5 +2328,4 @@ mod tests {
         assert_eq!("", applied[0].container_id());
         assert_eq!(0, applied[0].tags().len());
     }
-
 }

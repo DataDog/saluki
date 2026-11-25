@@ -1,12 +1,12 @@
 //! Inputs of the trace pipeline: the trace and stats components, obfuscation, and the OTTL processors.
 
 use agent_data_plane_config::{
-    domains::{otlp, traces},
+    domains::{apm, otlp, traces},
     shared::SharedConfiguration,
 };
 use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
 use saluki_components::{
-    config::AgentEnv,
+    config::{AgentEnv, ContainerTagsBuffer},
     encoders::DatadogTraceConfiguration,
     transforms::{
         ApmStatsTransformConfiguration, CreditCardObfuscationConfig, EsObfuscationConfig, HttpObfuscationConfig,
@@ -36,6 +36,7 @@ pub(crate) fn trace_configuration(
         ignore_missing_datadog_fields: otlp_traces.ignore_missing_datadog_fields,
         default_hostname: None,
         workload_provider: None,
+        container_tags_buffer: None,
     }
 }
 
@@ -81,8 +82,20 @@ pub(crate) fn apm_stats_configuration(
         agent_env,
         default_hostname: None,
         workload_provider: None,
+        container_tags_buffer: None,
         semantic_registry,
     }
+}
+
+/// Builds the buffer that holds traces and stats until their container has tags.
+///
+/// Returns `None`, which selects the resolver that never waits, unless `apm_config.enable_container_tags_buffer` is set
+/// and the process runs in Kubernetes. Pending items use 10% of the trace-agent memory limit, or 7 MB without a limit.
+pub(crate) fn container_tags_buffer(
+    traces: &traces::Domain, apm: &apm::Domain, containerized: bool, kubernetes: bool,
+) -> Option<ContainerTagsBuffer> {
+    (traces.enable_container_tags_buffer && kubernetes)
+        .then(|| ContainerTagsBuffer::from_memory_limit(apm.effective_max_memory(containerized)))
 }
 
 /// Builds the trace tag replacer settings: the configured `replace_tags` rules, then the stack trace rules when
@@ -246,6 +259,61 @@ mod tests {
         assert!(config.ignore_missing_datadog_fields);
         assert_eq!(None, config.default_hostname);
         assert!(config.workload_provider.is_none());
+        assert!(config.container_tags_buffer.is_none());
+    }
+
+    #[test]
+    fn the_container_tags_buffer_needs_the_setting_and_kubernetes() {
+        let traces = |enabled| traces::Domain {
+            enable_container_tags_buffer: enabled,
+            ..Default::default()
+        };
+        let apm = apm::Domain {
+            max_memory: ConfigValue::explicit(1e9),
+            ..Default::default()
+        };
+
+        for (enabled, kubernetes, expected) in [
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+            (false, false, false),
+        ] {
+            let buffer = container_tags_buffer(&traces(enabled), &apm, false, kubernetes);
+            assert_eq!(
+                expected,
+                buffer.is_some(),
+                "enabled: {enabled}, kubernetes: {kubernetes}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_container_tags_buffer_holds_a_tenth_of_the_memory_limit_or_7_mb() {
+        let traces = traces::Domain {
+            enable_container_tags_buffer: true,
+            ..Default::default()
+        };
+        let cap = |apm: &apm::Domain, containerized| {
+            container_tags_buffer(&traces, apm, containerized, true)
+                .expect("the buffer should be on")
+                .max_pending_bytes()
+        };
+
+        let explicit = apm::Domain {
+            max_memory: ConfigValue::explicit(1e9),
+            ..Default::default()
+        };
+        assert_eq!(100_000_000, cap(&explicit, false));
+        assert_eq!(100_000_000, cap(&explicit, true));
+
+        // The unset limit is 500 MB outside a container, and none in one.
+        let defaulted = apm::Domain {
+            max_memory: ConfigValue::defaulted(5e8),
+            ..Default::default()
+        };
+        assert_eq!(50_000_000, cap(&defaulted, false));
+        assert_eq!(7_000_000, cap(&defaulted, true));
     }
 
     #[test]
@@ -314,6 +382,7 @@ mod tests {
         assert_eq!("prod", config.agent_env.as_str());
         assert_eq!(None, config.default_hostname);
         assert!(config.workload_provider.is_none());
+        assert!(config.container_tags_buffer.is_none());
     }
 
     #[test]

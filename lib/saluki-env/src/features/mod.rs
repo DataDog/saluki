@@ -274,7 +274,11 @@ mod tests {
             (&["KUBERNETES_SERVICE_HOST"], false),
         ];
         for (present, expected) in cases {
-            assert_eq!(expected, is_kubernetes_with(|name| present.contains(&name)), "{present:?}");
+            assert_eq!(
+                expected,
+                is_kubernetes_with(|name| present.contains(&name)),
+                "{present:?}"
+            );
         }
     }
 }

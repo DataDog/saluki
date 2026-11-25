@@ -58,11 +58,12 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     component_inputs::{
-        apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
-        metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
-        otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
-        ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration,
-        trace_sampler_configuration, trace_tag_replacer_configuration, traces_forwarder_configuration,
+        apm_relay_configuration, apm_stats_configuration, container_tags_buffer, datadog_metrics_configuration,
+        forwarder_configuration, metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration,
+        origin_tag_cardinality, otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver,
+        otlp_traces_settings, ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist,
+        trace_configuration, trace_sampler_configuration, trace_tag_replacer_configuration,
+        traces_forwarder_configuration,
     },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -606,6 +607,14 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     .with_environment_provider(env_provider.clone())
     .await?;
     dd_traces_config.workload_provider = Some(workload_provider.clone());
+    // The trace encoder and the stats transform share one buffer, so they share its cap and its deny list.
+    let container_tags_buffer = container_tags_buffer(
+        &config.domains.traces,
+        &config.domains.apm,
+        datadog_agent_config::is_containerized(),
+        features::is_kubernetes(),
+    );
+    dd_traces_config.container_tags_buffer = container_tags_buffer.clone();
     let trace_sampler_config = trace_sampler_configuration(
         &config.domains.traces,
         &config.domains.otlp.traces,
@@ -642,6 +651,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
             .with_environment_provider(env_provider.clone())
             .await?;
     apm_stats_transform_config.workload_provider = Some(workload_provider);
+    apm_stats_transform_config.container_tags_buffer = container_tags_buffer;
     let dd_apm_stats_encoder =
         DatadogApmStatsEncoderConfiguration::new(config.shared.metrics_encoding.flush_timeout, agent_env)
             .with_environment_provider(env_provider.clone())

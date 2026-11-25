@@ -1390,6 +1390,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.apm_dd_url`                                                                    | APM intake URL override                            |
 | `apm_config.apm_non_local_traffic`                                                         | Accept non-local traffic on the APM receiver       |
 | `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
+| `apm_config.enable_container_tags_buffer`                                                  | Hold traces and stats for container tags           |
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
 | `apm_config.env`                                                                           | Trace environment                                  |
 | `apm_config.error_tracking_standalone.enabled`                                             | Enable Error Tracking standalone                   |
@@ -1632,6 +1633,15 @@ The following settings work in ADP with the same behavior as the core agent.
 
 
 ## Additional Notes
+
+### `apm_config.enable_container_tags_buffer`
+
+The buffer is active only in Kubernetes. It looks up high cardinality container tags and treats
+a container with a `kube_` tag as complete. It retries each second and releases pending items
+on the first tick after their 12-second wait. A timed-out container stays denied for two minutes
+after the last lookup. Pending items use at most 10% of `apm_config.max_memory`, or 7 MB when
+that limit is `0`. ADP detects Kubernetes from `KUBERNETES_SERVICE_PORT` or `KUBERNETES`.
+The buffer flushes pending traces and stats when their components stop.
 
 ### `apm_config.receiver_port`
 

@@ -11,7 +11,7 @@ use saluki_core::{
     components::{encoders::*, BuildContext},
     data_model::{
         event::{
-            trace::{AttributeValue, Span, Trace, TraceIngestInfo},
+            trace::{AttributeValue, Trace, TraceIngestInfo},
             EventType,
         },
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -19,7 +19,7 @@ use saluki_core::{
     },
     observability::ComponentMetricsExt as _,
     runtime,
-    topology::{EventsBuffer, PayloadsBuffer},
+    topology::PayloadsBuffer,
 };
 use saluki_env::host::providers::BoxedHostProvider;
 use saluki_env::{EnvironmentProvider, HostProvider, WorkloadProvider};
@@ -52,6 +52,9 @@ use crate::common::otlp::util::{
     KEY_DATADOG_CONTAINER_TAGS,
 };
 use crate::config::{AgentEnv, ContainerTagsBuffer};
+
+mod size;
+use self::size::estimated_size;
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
 
@@ -156,6 +159,9 @@ pub struct DatadogTraceConfiguration {
     /// Without a buffer, the encoder looks a container up once and never waits for its tags. With a buffer, the
     /// encoder holds the traces of a container that has no `kube_` tag yet. It sends them when the container has one,
     /// or after 12 seconds. The buffer has no effect without a workload provider.
+    ///
+    /// The stats transform shares this buffer and its cap. This encoder declares the cap in its memory bounds, which
+    /// bounds the pending bytes of both components.
     pub container_tags_buffer: Option<ContainerTagsBuffer>,
 }
 
@@ -235,7 +241,7 @@ impl MemoryBounds for DatadogTraceConfiguration {
         builder
             .minimum()
             .with_single_value::<DatadogTrace>("component struct")
-            .with_array::<EventsBuffer>("request builder events channel", 8)
+            .with_array::<Vec<Trace>>("request builder events channel", 8)
             .with_array::<PayloadsBuffer>("request builder payloads channel", 8);
 
         builder
@@ -377,7 +383,7 @@ impl Encoder for DatadogTrace {
                     }
                     None => break,
                 },
-                _ = retry_ticker.tick(), if tag_resolver.has_pending() => {
+                _ = retry_ticker.tick() => {
                     tag_resolver.tick(Instant::now().into_std(), &mut released);
                     send_traces(&events_tx, resolved_traces(&mut released, Vec::new())).await?;
                 },
@@ -448,17 +454,6 @@ fn resolved_traces(released: &mut Vec<Released<Trace>>, mut ready: Vec<Trace>) -
     ready
 }
 
-/// Estimates the bytes that a trace holds while it waits for the tags of its container.
-fn estimated_size(trace: &Trace) -> usize {
-    let attribute_size = std::mem::size_of::<(MetaString, AttributeValue)>();
-    let spans: usize = trace
-        .spans()
-        .iter()
-        .map(|span| std::mem::size_of::<Span>() + span.attributes.len() * attribute_size)
-        .sum();
-    std::mem::size_of::<Trace>() + spans
-}
-
 /// Adds the tags that the workload provider knows to the container tags of a trace.
 ///
 /// The container tags that the trace carries stay. The provider's tags join them, and the trace keeps the merged tags
@@ -483,8 +478,8 @@ fn add_resolved_container_tags(trace: &mut Trace, resolution: &Resolution) {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<Vec<Trace>>,
-    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
+    payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<Vec<Trace>>, payloads_tx: Sender<PayloadsBuffer>,
+    flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -2051,8 +2046,7 @@ mod tests {
             .expect("encode should succeed");
         let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
         let tracer_payload = &payload.idxTracerPayloads[0];
-        string_attrs(tracer_payload.attributes(), tracer_payload.strings())
-            .remove(CONTAINER_TAGS_META_KEY)
+        string_attrs(tracer_payload.attributes(), tracer_payload.strings()).remove(CONTAINER_TAGS_META_KEY)
     }
 
     #[test]
@@ -2069,7 +2063,10 @@ mod tests {
         // A payload with no version takes the container's.
         let mut trace = make_trace(TraceIngestInfo::Datadog);
         trace.payload.container_id = MetaString::from("cid-1");
-        assert_eq!(encode(&with_provider_tags(trace.clone(), &container_tags)), "container-v");
+        assert_eq!(
+            encode(&with_provider_tags(trace.clone(), &container_tags)),
+            "container-v"
+        );
 
         // The payload's own version wins.
         trace.payload.app_version = MetaString::from("payload-v");

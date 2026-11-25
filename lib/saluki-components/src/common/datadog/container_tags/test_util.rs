@@ -23,6 +23,7 @@ use stringtheory::MetaString;
 pub(crate) struct ScriptedProvider {
     containers: Mutex<HashMap<MetaString, SharedTagSet>>,
     lookups: AtomicUsize,
+    last_cardinality: Mutex<Option<OriginTagCardinality>>,
 }
 
 impl ScriptedProvider {
@@ -35,6 +36,11 @@ impl ScriptedProvider {
             .insert(MetaString::from(container_id), tags);
     }
 
+    /// Returns the cardinality of the most recent lookup.
+    pub fn last_cardinality(&self) -> Option<OriginTagCardinality> {
+        *self.last_cardinality.lock().unwrap()
+    }
+
     /// Returns how many times a consumer looked a container up.
     pub fn lookups(&self) -> usize {
         self.lookups.load(Ordering::Relaxed)
@@ -42,8 +48,9 @@ impl ScriptedProvider {
 }
 
 impl WorkloadProvider for ScriptedProvider {
-    fn get_tags_for_entity(&self, entity_id: &EntityId, _: OriginTagCardinality) -> Option<SharedTagSet> {
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         self.lookups.fetch_add(1, Ordering::Relaxed);
+        *self.last_cardinality.lock().unwrap() = Some(cardinality);
         match entity_id {
             EntityId::Container(id) => self.containers.lock().unwrap().get(id).cloned(),
             _ => None,

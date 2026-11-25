@@ -17,6 +17,18 @@ pub(super) struct BufferingResolver<T> {
     telemetry: BufferTelemetry,
 }
 
+impl<T> Drop for BufferingResolver<T> {
+    fn drop(&mut self) {
+        // An error or cancellation can bypass the consumer's final flush.
+        for container in self.pending.values() {
+            for item in &container.items {
+                self.shared.release(item.size);
+            }
+        }
+        self.telemetry.set_pending(0, self.shared.pending_bytes());
+    }
+}
+
 /// The items held for one container, in submission order.
 struct PendingContainer<T> {
     expires_at: Instant,
@@ -40,7 +52,9 @@ impl<T> BufferingResolver<T> {
     }
 
     /// Releases the held items of a container with the given resolution.
-    fn release_container(&mut self, container_id: &MetaString, resolution: &Resolution, released: &mut Vec<Released<T>>) {
+    fn release_container(
+        &mut self, container_id: &MetaString, resolution: &Resolution, released: &mut Vec<Released<T>>,
+    ) {
         if let Some(container) = self.pending.shift_remove(container_id) {
             self.pending_items = self.pending_items.saturating_sub(container.items.len());
             release_items(&self.shared, container.items, resolution, released);
@@ -71,7 +85,9 @@ impl<T> ContainerTagsResolver<T> for BufferingResolver<T>
 where
     T: Send,
 {
-    fn submit(&mut self, container_id: &MetaString, item: T, size: usize, now: Instant, released: &mut Vec<Released<T>>) {
+    fn submit(
+        &mut self, container_id: &MetaString, item: T, size: usize, now: Instant, released: &mut Vec<Released<T>>,
+    ) {
         let lookup = self.lookup.lookup(container_id);
         let complete = lookup.is_complete();
         let resolution = lookup.into_resolution();
@@ -158,6 +174,7 @@ mod tests {
     use std::time::Duration;
 
     use metrics::Key;
+    use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
@@ -243,6 +260,7 @@ mod tests {
             harness.take_released()
         );
         assert!(!harness.resolver.has_pending());
+        assert_eq!(Some(OriginTagCardinality::High), harness.provider.last_cardinality());
     }
 
     #[test]
@@ -309,7 +327,10 @@ mod tests {
 
         // The container expired at 12s. While denied, an item doesn't wait.
         harness.submit("c1", "denied", 13);
-        assert_eq!(vec![("denied", "tags[image_tag:1]".to_string())], harness.take_released());
+        assert_eq!(
+            vec![("denied", "tags[image_tag:1]".to_string())],
+            harness.take_released()
+        );
         assert!(!harness.resolver.has_pending());
 
         // A denied container that the resolver doesn't see for two minutes leaves the list.
@@ -346,7 +367,11 @@ mod tests {
         second
             .resolver
             .submit(&MetaString::from("c1"), "t2", 10, now, &mut second.released);
-        assert_eq!(1, second.released.len(), "the second resolver doesn't wait for a denied container");
+        assert_eq!(
+            1,
+            second.released.len(),
+            "the second resolver doesn't wait for a denied container"
+        );
         assert!(!second.resolver.has_pending());
     }
 
@@ -380,7 +405,10 @@ mod tests {
         harness.submit_sized("c1", "second", 60, 1);
 
         let released = harness.take_released();
-        assert_eq!(vec!["first", "second"], released.iter().map(|r| r.0).collect::<Vec<_>>());
+        assert_eq!(
+            vec!["first", "second"],
+            released.iter().map(|r| r.0).collect::<Vec<_>>()
+        );
         assert!(!harness.resolver.has_pending());
     }
 
@@ -413,7 +441,10 @@ mod tests {
         harness.tick_until(1, 12);
 
         let released = harness.take_released();
-        assert_eq!(vec!["first", "second"], released.iter().map(|r| r.0).collect::<Vec<_>>());
+        assert_eq!(
+            vec!["first", "second"],
+            released.iter().map(|r| r.0).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -454,6 +485,39 @@ mod tests {
     }
 
     #[test]
+    fn dropping_a_resolver_releases_its_shared_reservations() {
+        let buffer = ContainerTagsBuffer::new(100);
+        let mut first = Harness::with_buffer(&buffer);
+        first.submit_sized("c1", "first", 100, 0);
+        assert!(first.resolver.has_pending());
+
+        drop(first);
+        let mut second = Harness::with_buffer(&buffer);
+        second.submit_sized("c2", "second", 100, 0);
+
+        assert!(second.take_released().is_empty());
+        assert!(
+            second.resolver.has_pending(),
+            "the first resolver returned the shared reservation"
+        );
+    }
+
+    #[test]
+    fn ticking_an_idle_resolver_evicts_expired_denials() {
+        let buffer = ContainerTagsBuffer::new(100);
+        let mut harness = Harness::with_buffer(&buffer);
+        harness.submit("unknown", "item", 0);
+        harness.tick_until(1, 12);
+        harness.take_released();
+        assert!(!harness.resolver.has_pending());
+        assert_eq!(1, buffer.shared.denied().len());
+
+        harness.tick_until(13, 12 + DENY_DURATION.as_secs() + 10);
+
+        assert_eq!(0, buffer.shared.denied().len());
+    }
+
+    #[test]
     fn the_no_op_resolver_never_waits() {
         let provider = Arc::new(ScriptedProvider::default());
         provider.set_tags("c1", &["image_tag:1"]);
@@ -465,10 +529,7 @@ mod tests {
         resolver.submit(&MetaString::from("c1"), "known", 10, now, &mut released);
         resolver.submit(&MetaString::from("unknown"), "unknown", 10, now, &mut released);
 
-        let described: Vec<_> = released
-            .iter()
-            .map(|r| (r.item, describe(&r.resolution)))
-            .collect();
+        let described: Vec<_> = released.iter().map(|r| (r.item, describe(&r.resolution))).collect();
         assert_eq!(
             vec![
                 ("known", "tags[image_tag:1]".to_string()),
@@ -481,18 +542,31 @@ mod tests {
 
     #[test]
     fn a_resolver_without_a_provider_adds_no_tags_and_does_not_fail() {
-        let mut resolver = resolver::<&'static str>(None, Some(&ContainerTagsBuffer::new(100)), &MetricsBuilder::default());
+        let mut resolver =
+            resolver::<&'static str>(None, Some(&ContainerTagsBuffer::new(100)), &MetricsBuilder::default());
         let mut released = Vec::new();
 
         resolver.submit(&MetaString::from("c1"), "item", 10, Instant::now(), &mut released);
 
-        assert_eq!(vec![("item", "tags[]".to_string())], released.iter().map(|r| (r.item, describe(&r.resolution))).collect::<Vec<_>>());
+        assert_eq!(
+            vec![("item", "tags[]".to_string())],
+            released
+                .iter()
+                .map(|r| (r.item, describe(&r.resolution)))
+                .collect::<Vec<_>>()
+        );
         assert!(!resolver.has_pending());
     }
 
     #[test]
     fn the_cap_follows_the_memory_limit() {
-        for (limit, expected) in [(5e8, 50_000_000), (1e6, 100_000), (0.0, 7_000_000), (-1.0, 7_000_000), (f64::NAN, 7_000_000)] {
+        for (limit, expected) in [
+            (5e8, 50_000_000),
+            (1e6, 100_000),
+            (0.0, 7_000_000),
+            (-1.0, 7_000_000),
+            (f64::NAN, 7_000_000),
+        ] {
             assert_eq!(
                 expected,
                 ContainerTagsBuffer::from_memory_limit(limit).max_pending_bytes(),
@@ -516,7 +590,10 @@ mod tests {
         assert_eq!(Some(60.0), gauge("tag_buffer_memory_usage_bytes"));
 
         harness.submit_sized("c2", "over the cap", 60, 0);
-        assert_eq!(Some(1), counter("tag_buffer_denied_payloads_total", reason("memory_limit")));
+        assert_eq!(
+            Some(1),
+            counter("tag_buffer_denied_payloads_total", reason("memory_limit"))
+        );
 
         harness.tick_until(1, 12);
         assert_eq!(Some(0.0), gauge("tag_buffer_pending_payloads"));
