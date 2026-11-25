@@ -47,7 +47,8 @@
     - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' "${BUNDLED_IMAGE}"
     - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui
   after_script:
-    - AGENT_NIGHTLY="$PARENT_AGENT_NIGHTLY" bash ci/tooling/report-panoramic-results.sh correctness
+    - bash ci/tooling/report-panoramic-results.sh convert correctness "$CORRECTNESS_TEST_CASE"
+    - AGENT_NIGHTLY="$PARENT_AGENT_NIGHTLY" bash ci/tooling/report-panoramic-results.sh upload
 
 # Common to every kind-based correctness-test job. Extends .test-correctness-definition
 # with a longer timeout. Cluster creation, image loading, and teardown are managed by

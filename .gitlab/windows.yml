@@ -154,6 +154,20 @@ test-integration-windows-amd64:
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
   after_script:
+    # Convert after the script ends, so an attempt that timed out still has a report. The converter runs in the build
+    # image, which has Python. Skip it when the image is missing, so the conversion never starts a cold pull.
+    - |
+      $ErrorActionPreference = "Continue"
+      docker image inspect ${WINBUILDIMAGE} *> $null
+      if ($LASTEXITCODE -eq 0) {
+        docker run --rm -v "$(Get-Location):c:\mnt" -w c:\mnt -e CI_JOB_STATUS -e PANORAMIC_LOG_DIR ${WINBUILDIMAGE} `
+          powershell.exe -NoProfile -NonInteractive -Command `
+          'python ci\tooling\panoramic_junit.py $env:PANORAMIC_LOG_DIR integration --wait 60'
+        # GitLab ends after_script when an entry fails, which would skip the upload.
+        if ($LASTEXITCODE -ne 0) { Write-Host "WARNING: Panoramic JUnit conversion failed (exit $LASTEXITCODE)." }
+      } else {
+        Write-Host "WARNING: build image ${WINBUILDIMAGE} is not present; no Panoramic JUnit report."
+      }
     - |
       if (-not $env:CI_COMMIT_TAG) {
         $Channel = if ($env:AGENT_NIGHTLY -eq "true") { "nightly" } else { "pinned" }

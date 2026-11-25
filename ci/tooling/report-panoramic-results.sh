@@ -1,8 +1,26 @@
 #!/usr/bin/env bash
-# Run in the job's after_script so a failed test still has a report.
+# Reports a Panoramic CI attempt from the job's after_script, so a failed or timed-out attempt still has a report.
+#
+# Usage: report-panoramic-results.sh convert <integration|correctness> [case]
+#        report-panoramic-results.sh upload
+#
+# Run `convert` first: it writes the JUnit report that GitLab collects. `upload` sends it to Datadog and can take
+# longer, so other after_script steps can run between the two.
 set -euo pipefail
 
-python3 ci/tooling/panoramic_junit.py "$PANORAMIC_LOG_DIR" "${1:?expected integration or correctness}" || exit 0
+# How long `convert` waits for a run that was stopped to record its last cases. Panoramic gives each running case
+# 30 seconds to return after a signal.
+readonly SETTLE_SECONDS=60
+
+case "${1:?expected convert or upload}" in
+    convert)
+        python3 ci/tooling/panoramic_junit.py "$PANORAMIC_LOG_DIR" "${2:?expected integration or correctness}" \
+            ${3:+--case "$3"} --wait "$SETTLE_SECONDS" || true
+        exit 0
+        ;;
+    upload) ;;
+    *) echo "WARNING: unknown command '$1'; not reporting Panoramic results." >&2; exit 0 ;;
+esac
 
 # The dd-sts policy admits branches, not tags. GitLab collects the XML for both.
 if [[ -n "${CI_COMMIT_TAG:-}" ]]; then
