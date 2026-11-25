@@ -148,6 +148,10 @@ fn main() -> ExitCode {
             traces::defaults_fixture,
         ),
         (
+            "test/correctness/cases/otlp-traces-obfuscation/millstone.yaml",
+            traces::obfuscation_fixture,
+        ),
+        (
             "test/correctness/cases/otlp-traces-stats/millstone.yaml",
             traces::stats_fixture,
         ),
