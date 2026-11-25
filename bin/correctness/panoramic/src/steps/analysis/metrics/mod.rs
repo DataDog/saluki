@@ -179,14 +179,28 @@ impl MetricsAnalyzer {
 
 /// Removes from both sides each series whose type differs between them, when a known difference covers it.
 ///
-/// A series has a type difference when each side holds its context with another type. The difference is at `type`, of
-/// kind `value`, and the view that an entry's `when` matches holds the series `name`.
+/// A series has a type difference when each side holds its context with exactly one type, and the two differ. A side
+/// that holds the context with another type as well has an unexpected series, which stays and fails the comparison.
+/// The difference is at `type`, of kind `value`, and the view that an entry's `when` matches holds the series `name`.
 fn remove_known_type_differences(
     baseline_metrics: &mut NormalizedMetrics, comparison_metrics: &mut NormalizedMetrics, ratchet: &mut Ratchet<'_>,
 ) {
     let (baseline_only_pairs, comparison_only_pairs) = context_differences(baseline_metrics, comparison_metrics);
+    let is_single_type = |metrics: &NormalizedMetrics, context: &NormalizedMetricContext| {
+        metrics
+            .metrics()
+            .iter()
+            .filter(|metric| metric.context() == context)
+            .map(|metric| metric.value_type())
+            .collect::<HashSet<_>>()
+            .len()
+            == 1
+    };
     let mut known = HashSet::new();
     for (context, baseline_type) in &baseline_only_pairs {
+        if !is_single_type(baseline_metrics, context) || !is_single_type(comparison_metrics, context) {
+            continue;
+        }
         let view = BTreeMap::from([(NAME_FIELD.to_string(), json!(context.name()))]);
         for (_, comparison_type) in comparison_only_pairs.iter().filter(|(other, _)| other == context) {
             let diff = FieldDiff {
@@ -445,7 +459,7 @@ mod tests {
                         "name": name,
                         "tags": tags,
                     },
-                    "values": [[10, {"mtype": mtype, "value": value}]],
+                    "values": [[10, {"mtype": mtype, "value": value, "interval": 10}]],
                 }))
                 .expect("metric should deserialize")
             })
@@ -522,6 +536,49 @@ mod tests {
         );
         assert!(
             !details.iter().any(|line| line.contains("known.series")),
+            "{:?}",
+            details
+        );
+    }
+
+    #[test]
+    fn a_known_type_difference_keeps_an_unexpected_type_of_the_series() {
+        // The comparison also holds a rate of the series, and the known difference does not hide it.
+        let extra_in_comparison = valued(&[
+            ("known.series", &[], "Gauge", 3.0),
+            ("known.series", &[], "Rate", 3.0),
+            ("value.series", &[], "Count", 15.0),
+        ]);
+        let (error, details) = analyze(baseline(), extra_in_comparison, KNOWN_TYPE_DIFFERENCE).unwrap_err();
+        assert!(
+            error.starts_with("Mismatch in metrics pairs between baseline and comparison."),
+            "{}",
+            error
+        );
+        assert!(
+            details.contains(&"  - known.series (type: rate)".to_string()),
+            "{:?}",
+            details
+        );
+
+        // The same holds when the baseline holds the extra type.
+        let extra_in_baseline = valued(&[
+            ("known.series", &[], "Count", 30.0),
+            ("known.series", &[], "Rate", 30.0),
+            ("value.series", &[], "Count", 15.0),
+        ]);
+        let comparison = valued(&[
+            ("known.series", &[], "Gauge", 3.0),
+            ("value.series", &[], "Count", 15.0),
+        ]);
+        let (error, details) = analyze(extra_in_baseline, comparison, KNOWN_TYPE_DIFFERENCE).unwrap_err();
+        assert!(
+            error.starts_with("Mismatch in metrics pairs between baseline and comparison."),
+            "{}",
+            error
+        );
+        assert!(
+            details.contains(&"  - known.series (type: rate)".to_string()),
             "{:?}",
             details
         );
