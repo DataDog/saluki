@@ -34,6 +34,7 @@ dependencies = [
  "datadog-agent-config",
  "datadog-agent-config-docs",
  "datadog-agent-runtime",
+ "datadog-agent-tag-normalization",
  "datadog-protos",
  "derive-where",
  "futures",
@@ -1502,6 +1503,15 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "datadog-agent-tag-normalization"
+version = "0.1.0"
+dependencies = [
+ "icu_properties",
+ "proptest",
+ "simdutf8",
 ]
 
 [[package]]

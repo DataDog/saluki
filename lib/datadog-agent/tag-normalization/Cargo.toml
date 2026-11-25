@@ -1,0 +1,17 @@
+[package]
+name = "datadog-agent-tag-normalization"
+version = "0.1.0"
+description = "Metric tag key normalization, in the form the Datadog metrics intake stores tags in"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+icu_properties = { workspace = true }
+simdutf8 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
