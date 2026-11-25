@@ -131,8 +131,8 @@ impl ContainerIdResolver {
                 let external_data = RawExternalData::new(pod_uid, container_name, init_container);
                 self.workload_provider
                     .get_container_entity_for_external_data(&external_data)
+                    .filter(is_container_id)
             })
-            .filter(is_container_id)
     }
 }
 
@@ -476,6 +476,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolver.resolve(&origin).as_deref(), Some("containerd-container"));
+    }
+
+    #[test]
+    fn an_empty_container_id_for_one_init_flag_falls_through_to_the_other() {
+        let mut provider = TestWorkloadProvider::new();
+        provider
+            .add_external_data("pod-uid", "app", false, container(""))
+            .add_external_data("pod-uid", "app", true, container("init-container"));
+        let resolver = resolver(provider);
+        let origin = OriginInfo {
+            pod_uid: "pod-uid".into(),
+            container_name: "app".into(),
+            ..Default::default()
+        };
+        assert_eq!(resolver.resolve(&origin).as_deref(), Some("init-container"));
     }
 
     #[test]
