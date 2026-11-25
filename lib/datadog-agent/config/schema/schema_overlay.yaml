@@ -582,11 +582,9 @@ inventory:
     pipelines: [traces]
     description: "SQL obfuscator mode"
     documentation: |-
-      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
-      `/info` response, and applies it to the traces it processes itself. The `obfuscate_only` mode
-      can differ from the Agent: comments are dropped and the spacing around parentheses can change.
-      The other modes matched the Agent in testing. As in the Agent, an invalid value logs a warning
-      and falls back to the default obfuscator.
+      ADP uses this mode for SQL obfuscation. `obfuscate_only` may differ from the Agent: comments are
+      dropped and spacing around parentheses can change. An invalid value logs a warning and falls
+      back to the default obfuscator.
 
   apm_config.stats_writer.connection_limit:
     support: none

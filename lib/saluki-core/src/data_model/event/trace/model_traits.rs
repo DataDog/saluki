@@ -43,28 +43,64 @@ impl model::ValueTypes for SalukiValues {
 /// Typed value for attributes at every level of the trace model.
 pub type AttributeValue = model::AttributeValue<SalukiValues>;
 
+/// Returns `true` if a later list entry has the same key.
+fn is_shadowed(entries: &KeyValueList, index: usize) -> bool {
+    let key = &entries[index].0;
+    entries[index + 1..].iter().any(|(later, _)| later == key)
+}
+
+/// Keep only each key's last entry, preserving the order of the surviving entries.
+fn remove_shadowed(entries: &mut KeyValueList) {
+    let mut index = 0;
+    while index < entries.len() {
+        if is_shadowed(entries, index) {
+            Vec::remove(entries, index);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+/// Key/value lists preserve decoded order and can contain duplicate keys; the last value wins.
 impl ValueMap<SalukiValues> for KeyValueList {
     fn get(&self, key: &str) -> Option<&AttributeValue> {
-        <[_]>::iter(self).find(|(k, _)| &**k == key).map(|(_, v)| v)
+        self.as_slice()
+            .iter()
+            .rev()
+            .find(|(k, _)| k.as_ref() == key)
+            .map(|(_, v)| v)
     }
     fn len(&self) -> usize {
-        self.len()
+        (0..self.as_slice().len()).filter(|&i| !is_shadowed(self, i)).count()
     }
     fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a str, &'a AttributeValue)>
     where
         SalukiValues: 'a,
     {
-        <[_]>::iter(self).map(|(k, v)| (k.as_ref(), v))
+        self.as_slice()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !is_shadowed(self, *i))
+            .map(|(_, (k, v))| (k.as_ref(), v))
     }
 }
 
 impl ValueMapMut<SalukiValues> for KeyValueList {
     fn get_mut(&mut self, key: &str) -> Option<&mut AttributeValue> {
-        <[_]>::iter_mut(self).find(|(k, _)| &**k == key).map(|(_, v)| v)
+        self.as_mut_slice()
+            .iter_mut()
+            .rev()
+            .find(|(k, _)| k.as_ref() == key)
+            .map(|(_, v)| v)
     }
     fn insert(&mut self, key: MetaString, value: AttributeValue) -> Option<AttributeValue> {
-        match self.get_mut(key.as_ref()) {
-            Some(v) => Some(std::mem::replace(v, value)),
+        match self
+            .as_mut_slice()
+            .iter_mut()
+            .rev()
+            .find(|(k, _)| k.as_ref() == key.as_ref())
+        {
+            Some((_, current)) => Some(std::mem::replace(current, value)),
             None => {
                 self.push((key, value));
                 None
@@ -72,19 +108,23 @@ impl ValueMapMut<SalukiValues> for KeyValueList {
         }
     }
     fn remove(&mut self, key: &str) -> Option<AttributeValue> {
-        let idx = <[_]>::iter(self).position(|(k, _)| &**k == key)?;
-        Some(Vec::remove(self, idx).1)
+        let last = self.as_slice().iter().rposition(|(k, _)| k.as_ref() == key)?;
+        let (_, value) = Vec::remove(self, last);
+        self.retain(|(k, _)| &**k != key);
+        Some(value)
     }
     fn retain(&mut self, mut f: impl FnMut(&str, &mut AttributeValue) -> bool) {
+        remove_shadowed(self);
         Vec::retain_mut(self, |(k, v)| f(k.as_ref(), v));
     }
     fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (&'a str, &'a mut AttributeValue)>
     where
         SalukiValues: 'a,
     {
-        <[_]>::iter_mut(self).map(|(k, v)| {
+        remove_shadowed(self);
+        self.as_mut_slice().iter_mut().map(|(k, v)| {
             let k: &'a MetaString = k;
-            (&**k, v)
+            (k.as_ref(), v)
         })
     }
 }
@@ -232,7 +272,39 @@ fn non_empty(s: &MetaString) -> Option<&str> {
     (!s.is_empty()).then_some(s.as_ref())
 }
 
-const KINDS: [&str; 6] = ["", "internal", "server", "client", "producer", "consumer"];
+fn start_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn duration_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(-1)
+}
+
+fn from_i64(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+fn span_kind_name(kind: u32) -> Option<&'static str> {
+    match kind {
+        1 => Some("internal"),
+        2 => Some("server"),
+        3 => Some("client"),
+        4 => Some("producer"),
+        5 => Some("consumer"),
+        _ => None,
+    }
+}
+
+fn span_kind_from_name(name: &str) -> u32 {
+    match name {
+        "internal" => 1,
+        "server" => 2,
+        "client" => 3,
+        "producer" => 4,
+        "consumer" => 5,
+        _ => 0,
+    }
+}
 
 impl model::SpanEvent for SpanEvent {
     fn name(&self) -> &str {
@@ -280,20 +352,16 @@ impl model::Span for Span {
         self.parent_id
     }
     fn start(&self) -> i64 {
-        self.start as i64
+        start_to_i64(self.start)
     }
     fn duration(&self) -> i64 {
-        self.duration as i64
+        duration_to_i64(self.duration)
     }
     fn is_error(&self) -> bool {
         self.error != 0
     }
     fn span_kind(&self) -> Option<&str> {
-        // `internal` is the default kind, so it reads as unset.
-        match self.kind {
-            2..=5 => Some(KINDS[self.kind as usize]),
-            _ => None,
-        }
+        span_kind_name(self.kind)
     }
     fn env(&self) -> Option<&str> {
         non_empty(&self.env)
@@ -329,16 +397,16 @@ impl model::SpanMut for Span {
         self.parent_id = value;
     }
     fn set_start(&mut self, value: i64) {
-        self.start = value as u64;
+        self.start = from_i64(value);
     }
     fn set_duration(&mut self, value: i64) {
-        self.duration = value as u64;
+        self.duration = from_i64(value);
     }
     fn set_error(&mut self, value: bool) {
         self.error = i32::from(value);
     }
     fn set_span_kind(&mut self, value: &str) {
-        self.kind = KINDS.iter().position(|k| *k == value).unwrap_or(0) as u32;
+        self.kind = span_kind_from_name(value);
     }
     fn set_env(&mut self, value: MetaString) {
         self.env = value;
@@ -427,10 +495,10 @@ mod tests {
     }
 
     #[test]
-    fn span_kind_maps_otel_kinds_and_reads_internal_as_unset() {
+    fn span_kind_maps_otel_kinds_and_unsets_unknown_values() {
         let kinds = [
             (0, None),
-            (1, None),
+            (1, Some("internal")),
             (2, Some("server")),
             (3, Some("client")),
             (4, Some("producer")),
@@ -442,10 +510,23 @@ mod tests {
         }
 
         let mut span = Span::default();
-        model::SpanMut::set_span_kind(&mut span, "client");
-        assert_eq!(span.kind, 3);
+        model::SpanMut::set_span_kind(&mut span, "internal");
+        assert_eq!(span.kind, 1);
         model::SpanMut::set_span_kind(&mut span, "not-a-kind");
         assert_eq!(span.kind, 0, "an unrecognized kind unsets it");
+    }
+
+    #[test]
+    fn trait_time_fields_handle_values_outside_the_signed_range() {
+        let mut span = Span::default().with_start(u64::MAX).with_duration(u64::MAX);
+        assert_eq!(
+            (model::Span::start(&span), model::Span::duration(&span)),
+            (i64::MAX, -1)
+        );
+
+        model::SpanMut::set_start(&mut span, -1);
+        model::SpanMut::set_duration(&mut span, -1);
+        assert_eq!((model::Span::start(&span), model::Span::duration(&span)), (0, 0));
     }
 
     #[test]
@@ -561,6 +642,30 @@ mod tests {
         assert_eq!(ValueMap::get(&list, "k"), Some(&string("w")));
         assert_eq!(ValueMapMut::remove(&mut list, "k"), Some(string("w")));
         assert!(ValueMap::is_empty(&list));
+    }
+
+    #[test]
+    fn key_value_lists_treat_the_last_duplicate_as_the_value() {
+        let mut list = vec![
+            ("a".into(), string("first")),
+            ("b".into(), string("only")),
+            ("a".into(), string("last")),
+        ];
+
+        assert_eq!(ValueMap::get(&list, "a"), Some(&string("last")));
+        assert_eq!(ValueMap::len(&list), 2);
+        let entries: Vec<_> = ValueMap::iter(&list).map(|(k, v)| (k, v.as_str().unwrap())).collect();
+        assert_eq!(entries, [("b", "only"), ("a", "last")]);
+
+        let mut visited = Vec::new();
+        ValueMapMut::retain(&mut list, |key, _| {
+            visited.push(key.to_owned());
+            key != "b"
+        });
+        assert_eq!(visited, ["b", "a"]);
+        assert_eq!(list.len(), 1);
+        assert_eq!(ValueMapMut::remove(&mut list, "a"), Some(string("last")));
+        assert!(list.is_empty());
     }
 
     #[test]
