@@ -86,10 +86,10 @@ pub struct LogsAnalysisOptions {
     /// gap requires removing its entries.
     ///
     /// An entry's `when` limits it to some logs, such as the logs of one fixture with `{fixture_id: [a]}`. It matches
-    /// the fields of the baseline log, read from its semantic view: one map of the envelope fields, the other
-    /// top-level keys and the content properties, so that a field matches wherever the log holds it (see
-    /// `stele::Log::semantic_view`). A request header difference comes from a request, not from a log, so it has no
-    /// fields to match, and an entry with a `when` never covers it.
+    /// the fields of the baseline log's semantic view (see `stele::Log::semantic_view`). That view is one map of the
+    /// envelope fields, the other top-level keys, and the content properties, so a field matches wherever the log holds
+    /// it. A request header difference comes from a request, not from a log, so it has no fields to match, and an entry
+    /// with a `when` never covers it.
     pub known_differences: Vec<KnownDifference>,
 }
 
