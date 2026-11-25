@@ -8,8 +8,10 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 
 /// Renders an OTLP value the way `pcommon.Value.AsString` does. Arrays and maps become JSON.
 ///
-/// The JSON of arrays and maps doesn't match `pcommon` exactly yet. Inside them, doubles use `serde_json`'s layout,
-/// empty values are dropped and empty bytes become `""` instead of `null`, a non-finite double is dropped instead of
+/// # Missing
+///
+/// The JSON of arrays and maps differs from `pcommon` (#3397). Inside them, doubles use the `serde_json` layout and
+/// empty values are dropped. Empty bytes become `""` instead of `null`. A non-finite double is dropped instead of
 /// making the whole string empty, and U+2028 and U+2029 aren't escaped.
 pub(crate) fn otlp_value_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
     match value {

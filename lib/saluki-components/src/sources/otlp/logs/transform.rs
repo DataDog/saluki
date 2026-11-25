@@ -56,8 +56,8 @@ static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion"
 ///
 /// # Errors
 ///
-/// If a record attribute holds a NaN or an infinite double that no later property overwrites, an error is returned,
-/// and the log should be dropped. The Agent drops such a log when it fails to marshal it.
+/// Returns an error when a record attribute holds a NaN or an infinite double that no later property overwrites. The
+/// caller drops the log, as the Agent drops a log that it fails to marshal.
 pub(super) fn transform_log_record(
     lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
     record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet,
