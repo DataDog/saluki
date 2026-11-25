@@ -426,3 +426,21 @@ pub fn kafka_parity_fixture() -> Vec<u8> {
         ],
     )])
 }
+
+/// Three gauges named `otlpprobe.ctl.{a,b,c}`, with the values 1, 2 and 3.
+///
+/// The `otlp-metrics` case sends them next to its random load, whose metric names are random, so that the case can
+/// check which software sent a known metric to the intake.
+pub fn control_fixture() -> Vec<u8> {
+    let gauges = ["a", "b", "c"]
+        .iter()
+        .zip(1..)
+        .map(|(item, value)| {
+            gauge(
+                &format!("otlpprobe.ctl.{item}"),
+                vec![point(NOV_2023_NANOS, f64::from(value), vec![])],
+            )
+        })
+        .collect();
+    request(vec![resource_metrics(None, None, gauges)])
+}

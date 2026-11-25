@@ -80,6 +80,10 @@ fn main() -> ExitCode {
             logs::resource_host_fixture,
         ),
         (
+            "test/correctness/cases/otlp-metrics/millstone-control.yaml",
+            metrics::control_fixture,
+        ),
+        (
             "test/correctness/cases/otlp-metrics-as-type-rate/millstone.yaml",
             metrics::as_type_rate_fixture,
         ),
