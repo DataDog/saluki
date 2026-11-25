@@ -9,13 +9,22 @@ use std::fmt;
 
 use serde::de::{self, DeserializeOwned, Deserializer, SeqAccess, Visitor};
 use serde::Deserialize;
+use tracing::warn;
+
+use crate::cast_de::cast_to_string;
 
 /// Deserialize a `Vec<String>` from either a sequence or a string.
 ///
 /// A string is read as the Agent's `[]string` cast reads it (see
 /// [`parse_string_list`](crate::cast_de::parse_string_list)): a JSON array of strings, else split on
-/// whitespace. A sequence is taken element by element and a null is an empty list. Any other JSON
-/// shape is a type error.
+/// whitespace. A null is an empty list. Any other JSON shape is a type error.
+///
+/// A sequence is read item by item, as the Agent's `cast.ToStringSlice` reads it: each item is cast
+/// with `cast.ToString`, so a number or a boolean is its string form and a null is an empty string.
+/// `cast.ToString` cannot cast a map or a sequence item, and the Agent keeps the empty string that
+/// it returns, without a warning. This function also reads such an item as an empty string, and
+/// logs a warning, so that an item such as `- product: contentcontrol` does not reject a
+/// configuration that the Agent runs with.
 pub(crate) fn deserialize_space_separated_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -35,8 +44,16 @@ where
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
             let mut values = Vec::new();
-            while let Some(v) = seq.next_element()? {
-                values.push(v);
+            while let Some(item) = seq.next_element::<serde_json::Value>()? {
+                let value = cast_to_string(&item).unwrap_or_else(|_| {
+                    warn!(
+                        item = %item,
+                        "Reading a list item that is not a string, a number, or a boolean as an empty string. \
+                         Write the item as a string, such as `\"key:value\"`."
+                    );
+                    String::new()
+                });
+                values.push(value);
             }
             Ok(values)
         }
@@ -166,6 +183,26 @@ mod tests {
     #[test]
     fn wrong_shape_is_rejected() {
         assert!(serde_json::from_str::<Holder>(r#"{"list": 5}"#).is_err());
+    }
+
+    #[test]
+    fn scalar_items_are_cast_to_strings() {
+        // The Agent reads each item with `cast.ToString`, so a number or a boolean item is its string form, and a
+        // null item is an empty string.
+        assert_eq!(
+            parse(r#"{"list": ["a", 123, -7, 1.5, true, null]}"#),
+            vec!["a", "123", "-7", "1.5", "true", ""]
+        );
+    }
+
+    #[test]
+    fn compound_items_are_empty_strings() {
+        // `cast.ToString` cannot cast a map or a sequence item, and `cast.ToStringSlice` keeps the empty string that it
+        // returns. A YAML item such as `- product: contentcontrol` is a map, so it must not reject the whole list.
+        assert_eq!(
+            parse(r#"{"list": [{"product": "contentcontrol"}, "env:prod", ["nested"]]}"#),
+            vec!["", "env:prod", ""]
+        );
     }
 
     #[derive(serde::Deserialize)]

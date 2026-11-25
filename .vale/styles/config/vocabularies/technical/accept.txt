@@ -309,3 +309,7 @@ agentic
 getter(s?)
 protojson
 unprefixed
+[Dd]ockerfile(s?)
+[Nn]ightl(y|ies)
+RC(s?)
+DMG(s?)

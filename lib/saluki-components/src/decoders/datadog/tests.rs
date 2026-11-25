@@ -65,7 +65,8 @@ struct ExpectedPayload {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ExpectedChunk {
-    priority: Option<i32>,
+    /// Zero when the fixture omits it, as the reference's chunk keeps its zero value.
+    priority: i32,
     origin: String,
     dropped_trace: bool,
     sampling_mechanism: u32,
@@ -269,7 +270,7 @@ fn check_case(case: &Case) {
 
         check!(ctx, trace.ingest_info(), TraceIngestInfo::Datadog);
         check!(ctx, trace.origin.as_ref(), chunk.origin);
-        check!(ctx, trace.priority, chunk.priority);
+        check!(ctx, trace.priority, Some(chunk.priority));
         check!(ctx, trace.dropped_trace, chunk.dropped_trace);
         check!(ctx, trace.sampling_mechanism, chunk.sampling_mechanism);
 
@@ -942,4 +943,40 @@ fn truncated_v1_payload_is_short_input() {
     encode::write_bool(&mut buf, true).unwrap();
     let err = decode_v1_payload(&buf).unwrap_err();
     assert!(matches!(err, DecodeError::Msgpack { .. }), "{err:?}");
+}
+
+#[test]
+fn a_chunk_without_a_priority_has_priority_zero() {
+    // Found by the parity fuzzer: the reference's chunk keeps its zero value when the payload omits the field.
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
+    encode::write_uint(&mut buf, 6).unwrap(); // traceID
+    encode::write_bin(&mut buf, &[1; 16]).unwrap();
+    encode::write_uint(&mut buf, 2).unwrap(); // origin
+    encode::write_str(&mut buf, "synthetics").unwrap();
+
+    let decoded = decode_v1_payload(&buf).unwrap();
+    assert_eq!(decoded.traces[0].priority, Some(0));
+}
+
+#[test]
+fn a_chunk_of_priority_none_has_no_priority() {
+    // As the reference's `GetSamplingPriorityV1`, which reads -128 as no priority.
+    let payload = |priority: i32| {
+        let mut buf = Vec::new();
+        encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+        encode::write_uint(&mut buf, 11).unwrap(); // chunks
+        encode::write_array_len(&mut buf, 1).unwrap();
+        encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
+        encode::write_uint(&mut buf, 6).unwrap(); // traceID
+        encode::write_bin(&mut buf, &[1; 16]).unwrap();
+        encode::write_uint(&mut buf, 1).unwrap(); // priority
+        encode::write_sint(&mut buf, priority.into()).unwrap();
+        buf
+    };
+    assert_eq!(decode_v1_payload(&payload(-128)).unwrap().traces[0].priority, None);
+    assert_eq!(decode_v1_payload(&payload(2)).unwrap().traces[0].priority, Some(2));
 }

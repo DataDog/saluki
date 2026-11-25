@@ -28,6 +28,24 @@ ignore = [
   # RUSTSEC-2024-0449: unsafe-libyaml (via the deprecated serde_yaml, and lading-payload) is unmaintained. No known
   # vulnerability. Migrating to serde-saphyr needs reworking our serde_yaml::Value usage and coordinating with lading.
   { id = "RUSTSEC-2024-0449", reason = "unmaintained only; no drop-in safe replacement, pending serde-saphyr migration" },
+
+  # chrono is unmaintained. No known vulnerability. Our own code uses `jiff`, but chrono still arrives through
+  # `lading-payload`, which only millstone uses, until lading drops it.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained only; only lading-payload (millstone) still depends on chrono" },
+
+  # heapless 0.8 has several unsoundness advisories. It arrives only through `faster-hex` 0.10, which `gix` uses in the
+  # `panoramic` build script through `vergen-gix`. `faster-hex` uses heapless only when its `alloc` feature is off, but
+  # Cargo cannot evaluate a feature in a target-specific dependency, so the crate is always in the graph. `gix` enables
+  # `alloc`, so no heapless code is used. The latest `gix` still uses `faster-hex` 0.10.
+  { id = "RUSTSEC-2026-0574", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+  { id = "RUSTSEC-2026-0575", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+  { id = "RUSTSEC-2026-0576", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+  { id = "RUSTSEC-2026-0577", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+  { id = "RUSTSEC-2026-0578", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+  { id = "RUSTSEC-2026-0579", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+  { id = "RUSTSEC-2026-0580", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+  { id = "RUSTSEC-2026-0581", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
+  { id = "RUSTSEC-2026-0582", reason = "faster-hex 0.10 never uses heapless with alloc on; panoramic build only" },
 ]
 
 [graph]
@@ -43,6 +61,10 @@ deny = [
   # in the workspace Cargo.toml. Lift both once AWS-LC-FIPS 4.x moves from "Modules in Process" to "Validations" in
   # https://github.com/aws/aws-lc/blob/main/crypto/fipsmodule/FIPS.md.
   { crate = "aws-lc-fips-sys@>=0.14", reason = "AWS-LC-FIPS 4.x is not yet certified; see aws-lc-rs pin in Cargo.toml" },
+  { crate = "chrono-tz", reason = "unmaintained (RUSTSEC-2026-0555); use saluki_common::time for time zones" },
+  { crate = "chrono", wrappers = ["lading-payload"], reason = "unmaintained (RUSTSEC-2026-0543); use saluki_common::time" },
+  # Older jiff versions come in through third-party crates, so the ban only covers 1.x.
+  { crate = "jiff@>=1", wrappers = ["saluki-common"], reason = "date and time code goes through saluki_common::time" },
 ]
 
 [licenses]
@@ -83,9 +105,9 @@ allow-git = [
   # Yet-to-be-published version of incremental Protocol Buffers encoding library.
   "https://github.com/tobz/piecemeal.git",
 
-  # Datadog-maintained trace obfuscation crate (`libdd-trace-obfuscation`), shared with Datadog's other trace
-  # obfuscation implementations. The version we need is not on crates.io yet, so it is consumed from GitHub and pinned
-  # to a specific revision in Cargo.toml.
+  # Datadog-maintained trace crates (`libdd-trace-model`, `libdd-trace-normalization`, and `libdd-trace-obfuscation`),
+  # shared with Datadog's other trace implementations. The versions we need are not on crates.io yet, so we consume
+  # them from GitHub and pin them to a specific revision in Cargo.toml.
   "https://github.com/DataDog/libdatadog.git",
 
   # Unmerged fix for byteorder's AIX alignment assertion; see the `[patch.crates-io]` entry in Cargo.toml for details.

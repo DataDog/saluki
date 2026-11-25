@@ -1,48 +1,65 @@
-type: correctness
-runtime: docker
-analysis_mode: traces
-# The baseline trace-agent processes `/v1.0/traces` itself. On the comparison side, ADP's native trace intake serves the
-# endpoint and processes the traces in place of the trace-agent behind it, so any difference in the spans or APM stats
-# that reach the intake comes from ADP.
-# ADP's SQL obfuscation always sets `sql.query` to the obfuscated resource, where the trace-agent only rewrites a
-# `sql.query`, `db.statement` or `db.query.text` the tracer sent.
-# TODO: Drop once ADP's SQL obfuscation matches the trace-agent's.
-additional_span_ignore_fields:
-  - meta.sql.query
-millstone:
-  image: saluki-images/correctness-tools:latest
-  config_path: millstone.yaml
-datadog_intake:
-  image: saluki-images/correctness-tools:latest
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
-    DD_DATA_PLANE_EXPERIMENTAL_APM_PROXY_DESTINATION: "http://127.0.0.1:8127"
-    DD_DATA_PLANE_EXPERIMENTAL_APM_NATIVE_TRACE_INTAKE: "true"
-    # The trace-agent behind ADP sends nowhere, so that traces it processed never reach the intake: if native intake
-    # didn't activate and ADP proxied `/v1.0/traces` to it, the comparison would have no spans or stats and the case
-    # would fail. ADP doesn't read `apm_config.apm_dd_url`, and sends to `dd_url`.
-    DD_APM_DD_URL: "http://127.0.0.1:9"
-    # ADP takes over the trace-agent's receiver (TCP and UDS), so the trace-agent has to move to the proxy destination.
-    # `ADP_DD_*` variables only reach ADP (see `docker/cont-init.d/99-agent-data-plane.sh`), while the plain variable is
-    # seen by the trace-agent.
-    #
-    # ADP gets a distinct socket path rather than an empty one: `s6-envdir` unsets variables whose value is empty, which
-    # would put ADP back on the trace-agent's default socket.
-    #
-    # TODO: Drop these once the Core Agent moves the trace-agent's receiver itself when the APM proxy is enabled.
-    DD_APM_RECEIVER_PORT: "8127"
-    ADP_DD_APM_RECEIVER_PORT: "8126"
-    ADP_DD_APM_RECEIVER_SOCKET: "/var/run/datadog/adp-apm.socket"
+description: >-
+  ADP's native trace intake in front of the trace-agent and the Agent's trace-agent alone each receive the same random
+  `/v1.0/traces` payloads, and their intakes must hold the same spans and APM stats.
+timeout: 8m
+subject_os: [linux]
+participants:
+  # The baseline trace-agent processes `/v1.0/traces` itself. On the comparison side, ADP's native trace intake serves
+  # the endpoint and processes the traces in place of the trace-agent behind it, so any difference in the spans or APM
+  # stats that reach the intake comes from ADP.
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
+      DD_DATA_PLANE_EXPERIMENTAL_APM_NATIVE_TRACE_INTAKE: "true"
+      # ADP proxies to a port nothing listens on, so that no trace reaches the intake through the trace-agent: if native
+      # intake didn't activate and ADP proxied `/v1.0/traces`, the comparison would have no spans or stats and the case
+      # would fail.
+      DD_DATA_PLANE_EXPERIMENTAL_APM_PROXY_DESTINATION: "http://127.0.0.1:9"
+      # ADP takes over the trace-agent's receiver (TCP and UDS), so the trace-agent has to move out of its way.
+      # `ADP_DD_*` variables only reach ADP (see `docker/cont-init.d/99-agent-data-plane.sh`), while the plain variable
+      # is seen by the trace-agent.
+      #
+      # ADP gets a distinct socket path rather than an empty one: `s6-envdir` unsets variables whose value is empty,
+      # which would put ADP back on the trace-agent's default socket.
+      #
+      # TODO: Drop these once the Core Agent moves the trace-agent's receiver itself when the APM proxy is enabled.
+      DD_APM_RECEIVER_PORT: "8127"
+      ADP_DD_APM_RECEIVER_PORT: "{{ self.endpoints.apm_tcp.port }}"
+      ADP_DD_APM_RECEIVER_SOCKET: "/var/run/datadog/adp-apm.socket"
+    files:
+      datadog.yaml: datadog.yaml
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: datadog.yaml
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.apm_tcp, baseline_target: agent.apm_tcp}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up.
+  - {step: process_stable_for, on: load, duration: 32s}
+  - step: compare
+    telemetry: traces
+    comparison: intake-adp
+    baseline: intake-agent
+    # ADP's SQL obfuscation always sets `sql.query` to the obfuscated resource, where the trace-agent only rewrites a
+    # `sql.query`, `db.statement` or `db.query.text` the tracer sent.
+    # TODO(#3388): Drop once ADP's SQL obfuscation matches the trace-agent's.
+    additional_span_ignore_fields: [meta.sql.query]

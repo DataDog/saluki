@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "integration": {
+    "kind": "nightly",
+    "version": "7.87.0-devel+git.1007.92824ec.pipeline.155037692",
+    "git_revision": "92824ec3d3f4a4c5b0926452999a39df5b4eb850",
+    "pipeline_id": 155037692,
+    "built_at": "2026-11-20T03:28:59Z",
+    "linux": {
+      "image": "datadog/agent-dev@sha256:8ea535494dc12609b5d7d7eed99fa6c1759eb3b2351b17a03e2706d09b529c21",
+      "platform_digests": {
+        "amd64": "sha256:ed9a37d0b599a077915f9caa35f2171fe63ea34e60426ab3049e9b63cf0e42ea",
+        "arm64": "sha256:5560ae02964d45c765772fd2260627360b2862655129872364deb06ccf3c5594"
+      }
+    },
+    "windows": {
+      "image": "datadog/agent-dev@sha256:2b64852e04652ac176fee6ad5f83dc6f71b85dd5127459b7cee6c43ebd09b12e",
+      "source_index_digest": "sha256:00995e38a77f85daae997e8c350be9973e281b9dd600cba94b13f9a487d2a999",
+      "os_version": "10.0.20348.5870"
+    },
+    "macos": {
+      "arm64": {
+        "url": "https://s3.amazonaws.com/dd-agent-macostesting/nightly/datadog-agent-7.87.0-devel.git.1007.92824ec.pipeline.155037692-1.arm64.dmg",
+        "sha256": "256d33ae3237b94c75bc64eaf4e81b7ecd50fb80e7c2fd2793faa7857b2c56e6"
+      },
+      "x86_64": {
+        "url": "https://s3.amazonaws.com/dd-agent-macostesting/nightly/datadog-agent-7.87.0-devel.git.1007.92824ec.pipeline.155037692-1.x86_64.dmg",
+        "sha256": "700f50494c77fd7ac58c08c83e60c6fc536cbdfc7ef4dc64c6486bbb0d3efbbc"
+      }
+    },
+    "antithesis_debug_debs": {
+      "amd64": {
+        "url": "https://apt.datad0g.com/pool/d/da/datadog-agent-dbg_7.87.0~devel.git.1007.92824ec.pipeline.155037692-1_amd64.deb",
+        "sha256": "ea47ba23a35a48048c01769b426ab9311f887f54390b92d5c1fe6f267bd7d785"
+      },
+      "arm64": {
+        "url": "https://apt.datad0g.com/pool/d/da/datadog-agent-dbg_7.87.0~devel.git.1007.92824ec.pipeline.155037692-1_arm64.deb",
+        "sha256": "e6c3f646977c97de8021f7bfa2e29a206561353fce0cad99128b12753f7ee9cc"
+      }
+    }
+  }
+}

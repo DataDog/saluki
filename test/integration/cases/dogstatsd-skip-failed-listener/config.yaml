@@ -4,37 +4,31 @@
 # created, but the UDP listener can. Like the core agent, ADP must log the failed listener and keep
 # running with the UDP one, even though a listener is required.
 
-type: integration
-name: "dogstatsd-skip-failed-listener"
 description: "Verifies ADP skips a DogStatsD listener that can't be created and keeps the others"
 timeout: 120s
-runtimes: [linux, mac]
+subject_os: [linux, macos]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dsd-skip-failed-listener"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DOGSTATSD_SOCKET: "/dev/null/saluki-dogstatsd-skip-failed-listener.sock"
-  DD_DOGSTATSD_REQUIRE_LISTENER: "true"
-
-container:
-  exposed_ports:
-    - "48125/udp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-dsd-skip-failed-listener"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_DOGSTATSD_SOCKET: "/dev/null/saluki-dogstatsd-skip-failed-listener.sock"
+      DD_DOGSTATSD_REQUIRE_LISTENER: "true"
 
 procedure:
-  - assertion: log_contains
-    pattern: "Can't create DogStatsD unixgram listener."
-    timeout: 60s
+  - {step: log_contains, on: adp, pattern: "Can't create DogStatsD unixgram listener.", timeout: 60s}
   - parallel:
-      - assertion: process_stable_for
-        duration: 10s
-      - assertion: port_listening
-        port: 48125
-        protocol: udp
+      - {step: process_stable_for, on: adp, process: adp, duration: 10s}
+      # ADP's log line that the UDP listener started stands in for a UDP probe.
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: ':{{ adp.endpoints.dogstatsd_udp.port }}" | DogStatsD listener started.'
         timeout: 60s
-      - assertion: log_not_contains
-        pattern: "Could not start DogStatsD.|panic|PANIC"
-        regex: true
-        during: 10s
+      - {step: log_not_contains, on: adp, pattern: "Could not start DogStatsD.|panic|PANIC", regex: true, during: 10s}

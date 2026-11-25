@@ -1,6 +1,7 @@
 #!/opt/datadog-agent/embedded/bin/python3
 
 import json
+import os
 import shutil
 import socket
 import ssl
@@ -65,7 +66,7 @@ def send_dogstatsd_contexts():
     )
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
         for _ in range(3):
-            client.sendto(payload, ("127.0.0.1", 48125))
+            client.sendto(payload, ("127.0.0.1", int(os.environ["DOGSTATSD_PORT"])))
 
 
 def wait_for_online_report():
