@@ -152,8 +152,7 @@ fn host_from_attributes(attributes: &[KeyValue]) -> Option<MetaString> {
         .map(MetaString::from)
 }
 
-/// Resolves the service of a resource or record from the first `service.name` attribute, rendered as a string. An empty
-/// service counts as missing.
+/// Returns the first `service.name` attribute as a string, unless it's empty.
 fn service_from_attributes(attributes: &[KeyValue]) -> Option<MetaString> {
     first_attribute(attributes, SERVICE_NAME)
         .map(otlp_value_as_string)

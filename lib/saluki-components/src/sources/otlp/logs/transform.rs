@@ -50,9 +50,8 @@ static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion"
 
 /// Transforms an OTLP log record, with its resource and scope, into a log.
 ///
-/// Where the Agent needs a string, the value is rendered as [`otlp_value_as_string`] describes: the message, status,
-/// `ddtags`, and trace and span ID attributes, the `otel.library.*` aliases, every resource and scope attribute, and the
-/// body. Other record attributes keep their types, as [`Flattener`] describes.
+/// The message, status, `ddtags`, and trace and span ID attributes, the `otel.library.*` aliases, the resource and scope
+/// attributes, and the body become strings. Other record attributes keep their types, as [`Flattener`] describes.
 ///
 /// # Errors
 ///
@@ -139,7 +138,6 @@ impl Properties {
         self.0.remove(key);
     }
 
-    /// Returns the key of a property that holds the placeholder that [`Flattener`] writes for a non-finite double.
     fn non_finite_placeholder(&self) -> Option<&MetaString> {
         self.0
             .iter()
@@ -197,7 +195,7 @@ fn apply_record_attributes<'a>(
             k if k.eq_ignore_ascii_case(OTEL_LIBRARY_VERSION) => {
                 insert_scope_alias(properties, attributes, OTEL_SCOPE_VERSION, kv)
             }
-            _ => flattener.flatten(Cow::Borrowed(kv.key.as_str()), key_value_value(kv), 1, properties),
+            _ => flattener.flatten(Cow::Borrowed(kv.key.as_str()), attribute_value(kv), 1, properties),
         }
     }
     reserved
@@ -391,14 +389,12 @@ fn insert_scope_alias(
     properties.insert_static(canonical, as_string(kv).into_owned());
 }
 
-/// Returns the value of an attribute, which is absent when the attribute or its value isn't set.
-fn key_value_value(kv: &otlp_common::KeyValue) -> Option<&OtlpValue> {
+fn attribute_value(kv: &otlp_common::KeyValue) -> Option<&OtlpValue> {
     kv.value.as_ref().and_then(|av| av.value.as_ref())
 }
 
-/// Renders an attribute's value as a string, as [`otlp_value_as_string`] describes.
 fn as_string(kv: &otlp_common::KeyValue) -> Cow<'_, str> {
-    otlp_value_as_string(key_value_value(kv))
+    otlp_value_as_string(attribute_value(kv))
 }
 
 /// The depth at which [`Flattener`] renders a map as a string instead of flattening it.
@@ -406,7 +402,6 @@ const FLATTEN_STRING_DEPTH: usize = 10;
 
 /// Where [`Flattener`] writes the properties of a record attribute.
 trait PropertySink {
-    /// Sets a property, overwriting an earlier one with the same key.
     fn set(&mut self, key: String, value: JsonValue);
 }
 
@@ -427,7 +422,7 @@ impl PropertySink for serde_json::Map<String, JsonValue> {
 /// - A map spreads its entries into dotted keys. Under an empty key, the entries keep their own keys.
 /// - An array stays an array at any depth, as [`Flattener::array_element`] describes.
 /// - Strings, integers, Booleans, and doubles keep their types. Bytes, empty values, and maps at depth 10 become
-///   strings, as [`otlp_value_as_string`] renders them.
+///   strings.
 ///
 /// A map becomes a string only at exactly depth 10. An array at depth 10 moves its elements to depth 11, so the maps
 /// below it flatten without a limit. This is a quirk of the Agent since it added array support
@@ -442,7 +437,7 @@ struct Flattener {
 }
 
 impl Flattener {
-    /// Flattens a value under `key` into `out`. A record attribute is at depth 1.
+    /// Flattens a value under `key` into `out`. A record attribute starts at depth 1.
     fn flatten<S: PropertySink>(&mut self, key: Cow<'_, str>, value: Option<&OtlpValue>, depth: usize, out: &mut S) {
         match value {
             Some(KvlistValue(map)) if depth != FLATTEN_STRING_DEPTH => {
@@ -452,7 +447,7 @@ impl Flattener {
                     } else {
                         Cow::Owned(format!("{}.{}", key, kv.key))
                     };
-                    self.flatten(nested_key, key_value_value(kv), depth + 1, out);
+                    self.flatten(nested_key, attribute_value(kv), depth + 1, out);
                 }
             }
             _ => {
@@ -506,7 +501,6 @@ impl Flattener {
     }
 }
 
-/// Returns whether a property holds the placeholder that [`Flattener`] writes for a non-finite double.
 fn holds_non_finite_placeholder(value: &JsonValue) -> bool {
     match value {
         JsonValue::Null => true,
