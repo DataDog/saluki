@@ -102,7 +102,7 @@ pub struct TracesExpectations {
     pub spans: Vec<ExpectedSpan>,
 
     /// Spans that neither side may hold, one entry for each. No span of a side may meet every field of an entry.
-    pub absent: Vec<ExpectedSpan>,
+    pub absent: Vec<AbsentSpan>,
 
     /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
     ///
@@ -158,29 +158,33 @@ impl TracesExpectations {
             }
         }
 
-        for (idx, expected) in self
-            .spans
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.applies_to(side))
-        {
-            if !held.spans.values().any(|span| expected.is_met_by(span)) {
+        for (idx, expected) in self.spans.iter().enumerate() {
+            let met = expected.is_met_by_side(held.spans);
+            if expected.applies_to(side) {
+                if !met {
+                    unmet.push(format!(
+                        "The {} holds no span that meets `spans[{}]` ({}): {}.",
+                        side,
+                        idx,
+                        expected.describe(),
+                        expected.describe_held(held.spans)
+                    ));
+                }
+            } else if met {
+                // An entry for one side also holds on the other, so `side` no longer separates them. A known
+                // difference goes stale when the gap closes, and this makes the entry go stale with it.
                 unmet.push(format!(
-                    "The {} holds no span that meets `spans[{}]` ({}): {}.",
+                    "The {} meets `spans[{}]` ({}) too, but the entry is `side: {}`. Drop `side`, so that the entry \
+                     holds both sides.",
                     side,
                     idx,
                     expected.describe(),
-                    expected.describe_held(held.spans)
+                    expected.side_name()
                 ));
             }
         }
 
-        for (idx, unexpected) in self
-            .absent
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.applies_to(side))
-        {
+        for (idx, unexpected) in self.absent.iter().enumerate() {
             let held = held.spans.values().filter(|span| unexpected.is_met_by(span)).count();
             if held > 0 {
                 unmet.push(format!(
@@ -197,14 +201,16 @@ impl TracesExpectations {
     }
 }
 
-/// A span that a side must hold or must not hold, by its service, its operation name, its resource and its `meta` tags.
+/// A span that a side must hold, by its service, its operation name, its resource and its `meta` tags.
 ///
-/// A span meets the entry when it meets every field that the entry sets. The service, the name and the resource select
-/// the candidates, and the `meta` expectations say what a candidate must hold. A failure names the tags that a
-/// candidate holds wrong, so a field that a side should have scrubbed shows its value.
+/// The service, the name and the resource select the spans of a side, and the `meta` expectations say what every
+/// selected span must hold. A side meets the entry when it selects at least one span and every selected span meets the
+/// `meta` expectations, so a second span that leaks what the first one scrubbed fails it. A failure names the tags that
+/// a selected span holds wrong, so a field that a side should have scrubbed shows its value.
 ///
 /// An entry applies to both sides, unless it sets `side`. A side-specific entry holds one side to a value that the
-/// other side does not yet produce, while a known difference covers the gap between them.
+/// other side does not yet produce, while a known difference covers the gap between them. When the other side meets the
+/// entry too, the entry is stale, and the step fails until the entry drops `side`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "ExpectedSpanFields")]
 pub struct ExpectedSpan {
@@ -213,6 +219,55 @@ pub struct ExpectedSpan {
     resource: Option<String>,
     meta: BTreeMap<String, MetaExpectation>,
     side: Option<Side>,
+}
+
+/// A span that neither side may hold, by its service, its operation name and its resource.
+///
+/// A span meets the entry when it has the service, and the name and the resource if the entry sets them. The entry
+/// takes no `meta` and no `side`: `not_contains` would turn around, since it holds a tag that is present and lacks the
+/// value, and a span that one side drops is one that both sides drop.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "ExpectedSpanFields")]
+pub struct AbsentSpan(ExpectedSpan);
+
+impl TryFrom<ExpectedSpanFields> for AbsentSpan {
+    type Error = String;
+
+    fn try_from(fields: ExpectedSpanFields) -> Result<Self, Self::Error> {
+        if !fields.meta.is_empty() || fields.side.is_some() {
+            return Err(format!(
+                "an `absent` span of service '{}' takes a `name` and a `resource`, but no `meta` and no `side`: a \
+                 span that must not exist has no tags to check, and both sides must drop it",
+                fields.service
+            ));
+        }
+        if fields.name.is_none() && fields.resource.is_none() {
+            return Err(format!(
+                "an `absent` span of service '{}' needs a `name` or a `resource`: any span of the service would \
+                 meet it",
+                fields.service
+            ));
+        }
+
+        ExpectedSpan::try_from(fields).map(Self)
+    }
+}
+
+impl AbsentSpan {
+    /// Returns the service of the absent span.
+    pub fn service(&self) -> &str {
+        self.0.service()
+    }
+
+    /// Returns whether `span` has the service, the name and the resource that the entry sets.
+    fn is_met_by(&self, span: &Span) -> bool {
+        self.0.selects(span)
+    }
+
+    /// Writes the entry as `service=.., name=.., resource=..`, leaving out what it doesn't set.
+    fn describe(&self) -> String {
+        self.0.describe()
+    }
 }
 
 /// The side that an entry applies to.
@@ -276,6 +331,16 @@ impl ExpectedSpan {
         &self.service
     }
 
+    /// Returns whether the entry applies to both sides.
+    pub fn applies_to_both(&self) -> bool {
+        self.side.is_none()
+    }
+
+    /// Returns the name of the side that the entry is for, or `both` if it sets none.
+    fn side_name(&self) -> &'static str {
+        self.side.map_or("both", Side::name)
+    }
+
     /// Returns whether the entry applies to the side named `side`.
     fn applies_to(&self, side: &str) -> bool {
         self.side.is_none_or(|only| only.name() == side)
@@ -303,9 +368,11 @@ impl ExpectedSpan {
             .collect()
     }
 
-    /// Returns whether `span` meets every field that the expectation sets.
-    fn is_met_by(&self, span: &Span) -> bool {
-        self.selects(span) && self.meta_mismatches(span).is_empty()
+    /// Returns whether the spans of one side meet the expectation: it selects a span, and every selected span meets
+    /// the `meta` expectations.
+    fn is_met_by_side(&self, spans: &HashMap<u64, Span>) -> bool {
+        let mut selected = spans.values().filter(|span| self.selects(span)).peekable();
+        selected.peek().is_some() && selected.all(|span| self.meta_mismatches(span).is_empty())
     }
 
     /// Writes the expectation as `service=.., name=.., resource=.., meta.<key> ..`, leaving out what it doesn't set.

@@ -13,7 +13,7 @@ use stele::{AggregationKey, BucketedClientStatistics, Span};
 use tracing::{error, info};
 use treediff::value::Key;
 
-use super::expectations::{ExpectedSpan, HeldTraces, TracesExpectations};
+use super::expectations::{AbsentSpan, ExpectedSpan, HeldTraces, TracesExpectations};
 use super::join_failures;
 use super::ratchet::{path_matches, DiffKind, FieldDiff, KnownDifference, Ratchet};
 use crate::steps::analysis::TracesAnalysisOptions;
@@ -126,13 +126,14 @@ pub struct TracesOptions {
     #[serde(default)]
     pub spans: Vec<ExpectedSpan>,
 
-    /// Spans that neither side may hold, one entry for each, with the fields of an entry of `spans`.
+    /// Spans that neither side may hold, one entry for each. An entry has a `service`, and a `name`, a `resource` or
+    /// both. It takes no `meta` and no `side`: both sides must drop the span.
     ///
     /// Name a span that both sides drop, and name a span of the same service in `spans`, one that both sides hold, so
     /// that the check can't pass because the whole service is missing. The step rejects an entry whose service has no
-    /// entry in `spans`.
+    /// entry in `spans` that applies to both sides.
     #[serde(default)]
-    pub absent: Vec<ExpectedSpan>,
+    pub absent: Vec<AbsentSpan>,
 
     /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
     ///
@@ -244,14 +245,15 @@ impl TracesOptions {
                 ));
             }
         }
-        if let Some(unexpected) = self
-            .absent
-            .iter()
-            .find(|unexpected| !self.spans.iter().any(|span| span.service() == unexpected.service()))
-        {
+        if let Some(unexpected) = self.absent.iter().find(|unexpected| {
+            !self
+                .spans
+                .iter()
+                .any(|span| span.service() == unexpected.service() && span.applies_to_both())
+        }) {
             return Err(format!(
-                "`absent` names a span of service '{}', but `spans` holds no span of that service. Add one that both \
-                 sides hold, so that the check can't pass because the whole service is missing",
+                "`absent` names a span of service '{}', but `spans` holds no span of that service for both sides. Add \
+                 one without `side`, that both sides hold, so that the check can't pass because the whole service is missing",
                 unexpected.service()
             ));
         }

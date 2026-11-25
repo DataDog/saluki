@@ -1379,26 +1379,65 @@ mod tests {
             "{}",
             report.message
         );
+    }
 
-        // A side that an entry of `absent` names is the only one held to it.
-        let fields = direct(
-            "spans: [{service: db, name: db.query}], \
-             absent: [{service: db, side: comparison, meta: {db.statement: 'SELECT ?'}}]",
-        );
+    #[tokio::test]
+    async fn an_entry_for_one_side_fails_once_the_other_side_meets_it_too() {
+        let scrubbed = tracing(spans_with_meta(11, json!({"db.statement": "SELECT ?"})), &[]);
+        let leaked = tracing(spans_with_meta(11, json!({"db.statement": "SELECT 'canary'"})), &[]);
+        let fields = direct("spans: [{service: db, side: baseline, meta: {db.statement: 'SELECT ?'}}]");
+
+        // The comparison leaks, so the entry still sets the sides apart. Only the difference between the sides fails.
+        let report = compare(&fields, &leaked, &scrubbed).await;
+        assert!(!report.message.contains("Drop `side`"), "{}", report.message);
+        assert!(!report.message.contains("holds no span"), "{}", report.message);
+
+        // The comparison scrubs too, so the entry no longer needs `side`.
         let report = compare(&fields, &scrubbed, &scrubbed).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "The comparison meets `spans[0]` (service=db, meta.db.statement = SELECT ?) too, but the entry is \
+                 `side: baseline`. Drop `side`"
+            ),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline"), "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_meta_expectation_holds_every_span_that_it_selects() {
+        let scrub = |extra: Option<&str>| {
+            let mut spans = spans_with_meta(11, json!({"sql.query": "SELECT ?"}));
+            if let Some(query) = extra {
+                // A duplicate of the span, in the same service with the same name and resource.
+                let mut duplicate = span_json("db", "db.query", "SELECT 1", 1, 12, false);
+                duplicate["meta"] = json!({"sql.query": query});
+                spans.push(duplicate);
+            }
+            tracing(spans, &[])
+        };
+        let fields = direct("spans: [{service: db, name: db.query, meta: {sql.query: {not_contains: canary}}}]");
+
+        let report = compare(&fields, &scrub(Some("SELECT ?")), &scrub(Some("SELECT ?"))).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // One scrubbed span doesn't excuse a duplicate that leaks, and the failure names the leaking span.
+        let report = compare(&fields, &scrub(Some("SELECT 'canary'")), &scrub(None)).await;
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
         assert!(
             report
                 .message
-                .contains("The comparison holds 1 span(s) that meet `absent[0]`"),
+                .contains("The comparison holds no span that meets `spans[0]`")
+                && report
+                    .message
+                    .contains("2 span(s) have that service, name and resource")
+                && report.message.contains("span 12 has `meta.sql.query`"),
             "{}",
             report.message
         );
-        assert!(
-            !report.message.contains("The baseline holds 1 span(s)"),
-            "{}",
-            report.message
-        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
     }
 
     #[tokio::test]
@@ -1562,7 +1601,25 @@ mod tests {
             (
                 "{telemetry: traces, comparison: app, baseline: peer, \
                  traces: {min_stats_groups: 1, absent: [{service: api}]}}",
-                "a span of service 'api' needs a `name`, a `resource` or a `meta` tag",
+                "an `absent` span of service 'api' needs a `name` or a `resource`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
+                 absent: [{service: api, name: x, meta: {k: {not_contains: c}}}]}}",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta` and no `side`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
+                 absent: [{service: api, name: x, side: baseline}]}}",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta` and no `side`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x, side: baseline}], \
+                 absent: [{service: api, name: gone}]}}",
+                "`absent` names a span of service 'api', but `spans` holds no span of that service for both sides",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, traces: {min_traces: 0}}",

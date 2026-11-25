@@ -534,12 +534,13 @@ For traces, set expectations under `traces`:
 
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
 - `spans`: a list of spans that each side must hold. An entry has a `service` and a `name`, a `resource` or `meta`
-  tags, and a span of the side must match every field that the entry sets. The `name` is the operation name. See
+  tags, and a side must hold a span that matches every field that the entry sets. The `name` is the operation name. See
   [Assert the tags of a span](#assert-the-tags-of-a-span).
-- `absent`: a list of spans that neither side may hold, with the fields of an entry of `spans`. A failure names the
-  side that holds a span that meets an entry. Name a span that both sides drop, and name a span of the same service in
-  `spans`, one that both sides hold, so that the check can't pass because the whole service is missing. The step
-  rejects an `absent` entry whose service has no entry in `spans`.
+- `absent`: a list of spans that neither side may hold. An entry has a `service`, and a `name`, a `resource` or both. It
+  takes no `meta` and no `side`: the step rejects them, since a span that must not exist has no tags to check, and both
+  sides must drop it. A failure names the side that holds a span that meets an entry. Name a span that both sides drop,
+  and name a span of the same service in `spans`, one that both sides hold, so that the check can't pass because the
+  whole service is missing. The step rejects an `absent` entry whose service has no entry in `spans` without `side`.
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
   The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
@@ -572,11 +573,13 @@ Two sides that both leak a secret are equal, so a case that must show a scrubbed
 `spans`. `meta` maps the key of a tag to what its value must be:
 
 - a string: the value must equal it.
-- `equals` and `not_contains`: the value must equal the first, and must not hold the second. An entry can set both.
+- a map of `equals`, `not_contains` or both: the value must equal `equals`, and must not hold `not_contains`.
 
 A tag that the span lacks fails every expectation. The `service`, the `name` and the `resource` select the spans that
-must hold the tags, so give a probe a service of its own: a field that a side should scrub can't then hide the probe. A
-failure names the side, the entry and the tags that the selected spans hold wrong, with their values.
+must hold the tags, and a side meets the entry only if it holds at least one selected span and every selected span holds
+the tags. A second span that leaks what the first one scrubs fails the entry. Give a probe a service of its own anyway,
+so that a field that a side should scrub can't hide the probe. A failure names the side, the entry and the tags that the
+selected spans hold wrong, with their values.
 
 ```yaml
 spans:
@@ -589,9 +592,12 @@ spans:
 ```
 
 An entry applies to both sides. Set `side: baseline` or `side: comparison` to hold one side to a value that the other
-side does not yet produce, and cover the difference with a known difference that names the issue. Remove `side` when the
-issue is fixed, so that the stale known difference and the one-sided entry go together. An entry of `absent` takes
-`meta` and `side` too.
+side does not yet produce, and cover the difference with a known difference that names the issue. The step also checks
+an entry with `side` against the other side, and fails if that side meets it too: the entry then needs no `side`. So the
+one-sided entry goes stale with the known difference when the issue is fixed, and the step tells you to drop `side`.
+
+To record a gap that both sides share, such as a leak that an issue tracks, pin the value that both sides send today in
+an entry without `side`. A fix on either side fails the entry, and the entry must then take the scrubbed value.
 
 #### Check that both sides drop a span
 
