@@ -5,12 +5,6 @@ use crate::classifier::*;
 
 pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
     ClassifierEntry {
-        yaml_path: "dogstatsd_metrics_stats_enable",
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("false"),
-    },
-    ClassifierEntry {
         yaml_path: "forwarder_num_workers",
         support_level: SupportLevel::Partial,
         pipeline_affinity: PipelineAffinity::CrossCutting,
