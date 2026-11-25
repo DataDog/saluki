@@ -35,4 +35,4 @@ procedure:
   # Make sure the container stays up without errors for ~10 seconds after.
   - parallel:
       - {step: process_stable_for, on: adp, process: agent, duration: 10s}
-      - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}

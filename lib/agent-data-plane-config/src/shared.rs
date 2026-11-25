@@ -186,6 +186,9 @@ pub struct Endpoints {
 
     /// Alternate metrics intake for Vector, used in place of the default intake when enabled.
     pub vector_intake: AltMetricsIntake,
+
+    /// Where trace and APM stats payloads go, which is independent of the endpoints above.
+    pub traces: TracesIntake,
 }
 
 impl Endpoints {
@@ -202,6 +205,73 @@ impl Endpoints {
             format!("https://app.{}", self.site.value)
         }
     }
+}
+
+impl Endpoints {
+    /// Returns the primary intake endpoint for trace and APM stats payloads, as configured and without
+    /// normalization.
+    ///
+    /// An enabled Observability Pipelines Worker intake wins, then an enabled Vector intake, and then
+    /// [`apm_dd_url`](TracesIntake::apm_dd_url). Without any of them traces follow
+    /// [`primary_endpoint`](Self::primary_endpoint). The first enabled alternate intake shadows the later ones even
+    /// without a URL, in which case traces go to `apm_dd_url`, or else to the default.
+    pub fn traces_primary_endpoint(&self) -> String {
+        let traces = &self.traces;
+        let alternate = [&traces.opw_intake, &traces.vector_intake]
+            .into_iter()
+            .find(|intake| intake.enabled);
+        match alternate {
+            Some(intake) if !intake.url.is_empty() => intake.url.clone(),
+            _ if !traces.apm_dd_url.is_empty() => traces.apm_dd_url.clone(),
+            _ => self.primary_endpoint(),
+        }
+    }
+}
+
+/// Routing of trace and APM stats payloads.
+///
+/// Traces are routed on their own, so none of this affects metrics, logs, or events.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct TracesIntake {
+    /// Intake URL that replaces the primary endpoint for traces and APM stats
+    /// (`apm_config.apm_dd_url`).
+    ///
+    /// Empty when unset.
+    pub apm_dd_url: String,
+
+    /// Additional dual-shipping endpoints for traces and APM stats, keyed by intake URL with their API keys
+    /// (`apm_config.additional_endpoints`).
+    pub additional_endpoints: HashMap<String, Vec<String>>,
+
+    /// Alternate traces intake for the Observability Pipelines Worker, used in place of the default intake when
+    /// enabled.
+    pub opw_intake: AltTracesIntake,
+
+    /// Alternate traces intake for Vector, used in place of the default intake when enabled.
+    pub vector_intake: AltTracesIntake,
+
+    /// Whether traces and APM stats skip the primary traces endpoint and go only to
+    /// [`additional_endpoints`](Self::additional_endpoints) (`apm_config.traces_send_to_main_endpoint` is `false`).
+    ///
+    /// This is the inverse of the setting, so that the default sends to the primary endpoint.
+    pub skip_main_endpoint: bool,
+
+    /// How long the traces forwarder keeps a connection before resetting it (`apm_config.connection_reset_interval`).
+    ///
+    /// [`Duration::ZERO`], the default, never resets a connection. A negative value is read as zero, with a warning.
+    /// As in the trace-agent, this replaces `forwarder_connection_reset_interval` for traces and APM stats.
+    pub connection_reset_interval: Duration,
+}
+
+/// An alternate traces intake (Observability Pipelines Worker or Vector) that replaces the Datadog intake when
+/// enabled.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct AltTracesIntake {
+    /// Whether this alternate intake replaces the default one.
+    pub enabled: bool,
+
+    /// URL of the alternate traces intake.
+    pub url: String,
 }
 
 /// An alternate metrics intake (Observability Pipelines Worker or Vector) that replaces the Datadog
@@ -722,9 +792,101 @@ pub struct AutoscalingFailover {
 
 #[cfg(test)]
 mod tests {
-    use super::{Compression, Endpoints, Forwarder, Secrets, V3SeriesMode};
+    use super::{AltTracesIntake, Compression, Endpoints, Forwarder, Secrets, TracesIntake, V3SeriesMode};
     use crate::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use crate::ConfigValue;
+
+    fn alternate(enabled: bool, url: &str) -> AltTracesIntake {
+        AltTracesIntake {
+            enabled,
+            url: url.to_string(),
+        }
+    }
+
+    fn endpoints_with_traces(traces: TracesIntake) -> Endpoints {
+        Endpoints {
+            site: ConfigValue::explicit("datadoghq.eu".to_string()),
+            traces,
+            ..Endpoints::default()
+        }
+    }
+
+    #[test]
+    fn traces_follow_the_primary_endpoint_by_default() {
+        let endpoints = endpoints_with_traces(TracesIntake::default());
+
+        assert_eq!("https://app.datadoghq.eu", endpoints.traces_primary_endpoint());
+    }
+
+    #[test]
+    fn apm_dd_url_overrides_the_traces_endpoint_only() {
+        let endpoints = endpoints_with_traces(TracesIntake {
+            apm_dd_url: "https://apm.example.com".to_string(),
+            ..TracesIntake::default()
+        });
+
+        assert_eq!("https://apm.example.com", endpoints.traces_primary_endpoint());
+        assert_eq!("https://app.datadoghq.eu", endpoints.primary_endpoint());
+    }
+
+    #[test]
+    fn an_enabled_alternate_traces_intake_wins_over_apm_dd_url() {
+        let cases = [
+            (
+                "opw",
+                alternate(true, "https://opw.example.com"),
+                alternate(false, "https://vector.example.com"),
+                "https://opw.example.com",
+            ),
+            (
+                "vector",
+                alternate(false, "https://opw.example.com"),
+                alternate(true, "https://vector.example.com"),
+                "https://vector.example.com",
+            ),
+            (
+                "opw shadows vector",
+                alternate(true, "https://opw.example.com"),
+                alternate(true, "https://vector.example.com"),
+                "https://opw.example.com",
+            ),
+            (
+                "disabled",
+                alternate(false, "https://opw.example.com"),
+                alternate(false, "https://vector.example.com"),
+                "https://apm.example.com",
+            ),
+        ];
+
+        for (name, opw_intake, vector_intake, expected) in cases {
+            let endpoints = endpoints_with_traces(TracesIntake {
+                apm_dd_url: "https://apm.example.com".to_string(),
+                opw_intake,
+                vector_intake,
+                ..TracesIntake::default()
+            });
+
+            assert_eq!(expected, endpoints.traces_primary_endpoint(), "{name}");
+        }
+    }
+
+    #[test]
+    fn an_enabled_alternate_traces_intake_without_a_url_falls_back_to_apm_dd_url_or_the_default() {
+        for (apm_dd_url, expected) in [
+            ("https://apm.example.com", "https://apm.example.com"),
+            ("", "https://app.datadoghq.eu"),
+        ] {
+            // The Observability Pipelines Worker intake shadows the Vector one even without a URL.
+            let endpoints = endpoints_with_traces(TracesIntake {
+                apm_dd_url: apm_dd_url.to_string(),
+                opw_intake: alternate(true, ""),
+                vector_intake: alternate(true, "https://vector.example.com"),
+                ..TracesIntake::default()
+            });
+
+            assert_eq!(expected, endpoints.traces_primary_endpoint(), "{apm_dd_url:?}");
+        }
+    }
 
     #[test]
     fn secrets_are_in_use_with_a_backend_command_or_a_refresh_interval() {

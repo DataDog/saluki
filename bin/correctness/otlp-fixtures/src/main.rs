@@ -18,9 +18,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 mod common;
 mod logs;
 mod metrics;
-// TODO: remove the dead_code expectation when a fixture uses the trace builder.
-// Tests already use it, so the expectation only applies to non-test builds.
-#[cfg_attr(not(test), expect(dead_code))]
+mod routing;
 mod traces;
 
 /// Writes `payload` into the `static_base64` payload of the sender config at `target`, a path relative to `root`.
@@ -136,6 +134,54 @@ fn main() -> ExitCode {
         (
             "test/correctness/cases/otlp-metrics-summary-mode/millstone.yaml",
             metrics::summary_fixture,
+        ),
+        (
+            "test/integration/cases/otlp-routing-mixed-grpc/millstone-metrics-grpc.yaml",
+            || routing::metrics_fixture("mixed-grpc", "grpc"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-mixed-grpc/millstone-traces-grpc.yaml",
+            || routing::traces_fixture("mixed-grpc", "grpc", 1),
+        ),
+        (
+            "test/integration/cases/otlp-routing-mixed-grpc/millstone-logs-grpc.yaml",
+            || routing::logs_fixture("mixed-grpc", "grpc"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-mixed-http/millstone-metrics-http.yaml",
+            || routing::metrics_fixture("mixed-http", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-mixed-http/millstone-traces-http.yaml",
+            || routing::traces_fixture("mixed-http", "http", 2),
+        ),
+        (
+            "test/integration/cases/otlp-routing-mixed-http/millstone-logs-http.yaml",
+            || routing::logs_fixture("mixed-http", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-metrics-grpc.yaml",
+            || routing::metrics_fixture("internal", "grpc"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-traces-grpc.yaml",
+            || routing::traces_fixture("internal", "grpc", 3),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-logs-grpc.yaml",
+            || routing::logs_fixture("internal", "grpc"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-metrics-http.yaml",
+            || routing::metrics_fixture("internal", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-traces-http.yaml",
+            || routing::traces_fixture("internal", "http", 4),
+        ),
+        (
+            "test/integration/cases/otlp-routing-internal/millstone-logs-http.yaml",
+            || routing::logs_fixture("internal", "http"),
         ),
     ];
 

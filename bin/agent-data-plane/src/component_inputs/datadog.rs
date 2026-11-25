@@ -74,6 +74,38 @@ pub(crate) fn forwarder_configuration(shared: &SharedConfiguration) -> Forwarder
     }
 }
 
+/// Builds the forwarder settings for the Datadog traces forwarder.
+///
+/// Traces and APM stats are routed independently of everything else the data plane sends: they go to
+/// the trace intake and the additional endpoints configured for traces, and the metrics
+/// alternate intakes don't apply to them.
+pub(crate) fn traces_forwarder_configuration(shared: &SharedConfiguration) -> ForwarderConfiguration {
+    let endpoints = &shared.endpoints;
+
+    let endpoint = EndpointConfiguration::new(
+        endpoints.api_key.clone(),
+        endpoints.traces_primary_endpoint(),
+        endpoints.traces.additional_endpoints.clone(),
+    );
+
+    let mut config = ForwarderConfiguration {
+        endpoint: if endpoints.traces.skip_main_endpoint {
+            endpoint.without_primary()
+        } else {
+            endpoint
+        },
+        opw_metrics: OpwMetricsConfiguration::default(),
+        ..forwarder_configuration(shared)
+    };
+    // The trace-agent resets its connections on `apm_config.connection_reset_interval` alone, so the shared
+    // `forwarder_connection_reset_interval` doesn't apply to traces.
+    config.connection_reset_interval_secs = endpoints.traces.connection_reset_interval.as_secs();
+    // Sketch shadowing validates metrics payloads, which never reach this forwarder. Its workers would only add to the
+    // forwarder's declared memory bounds.
+    config.v3_api.sketches.shadow_sample_rate = 0.0;
+    config
+}
+
 /// Builds the settings shared by every Datadog metrics encoder.
 pub(crate) fn datadog_metrics_configuration(shared: &SharedConfiguration) -> DatadogMetricsConfiguration {
     let endpoints = &shared.endpoints;
@@ -163,8 +195,8 @@ mod tests {
 
     use agent_data_plane_config::{
         shared::{
-            AltMetricsIntake, Compression, Endpoints, Forwarder, MetricsEncoding, Proxy, Tls, V3ApiEncoding,
-            V3ApiSettings as ModelV3ApiSettings,
+            AltMetricsIntake, AltTracesIntake, Compression, Endpoints, Forwarder, MetricsEncoding, Proxy, Tls,
+            TracesIntake, V3ApiEncoding, V3ApiSettings as ModelV3ApiSettings,
         },
         ConfigValue,
     };
@@ -235,6 +267,23 @@ mod tests {
                     enabled: false,
                     url: "https://vector.example.com".to_string(),
                     use_v3_series: false,
+                },
+                traces: TracesIntake {
+                    apm_dd_url: "https://apm.example.com".to_string(),
+                    additional_endpoints: HashMap::from([(
+                        "https://apm-additional.example.com".to_string(),
+                        vec!["apm-additional-key".to_string()],
+                    )]),
+                    opw_intake: AltTracesIntake {
+                        enabled: false,
+                        url: "https://traces-opw.example.com".to_string(),
+                    },
+                    vector_intake: AltTracesIntake {
+                        enabled: false,
+                        url: "https://traces-vector.example.com".to_string(),
+                    },
+                    skip_main_endpoint: false,
+                    connection_reset_interval: Duration::from_secs(57),
                 },
             },
             metrics_encoding: MetricsEncoding {
@@ -350,6 +399,81 @@ mod tests {
         assert!(config.allow_arbitrary_tags);
         assert_eq!(22, config.api_key_validation_interval_mins);
         assert!(config.routing_targets.is_none());
+    }
+
+    #[test]
+    fn traces_forwarder_configuration_routes_traces_independently() {
+        let shared = distinct_shared_configuration();
+        let config = traces_forwarder_configuration(&shared);
+
+        // The traces intake and additional endpoints replace the shared ones, but the API key is the same.
+        assert_eq!(
+            EndpointConfiguration::new(
+                "primary-key".to_string(),
+                "https://apm.example.com".to_string(),
+                HashMap::from([(
+                    "https://apm-additional.example.com".to_string(),
+                    vec!["apm-additional-key".to_string()],
+                )]),
+            ),
+            config.endpoint
+        );
+        // Alternate metrics intakes and sketch shadowing never apply to traces.
+        assert_eq!(OpwMetricsConfiguration::default(), config.opw_metrics);
+        assert_eq!(0.0, config.v3_api.sketches.shadow_sample_rate);
+        assert_eq!(
+            0.52,
+            forwarder_configuration(&shared).v3_api.sketches.shadow_sample_rate
+        );
+        assert!(config.routing_targets.is_none());
+
+        // Traces reset connections on their own interval, not the shared forwarder's.
+        assert_eq!(57, config.connection_reset_interval_secs);
+        assert_eq!(23, forwarder_configuration(&shared).connection_reset_interval_secs);
+
+        // Everything else is the shared forwarder configuration.
+        let expected = forwarder_configuration(&shared);
+        assert_eq!(expected.endpoint_concurrency, config.endpoint_concurrency);
+        assert_eq!(expected.request_timeout_secs, config.request_timeout_secs);
+        assert_eq!(expected.retry.storage_path, config.retry.storage_path);
+        assert_eq!(expected.proxy.https, config.proxy.https);
+        assert_eq!(expected.min_tls_version, config.min_tls_version);
+    }
+
+    #[test]
+    fn traces_forwarder_configuration_can_skip_the_main_endpoint() {
+        let mut shared = distinct_shared_configuration();
+        shared.endpoints.traces.skip_main_endpoint = true;
+
+        let endpoint = EndpointConfiguration::new(
+            "primary-key".to_string(),
+            "https://apm.example.com".to_string(),
+            HashMap::from([(
+                "https://apm-additional.example.com".to_string(),
+                vec!["apm-additional-key".to_string()],
+            )]),
+        )
+        .without_primary();
+        assert_eq!(endpoint, traces_forwarder_configuration(&shared).endpoint);
+        // The shared forwarder keeps sending to its primary endpoint.
+        assert!(forwarder_configuration(&shared).endpoint != endpoint);
+    }
+
+    #[test]
+    fn the_shared_forwarder_ignores_the_traces_intake() {
+        let config = forwarder_configuration(&distinct_shared_configuration());
+
+        assert_eq!(
+            EndpointConfiguration::new(
+                "primary-key".to_string(),
+                "https://app.datadoghq.eu".to_string(),
+                HashMap::from([(
+                    "https://additional.example.com".to_string(),
+                    vec!["additional-key".to_string()],
+                )]),
+            ),
+            config.endpoint
+        );
     }
 
     #[test]

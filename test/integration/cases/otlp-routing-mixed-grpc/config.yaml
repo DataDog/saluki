@@ -1,0 +1,110 @@
+description: >-
+  With ADP proxying OTLP traces and logs to the Agent and handling OTLP metrics itself, each signal sent over gRPC
+  reaches the intake from its own sender: the metrics from ADP, the traces and their statistics from the trace agent,
+  and the logs from the Agent.
+timeout: 5m
+subject_os: [linux]
+
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-routing-mixed-grpc"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read this. The endpoint is the harness's, not the default one. The Agent moves its receiver
+      # off it.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "true"
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "true"
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"
+      # No `agent_receiver_*` key, so the Agent and ADP use the default relocation addresses.
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake.api}
+  intake: {type: datadog-intake}
+  # Each sender waits idle. The procedure runs millstone in it once the Agent's receivers listen.
+  send-metrics-grpc:
+    image: saluki-images/correctness-tools:latest
+    command: [sleep, infinity]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-metrics-grpc.yaml, template: true}
+    connect: {otlp: adp.otlp_grpc}
+  send-traces-grpc:
+    image: saluki-images/correctness-tools:latest
+    command: [sleep, infinity]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-traces-grpc.yaml, template: true}
+    connect: {otlp: adp.otlp_grpc}
+  send-logs-grpc:
+    image: saluki-images/correctness-tools:latest
+    command: [sleep, infinity]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-logs-grpc.yaml, template: true}
+    connect: {otlp: adp.otlp_grpc}
+
+procedure:
+  # ADP listens, and the Agent moves its receivers to the relocation addresses.
+  - parallel:
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp.endpoints.otlp_grpc.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: 'Relocating Agent OTLP/grpc receiver from "0.0.0.0:{{ adp.endpoints.otlp_grpc.port }}" to "127.0.0.1:4319"'
+        timeout: 60s
+      # The harness sets the OTLP/http endpoint too, so the Agent also relocates that receiver.
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: 'Relocating Agent OTLP/http receiver from "0.0.0.0:{{ adp.endpoints.agent_otlp_http.port }}" to "127.0.0.1:4320"'
+        timeout: 60s
+      # The Agent's OTLP pipeline logs this once its relocated receivers listen. A proxied request fails until then,
+      # so the senders run millstone only after this step.
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: "Everything is ready. Begin running and processing data."
+        timeout: 60s
+  - {step: exec, on: send-metrics-grpc, command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml], timeout: 2m}
+  - {step: exec, on: send-traces-grpc, command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml], timeout: 2m}
+  - {step: exec, on: send-logs-grpc, command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml], timeout: 2m}
+  - parallel:
+      - step: intake_from
+        on: intake
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.mixed-grpc.grpc."}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: spans
+        select: {service: otlp-routing-mixed-grpc-grpc}
+        sender: trace-agent
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: trace_stats
+        select: {service: otlp-routing-mixed-grpc-grpc}
+        sender: trace-agent
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: logs
+        select: {service: otlp-routing-mixed-grpc-grpc}
+        sender: agent
+        count: 3
+        timeout: 2m
+  # `log_not_contains` reads the logs of the `adp` and `agent` processes, so it covers the Agent's receivers too.
+  - parallel:
+      - {step: process_stable_for, on: adp, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "(?i)address already in use", regex: true, during: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}

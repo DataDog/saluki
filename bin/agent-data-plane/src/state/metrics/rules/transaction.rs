@@ -22,10 +22,12 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
             .with_original_tags(["domain", "endpoint"])
             .with_help_text("Transaction requeue count"),
         // Only match per-domain gauges: the untagged aggregate is emitted once per forwarder, and those would
-        // collide once remapped.
+        // collide once remapped. Forwarders that share a domain, such as the shared and the traces forwarder, also
+        // collide once `component_id` is dropped, so their queues are summed into one total per domain.
         RemapperRule::by_name("adp.network_http_retry_queue_size", "transactions.retry_queue_size")
             .with_required_tag_keys(["domain"])
             .with_original_tags(["domain"])
+            .with_summed_gauges()
             .with_help_text("Current transaction retry queue size"),
         RemapperRule::by_name("adp.network_http_requests_success_total", "transactions.success")
             .with_original_tags(["domain", "endpoint", "proto_version"])

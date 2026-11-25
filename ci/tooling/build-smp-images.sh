@@ -142,6 +142,11 @@ if [[ "${reuse}" == "true" ]]; then
 fi
 
 # The ADP key includes all of these arguments, so a change to them makes a new key.
+#
+# We don't pass `APP_GIT_HASH`. `saluki-metadata` embeds it, so a new value on each commit
+# invalidates that crate and every crate that depends on it in the compiler cache, including
+# `saluki-components`. The binary then reports an unknown Git hash. The image tag and the
+# `git.commit` label still identify the built commit.
 adp_build_args=(
     "BUILD_PROFILE=${SMP_BUILD_PROFILE}"
     "BUILD_TARGET=${BUILD_TARGET}"
@@ -151,7 +156,6 @@ adp_build_args=(
     "BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}"
     "SPDX_LICENSES_IMAGE=${spdx_image}"
     "APP_IMAGE=${app_image}"
-    "APP_GIT_HASH=${adp_sha}"
 )
 
 if [[ "${reuse}" == "true" ]]; then

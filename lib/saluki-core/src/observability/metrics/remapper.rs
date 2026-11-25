@@ -26,6 +26,7 @@ pub struct RemapperRule {
     additional_tags: Vec<MetaString>,
     all_original_tags_except: Option<Vec<&'static str>>,
     continue_matching: bool,
+    sum_gauges: bool,
     help_text: Option<&'static str>,
 }
 
@@ -42,6 +43,7 @@ impl RemapperRule {
             additional_tags: Vec::new(),
             all_original_tags_except: None,
             continue_matching: false,
+            sum_gauges: false,
             help_text: None,
         }
     }
@@ -60,6 +62,7 @@ impl RemapperRule {
             additional_tags: Vec::new(),
             all_original_tags_except: None,
             continue_matching: false,
+            sum_gauges: false,
             help_text: None,
         }
     }
@@ -172,6 +175,16 @@ impl RemapperRule {
         self
     }
 
+    /// Sums gauges that remap to the same name and tags, instead of keeping the latest one.
+    ///
+    /// Remapping can drop the tags that told two source series apart, such as a component ID, so that they share one
+    /// remapped identity. For a gauge that's a total across them, such as a queue size, this reports their sum rather
+    /// than whichever one was seen last.
+    pub fn with_summed_gauges(mut self) -> Self {
+        self.sum_gauges = true;
+        self
+    }
+
     /// Sets the Prometheus `# HELP` text that should be emitted alongside the remapped metric.
     ///
     /// Some downstream collectors (notably the Datadog Agent's OpenMetrics check) require a
@@ -185,6 +198,11 @@ impl RemapperRule {
     /// Returns `true` if matching should continue after this rule matches.
     pub const fn should_continue_matching(&self) -> bool {
         self.continue_matching
+    }
+
+    /// Returns `true` if gauges that remap to the same name and tags are summed.
+    pub const fn sums_gauges(&self) -> bool {
+        self.sum_gauges
     }
 
     /// Returns the remapped metric name produced by this rule.

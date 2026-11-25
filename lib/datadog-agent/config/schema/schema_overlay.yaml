@@ -47,8 +47,8 @@ inventory:
       ADP also sends logs to these endpoints, which the core Agent never does: the Agent sends logs only
       to the endpoints configured under `logs_config`, including `logs_config.additional_endpoints`.
       Only the logs ADP handles itself are affected: native OTLP logs, when it doesn't relay them to the
-      core Agent, and check logs. ADP sends native traces to these endpoints too, where the core Agent
-      uses `apm_config.additional_endpoints`.
+      core Agent, and check logs. ADP doesn't send traces to these endpoints: native traces go to
+      `apm_config.additional_endpoints` instead.
     issue: "#2973"
 
   agent_ipc.grpc_max_message_size:
@@ -173,6 +173,11 @@ inventory:
     pipelines: [cross_cutting]
     description: "API key for endpoint auth"
 
+  apm_config.additional_endpoints:
+    support: full
+    pipelines: [traces]
+    description: "Dual-ship traces and stats to extra endpoints"
+
   apm_config.analyzed_rate_by_service:
     support: full
     pipelines: [traces]
@@ -184,13 +189,9 @@ inventory:
     description: "Per service|operation APM event extraction rates"
 
   apm_config.apm_dd_url:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2419"
+    support: full
     pipelines: [traces]
     description: "APM intake URL override"
-    documentation: "ADP sends trace and stats payloads to the endpoints derived from `dd_url` or `site` and ignores this override."
 
   apm_config.apm_non_local_traffic:
     support: full
@@ -211,6 +212,15 @@ inventory:
       `/info` response. ADP doesn't limit the relay's own connections: the trace-agent behind the
       relay applies the limit to the connections it receives from ADP. As in the trace-agent,
       `/info` reports `0` unless the key is set.
+
+  apm_config.connection_reset_interval:
+    support: partial
+    pipelines: [traces]
+    description: "Traces and stats connection reset period (secs)"
+    documentation: |-
+      Resets the connections to the traces intake after this many seconds, for traces and APM stats. As in the
+      trace-agent, `0` never resets, and `forwarder_connection_reset_interval` doesn't apply to traces. A negative
+      value reads as `0`, with a warning. The APM relay's own connections to the trace-agent aren't reset.
 
   apm_config.decoder_timeout:
     support: partial
@@ -362,6 +372,16 @@ inventory:
       ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
       `/info` response. The trace-agent behind the relay enforces the limit on the requests ADP
       forwards to it; ADP doesn't enforce it on the requests it handles itself.
+
+  apm_config.max_sender_retries:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Failed sends before a payload is dropped"
+    documentation: |-
+      The trace-agent drops a trace or stats payload after this many failed sends, 4 by default. ADP follows its forwarder: it
+      retries with backoff, up to `forwarder_backoff_max`, until the byte-bounded retry queue evicts the payload. Nothing uses this key in practice, so ADP doesn't implement it.
 
   apm_config.max_traces_per_second:
     support: full
@@ -555,6 +575,34 @@ inventory:
       relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
       invalid value logs a warning and falls back to the default obfuscator.
 
+  apm_config.stats_writer.connection_limit:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Concurrent stats requests"
+    documentation: |-
+      ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.
+
+  apm_config.stats_writer.queue_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Pending stats payloads"
+    documentation: |-
+      ADP sends traces and APM stats from one forwarder with a byte-bounded retry queue, so a writer can't have its own queue size. Nothing uses this key in practice, so ADP doesn't implement it.
+
+  apm_config.sync_flushing:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Flush payloads on request, not on a timer"
+    documentation: |-
+      The trace-agent flushes its writers only when the host asks, which serverless deployments use. ADP's encoders flush on
+      timers and ADP has no host flush, so ADP doesn't support this mode. Nothing uses this key in practice, so ADP doesn't implement it.
+
   apm_config.target_traces_per_second:
     support: full
     pipelines: [traces]
@@ -569,18 +617,29 @@ inventory:
       `/info` response. The relay forwards `/telemetry/proxy/` to the trace-agent behind it, which
       proxies tracer telemetry when this key is enabled.
 
-  apm_config.traces_send_to_main_endpoint:
+  apm_config.trace_writer.connection_limit:
     support: none
     severity: low
-    planned: true
-    issue: "#2419"
+    planned: false
+    pipelines: [traces]
+    description: "Concurrent trace requests"
+    documentation: |-
+      ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.
+
+  apm_config.trace_writer.queue_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [traces]
+    description: "Pending trace payloads"
+    documentation: |-
+      The trace-agent deprecates this key and always queues one payload. ADP sends traces from a forwarder with a byte-bounded
+      retry queue and doesn't read it. Nothing uses this key in practice, so ADP doesn't implement it.
+
+  apm_config.traces_send_to_main_endpoint:
+    support: full
     pipelines: [traces]
     description: "Send traces and stats to the main endpoint"
-    documentation: |-
-      When `false`, the trace-agent sends traces and APM stats only to `apm_config.additional_endpoints`. ADP
-      sends the trace and stats payloads from its OTLP traces pipeline to the endpoints derived from `dd_url`
-      or `site` and `additional_endpoints`, whatever this key's value. Traces that ADP relays to the
-      trace-agent follow this key.
 
   auth_token_file_path:
     support: full
@@ -3219,6 +3278,16 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use V3 series for OPW"
 
+  observability_pipelines_worker.traces.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Route traces and stats to OPW"
+
+  observability_pipelines_worker.traces.url:
+    support: full
+    pipelines: [traces]
+    description: "OPW traces intake URL"
+
   origin_detection_unified:
     support: full
     pipelines: [dogstatsd]
@@ -4505,6 +4574,16 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use V3 series for Vector"
 
+  vector.traces.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Route traces to OPW (legacy alias)"
+
+  vector.traces.url:
+    support: full
+    pipelines: [traces]
+    description: "OPW traces intake URL (legacy alias)"
+
   vsock_addr:
     support: full
     pipelines: [cross_cutting]
@@ -4737,11 +4816,9 @@ excluded:
   anomaly_detection.storage.inactive_series_ttl: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.storage.max_series: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.storage.point_retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
-  apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
-  apm_config.connection_reset_interval: "ignored in initial audit 2026-04-23"
   apm_config.dd_agent_bin: "ignored in initial audit 2026-04-23"
   apm_config.debug.port: "ignored in initial audit 2026-04-23"
   apm_config.debug_v1_payloads: "ignored in initial audit 2026-04-23"
@@ -4774,7 +4851,6 @@ excluded:
   apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
   apm_config.max_connections: "ignored in initial audit 2026-04-23"
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
-  apm_config.max_sender_retries: "ignored in initial audit 2026-04-23"
   apm_config.mode: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"
@@ -4793,17 +4869,12 @@ excluded:
   apm_config.socket_activation.enabled: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.handle_tcp_probe: "ignored in initial audit 2026-04-23"
   apm_config.span_derived_primary_tags: "ignored in initial audit 2026-04-23"
-  apm_config.stats_writer.connection_limit: "ignored in initial audit 2026-04-23"
-  apm_config.stats_writer.queue_size: "ignored in initial audit 2026-04-23"
   apm_config.symdb_additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.symdb_api_key: "ignored in initial audit 2026-04-23"
   apm_config.symdb_dd_url: "ignored in initial audit 2026-04-23"
-  apm_config.sync_flushing: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.dd_url: "ignored in initial audit 2026-04-23"
   apm_config.trace_buffer: "ignored in initial audit 2026-04-23"
-  apm_config.trace_writer.connection_limit: "ignored in initial audit 2026-04-23"
-  apm_config.trace_writer.queue_size: "ignored in initial audit 2026-04-23"
   apm_config.watchdog_check_delay: "ignored in initial audit 2026-04-23"
   apm_config.windows_pipe_buffer_size: "ignored in initial audit 2026-04-23"
   apm_config.windows_pipe_name: "ignored in initial audit 2026-04-23"
@@ -5916,8 +5987,6 @@ excluded:
   network_pcap.forwarder.use_v2_api: "2026-11-05: ADP does not currently support remote packet capture."
   network_pcap.forwarder.zstd_compression_level: "2026-11-05: ADP does not currently support remote packet capture."
   notable_events.enabled: "ignored in initial audit 2026-04-23"
-  observability_pipelines_worker.traces.enabled: "OPW traces routing out of scope for ADP"
-  observability_pipelines_worker.traces.url: "OPW traces routing out of scope for ADP"
   ol_proxy_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   ol_proxy_config.api_key: "ignored in initial audit 2026-04-23"
   ol_proxy_config.api_version: "ignored in initial audit 2026-04-23"
@@ -6368,8 +6437,6 @@ excluded:
   use_diskv2_check: "ignored in initial audit 2026-04-23"
   use_improved_cgroup_parser: "ignored in initial audit 2026-04-23"
   use_networkv2_check: "ignored in initial audit 2026-04-23"
-  vector.traces.enabled: "OPW traces routing out of scope for ADP"
-  vector.traces.url: "OPW traces routing out of scope for ADP"
   win_skip_com_init: "ignored in initial audit 2026-04-23"
   windows_counter_init_failure_limit: "ignored in initial audit 2026-04-23"
   windows_counter_refresh_interval: "ignored in initial audit 2026-04-23"

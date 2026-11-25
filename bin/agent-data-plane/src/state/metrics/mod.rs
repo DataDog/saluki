@@ -88,6 +88,14 @@ mod tests {
                 ),
                 6.0,
             )),
+            // A forwarder that shares a domain with another one, such as the traces forwarder, adds to its queue.
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_size",
+                    &["component_id:dd_traces_out", "domain:https://api.datadoghq.com"],
+                ),
+                1.0,
+            )),
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
                     "adp.component_errors_total",
@@ -113,7 +121,7 @@ mod tests {
         assert!(
             output.contains("transactions__requeued{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 2")
         );
-        assert!(output.contains("transactions__retry_queue_size{domain=\"https://api.datadoghq.com\"} 4"));
+        assert!(output.contains("transactions__retry_queue_size{domain=\"https://api.datadoghq.com\"} 5"));
         assert!(output.contains("transactions__retry_queue_size{domain=\"https://api.datadoghq.eu\"} 6"));
         assert!(!output.contains("transactions__retry_queue_size 99"));
         assert!(output.contains("dogstatsd__uds_origin_detection_error 9"));

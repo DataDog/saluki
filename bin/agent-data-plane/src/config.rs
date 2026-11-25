@@ -272,6 +272,14 @@ impl<'a> DataPlaneConfiguration<'a> {
         matches!(otlp.routes.traces, OtlpRoute::Internal)
     }
 
+    /// Returns `true` if the traces forwarder is required.
+    ///
+    /// The traces pipeline delivers its traces and stats through it, and so does the APM relay, which has nothing to
+    /// feed the traces pipeline.
+    pub const fn traces_forwarder_required(&self, otlp: &OtlpPlan) -> bool {
+        self.traces_pipeline_required(otlp) || self.apm_enabled()
+    }
+
     /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
     pub fn active_pipelines(&self, otlp: &OtlpPlan) -> HashSet<Pipeline> {
         let mut s = HashSet::new();

@@ -27,8 +27,6 @@ tracking.
 
 | Config Key                                                      | Description                                       | Issue   |
 | --------------------------------------------------------------- | ------------------------------------------------- | ------- |
-| `apm_config.apm_dd_url`                                         | APM intake URL override                           | [#2419] |
-| `apm_config.traces_send_to_main_endpoint`                       | Send traces and stats to the main endpoint        | [#2419] |
 | `dogstatsd_client_drop_detection.dropped_ratio_threshold`       | Client drop ratio that marks a client unhealthy   | [#3088] |
 | `dogstatsd_client_drop_detection.enabled`                       | DogStatsD client drop detection                   | [#3088] |
 | `dogstatsd_client_drop_detection.recovery_confirmation_window`  | Time below threshold before a client recovers     | [#3088] |
@@ -125,6 +123,12 @@ architecture is fundamentally different or the feature is platform-specific.
 | `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`                         | Parallel flush: series/sketch buffer size          | See below                                                                                                                                                                                                                                                                 |
 | `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`                           | Parallel flush: channel size                       | See below                                                                                                                                                                                                                                                                 |
 | `aggregator_use_tags_store`                                                              | Enable shared tag deduplication store              | See below                                                                                                                                                                                                                                                                 |
+| `apm_config.max_sender_retries`                                                          | Failed sends before a payload is dropped           | See below                                                                                                                                                                                                                                                                 |
+| `apm_config.stats_writer.connection_limit`                                               | Concurrent stats requests                          | ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.                                                                                                       |
+| `apm_config.stats_writer.queue_size`                                                     | Pending stats payloads                             | ADP sends traces and APM stats from one forwarder with a byte-bounded retry queue, so a writer can't have its own queue size. Nothing uses this key in practice, so ADP doesn't implement it.                                                                             |
+| `apm_config.sync_flushing`                                                               | Flush payloads on request, not on a timer          | See below                                                                                                                                                                                                                                                                 |
+| `apm_config.trace_writer.connection_limit`                                               | Concurrent trace requests                          | ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.                                                                                                       |
+| `apm_config.trace_writer.queue_size`                                                     | Pending trace payloads                             | See below                                                                                                                                                                                                                                                                 |
 | `config_id`                                                                              | Fleet Automation config ID tag                     | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
 | `data_plane.telemetry_enabled`                                                           | ADP telemetry toggle                               | See below                                                                                                                                                                                                                                                                 |
 | `data_plane.telemetry_listen_addr`                                                       | ADP telemetry listen address                       | See below                                                                                                                                                                                                                                                                 |
@@ -271,6 +275,21 @@ and `SharedTagSet` structural sharing.
 Related ADP-specific tuning is exposed through context/tag-set resolver settings such as
 `dogstatsd_cached_tagsets_limit`, not through `aggregator_use_tags_store`. Setting
 `aggregator_use_tags_store` has no effect in ADP.
+
+### `apm_config.max_sender_retries`
+
+The trace-agent drops a trace or stats payload after this many failed sends, 4 by default. ADP follows its forwarder: it
+retries with backoff, up to `forwarder_backoff_max`, until the byte-bounded retry queue evicts the payload. Nothing uses this key in practice, so ADP doesn't implement it.
+
+### `apm_config.sync_flushing`
+
+The trace-agent flushes its writers only when the host asks, which serverless deployments use. ADP's encoders flush on
+timers and ADP has no host flush, so ADP doesn't support this mode. Nothing uses this key in practice, so ADP doesn't implement it.
+
+### `apm_config.trace_writer.queue_size`
+
+The trace-agent deprecates this key and always queues one payload. ADP sends traces from a forwarder with a byte-bounded
+retry queue and doesn't read it. Nothing uses this key in practice, so ADP doesn't implement it.
 
 ### `data_plane.telemetry_enabled`
 
@@ -606,6 +625,7 @@ default values.
 | `additional_endpoints`                                          | Dual-ship to extra endpoints                    |
 | `aggregator_stop_timeout`                                       | Timeout (s) for aggregator flush on stop        |
 | `apm_config.connection_limit`                                   | APM receiver connection limit                   |
+| `apm_config.connection_reset_interval`                          | Traces and stats connection reset period (secs) |
 | `apm_config.decoder_timeout`                                    | Trace decoder wait timeout, in milliseconds     |
 | `apm_config.decoders`                                           | Number of concurrent trace decoders             |
 | `apm_config.features`                                           | Beta APM feature flags                          |
@@ -656,8 +676,8 @@ does.
 ADP also sends logs to these endpoints, which the core Agent never does: the Agent sends logs only
 to the endpoints configured under `logs_config`, including `logs_config.additional_endpoints`.
 Only the logs ADP handles itself are affected: native OTLP logs, when it doesn't relay them to the
-core Agent, and check logs. ADP sends native traces to these endpoints too, where the core Agent
-uses `apm_config.additional_endpoints`.
+core Agent, and check logs. ADP doesn't send traces to these endpoints: native traces go to
+`apm_config.additional_endpoints` instead.
 
 ### `aggregator_stop_timeout`
 
@@ -682,6 +702,12 @@ ADP reads this key to describe the trace-agent's configuration to tracers in the
 `/info` response. ADP doesn't limit the relay's own connections: the trace-agent behind the
 relay applies the limit to the connections it receives from ADP. As in the trace-agent,
 `/info` reports `0` unless the key is set.
+
+### `apm_config.connection_reset_interval`
+
+Resets the connections to the traces intake after this many seconds, for traces and APM stats. As in the
+trace-agent, `0` never resets, and `forwarder_connection_reset_interval` doesn't apply to traces. A negative
+value reads as `0`, with a warning. The APM relay's own connections to the trace-agent aren't reset.
 
 ### `apm_config.decoder_timeout`
 
@@ -1358,8 +1384,10 @@ The following settings work in ADP with the same behavior as the core agent.
 | `agent_ipc.grpc_max_message_size`                                                          | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                                                     | Relax backend tag validation via HTTP header       |
 | `api_key`                                                                                  | API key for endpoint auth                          |
+| `apm_config.additional_endpoints`                                                          | Dual-ship traces and stats to extra endpoints      |
 | `apm_config.analyzed_rate_by_service`                                                      | Legacy per-service event extraction rates          |
 | `apm_config.analyzed_spans`                                                                | Per service|operation APM event extraction rates   |
+| `apm_config.apm_dd_url`                                                                    | APM intake URL override                            |
 | `apm_config.apm_non_local_traffic`                                                         | Accept non-local traffic on the APM receiver       |
 | `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
@@ -1400,6 +1428,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.receiver_socket`                                                               | APM receiver Unix domain socket path               |
 | `apm_config.replace_tags`                                                                  | Regex-based trace tag replacement rules            |
 | `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |
+| `apm_config.traces_send_to_main_endpoint`                                                  | Send traces and stats to the main endpoint         |
 | `auth_token_file_path`                                                                     | Agent authentication token file path               |
 | `autoscaling.failover.enabled`                                                             | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                                             | Metric names forwarded to DCA for failover         |
@@ -1518,6 +1547,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `observability_pipelines_worker.metrics.enabled`                                           | Route metrics to OPW instance                      |
 | `observability_pipelines_worker.metrics.url`                                               | OPW metrics intake URL                             |
 | `observability_pipelines_worker.metrics.use_v3_api.series`                                 | Use V3 series for OPW                              |
+| `observability_pipelines_worker.traces.enabled`                                            | Route traces and stats to OPW                      |
+| `observability_pipelines_worker.traces.url`                                                | OPW traces intake URL                              |
 | `origin_detection_unified`                                                                 | Unified origin detection mode                      |
 | `otlp_config.metrics.delta_ttl`                                                            | TTL (seconds) for cached delta-conversion points   |
 | `otlp_config.metrics.enabled`                                                              | Accept OTLP metrics                                |
@@ -1595,6 +1626,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `vector.metrics.enabled`                                                                   | Route metrics to OPW (legacy alias)                |
 | `vector.metrics.url`                                                                       | OPW metrics intake URL (legacy alias)              |
 | `vector.metrics.use_v3_api.series`                                                         | Use V3 series for Vector                           |
+| `vector.traces.enabled`                                                                    | Route traces to OPW (legacy alias)                 |
+| `vector.traces.url`                                                                        | OPW traces intake URL (legacy alias)               |
 | `vsock_addr`                                                                               | vsock address for Agent IPC endpoint               |
 
 
@@ -2131,7 +2164,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
-[#2419]: https://github.com/DataDog/saluki/issues/2419
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559
