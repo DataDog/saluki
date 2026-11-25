@@ -7,6 +7,10 @@ use otlp_protos::opentelemetry::proto::common::v1::any_value::Value as OtlpValue
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 /// Renders an OTLP value the way `pcommon.Value.AsString` does. Arrays and maps become JSON.
+///
+/// The JSON of arrays and maps doesn't match `pcommon` exactly yet. Inside them, doubles use `serde_json`'s layout,
+/// empty values are dropped and empty bytes become `""` instead of `null`, a non-finite double is dropped instead of
+/// making the whole string empty, and U+2028 and U+2029 aren't escaped.
 pub(crate) fn otlp_value_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
     match value {
         Some(value @ (OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_))) => {

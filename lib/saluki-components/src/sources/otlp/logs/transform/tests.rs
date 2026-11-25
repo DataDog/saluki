@@ -2,7 +2,7 @@ use otlp_common::{any_value::Value, AnyValue, KeyValue, KeyValueList};
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use saluki_core::data_model::tags::TagSet;
-use serde_json::json;
+use serde_json::{json, Value as JsonValue};
 
 use super::*;
 
@@ -25,6 +25,254 @@ fn transform_attributes(attributes: Vec<KeyValue>) -> Log {
         ..Default::default()
     };
     transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+        .expect("the record should transform")
+}
+
+fn value(value: Value) -> AnyValue {
+    AnyValue { value: Some(value) }
+}
+
+fn empty() -> AnyValue {
+    AnyValue { value: None }
+}
+
+fn map(entries: Vec<(&str, AnyValue)>) -> AnyValue {
+    value(Value::KvlistValue(KeyValueList {
+        values: entries.into_iter().map(|(key, value)| key_value(key, value)).collect(),
+    }))
+}
+
+fn array(values: Vec<AnyValue>) -> AnyValue {
+    value(Value::ArrayValue(otlp_common::ArrayValue { values }))
+}
+
+/// Nests `leaf` in `depth` maps, keyed `m1` to `m<depth>` from the outside in.
+fn nested_maps(depth: usize, leaf: AnyValue) -> AnyValue {
+    (1..=depth)
+        .rev()
+        .fold(leaf, |inner, level| map(vec![(&format!("m{}", level), inner)]))
+}
+
+/// Nests `leaf` in `depth` arrays of one map each, keyed `level1` to `level<depth>` from the outside in.
+fn nested_through_arrays(depth: usize, leaf: AnyValue) -> AnyValue {
+    (1..=depth).rev().fold(leaf, |inner, level| {
+        array(vec![map(vec![(&format!("level{}", level), inner)])])
+    })
+}
+
+/// Returns the log's message, status, and additional properties as one JSON object, as the Agent's
+/// `HTTPLogItem` holds them without its `ddtags`.
+fn item_json(log: &Log) -> JsonValue {
+    let mut item = serde_json::Map::new();
+    item.insert("message".to_string(), json!(log.message()));
+    item.insert("status".to_string(), json!(log.status()));
+    for (key, value) in log.additional_properties() {
+        item.insert(key.to_string(), value.clone());
+    }
+    JsonValue::Object(item)
+}
+
+#[test]
+fn values_coerce_as_the_reference() {
+    // Each target is what the Agent's `transform` returns for the record, marshaled by `HTTPLogItem.MarshalJSON`
+    // without its `ddtags`, at the Agent version that `_version.txt` pins.
+    struct Case {
+        name: &'static str,
+        record: Vec<KeyValue>,
+        body: Option<AnyValue>,
+        resource: Vec<KeyValue>,
+        scope: Vec<KeyValue>,
+        target: &'static str,
+    }
+    let case = |name, record| Case {
+        name,
+        record,
+        body: None,
+        resource: vec![],
+        scope: vec![],
+        target: "",
+    };
+    let body = |name, body| Case {
+        body: Some(body),
+        ..case(name, vec![])
+    };
+
+    let cases = [
+        Case {
+            target: r#"{"array":[1,"","aGk=",[true],{},"collapsed",{"a.b":2}],"bytes":"/wBh","bytes_empty":"","empty":"","map.inner_bytes":"aGk=","map.inner_value_empty":"","message":"","spread":"x","status":""}"#,
+            ..case(
+                "record values keep their types, and other values become strings",
+                vec![
+                    key_value("empty", empty()),
+                    key_value("bytes_empty", value(Value::BytesValue(vec![]))),
+                    key_value("bytes", value(Value::BytesValue(vec![0xff, 0x00, b'a']))),
+                    key_value("map_empty", map(vec![])),
+                    key_value(
+                        "map",
+                        map(vec![
+                            ("inner_empty", map(vec![])),
+                            ("inner_value_empty", empty()),
+                            ("inner_bytes", value(Value::BytesValue(b"hi".to_vec()))),
+                        ]),
+                    ),
+                    key_value(
+                        "array",
+                        array(vec![
+                            value(Value::IntValue(1)),
+                            empty(),
+                            value(Value::BytesValue(b"hi".to_vec())),
+                            array(vec![value(Value::BoolValue(true))]),
+                            map(vec![]),
+                            map(vec![("", string("collapsed"))]),
+                            map(vec![("a", map(vec![("b", value(Value::IntValue(2)))]))]),
+                        ]),
+                    ),
+                    key_value("", map(vec![("spread", string("x"))])),
+                ],
+            )
+        },
+        Case {
+            target: r#"{"attr_depth_4":[{"level1":[{"level2":[{"level3":[{"level4":"leaf"}]}]}]}],"attr_depth_5":[{"level1":[{"level2":[{"level3":[{"level4":["{\"level5\":\"leaf\"}"]}]}]}]}],"attr_depth_6":[{"level1":[{"level2":[{"level3":[{"level4":["{\"level5\":[{\"level6\":\"leaf\"}]}"]}]}]}]}],"message":"","status":""}"#,
+            ..case(
+                "a map that arrays nest at depth 10 becomes a string",
+                (4..=6)
+                    .map(|depth| {
+                        key_value(
+                            &format!("attr_depth_{}", depth),
+                            nested_through_arrays(depth, string("leaf")),
+                        )
+                    })
+                    .collect(),
+            )
+        },
+        Case {
+            target: r#"{"m.m1.m2.m3.m4.m5.m6.m7.m8.m9":"{\"m10\":1}","message":"","n.m1.m2.m3.m4.m5.m6.m7.m8.m9":1,"status":""}"#,
+            ..case(
+                "a map at depth 10 becomes a string",
+                vec![
+                    key_value("m", nested_maps(10, value(Value::IntValue(1)))),
+                    key_value("n", nested_maps(9, value(Value::IntValue(1)))),
+                ],
+            )
+        },
+        Case {
+            target: r#"{"message":"12","otel.scope.name":"1.5","status":"true"}"#,
+            ..case(
+                "reserved attributes become strings",
+                vec![
+                    key_value("message", value(Value::IntValue(12))),
+                    key_value("level", value(Value::BoolValue(true))),
+                    key_value("ddtags", value(Value::IntValue(5))),
+                    key_value("otel.library.name", value(Value::DoubleValue(1.5))),
+                ],
+            )
+        },
+        Case {
+            target: r#"{"message":"{\"k\":\"v\"}","status":""}"#,
+            ..case(
+                "a map message becomes JSON",
+                vec![key_value("msg", map(vec![("k", string("v"))]))],
+            )
+        },
+        Case {
+            body: Some(value(Value::DoubleValue(1e21))),
+            target: r#"{"message":"1e+21","status":""}"#,
+            ..case(
+                "an empty message falls back to the body",
+                vec![key_value("msg", empty())],
+            )
+        },
+        Case {
+            target: r#"{"message":"-3","status":""}"#,
+            ..body("an integer body", value(Value::IntValue(-3)))
+        },
+        Case {
+            target: r#"{"message":"Ym9keQ==","status":""}"#,
+            ..body("a bytes body", value(Value::BytesValue(b"body".to_vec())))
+        },
+        Case {
+            target: r#"{"message":"NaN","status":""}"#,
+            ..body("a NaN body", value(Value::DoubleValue(f64::NAN)))
+        },
+        Case {
+            target: r#"{"message":"[\"<&>\"]","status":""}"#,
+            ..body("an array body", array(vec![string("<&>")]))
+        },
+        Case {
+            resource: vec![
+                key_value("res_empty", empty()),
+                key_value("res_inf", value(Value::DoubleValue(f64::NEG_INFINITY))),
+                key_value("res_bytes", value(Value::BytesValue(b"hi".to_vec()))),
+                key_value("service", value(Value::IntValue(3))),
+            ],
+            scope: vec![
+                key_value("scope_bool", value(Value::BoolValue(false))),
+                key_value("scope_empty", empty()),
+                key_value("scope_array", array(vec![value(Value::IntValue(2))])),
+            ],
+            target: r#"{"message":"","otel.service":"3","res_bytes":"aGk=","res_empty":"","res_inf":"-Infinity","scope_array":"[2]","scope_bool":"false","scope_empty":"","status":""}"#,
+            ..case("resource and scope attributes become strings", vec![])
+        },
+        Case {
+            resource: vec![key_value("d", string("resource"))],
+            target: r#"{"d":"resource","message":"","status":""}"#,
+            ..case(
+                "a NaN record attribute that a resource attribute overwrites",
+                vec![key_value("d", value(Value::DoubleValue(f64::NAN)))],
+            )
+        },
+    ];
+
+    for case in cases {
+        let lr = LogRecord {
+            attributes: case.record,
+            body: case.body,
+            ..Default::default()
+        };
+        let resource = Resource {
+            attributes: case.resource,
+            ..Default::default()
+        };
+        let scope = otlp_common::InstrumentationScope {
+            attributes: case.scope,
+            ..Default::default()
+        };
+        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+            .unwrap_or_else(|e| panic!("{}: {}", case.name, e));
+
+        let target: JsonValue = serde_json::from_str(case.target).expect("the target should be JSON");
+        assert_eq!(item_json(&log), target, "{}", case.name);
+    }
+}
+
+#[test]
+fn non_finite_record_attributes_drop_the_log() {
+    // The Agent fails to marshal each of these logs, and drops it.
+    let cases = [
+        ("a NaN attribute", value(Value::DoubleValue(f64::NAN))),
+        (
+            "an infinity in an array",
+            array(vec![value(Value::DoubleValue(f64::INFINITY))]),
+        ),
+        ("a NaN in a map", map(vec![("d", value(Value::DoubleValue(f64::NAN)))])),
+        (
+            "a NaN leaf at depth 10",
+            nested_maps(9, value(Value::DoubleValue(f64::NAN))),
+        ),
+        (
+            "a negative infinity in a map in an array",
+            array(vec![map(vec![("d", value(Value::DoubleValue(f64::NEG_INFINITY)))])]),
+        ),
+    ];
+
+    for (name, attribute) in cases {
+        let lr = LogRecord {
+            attributes: vec![key_value("x", attribute)],
+            ..Default::default()
+        };
+        let result = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+        assert!(result.is_err(), "{}: {:?}", name, result.map(|log| item_json(&log)));
+    }
 }
 
 #[test]
@@ -246,7 +494,8 @@ fn duplicate_reserved_keys_resolve_as_the_reference() {
         };
         let mut tags = TagSet::default();
         tags.insert_tag("res:tag");
-        let log = transform_log_record(lr, &Resource::default(), None, None, None, tags);
+        let log = transform_log_record(lr, &Resource::default(), None, None, None, tags)
+            .expect("the record should transform");
 
         assert_eq!(log.message(), case.message, "{}: message", case.name);
         assert_eq!(log.status(), case.status, "{}: status", case.name);
@@ -276,7 +525,8 @@ proptest::proptest! {
             time_unix_nano,
             ..Default::default()
         };
-        let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+        let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+        .expect("the record should transform");
         let formatted = log.additional_properties()["@timestamp"]
             .as_str()
             .expect("@timestamp should be a string")
@@ -367,7 +617,8 @@ fn timestamps_fall_back_to_the_observed_timestamp() {
             observed_time_unix_nano,
             ..Default::default()
         };
-        let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+        let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+            .expect("the record should transform");
 
         let props = log.additional_properties();
         let context = format!("timestamp {}, observed {}", time_unix_nano, observed_time_unix_nano);
@@ -421,7 +672,8 @@ fn event_name_overwrites_attributes_with_the_same_key() {
             attributes: attributes(scope_attr),
             ..Default::default()
         };
-        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default());
+        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+            .expect("the record should transform");
 
         assert_eq!(
             log.additional_properties().get("otel.event_name"),
@@ -588,7 +840,8 @@ fn scope_metadata_follows_the_reference_precedence() {
             attributes: attributes(case.scope_attributes),
             ..Default::default()
         };
-        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default());
+        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+            .expect("the record should transform");
 
         let actual = log
             .additional_properties()

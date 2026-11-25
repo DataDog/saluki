@@ -482,7 +482,7 @@ const INVALID_HOSTNAMES: [&str; 6] = [
 /// Returns the value of the first attribute named `key`, like `Map.Get` in `pdata`.
 ///
 /// The inner `Option` is `None` for an attribute that is present but has an empty value.
-pub(super) fn first_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
+pub(crate) fn first_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
     attributes
         .iter()
         .find(|kv| kv.key == key)

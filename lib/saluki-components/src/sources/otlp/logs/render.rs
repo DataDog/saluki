@@ -198,20 +198,26 @@ impl OtlpLogsRenderer {
         match self.renderer.render(&log) {
             Ok(content) => Some(log.with_message(content).with_additional_properties(None)),
             Err(error) => {
-                metrics.logs_dropped_render_failure().increment(1);
-                self.failures_since_logged += 1;
-
-                let now = Instant::now();
-                let log_due = self
-                    .last_failure_logged
-                    .is_none_or(|last| now.duration_since(last) >= RENDER_FAILURE_LOG_INTERVAL);
-                if log_due {
-                    self.last_failure_logged = Some(now);
-                    let failures = mem::take(&mut self.failures_since_logged);
-                    error!(%error, failures, "Failed to render OTLP log content. Dropping logs.");
-                }
+                self.record_failure(error, metrics);
                 None
             }
+        }
+    }
+
+    /// Counts a log that can't be rendered as dropped in `metrics`, and logs the failure at most once every
+    /// [`RENDER_FAILURE_LOG_INTERVAL`].
+    pub fn record_failure(&mut self, error: GenericError, metrics: &Metrics) {
+        metrics.logs_dropped_render_failure().increment(1);
+        self.failures_since_logged += 1;
+
+        let now = Instant::now();
+        let log_due = self
+            .last_failure_logged
+            .is_none_or(|last| now.duration_since(last) >= RENDER_FAILURE_LOG_INTERVAL);
+        if log_due {
+            self.last_failure_logged = Some(now);
+            let failures = mem::take(&mut self.failures_since_logged);
+            error!(%error, failures, "Failed to render OTLP log content. Dropping logs.");
         }
     }
 }
