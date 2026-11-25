@@ -1,0 +1,100 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive the same fixed OTLP traces over gRPC, and their intakes must hold the
+  same spans and the same named APM stats groups. Each stats dimension has a span name of its own.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up. The span that ends in the year 2100 goes into the
+  # current bucket, which each side flushes after two more buckets.
+  - {step: process_stable_for, on: load, duration: 45s}
+  # ADP sends the spans and their statistics itself, and does not proxy the traces to the Agent.
+  - parallel:
+      - step: compare
+        telemetry: traces
+        comparison: intake-adp
+        baseline: intake-agent
+        # The fixture holds 37 traces and 48 spans. Its spans have the 35 groups that both sides must compute, and a few
+        # more that only one side computes.
+        traces:
+          require_ssi: false
+          min_traces: 37
+          min_spans: 48
+          spans:
+            - {service: probe-stats, name: otlpprobe.tstat.http_status}
+            - {service: probe-stats, name: otlpprobe.tstat.http_split}
+            - {service: probe-stats, name: otlpprobe.tstat.grpc}
+            - {service: probe-stats, name: otlpprobe.tstat.db_type}
+            - {service: probe-stats, name: otlpprobe.tstat.kind}
+            - {service: probe-stats, name: otlpprobe.tstat.children}
+            - {service: probe-stats, name: otlpprobe.tstat.internal_child}
+            - {service: probe-stats, name: otlpprobe.tstat.partial}
+            - {service: probe-stats, name: otlpprobe.tstat.partial_control}
+            - {service: probe-stats, name: otlpprobe.tstat.measured_string}
+            - {service: probe-stats, name: otlpprobe.tstat.measured_int}
+            - {service: probe-stats, name: otlpprobe.tstat.top_level_attribute}
+            - {service: probe-stats, name: otlpprobe.tstat.synthetics}
+            - {service: probe-stats, name: otlpprobe.tstat.synthetics_off}
+            - {service: probe-stats, name: otlpprobe.tstat.synthetics_first}
+            - {service: probe-stats, name: otlpprobe.tstat.synthetics_root}
+            - {service: probe-stats, name: otlpprobe.tstat.is_trace_root}
+            - {service: probe-stats, name: otlpprobe.tstat.self_parent}
+            - {service: probe-stats, name: otlpprobe.tstat.peer}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_address}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_service}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_order}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_base_service}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_server}
+            - {service: probe-stats, name: otlpprobe.tstat.weight}
+            - {service: probe-stats, name: otlpprobe.tstat.weight_child}
+            - {service: probe-stats, name: otlpprobe.tstat.weight_tracestate}
+            - {service: probe-stats, name: otlpprobe.tstat.override}
+            - {service: probe-stats, name: otlpprobe.tstat.future}
+            - {service: probe-stats-measured, name: otlpprobe.tstat.measured_resource_root}
+            - {service: probe-stats-measured, name: otlpprobe.tstat.measured_resource}
+            - {service: probe-stats-client, name: otlpprobe.tstat.client_computed}
+            - {service: probe-stats-client, name: otlpprobe.tstat.client_computed_child}
+          min_stats_groups: 35
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: probe-stats}
+        sender: adp
+        count: 44
+        timeout: 1m
+      - step: intake_from
+        on: intake-adp
+        telemetry: trace_stats
+        select: {service: probe-stats}
+        sender: adp
+        timeout: 1m
