@@ -34,6 +34,19 @@ use crate::encoders::DatadogMetricsConfiguration;
 pub(crate) fn init_tls() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
+        init_crypto_provider();
+        saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
+    });
+}
+
+/// Initializes the default TLS crypto provider, as application bootstrap does, but not the platform root certificates.
+///
+/// Tests that build only clients with their own root store, such as plaintext clients with an empty store, call this
+/// rather than [`init_tls`], so they don't depend on the certificates of the host. Without the provider, a FIPS build
+/// falls back to one whose cipher suites aren't all FIPS-approved, and the HTTP clients refuse to build.
+pub(crate) fn init_crypto_provider() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
         if rustls::crypto::CryptoProvider::get_default().is_none() {
             match saluki_tls::initialize_default_crypto_provider() {
                 Ok(()) => {}
@@ -43,7 +56,6 @@ pub(crate) fn init_tls() {
                 Err(e) => panic!("failed to initialize TLS crypto provider: {e}"),
             }
         }
-        saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
     });
 }
 
