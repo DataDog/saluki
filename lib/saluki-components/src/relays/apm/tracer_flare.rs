@@ -262,8 +262,12 @@ fn flare_endpoint(site: &str, version_label: &str) -> Result<Uri, GenericError> 
 }
 
 /// A proxy forwarding to `base` over plain HTTP, standing in for the flare endpoint, as the trace-agent's test does.
+///
+/// It installs the TLS crypto provider first, as application bootstrap does. Without it, a FIPS build falls back to a
+/// provider whose cipher suites aren't all FIPS-approved, and the HTTP client refuses to build.
 #[cfg(test)]
 pub(super) fn plain_http_proxy(base: &str, api_key: &str) -> TracerFlareProxy {
+    crate::common::datadog::test_util::init_tls();
     let builder = saluki_io::net::client::http::HttpClient::builder()
         .with_tls_config(|builder| builder.with_root_cert_store(rustls::RootCertStore::empty()))
         .with_http_protocol(saluki_io::net::client::http::HttpProtocol::Http1);
