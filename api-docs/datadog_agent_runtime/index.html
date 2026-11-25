@@ -51,13 +51,13 @@ open across its own restarts, so a failing <code>config-stream</code> reaches th
 <p>Each remote agent builds its own control plane supervisor from the workers it needs. ADP’s <code>ctrl-pln</code> runs on a
 dedicated single-threaded runtime and holds:</p>
 <ul>
-<li>the health registry’s worker, and <a href="../saluki_app/accounting/struct.ResourceTelemetryWorker.html" title="struct saluki_app::accounting::ResourceTelemetryWorker"><code>ResourceTelemetryWorker</code></a></li>
+<li>the health registry’s worker, and [<code>ResourceTelemetryWorker</code>][saluki_app::accounting::ResourceTelemetryWorker]</li>
 <li><a href="../saluki_core/observability/metrics/api/struct.InternalTelemetryAPIWorker.html" title="struct saluki_core::observability::metrics::api::InternalTelemetryAPIWorker"><code>InternalTelemetryAPIWorker</code></a>, for <code>/metrics</code></li>
-<li><a href="../saluki_app/logging/api/struct.DynamicLogLevelWorker.html" title="struct saluki_app::logging::api::DynamicLogLevelWorker"><code>DynamicLogLevelWorker</code></a>, fed by
+<li>[<code>DynamicLogLevelWorker</code>][saluki_app::logging::DynamicLogLevelWorker], fed by
 <a href="logging/struct.LoggingTranslator.html#method.translate_log_levels" title="method datadog_agent_runtime::logging::LoggingTranslator::translate_log_levels"><code>LoggingTranslator::translate_log_levels</code></a></li>
-<li><a href="../saluki_app/config/struct.ConfigWorker.html" title="struct saluki_app::config::ConfigWorker"><code>ConfigWorker</code></a> for <code>/config</code>, and
+<li>[<code>ConfigWorker</code>][saluki_app::config::ConfigWorker] for <code>/config</code>, and
 <a href="control_plane/struct.ConfigRuntimeWorker.html" title="struct datadog_agent_runtime::control_plane::ConfigRuntimeWorker"><code>ConfigRuntimeWorker</code></a> for <code>/config/runtime</code></li>
-<li>the unprivileged and privileged API endpoints, built with <a href="../saluki_app/api/struct.APIBuilder.html" title="struct saluki_app::api::APIBuilder"><code>APIBuilder</code></a>, where the
+<li>the unprivileged and privileged API endpoints, built with [<code>APIBuilder</code>][saluki_app::api::APIBuilder], where the
 privileged endpoint requires the Agent IPC certificate</li>
 <li>the <code>remote-agent</code> supervisor from <a href="facade/struct.RemoteAgent.html#method.create_remote_agent_supervisor" title="method datadog_agent_runtime::facade::RemoteAgent::create_remote_agent_supervisor"><code>RemoteAgent::create_remote_agent_supervisor</code></a></li>
 </ul>
