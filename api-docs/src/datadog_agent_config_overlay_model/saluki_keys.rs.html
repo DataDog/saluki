@@ -257,98 +257,104 @@
 <a href=#257 id=257 data-nosnippet>257</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.dbms"</span>,
 <a href=#258 id=258 data-nosnippet>258</a>        description: <span class="string">"SQL obfuscation DBMS dialect"</span>,
 <a href=#259 id=259 data-nosnippet>259</a>        default: <span class="string">""</span>,
-<a href=#260 id=260 data-nosnippet>260</a>        documentation: <span class="prelude-val">None</span>,
-<a href=#261 id=261 data-nosnippet>261</a>    },
-<a href=#262 id=262 data-nosnippet>262</a>    SalukiKey {
-<a href=#263 id=263 data-nosnippet>263</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.dollar_quoted_func"</span>,
-<a href=#264 id=264 data-nosnippet>264</a>        description: <span class="string">"Preserve dollar-quoted SQL functions"</span>,
-<a href=#265 id=265 data-nosnippet>265</a>        default: <span class="string">""</span>,
-<a href=#266 id=266 data-nosnippet>266</a>        documentation: <span class="prelude-val">None</span>,
-<a href=#267 id=267 data-nosnippet>267</a>    },
-<a href=#268 id=268 data-nosnippet>268</a>    SalukiKey {
-<a href=#269 id=269 data-nosnippet>269</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.keep_sql_alias"</span>,
-<a href=#270 id=270 data-nosnippet>270</a>        description: <span class="string">"Preserve SQL aliases in obfuscation"</span>,
-<a href=#271 id=271 data-nosnippet>271</a>        default: <span class="string">""</span>,
-<a href=#272 id=272 data-nosnippet>272</a>        documentation: <span class="prelude-val">None</span>,
-<a href=#273 id=273 data-nosnippet>273</a>    },
-<a href=#274 id=274 data-nosnippet>274</a>    SalukiKey {
-<a href=#275 id=275 data-nosnippet>275</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.replace_digits"</span>,
-<a href=#276 id=276 data-nosnippet>276</a>        description: <span class="string">"Replace digits in SQL obfuscation"</span>,
-<a href=#277 id=277 data-nosnippet>277</a>        default: <span class="string">""</span>,
-<a href=#278 id=278 data-nosnippet>278</a>        documentation: <span class="prelude-val">None</span>,
-<a href=#279 id=279 data-nosnippet>279</a>    },
-<a href=#280 id=280 data-nosnippet>280</a>    SalukiKey {
-<a href=#281 id=281 data-nosnippet>281</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.table_names"</span>,
-<a href=#282 id=282 data-nosnippet>282</a>        description: <span class="string">"Collect table names during obfuscation"</span>,
-<a href=#283 id=283 data-nosnippet>283</a>        default: <span class="string">""</span>,
-<a href=#284 id=284 data-nosnippet>284</a>        documentation: <span class="prelude-val">None</span>,
-<a href=#285 id=285 data-nosnippet>285</a>    },
-<a href=#286 id=286 data-nosnippet>286</a>    SalukiKey {
-<a href=#287 id=287 data-nosnippet>287</a>        yaml_path: <span class="string">"flush_timeout_secs"</span>,
-<a href=#288 id=288 data-nosnippet>288</a>        description: <span class="string">"Encoder flush timeout (secs)"</span>,
-<a href=#289 id=289 data-nosnippet>289</a>        default: <span class="string">""</span>,
-<a href=#290 id=290 data-nosnippet>290</a>        documentation: <span class="prelude-val">None</span>,
+<a href=#260 id=260 data-nosnippet>260</a>        documentation: <span class="prelude-val">Some</span>(
+<a href=#261 id=261 data-nosnippet>261</a>            <span class="string">"SQL dialect to use when a span has neither `db.type` nor `db.system`. Per-span hints take precedence."</span>,
+<a href=#262 id=262 data-nosnippet>262</a>        ),
+<a href=#263 id=263 data-nosnippet>263</a>    },
+<a href=#264 id=264 data-nosnippet>264</a>    SalukiKey {
+<a href=#265 id=265 data-nosnippet>265</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.dollar_quoted_func"</span>,
+<a href=#266 id=266 data-nosnippet>266</a>        description: <span class="string">"Preserve dollar-quoted SQL functions"</span>,
+<a href=#267 id=267 data-nosnippet>267</a>        default: <span class="string">""</span>,
+<a href=#268 id=268 data-nosnippet>268</a>        documentation: <span class="prelude-val">None</span>,
+<a href=#269 id=269 data-nosnippet>269</a>    },
+<a href=#270 id=270 data-nosnippet>270</a>    SalukiKey {
+<a href=#271 id=271 data-nosnippet>271</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.keep_sql_alias"</span>,
+<a href=#272 id=272 data-nosnippet>272</a>        description: <span class="string">"Preserve SQL aliases in obfuscation"</span>,
+<a href=#273 id=273 data-nosnippet>273</a>        default: <span class="string">""</span>,
+<a href=#274 id=274 data-nosnippet>274</a>        documentation: <span class="prelude-val">None</span>,
+<a href=#275 id=275 data-nosnippet>275</a>    },
+<a href=#276 id=276 data-nosnippet>276</a>    SalukiKey {
+<a href=#277 id=277 data-nosnippet>277</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.replace_digits"</span>,
+<a href=#278 id=278 data-nosnippet>278</a>        description: <span class="string">"Replace digits in SQL obfuscation"</span>,
+<a href=#279 id=279 data-nosnippet>279</a>        default: <span class="string">""</span>,
+<a href=#280 id=280 data-nosnippet>280</a>        documentation: <span class="prelude-val">None</span>,
+<a href=#281 id=281 data-nosnippet>281</a>    },
+<a href=#282 id=282 data-nosnippet>282</a>    SalukiKey {
+<a href=#283 id=283 data-nosnippet>283</a>        yaml_path: <span class="string">"apm_config.obfuscation.sql.table_names"</span>,
+<a href=#284 id=284 data-nosnippet>284</a>        description: <span class="string">"Collect table names during obfuscation"</span>,
+<a href=#285 id=285 data-nosnippet>285</a>        default: <span class="string">""</span>,
+<a href=#286 id=286 data-nosnippet>286</a>        documentation: <span class="prelude-val">Some</span>(
+<a href=#287 id=287 data-nosnippet>287</a>            <span class="string">"ADP ignores this key, and the `table_names` entry of `apm_config.features`, and logs a warning when \
+<a href=#288 id=288 data-nosnippet>288</a>             either is set. The SQL obfuscator can't collect table names yet, so ADP doesn't set the `sql.tables` \
+<a href=#289 id=289 data-nosnippet>289</a>             tag."</span>,
+<a href=#290 id=290 data-nosnippet>290</a>        ),
 <a href=#291 id=291 data-nosnippet>291</a>    },
 <a href=#292 id=292 data-nosnippet>292</a>    SalukiKey {
-<a href=#293 id=293 data-nosnippet>293</a>        yaml_path: <span class="string">"serializer_max_metrics_per_payload"</span>,
-<a href=#294 id=294 data-nosnippet>294</a>        description: <span class="string">"Max metrics per payload"</span>,
+<a href=#293 id=293 data-nosnippet>293</a>        yaml_path: <span class="string">"flush_timeout_secs"</span>,
+<a href=#294 id=294 data-nosnippet>294</a>        description: <span class="string">"Encoder flush timeout (secs)"</span>,
 <a href=#295 id=295 data-nosnippet>295</a>        default: <span class="string">""</span>,
 <a href=#296 id=296 data-nosnippet>296</a>        documentation: <span class="prelude-val">None</span>,
 <a href=#297 id=297 data-nosnippet>297</a>    },
 <a href=#298 id=298 data-nosnippet>298</a>    SalukiKey {
-<a href=#299 id=299 data-nosnippet>299</a>        yaml_path: <span class="string">"dogstatsd_mapper_string_interner_size"</span>,
-<a href=#300 id=300 data-nosnippet>300</a>        description: <span class="string">"Mapper string interner byte capacity"</span>,
-<a href=#301 id=301 data-nosnippet>301</a>        default: <span class="string">"64KiB"</span>,
-<a href=#302 id=302 data-nosnippet>302</a>        documentation: <span class="prelude-val">Some</span>(
-<a href=#303 id=303 data-nosnippet>303</a>            <span class="string">"Controls the pre-allocated byte capacity for interning mapped metric names and tags. The default is \
-<a href=#304 id=304 data-nosnippet>304</a>             `64KiB`. Set this to a nonzero byte count; you can use a bare number of bytes or a human-readable \
-<a href=#305 id=305 data-nosnippet>305</a>             byte-size string such as `64KiB`. Larger values increase memory usage."</span>,
-<a href=#306 id=306 data-nosnippet>306</a>        ),
-<a href=#307 id=307 data-nosnippet>307</a>    },
-<a href=#308 id=308 data-nosnippet>308</a>    SalukiKey {
-<a href=#309 id=309 data-nosnippet>309</a>        yaml_path: <span class="string">"memory_limit"</span>,
-<a href=#310 id=310 data-nosnippet>310</a>        description: <span class="string">"Process memory limit"</span>,
-<a href=#311 id=311 data-nosnippet>311</a>        default: <span class="string">""</span>,
-<a href=#312 id=312 data-nosnippet>312</a>        documentation: <span class="prelude-val">Some</span>(
-<a href=#313 id=313 data-nosnippet>313</a>            <span class="string">"### `memory_limit` / `memory_slop_factor`
-<a href=#314 id=314 data-nosnippet>314</a>
-<a href=#315 id=315 data-nosnippet>315</a>\
-<a href=#316 id=316 data-nosnippet>316</a>             ADP uses an explicit process memory limit (`memory_limit`) rather than relying on \
-<a href=#317 id=317 data-nosnippet>317</a>             Go's garbage collector. The `memory_slop_factor` reserves a fraction of the limit \
-<a href=#318 id=318 data-nosnippet>318</a>             to account for allocations not tracked by ADP's internal accounting. When memory \
-<a href=#319 id=319 data-nosnippet>319</a>             usage approaches `memory_limit`, ADP's global limiter begins exerting backpressure \
-<a href=#320 id=320 data-nosnippet>320</a>             (see `enable_global_limiter`)."</span>,
-<a href=#321 id=321 data-nosnippet>321</a>        ),
-<a href=#322 id=322 data-nosnippet>322</a>    },
-<a href=#323 id=323 data-nosnippet>323</a>    SalukiKey {
-<a href=#324 id=324 data-nosnippet>324</a>        yaml_path: <span class="string">"memory_slop_factor"</span>,
-<a href=#325 id=325 data-nosnippet>325</a>        description: <span class="string">"Memory accounting slop fraction"</span>,
-<a href=#326 id=326 data-nosnippet>326</a>        default: <span class="string">"0.25"</span>,
-<a href=#327 id=327 data-nosnippet>327</a>        documentation: <span class="prelude-val">Some</span>(<span class="string">"See `memory_limit` above."</span>),
+<a href=#299 id=299 data-nosnippet>299</a>        yaml_path: <span class="string">"serializer_max_metrics_per_payload"</span>,
+<a href=#300 id=300 data-nosnippet>300</a>        description: <span class="string">"Max metrics per payload"</span>,
+<a href=#301 id=301 data-nosnippet>301</a>        default: <span class="string">""</span>,
+<a href=#302 id=302 data-nosnippet>302</a>        documentation: <span class="prelude-val">None</span>,
+<a href=#303 id=303 data-nosnippet>303</a>    },
+<a href=#304 id=304 data-nosnippet>304</a>    SalukiKey {
+<a href=#305 id=305 data-nosnippet>305</a>        yaml_path: <span class="string">"dogstatsd_mapper_string_interner_size"</span>,
+<a href=#306 id=306 data-nosnippet>306</a>        description: <span class="string">"Mapper string interner byte capacity"</span>,
+<a href=#307 id=307 data-nosnippet>307</a>        default: <span class="string">"64KiB"</span>,
+<a href=#308 id=308 data-nosnippet>308</a>        documentation: <span class="prelude-val">Some</span>(
+<a href=#309 id=309 data-nosnippet>309</a>            <span class="string">"Controls the pre-allocated byte capacity for interning mapped metric names and tags. The default is \
+<a href=#310 id=310 data-nosnippet>310</a>             `64KiB`. Set this to a nonzero byte count; you can use a bare number of bytes or a human-readable \
+<a href=#311 id=311 data-nosnippet>311</a>             byte-size string such as `64KiB`. Larger values increase memory usage."</span>,
+<a href=#312 id=312 data-nosnippet>312</a>        ),
+<a href=#313 id=313 data-nosnippet>313</a>    },
+<a href=#314 id=314 data-nosnippet>314</a>    SalukiKey {
+<a href=#315 id=315 data-nosnippet>315</a>        yaml_path: <span class="string">"memory_limit"</span>,
+<a href=#316 id=316 data-nosnippet>316</a>        description: <span class="string">"Process memory limit"</span>,
+<a href=#317 id=317 data-nosnippet>317</a>        default: <span class="string">""</span>,
+<a href=#318 id=318 data-nosnippet>318</a>        documentation: <span class="prelude-val">Some</span>(
+<a href=#319 id=319 data-nosnippet>319</a>            <span class="string">"### `memory_limit` / `memory_slop_factor`
+<a href=#320 id=320 data-nosnippet>320</a>
+<a href=#321 id=321 data-nosnippet>321</a>\
+<a href=#322 id=322 data-nosnippet>322</a>             ADP uses an explicit process memory limit (`memory_limit`) rather than relying on \
+<a href=#323 id=323 data-nosnippet>323</a>             Go's garbage collector. The `memory_slop_factor` reserves a fraction of the limit \
+<a href=#324 id=324 data-nosnippet>324</a>             to account for allocations not tracked by ADP's internal accounting. When memory \
+<a href=#325 id=325 data-nosnippet>325</a>             usage approaches `memory_limit`, ADP's global limiter begins exerting backpressure \
+<a href=#326 id=326 data-nosnippet>326</a>             (see `enable_global_limiter`)."</span>,
+<a href=#327 id=327 data-nosnippet>327</a>        ),
 <a href=#328 id=328 data-nosnippet>328</a>    },
 <a href=#329 id=329 data-nosnippet>329</a>    SalukiKey {
-<a href=#330 id=330 data-nosnippet>330</a>        yaml_path: <span class="string">"enable_global_limiter"</span>,
-<a href=#331 id=331 data-nosnippet>331</a>        description: <span class="string">"Global memory limiter toggle"</span>,
-<a href=#332 id=332 data-nosnippet>332</a>        default: <span class="string">"true"</span>,
-<a href=#333 id=333 data-nosnippet>333</a>        documentation: <span class="prelude-val">Some</span>(
-<a href=#334 id=334 data-nosnippet>334</a>            <span class="string">"Controls whether the global memory limiter exerts backpressure as memory usage \
-<a href=#335 id=335 data-nosnippet>335</a>             approaches `memory_limit`. The default is `true`. When set to `false`, the limiter \
-<a href=#336 id=336 data-nosnippet>336</a>             becomes a no-op and only the memory bounds of the running components influence \
-<a href=#337 id=337 data-nosnippet>337</a>             memory usage."</span>,
-<a href=#338 id=338 data-nosnippet>338</a>        ),
-<a href=#339 id=339 data-nosnippet>339</a>    },
-<a href=#340 id=340 data-nosnippet>340</a>    SalukiKey {
-<a href=#341 id=341 data-nosnippet>341</a>        yaml_path: <span class="string">"memory_mode"</span>,
-<a href=#342 id=342 data-nosnippet>342</a>        description: <span class="string">"Memory bounds validation mode"</span>,
-<a href=#343 id=343 data-nosnippet>343</a>        default: <span class="string">"disabled"</span>,
-<a href=#344 id=344 data-nosnippet>344</a>        documentation: <span class="prelude-val">Some</span>(
-<a href=#345 id=345 data-nosnippet>345</a>            <span class="string">"Controls how the calculated memory bounds are reconciled against `memory_limit`. The \
-<a href=#346 id=346 data-nosnippet>346</a>             default is `disabled`. Accepted values: `disabled` skips bounds validation and applies \
-<a href=#347 id=347 data-nosnippet>347</a>             no memory limiting; `permissive` logs a warning when the bounds do not fit within the \
-<a href=#348 id=348 data-nosnippet>348</a>             limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, \
-<a href=#349 id=349 data-nosnippet>349</a>             the global memory limiter is active only when a limit is in effect (configured or \
-<a href=#350 id=350 data-nosnippet>350</a>             detected from cgroups) and `enable_global_limiter` is `true`."</span>,
-<a href=#351 id=351 data-nosnippet>351</a>        ),
-<a href=#352 id=352 data-nosnippet>352</a>    },
-<a href=#353 id=353 data-nosnippet>353</a>];
+<a href=#330 id=330 data-nosnippet>330</a>        yaml_path: <span class="string">"memory_slop_factor"</span>,
+<a href=#331 id=331 data-nosnippet>331</a>        description: <span class="string">"Memory accounting slop fraction"</span>,
+<a href=#332 id=332 data-nosnippet>332</a>        default: <span class="string">"0.25"</span>,
+<a href=#333 id=333 data-nosnippet>333</a>        documentation: <span class="prelude-val">Some</span>(<span class="string">"See `memory_limit` above."</span>),
+<a href=#334 id=334 data-nosnippet>334</a>    },
+<a href=#335 id=335 data-nosnippet>335</a>    SalukiKey {
+<a href=#336 id=336 data-nosnippet>336</a>        yaml_path: <span class="string">"enable_global_limiter"</span>,
+<a href=#337 id=337 data-nosnippet>337</a>        description: <span class="string">"Global memory limiter toggle"</span>,
+<a href=#338 id=338 data-nosnippet>338</a>        default: <span class="string">"true"</span>,
+<a href=#339 id=339 data-nosnippet>339</a>        documentation: <span class="prelude-val">Some</span>(
+<a href=#340 id=340 data-nosnippet>340</a>            <span class="string">"Controls whether the global memory limiter exerts backpressure as memory usage \
+<a href=#341 id=341 data-nosnippet>341</a>             approaches `memory_limit`. The default is `true`. When set to `false`, the limiter \
+<a href=#342 id=342 data-nosnippet>342</a>             becomes a no-op and only the memory bounds of the running components influence \
+<a href=#343 id=343 data-nosnippet>343</a>             memory usage."</span>,
+<a href=#344 id=344 data-nosnippet>344</a>        ),
+<a href=#345 id=345 data-nosnippet>345</a>    },
+<a href=#346 id=346 data-nosnippet>346</a>    SalukiKey {
+<a href=#347 id=347 data-nosnippet>347</a>        yaml_path: <span class="string">"memory_mode"</span>,
+<a href=#348 id=348 data-nosnippet>348</a>        description: <span class="string">"Memory bounds validation mode"</span>,
+<a href=#349 id=349 data-nosnippet>349</a>        default: <span class="string">"disabled"</span>,
+<a href=#350 id=350 data-nosnippet>350</a>        documentation: <span class="prelude-val">Some</span>(
+<a href=#351 id=351 data-nosnippet>351</a>            <span class="string">"Controls how the calculated memory bounds are reconciled against `memory_limit`. The \
+<a href=#352 id=352 data-nosnippet>352</a>             default is `disabled`. Accepted values: `disabled` skips bounds validation and applies \
+<a href=#353 id=353 data-nosnippet>353</a>             no memory limiting; `permissive` logs a warning when the bounds do not fit within the \
+<a href=#354 id=354 data-nosnippet>354</a>             limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, \
+<a href=#355 id=355 data-nosnippet>355</a>             the global memory limiter is active only when a limit is in effect (configured or \
+<a href=#356 id=356 data-nosnippet>356</a>             detected from cgroups) and `enable_global_limiter` is `true`."</span>,
+<a href=#357 id=357 data-nosnippet>357</a>        ),
+<a href=#358 id=358 data-nosnippet>358</a>    },
+<a href=#359 id=359 data-nosnippet>359</a>];
 </code></pre></div></section></main></body></html>

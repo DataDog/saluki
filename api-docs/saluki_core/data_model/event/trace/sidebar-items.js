@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["AttributeValue","TraceIngestInfo"],"struct":["PayloadFields","Span","SpanEvent","SpanLink","Trace"]};
+window.SIDEBAR_ITEMS = {"enum":["SalukiValues","TraceIngestInfo"],"struct":["PayloadFields","Span","SpanEvent","SpanLink","Trace"],"trait":["AttributeValueExt"],"type":["AttributeValue","KeyValueList"]};
