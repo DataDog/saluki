@@ -297,6 +297,19 @@ fn test_normalize_large_duration_v1() {
 }
 
 #[test]
+fn test_normalize_duration_above_i64_max_with_zero_start_v1() {
+    // The trace-agent zeroes a `u64` duration above `i64::MAX` even when the start is 0, so the sum doesn't overflow.
+    let mut s = new_test_span_v1().with_start(0).with_duration(u64::MAX);
+    let (result, counts) = normalize_v1(&mut s, "");
+    assert!(result.is_ok());
+    assert_eq!(s.duration(), 0);
+    assert_eq!(
+        counts,
+        ts_malformed(&[MalformedReason::InvalidDuration, MalformedReason::InvalidStartDate])
+    );
+}
+
+#[test]
 fn test_normalize_type_pass_thru_v1() {
     let mut s = new_test_span_v1().with_span_type("http");
     let (result, counts) = normalize_v1(&mut s, "");

@@ -190,10 +190,10 @@ fn span_setters_round_trip() {
 }
 
 #[test]
-fn span_start_and_duration_saturate() {
+fn span_start_saturates_and_large_duration_is_negative() {
     let mut span = Span::default().with_start(u64::MAX).with_duration(i64::MAX as u64 + 1);
     assert_eq!(libdd_trace_model::Span::start(&span), i64::MAX);
-    assert_eq!(libdd_trace_model::Span::duration(&span), i64::MAX);
+    assert_eq!(libdd_trace_model::Span::duration(&span), -1);
 
     SpanMut::set_start(&mut span, i64::MAX);
     SpanMut::set_duration(&mut span, -1);

@@ -105,13 +105,21 @@ impl model::ValueMapMut<SalukiValues> for Vec<(MetaString, AttributeValue)> {
     }
 }
 
-/// Converts a start or a duration to the `i64` of the traits, with saturation to `i64::MAX`.
+/// Converts a start to the `i64` of the traits, with saturation to `i64::MAX`.
 ///
-/// The V1 protocol encodes both as `u64`, and a value up to `i64::MAX` (until the year 2262) converts exactly. A start
-/// above `i64::MAX` doesn't fit: the normalizer then sets a non-zero duration to 0, where the trace-agent keeps it. A
-/// duration above `i64::MAX` is invalid, and both the normalizer and the trace-agent set it to 0.
-fn to_i64(value: u64) -> i64 {
+/// The V1 protocol encodes the start as `u64`, and a value up to `i64::MAX` (until the year 2262) converts exactly. A
+/// start above `i64::MAX` doesn't fit: the normalizer then sets a non-zero duration to 0, where the trace-agent keeps
+/// it.
+fn start_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Converts a duration to the `i64` of the traits.
+///
+/// A duration above `i64::MAX` becomes negative, so that the normalizer sets it to 0 and counts it as invalid, as the
+/// trace-agent does. Saturation to `i64::MAX` would keep it when the start is 0.
+fn duration_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(-1)
 }
 
 /// Converts a start or a duration from the `i64` of the traits. A negative value becomes 0.
@@ -298,11 +306,11 @@ impl model::Span for Span {
     }
 
     fn start(&self) -> i64 {
-        to_i64(self.start)
+        start_to_i64(self.start)
     }
 
     fn duration(&self) -> i64 {
-        to_i64(self.duration)
+        duration_to_i64(self.duration)
     }
 
     fn is_error(&self) -> bool {
