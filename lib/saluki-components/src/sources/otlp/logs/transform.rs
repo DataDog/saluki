@@ -40,7 +40,6 @@ const OTEL_SERVICE: &str = "otel.service";
 // Property keys of the Datadog counterparts of those fields.
 const DD_TRACE_ID: &str = "dd.trace_id";
 const DD_SPAN_ID: &str = "dd.span_id";
-const DD_STATUS: &str = "status";
 const DD_TIMESTAMP: &str = "@timestamp";
 
 static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion");
@@ -66,7 +65,7 @@ pub(super) fn transform_log_record(
     let status = derive_status(reserved.status, &lr.severity_text, lr.severity_number);
     // The Agent sends the derived status in place of any resource or scope attribute named `status`. The encoder
     // writes additional properties over the status, so the attribute must not be among them.
-    properties.remove(DD_STATUS);
+    properties.remove("status");
 
     apply_severity(&lr, &mut properties);
     apply_timestamp(&lr, &mut properties);
