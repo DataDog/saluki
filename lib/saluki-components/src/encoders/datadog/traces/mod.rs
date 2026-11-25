@@ -6,6 +6,7 @@ use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{encoders::*, BuildContext},
