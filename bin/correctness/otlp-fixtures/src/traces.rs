@@ -347,10 +347,10 @@ fn stats_traces() -> Vec<Vec<ProbeSpan>> {
         traces.push(vec![grpc_span("otlpprobe.tstat.grpc", status_code)]);
     }
 
-    // Database type: not a stats dimension of either side.
-    traces.push(vec![stats_span("otlpprobe.tstat.db_type", SpanKind::Client)
-        .with_attribute("db.system", string("postgresql"))
-        .with_attribute("db.type", string("sql"))]);
+    // Database type: `db.type` is a source of a peer tag, and neither side has a stats dimension for it.
+    traces.push(vec![
+        stats_span("otlpprobe.tstat.db_type", SpanKind::Client).with_attribute("db.type", string("sql"))
+    ]);
 
     // Span kind: one root for each kind, so each has a group.
     for kind in [
@@ -430,7 +430,7 @@ fn stats_traces() -> Vec<Vec<ProbeSpan>> {
     // Peer tags: in range, then the edges. A `CLIENT` span carries them, and a `SERVER` span does not.
     traces.push(vec![peer_span(
         "otlpprobe.tstat.peer",
-        &[("peer.service", "probe-peer"), ("db.system", "postgresql")],
+        &[("peer.service", "probe-peer"), ("peer.hostname", "probe-peer.example")],
     )]);
     // An address becomes `blocked-ip-address`, and a loopback address stays.
     for hostname in ["10.1.2.3:5432", "127.0.0.1"] {
@@ -446,7 +446,10 @@ fn stats_traces() -> Vec<Vec<ProbeSpan>> {
     // Two keys, where one is the other with a suffix.
     traces.push(vec![peer_span(
         "otlpprobe.tstat.peer_order",
-        &[("db.system", "postgresql"), ("db.system.name", "postgresql")],
+        &[
+            ("messaging.destination", "probe-queue"),
+            ("messaging.destination.name", "probe-queue"),
+        ],
     )]);
     traces.push(vec![stats_span(
         "otlpprobe.tstat.peer_base_service",
