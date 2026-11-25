@@ -4,11 +4,15 @@
 //! each side must hold. The analysis checks each side against the list first, and names the side and the expectation
 //! that the side leaves unmet.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::num::NonZeroUsize;
 
 use saluki_error::{generic_error, GenericError};
-use serde::Deserialize;
+use serde::{
+    de::{self, value::MapAccessDeserializer},
+    Deserialize, Deserializer,
+};
 use stele::Span;
 use tracing::error;
 
@@ -23,6 +27,9 @@ pub(super) const COMPARISON: &str = "comparison";
 
 /// Most series with the expected name, or span names of the expected service, that an unmet expectation lists.
 const MAX_LISTED: usize = 3;
+
+/// Most characters of a tag value that an unmet expectation shows.
+const MAX_SHOWN_CHARS: usize = 160;
 
 /// What each side must hold of metrics. The `metrics` section of a `compare` step sets these fields.
 ///
@@ -151,19 +158,29 @@ impl TracesExpectations {
             }
         }
 
-        for (idx, expected) in self.spans.iter().enumerate() {
+        for (idx, expected) in self
+            .spans
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.applies_to(side))
+        {
             if !held.spans.values().any(|span| expected.is_met_by(span)) {
                 unmet.push(format!(
                     "The {} holds no span that meets `spans[{}]` ({}): {}.",
                     side,
                     idx,
                     expected.describe(),
-                    expected.describe_service(held.spans)
+                    expected.describe_held(held.spans)
                 ));
             }
         }
 
-        for (idx, unexpected) in self.absent.iter().enumerate() {
+        for (idx, unexpected) in self
+            .absent
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.applies_to(side))
+        {
             let held = held.spans.values().filter(|span| unexpected.is_met_by(span)).count();
             if held > 0 {
                 unmet.push(format!(
@@ -180,13 +197,40 @@ impl TracesExpectations {
     }
 }
 
-/// A span that a side must hold or must not hold, by its service and its operation name or its resource.
+/// A span that a side must hold or must not hold, by its service, its operation name, its resource and its `meta` tags.
+///
+/// A span meets the entry when it meets every field that the entry sets. The service, the name and the resource select
+/// the candidates, and the `meta` expectations say what a candidate must hold. A failure names the tags that a
+/// candidate holds wrong, so a field that a side should have scrubbed shows its value.
+///
+/// An entry applies to both sides, unless it sets `side`. A side-specific entry holds one side to a value that the
+/// other side does not yet produce, while a known difference covers the gap between them.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "ExpectedSpanFields")]
 pub struct ExpectedSpan {
     service: String,
     name: Option<String>,
     resource: Option<String>,
+    meta: BTreeMap<String, MetaExpectation>,
+    side: Option<Side>,
+}
+
+/// The side that an entry applies to.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Side {
+    Baseline,
+    Comparison,
+}
+
+impl Side {
+    /// Returns the name that an unmet expectation gives the side.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Baseline => BASELINE,
+            Self::Comparison => COMPARISON,
+        }
+    }
 }
 
 /// The fields of [`ExpectedSpan`], as a case writes them.
@@ -198,15 +242,20 @@ struct ExpectedSpanFields {
     name: Option<String>,
     #[serde(default)]
     resource: Option<String>,
+    #[serde(default)]
+    meta: BTreeMap<String, MetaExpectation>,
+    #[serde(default)]
+    side: Option<Side>,
 }
 
 impl TryFrom<ExpectedSpanFields> for ExpectedSpan {
     type Error = String;
 
     fn try_from(fields: ExpectedSpanFields) -> Result<Self, Self::Error> {
-        if fields.name.is_none() && fields.resource.is_none() {
+        if fields.name.is_none() && fields.resource.is_none() && fields.meta.is_empty() {
             return Err(format!(
-                "a span of service '{}' needs a `name` or a `resource`: any span of the service would meet it",
+                "a span of service '{}' needs a `name`, a `resource` or a `meta` tag: any span of the service would \
+                 meet it",
                 fields.service
             ));
         }
@@ -215,6 +264,8 @@ impl TryFrom<ExpectedSpanFields> for ExpectedSpan {
             service: fields.service,
             name: fields.name,
             resource: fields.resource,
+            meta: fields.meta,
+            side: fields.side,
         })
     }
 }
@@ -225,8 +276,13 @@ impl ExpectedSpan {
         &self.service
     }
 
-    /// Returns whether `span` has the service, and the name and the resource that the expectation sets.
-    fn is_met_by(&self, span: &Span) -> bool {
+    /// Returns whether the entry applies to the side named `side`.
+    fn applies_to(&self, side: &str) -> bool {
+        self.side.is_none_or(|only| only.name() == side)
+    }
+
+    /// Returns whether `span` has the service, the name and the resource that the expectation sets.
+    fn selects(&self, span: &Span) -> bool {
         span.service() == self.service
             && self.name.as_deref().is_none_or(|name| span.name() == name)
             && self
@@ -235,7 +291,24 @@ impl ExpectedSpan {
                 .is_none_or(|resource| span.resource() == resource)
     }
 
-    /// Writes the expectation as `service=.., name=.., resource=..`, leaving out what it doesn't set.
+    /// Returns a line for each `meta` tag of `span` that the expectation leaves unmet.
+    fn meta_mismatches(&self, span: &Span) -> Vec<String> {
+        self.meta
+            .iter()
+            .filter_map(|(key, expected)| {
+                expected
+                    .mismatch(span.get_meta_field(key))
+                    .map(|mismatch| format!("`meta.{}` {}", key, mismatch))
+            })
+            .collect()
+    }
+
+    /// Returns whether `span` meets every field that the expectation sets.
+    fn is_met_by(&self, span: &Span) -> bool {
+        self.selects(span) && self.meta_mismatches(span).is_empty()
+    }
+
+    /// Writes the expectation as `service=.., name=.., resource=.., meta.<key> ..`, leaving out what it doesn't set.
     fn describe(&self) -> String {
         let mut parts = vec![format!("service={}", self.service)];
         if let Some(name) = &self.name {
@@ -244,7 +317,35 @@ impl ExpectedSpan {
         if let Some(resource) = &self.resource {
             parts.push(format!("resource={}", resource));
         }
+        for (key, expected) in &self.meta {
+            parts.push(format!("meta.{} {}", key, expected.describe()));
+        }
         parts.join(", ")
+    }
+
+    /// Says what the spans that the expectation selects hold, to show how close a side came.
+    ///
+    /// If a span has the service, the name and the resource, it says which `meta` tags of each such span are wrong.
+    /// Otherwise it lists the fields that the expectation sets: the names, the resources, or both as `name/resource`
+    /// pairs.
+    fn describe_held(&self, spans: &HashMap<u64, Span>) -> String {
+        let mut selected = spans.iter().filter(|(_, span)| self.selects(span)).collect::<Vec<_>>();
+        if self.meta.is_empty() || selected.is_empty() {
+            return self.describe_service(spans);
+        }
+
+        selected.sort_by_key(|(span_id, _)| **span_id);
+        let listed = selected
+            .iter()
+            .take(MAX_LISTED)
+            .map(|(span_id, span)| format!("span {} has {}", span_id, self.meta_mismatches(span).join(" and ")))
+            .collect::<Vec<_>>();
+        format!(
+            "{} span(s) have that service, name and resource, but {}{}",
+            selected.len(),
+            listed.join("; "),
+            if selected.len() > MAX_LISTED { "; and more" } else { "" }
+        )
     }
 
     /// Says what the spans of the expected service hold, to show how close a side came.
@@ -280,6 +381,98 @@ impl ExpectedSpan {
             listed.join(", "),
             if distinct.len() > MAX_LISTED { ", and more" } else { "" }
         )
+    }
+}
+
+/// What a span must hold in one `meta` tag: the whole value, or a part that the value must not hold.
+///
+/// A case writes a string for a value that the tag must equal, or a map of `equals` and `not_contains`, which can set
+/// both. The tag must be present. Use `not_contains` for a secret that a side must scrub, together with `equals` for the
+/// scrubbed value, so that a tag that a side drops fails the expectation instead of passing it.
+#[derive(Clone, Debug)]
+pub struct MetaExpectation {
+    equals: Option<String>,
+    not_contains: Option<String>,
+}
+
+/// The map form of [`MetaExpectation`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetaChecks {
+    #[serde(default)]
+    equals: Option<String>,
+    #[serde(default)]
+    not_contains: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for MetaExpectation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = MetaExpectation;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a string, or a map of `equals` and `not_contains`")
+            }
+
+            fn visit_str<E: de::Error>(self, equals: &str) -> Result<Self::Value, E> {
+                Ok(MetaExpectation {
+                    equals: Some(equals.to_string()),
+                    not_contains: None,
+                })
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                let MetaChecks { equals, not_contains } = MetaChecks::deserialize(MapAccessDeserializer::new(map))?;
+                if equals.is_none() && not_contains.is_none() {
+                    return Err(de::Error::custom(
+                        "a `meta` expectation needs `equals` or `not_contains`",
+                    ));
+                }
+                Ok(MetaExpectation { equals, not_contains })
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl MetaExpectation {
+    /// Says how `actual` fails the expectation, or returns `None` when it meets it.
+    fn mismatch(&self, actual: Option<&str>) -> Option<String> {
+        let Some(actual) = actual else {
+            return Some("is missing".to_string());
+        };
+        if let Some(equals) = self.equals.as_deref().filter(|equals| *equals != actual) {
+            return Some(format!("is `{}`, not `{}`", abbreviate(actual), abbreviate(equals)));
+        }
+        if let Some(part) = self.not_contains.as_deref().filter(|part| actual.contains(part)) {
+            return Some(format!("is `{}`, and holds `{}`", abbreviate(actual), abbreviate(part)));
+        }
+        None
+    }
+
+    /// Writes the expectation as `= <value>` or `without <part>`, or both.
+    fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(equals) = &self.equals {
+            parts.push(format!("= {}", abbreviate(equals)));
+        }
+        if let Some(part) = &self.not_contains {
+            parts.push(format!("without {}", abbreviate(part)));
+        }
+        parts.join(" ")
+    }
+}
+
+/// Cuts a tag value to the length that a line of an unmet expectation shows, and writes its line breaks as `\n`, so that
+/// the value stays on one line.
+fn abbreviate(value: &str) -> String {
+    let value = value.replace('\n', "\\n");
+    match value.char_indices().nth(MAX_SHOWN_CHARS) {
+        Some((end, _)) => format!("{}...", &value[..end]),
+        None => value,
     }
 }
 

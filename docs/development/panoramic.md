@@ -533,9 +533,13 @@ For logs, `logs.min_count` sets the minimum number of records per intake. If you
 For traces, set expectations under `traces`:
 
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
-- `spans`: a list of spans that each side must hold. An entry has a `service` and a `name` or a `resource`, and a span
-  of the side must match every field that the entry sets. The `name` is the operation name.
-- `absent`: spans that neither intake may hold. See [Check that both sides drop a span](#check-that-both-sides-drop-a-span).
+- `spans`: a list of spans that each side must hold. An entry has a `service` and a `name`, a `resource` or `meta`
+  tags, and a span of the side must match every field that the entry sets. The `name` is the operation name. See
+  [Assert the tags of a span](#assert-the-tags-of-a-span).
+- `absent`: a list of spans that neither side may hold, with the fields of an entry of `spans`. A failure names the
+  side that holds a span that meets an entry. Name a span that both sides drop, and name a span of the same service in
+  `spans`, one that both sides hold, so that the check can't pass because the whole service is missing. The step
+  rejects an `absent` entry whose service has no entry in `spans`.
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
   The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
@@ -561,6 +565,33 @@ This minimum counts the groups each intake holds. In spans-only mode (`otlp_dire
 For example, `test/correctness/cases/otlp-traces-stats/config.yaml` requires at least 37 stats groups in each intake.
 Its `spans` entries also check that the named probe spans arrived. Neither check proves that a span counted toward
 the right group. The [group comparison](#why-one-span-can-produce-two-group-differences) tests that separately.
+
+#### Assert the tags of a span
+
+Two sides that both leak a secret are equal, so a case that must show a scrubbed value sets `meta` on an entry of
+`spans`. `meta` maps the key of a tag to what its value must be:
+
+- a string: the value must equal it.
+- `equals` and `not_contains`: the value must equal the first, and must not hold the second. An entry can set both.
+
+A tag that the span lacks fails every expectation. The `service`, the `name` and the `resource` select the spans that
+must hold the tags, so give a probe a service of its own: a field that a side should scrub can't then hide the probe. A
+failure names the side, the entry and the tags that the selected spans hold wrong, with their values.
+
+```yaml
+spans:
+  - service: probe-obf-sql-simple
+    name: postgresql.query
+    resource: SELECT id FROM obf_simple WHERE token = ?
+    meta:
+      db.system: postgresql
+      db.statement: {equals: "SELECT id FROM obf_simple WHERE token = ?", not_contains: canary-7f3a}
+```
+
+An entry applies to both sides. Set `side: baseline` or `side: comparison` to hold one side to a value that the other
+side does not yet produce, and cover the difference with a known difference that names the issue. Remove `side` when the
+issue is fixed, so that the stale known difference and the one-sided entry go together. An entry of `absent` takes
+`meta` and `side` too.
 
 #### Check that both sides drop a span
 

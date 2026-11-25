@@ -119,8 +119,10 @@ pub struct TracesOptions {
     #[serde(default)]
     pub min_spans: Option<NonZeroUsize>,
 
-    /// Spans that each side must hold, one entry for each. An entry has a `service`, and a `name` or a `resource` or
-    /// both, and a span of the side must match every field of the entry.
+    /// Spans that each side must hold, one entry for each. An entry has a `service`, and a `name`, a `resource`, `meta`
+    /// tags or any of them, and a span of the side must match every field of the entry. A `meta` tag names its key, and
+    /// the value that it must equal or must not contain. An entry applies to both sides, unless it sets `side` to
+    /// `baseline` or `comparison`.
     #[serde(default)]
     pub spans: Vec<ExpectedSpan>,
 
