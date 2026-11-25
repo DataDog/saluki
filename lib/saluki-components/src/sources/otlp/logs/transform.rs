@@ -50,9 +50,9 @@ static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion"
 
 /// Transforms an OTLP log record, with its resource and scope, into a log.
 ///
-/// Every attribute value that the Agent renders with `pcommon.Value.AsString` is rendered the same way: the message,
-/// status, `ddtags`, and trace and span ID attributes, the `otel.library.*` aliases, every resource and scope attribute,
-/// and the body. Other record attributes keep their types, as [`Flattener`] describes.
+/// Where the Agent needs a string, the value is rendered as [`otlp_value_as_string`] describes: the message, status,
+/// `ddtags`, and trace and span ID attributes, the `otel.library.*` aliases, every resource and scope attribute, and the
+/// body. Other record attributes keep their types, as [`Flattener`] describes.
 ///
 /// # Errors
 ///
@@ -306,8 +306,8 @@ fn apply_timestamp(lr: &LogRecord, properties: &mut Properties) {
 /// Returns the message: the last message attribute, or the body when that attribute is missing or empty.
 fn message(attribute: Option<Cow<'_, str>>, body: Option<&otlp_common::AnyValue>) -> MetaString {
     match attribute {
-        Some(message) if !message.is_empty() => meta_string(message),
-        _ => meta_string(otlp_value_as_string(body.and_then(|body| body.value.as_ref()))),
+        Some(message) if !message.is_empty() => MetaString::from(message),
+        _ => MetaString::from(otlp_value_as_string(body.and_then(|body| body.value.as_ref()))),
     }
 }
 
@@ -396,17 +396,9 @@ fn key_value_value(kv: &otlp_common::KeyValue) -> Option<&OtlpValue> {
     kv.value.as_ref().and_then(|av| av.value.as_ref())
 }
 
-/// Renders an attribute's value as `pcommon.Value.AsString` does.
+/// Renders an attribute's value as a string, as [`otlp_value_as_string`] describes.
 fn as_string(kv: &otlp_common::KeyValue) -> Cow<'_, str> {
     otlp_value_as_string(key_value_value(kv))
-}
-
-/// Converts a rendered value into a `MetaString`, without copying an owned value.
-pub(super) fn meta_string(value: Cow<'_, str>) -> MetaString {
-    match value {
-        Cow::Borrowed(value) => MetaString::from(value),
-        Cow::Owned(value) => MetaString::from(value),
-    }
 }
 
 /// The depth at which [`Flattener`] renders a map as a string instead of flattening it.
@@ -435,7 +427,7 @@ impl PropertySink for serde_json::Map<String, JsonValue> {
 /// - A map spreads its entries into dotted keys. Under an empty key, the entries keep their own keys.
 /// - An array stays an array at any depth, as [`Flattener::array_element`] describes.
 /// - Strings, integers, Booleans, and doubles keep their types. Bytes, empty values, and maps at depth 10 become
-///   strings, as `pcommon.Value.AsString` renders them.
+///   strings, as [`otlp_value_as_string`] renders them.
 ///
 /// A map becomes a string only at exactly depth 10. An array at depth 10 moves its elements to depth 11, so the maps
 /// below it flatten without a limit. This is a quirk of the Agent since it added array support

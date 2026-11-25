@@ -21,7 +21,7 @@ use crate::common::otlp::util::first_attribute;
 use crate::common::otlp::value::otlp_value_as_string;
 use crate::common::otlp::Metrics;
 use crate::sources::otlp::logs::render::OtlpLogsRenderer;
-use crate::sources::otlp::logs::transform::{meta_string, transform_log_record};
+use crate::sources::otlp::logs::transform::transform_log_record;
 
 static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 
@@ -149,16 +149,16 @@ impl ResourceLogsIter {
 fn host_from_attributes(attributes: &[KeyValue]) -> Option<MetaString> {
     hostname_from_source_attributes(attributes)
         .filter(|hostname| !hostname.is_empty())
-        .map(meta_string)
+        .map(MetaString::from)
 }
 
-/// Resolves the service of a resource or record from the first `service.name` attribute, rendered as
-/// `pcommon.Value.AsString` does. An empty service counts as missing.
+/// Resolves the service of a resource or record from the first `service.name` attribute, rendered as a string. An empty
+/// service counts as missing.
 fn service_from_attributes(attributes: &[KeyValue]) -> Option<MetaString> {
     first_attribute(attributes, SERVICE_NAME)
         .map(otlp_value_as_string)
         .filter(|service| !service.is_empty())
-        .map(meta_string)
+        .map(MetaString::from)
 }
 
 impl Iterator for ResourceLogsIter {

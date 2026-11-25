@@ -6,7 +6,20 @@ use base64::{engine::general_purpose, Engine as _};
 use otlp_protos::opentelemetry::proto::common::v1::any_value::Value as OtlpValue;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-/// Renders an OTLP value the way `pcommon.Value.AsString` does. Arrays and maps become JSON.
+/// Renders an OTLP value as a string, as the Datadog Agent does wherever it needs a string.
+///
+/// The Agent converts values with `pcommon.Value.AsString` from the OpenTelemetry Collector's `pdata` module
+/// ([source](https://github.com/open-telemetry/opentelemetry-collector/blob/pdata/v1.71.0/pdata/pcommon/value.go)):
+///
+/// | Value | String |
+/// |---|---|
+/// | String | The string itself |
+/// | Boolean | `true` or `false` |
+/// | Integer | Decimal, as in `-12` |
+/// | Double | The ES6 number format, as in `1.5`, `1e+21`, and `-0`, with `NaN`, `Infinity`, and `-Infinity` spelled out |
+/// | Bytes | Base64, with padding |
+/// | Absent | The empty string |
+/// | Array or map | JSON, with map keys sorted |
 ///
 /// # Missing
 ///
