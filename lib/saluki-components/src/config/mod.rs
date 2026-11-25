@@ -11,3 +11,4 @@ pub use self::autoscaling_failover::AutoscalingFailoverConfiguration;
 pub use self::cluster_agent::ClusterAgentConfiguration;
 pub use self::metrics_endpoint_routing::MetricsEndpointRoutingConfiguration;
 pub use self::mrf::MrfConfiguration;
+pub use crate::common::datadog::container_tags::ContainerTagsBuffer;

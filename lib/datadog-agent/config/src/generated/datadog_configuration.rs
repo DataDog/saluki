@@ -838,6 +838,10 @@ pub struct ApmConfig {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub decoders: i64,
 
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enable_container_tags_buffer: bool,
+
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enable_rare_sampler: bool,
@@ -960,6 +964,7 @@ impl Default for ApmConfig {
             connection_reset_interval: Default::default(),
             decoder_timeout: defaults::default_u64::<i64, 1000>(),
             decoders: Default::default(),
+            enable_container_tags_buffer: defaults::default_bool::<true>(),
             enable_rare_sampler: Default::default(),
             env: Default::default(),
             error_tracking_standalone: Default::default(),

@@ -28,7 +28,7 @@ pub(crate) use self::otlp::{
 };
 pub(crate) use self::static_tags::resolve_static_tags;
 pub(crate) use self::traces::{
-    apm_stats_configuration, obfuscation_configuration, ottl_error_mode, trace_configuration,
+    apm_stats_configuration, container_tags_buffer, obfuscation_configuration, ottl_error_mode, trace_configuration,
     trace_sampler_configuration, trace_tag_replacer_configuration,
 };
 

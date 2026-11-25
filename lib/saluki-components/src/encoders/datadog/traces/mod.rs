@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt, fmt::Write, sync::Arc, time::Duration};
+use std::{borrow::Cow, fmt::Write, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
@@ -15,16 +15,15 @@ use saluki_core::{
             trace::{AttributeValue, Trace, TraceIngestInfo},
             EventType,
         },
-        origin::OriginTagCardinality,
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
-        tags::{SharedTagSet, TagSet},
+        tags::TagSet,
     },
     observability::ComponentMetricsExt as _,
     runtime,
-    topology::{EventsBuffer, PayloadsBuffer},
+    topology::PayloadsBuffer,
 };
 use saluki_env::host::providers::BoxedHostProvider;
-use saluki_env::{workload::EntityId, EnvironmentProvider, HostProvider, WorkloadProvider};
+use saluki_env::{EnvironmentProvider, HostProvider, WorkloadProvider};
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
@@ -34,11 +33,12 @@ use tokio::pin;
 use tokio::{
     select,
     sync::mpsc::{self, Receiver, Sender},
-    time::sleep,
+    time::{interval, sleep, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error};
 
 use crate::common::datadog::{
+    container_tags::{self, ContainerTagsResolver, Released, Resolution, RETRY_INTERVAL},
     get_tracer_hostname,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
@@ -52,14 +52,12 @@ use crate::common::otlp::util::{
     attributes_to_source, extract_trace_container_tags, Source as OtlpSource, SourceKind as OtlpSourceKind,
     KEY_DATADOG_CONTAINER_TAGS,
 };
-use crate::config::AgentEnv;
+use crate::config::{AgentEnv, ContainerTagsBuffer};
+
+mod size;
+use self::size::estimated_size;
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
-
-/// Cardinality of the container tags looked up to fill in a missing application version.
-///
-/// The version data tags are low cardinality, so a low cardinality lookup finds them.
-const VERSION_DATA_TAG_CARDINALITY: OriginTagCardinality = OriginTagCardinality::Low;
 
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
@@ -152,9 +150,20 @@ pub struct DatadogTraceConfiguration {
 
     /// Workload provider used to look up container tags, if any.
     ///
-    /// When a trace carries no application version, the `version` tag of its container fills it in. The lookup never
-    /// waits: if the container's tags aren't known yet, the version stays empty.
+    /// The tags of a trace's container join the container tags that the trace carries. When a trace carries no
+    /// application version, the `version` tag of its container fills it in. Without a provider, a trace keeps the
+    /// container tags that it carries.
     pub workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+
+    /// Buffer that holds traces until their container has tags, if any.
+    ///
+    /// Without a buffer, the encoder looks a container up once and never waits for its tags. With a buffer, the
+    /// encoder holds the traces of a container that has no `kube_` tag yet. It sends them when the container has one,
+    /// or after 12 seconds. The buffer has no effect without a workload provider.
+    ///
+    /// The stats transform shares this buffer and its cap. This encoder declares the cap in its memory bounds, which
+    /// bounds the pending bytes of both components.
+    pub container_tags_buffer: Option<ContainerTagsBuffer>,
 }
 
 impl DatadogTraceConfiguration {
@@ -180,7 +189,6 @@ impl DatadogTraceConfiguration {
             self.error_tracking_standalone,
             self.ignore_missing_datadog_fields,
         )
-        .with_container_tag_lookup(ContainerTagLookup(self.workload_provider.clone()))
     }
 }
 
@@ -198,6 +206,11 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let payload_telemetry = TracePayloadTelemetry::new(context.component_id(), context.component_type().as_str());
+        let tag_resolver = container_tags::resolver(
+            self.workload_provider.clone(),
+            self.container_tags_buffer.as_ref(),
+            &metrics_builder,
+        );
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create request builder for traces which is used to generate HTTP requests.
@@ -217,6 +230,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
             trace_rb,
             telemetry,
             payload_telemetry,
+            tag_resolver,
             flush_timeout,
         }))
     }
@@ -228,12 +242,18 @@ impl MemoryBounds for DatadogTraceConfiguration {
         builder
             .minimum()
             .with_single_value::<DatadogTrace>("component struct")
-            .with_array::<EventsBuffer>("request builder events channel", 8)
+            .with_array::<Vec<Trace>>("request builder events channel", 8)
             .with_array::<PayloadsBuffer>("request builder payloads channel", 8);
 
         builder
             .firm()
             .with_array::<Trace>("traces split re-encode buffer", MAX_TRACES_PER_PAYLOAD);
+
+        if let Some(buffer) = &self.container_tags_buffer {
+            builder
+                .firm()
+                .with_fixed_amount("container tags buffer", buffer.max_pending_bytes());
+        }
     }
 }
 
@@ -241,6 +261,7 @@ pub struct DatadogTrace {
     trace_rb: RequestBuilder<TraceEndpointEncoder>,
     telemetry: ComponentTelemetry,
     payload_telemetry: TracePayloadTelemetry,
+    tag_resolver: Box<dyn ContainerTagsResolver<Trace>>,
     flush_timeout: Duration,
 }
 
@@ -315,6 +336,7 @@ impl Encoder for DatadogTrace {
             trace_rb,
             telemetry,
             payload_telemetry,
+            mut tag_resolver,
             flush_timeout,
         } = *self;
 
@@ -343,6 +365,11 @@ impl Encoder for DatadogTrace {
         health.mark_ready();
         debug!("Datadog Trace encoder started.");
 
+        // Traces wait here for the tags of their container. The resolver returns them in `released`.
+        let mut released = Vec::new();
+        let mut retry_ticker = interval(RETRY_INTERVAL);
+        retry_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         loop {
             select! {
                 biased; // makes the branches of the select statement be evaluated in order.
@@ -357,13 +384,38 @@ impl Encoder for DatadogTrace {
                     }
                     None => break,
                 },
+                _ = retry_ticker.tick() => {
+                    tag_resolver.tick(Instant::now().into_std(), &mut released);
+                    send_traces(&events_tx, resolved_traces(&mut released, Vec::new())).await?;
+                },
                 maybe_event_buffer = context.events().next() => match maybe_event_buffer {
-                    Some(event_buffer) => events_tx.send(event_buffer).await
-                        .error_context("Failed to send event buffer to request builder task.")?,
+                    Some(event_buffer) => {
+                        let was_pending = tag_resolver.has_pending();
+                        let now = Instant::now().into_std();
+                        let mut ready = Vec::new();
+                        for trace in event_buffer.into_events::<Trace>() {
+                            if trace.payload.container_id.is_empty() {
+                                ready.push(trace);
+                                continue;
+                            }
+                            let container_id = trace.payload.container_id.clone();
+                            let size = estimated_size(&trace);
+                            tag_resolver.submit(&container_id, trace, size, now, &mut released);
+                        }
+                        if !was_pending && tag_resolver.has_pending() {
+                            // The first retry comes one interval after the trace started to wait.
+                            retry_ticker.reset();
+                        }
+                        send_traces(&events_tx, resolved_traces(&mut released, ready)).await?;
+                    }
                     None => break,
                 },
             }
         }
+
+        // The input is closed, so no trace waits any longer. Send the held traces with the tags known now.
+        tag_resolver.flush_all(&mut released);
+        send_traces(&events_tx, resolved_traces(&mut released, Vec::new())).await?;
 
         // Drop the events sender, which signals the request builder task to stop.
         drop(events_tx);
@@ -383,10 +435,52 @@ impl Encoder for DatadogTrace {
     }
 }
 
+/// Sends traces to the request builder task. An empty batch sends nothing.
+async fn send_traces(events_tx: &Sender<Vec<Trace>>, traces: Vec<Trace>) -> Result<(), GenericError> {
+    if traces.is_empty() {
+        return Ok(());
+    }
+    events_tx
+        .send(traces)
+        .await
+        .error_context("Failed to send traces to request builder task.")
+}
+
+/// Appends the released traces to `ready`, with the tags of their containers added.
+fn resolved_traces(released: &mut Vec<Released<Trace>>, mut ready: Vec<Trace>) -> Vec<Trace> {
+    ready.extend(released.drain(..).map(|Released { mut item, resolution }| {
+        add_resolved_container_tags(&mut item, &resolution);
+        item
+    }));
+    ready
+}
+
+/// Adds the tags that the workload provider knows to the container tags of a trace.
+///
+/// The container tags that the trace carries stay. The provider's tags join them, and the trace keeps the merged tags
+/// as its resolved container tags.
+fn add_resolved_container_tags(trace: &mut Trace, resolution: &Resolution) {
+    let Resolution::Tags(provider_tags) = resolution else {
+        return;
+    };
+    if provider_tags.is_empty() {
+        return;
+    }
+
+    let mut tags = TagSet::default();
+    extract_trace_container_tags(trace.payload.resolved_container_tags(), &trace.attributes, &mut tags);
+    tags.merge_shared(provider_tags);
+    let mut merged: Vec<MetaString> = tags.into_iter().map(|tag| MetaString::from(tag.as_str())).collect();
+    merged.sort_unstable();
+    // `merge_shared` doesn't remove a tag that both sources carry.
+    merged.dedup();
+    trace.payload.container_tags = Some(Arc::new(merged));
+}
+
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
-    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
+    payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<Vec<Trace>>, payloads_tx: Sender<PayloadsBuffer>,
+    flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -394,8 +488,8 @@ async fn run_request_builder(
 
     loop {
         select! {
-            Some(event_buffer) = events_rx.recv() => {
-                for trace in event_buffer.into_events::<Trace>() {
+            Some(traces) = events_rx.recv() => {
+                for trace in traces {
                     // Encode the trace. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the trace again.
                     let trace_counts = TraceCounts::from_trace(&trace);
@@ -497,31 +591,6 @@ async fn run_request_builder(
     Ok(())
 }
 
-/// One-shot lookup of a container's tags.
-///
-/// The lookup doesn't wait for the container to become known, and doesn't retry.
-#[derive(Clone, Default)]
-struct ContainerTagLookup(Option<Arc<dyn WorkloadProvider + Send + Sync>>);
-
-impl ContainerTagLookup {
-    /// Returns the tags of the container with the given ID, if the container is known.
-    fn get(&self, container_id: &MetaString) -> Option<SharedTagSet> {
-        if container_id.is_empty() {
-            return None;
-        }
-        let provider = self.0.as_ref()?;
-        provider.get_tags_for_entity(&EntityId::Container(container_id.clone()), VERSION_DATA_TAG_CARDINALITY)
-    }
-}
-
-impl fmt::Debug for ContainerTagLookup {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ContainerTagLookup")
-            .field("enabled", &self.0.is_some())
-            .finish()
-    }
-}
-
 #[derive(Debug)]
 struct TraceEndpointEncoder {
     scratch: ScratchWriter<Vec<u8>>,
@@ -537,7 +606,6 @@ struct TraceEndpointEncoder {
     string_table: StringTable,
     error_tracking_standalone: bool,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
-    container_tags: ContainerTagLookup,
 }
 
 impl TraceEndpointEncoder {
@@ -567,14 +635,7 @@ impl TraceEndpointEncoder {
             string_table: StringTable::new(),
             error_tracking_standalone,
             extra_headers,
-            container_tags: ContainerTagLookup::default(),
         }
-    }
-
-    /// Sets the lookup used to fill in a missing application version from container tags.
-    fn with_container_tag_lookup(mut self, container_tags: ContainerTagLookup) -> Self {
-        self.container_tags = container_tags;
-        self
     }
 
     fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> std::io::Result<()> {
@@ -621,15 +682,12 @@ impl TraceEndpointEncoder {
             Some(self.default_hostname.as_ref()),
             self.ignore_missing_datadog_fields,
         );
-        // The container's `version` tag fills in an application version that the payload leaves empty. The tags come
-        // from the trace's own container-tag attributes and from the container's known tags, as they do for stats. They
-        // are gathered only when the version is missing.
+        // The container's `version` tag fills in an application version that the payload leaves empty. The tags are the
+        // trace's container tags, which include the tags of the workload provider. They are gathered only when the
+        // version is missing.
         let version_tags = if trace.payload.app_version.is_empty() && !trace.payload.container_id.is_empty() {
             let mut tags = TagSet::default();
             extract_trace_container_tags(trace.payload.resolved_container_tags(), &trace.attributes, &mut tags);
-            if let Some(provider_tags) = self.container_tags.get(&trace.payload.container_id) {
-                tags.merge_shared(&provider_tags);
-            }
             Some(tags)
         } else {
             None
@@ -997,6 +1055,9 @@ fn append_tags(target: &mut String, tags: &str) {
 }
 
 #[cfg(test)]
+mod buffered_container_tags;
+
+#[cfg(test)]
 mod sampling_round_trip;
 
 /// Returns trace encoder settings carrying the configuration defaults.
@@ -1013,6 +1074,7 @@ fn trace_configuration(agent_env: AgentEnv) -> DatadogTraceConfiguration {
         ignore_missing_datadog_fields: false,
         default_hostname: None,
         workload_provider: None,
+        container_tags_buffer: None,
     }
 }
 
@@ -1026,6 +1088,7 @@ mod tests {
         trace::{Span as DdSpan, Trace, TraceIngestInfo},
         Event,
     };
+    use saluki_core::data_model::tags::{SharedTagSet, Tag};
     use saluki_env::workload::providers::TestWorkloadProvider;
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -2029,11 +2092,7 @@ mod tests {
         let (events_tx, events_rx) = mpsc::channel(1);
         let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
 
-        let mut events = EventsBuffer::default();
-        for trace in traces {
-            assert!(events.try_push(Event::Trace(trace)).is_none());
-        }
-        events_tx.send(events).await.expect("events should be sent");
+        events_tx.send(traces).await.expect("traces should be sent");
         drop(events_tx);
 
         run_request_builder(
@@ -2096,37 +2155,55 @@ mod tests {
             .collect()
     }
 
-    fn encoder_with_container(container_id: &str, tags: &[&str]) -> TraceEndpointEncoder {
-        let provider = TestWorkloadProvider::with_entity(EntityId::Container(MetaString::from(container_id)), tags);
-        make_encoder(false).with_container_tag_lookup(ContainerTagLookup(Some(Arc::new(provider))))
+    /// Adds the tags of a container that the workload provider knows to a trace, as the encoder does before it encodes.
+    fn with_provider_tags(mut trace: Trace, provider_tags: &[&str]) -> Trace {
+        let tags: SharedTagSet = provider_tags.iter().copied().map(Tag::from).collect();
+        add_resolved_container_tags(&mut trace, &Resolution::Tags(tags));
+        trace
+    }
+
+    fn encoded_container_tags(trace: &Trace) -> Option<String> {
+        let mut buf = Vec::new();
+        make_encoder(false)
+            .encode(trace, &mut buf)
+            .expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+        string_attrs(tracer_payload.attributes(), tracer_payload.strings()).remove(CONTAINER_TAGS_META_KEY)
     }
 
     #[test]
     fn app_version_falls_back_to_container_version_tag() {
-        let mut encoder = encoder_with_container("cid-1", &["image_tag:1.2.3", "version:container-v"]);
-        let encode = |encoder: &mut TraceEndpointEncoder, trace: &Trace| {
+        let encode = |trace: &Trace| {
             let mut buf = Vec::new();
-            encoder.encode(trace, &mut buf).expect("encode should succeed");
+            make_encoder(false)
+                .encode(trace, &mut buf)
+                .expect("encode should succeed");
             decode_etp_env_and_app_versions(&buf)[0].1.clone()
         };
+        let container_tags = ["image_tag:1.2.3", "version:container-v"];
 
         // A payload with no version takes the container's.
         let mut trace = make_trace(TraceIngestInfo::Datadog);
         trace.payload.container_id = MetaString::from("cid-1");
-        assert_eq!(encode(&mut encoder, &trace), "container-v");
+        assert_eq!(
+            encode(&with_provider_tags(trace.clone(), &container_tags)),
+            "container-v"
+        );
 
         // The payload's own version wins.
         trace.payload.app_version = MetaString::from("payload-v");
-        assert_eq!(encode(&mut encoder, &trace), "payload-v");
+        assert_eq!(encode(&with_provider_tags(trace, &container_tags)), "payload-v");
 
-        // A container the provider doesn't know yet supplies nothing.
+        // A container the provider doesn't know supplies nothing.
         let mut trace = make_trace(TraceIngestInfo::Datadog);
         trace.payload.container_id = MetaString::from("cid-unknown");
-        assert_eq!(encode(&mut encoder, &trace), "");
+        add_resolved_container_tags(&mut trace, &Resolution::Failed);
+        assert_eq!(encode(&trace), "");
 
         // Neither does a payload without a container ID.
         let trace = make_trace(TraceIngestInfo::Datadog);
-        assert_eq!(encode(&mut encoder, &trace), "");
+        assert_eq!(encode(&trace), "");
     }
 
     #[test]
@@ -2152,17 +2229,52 @@ mod tests {
     }
 
     #[test]
-    fn container_version_lookup_leaves_container_tags_untouched() {
-        let mut encoder = encoder_with_container("cid-1", &["version:container-v", "kube_namespace:default"]);
+    fn the_container_tags_of_the_workload_provider_reach_the_payload() {
         let mut trace = make_trace(TraceIngestInfo::Datadog);
         trace.payload.container_id = MetaString::from("cid-1");
+        assert_eq!(encoded_container_tags(&trace), None);
 
-        let mut buf = Vec::new();
-        encoder.encode(&trace, &mut buf).expect("encode should succeed");
-        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
-        let tracer_payload = &payload.idxTracerPayloads[0];
-        let attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
-        assert!(!attrs.contains_key(CONTAINER_TAGS_META_KEY));
+        let trace = with_provider_tags(trace, &["kube_namespace:default", "version:container-v"]);
+
+        assert_eq!(
+            encoded_container_tags(&trace).as_deref(),
+            Some("kube_namespace:default,version:container-v")
+        );
+    }
+
+    #[test]
+    fn the_container_tags_of_the_workload_provider_join_the_tags_the_trace_carries() {
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        trace.attributes = Arc::new(FastHashMap::from_iter([(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("core")),
+        )]));
+
+        // The same tag from both sources appears once, and the tags come out sorted.
+        let trace = with_provider_tags(trace, &["team:core", "kube_namespace:default"]);
+
+        assert_eq!(
+            encoded_container_tags(&trace).as_deref(),
+            Some("kube_namespace:default,team:core")
+        );
+    }
+
+    #[test]
+    fn a_failed_lookup_and_a_container_without_tags_leave_the_container_tags_alone() {
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        trace.attributes = Arc::new(FastHashMap::from_iter([(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("core")),
+        )]));
+
+        for resolution in [Resolution::Failed, Resolution::Tags(SharedTagSet::default())] {
+            let mut resolved = trace.clone();
+            add_resolved_container_tags(&mut resolved, &resolution);
+            assert_eq!(resolved.payload.container_tags, None);
+            assert_eq!(encoded_container_tags(&resolved).as_deref(), Some("team:core"));
+        }
     }
 
     #[test]

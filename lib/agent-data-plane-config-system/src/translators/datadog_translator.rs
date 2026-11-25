@@ -600,6 +600,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.apm.decoders = non_positive_as_zero("apm_config.decoders", value);
     }
 
+    fn consume_apm_config_enable_container_tags_buffer(&mut self, value: bool) {
+        self.config.domains.traces.enable_container_tags_buffer = value;
+    }
+
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool) {
         self.config.domains.traces.enable_rare_sampler = value;
     }
@@ -2617,6 +2621,17 @@ mod tests {
             25.0
         );
         assert_eq!(config.domains.traces.probabilistic_sampler.sampling_percentage, 40.0);
+    }
+
+    #[test]
+    fn apm_config_enable_container_tags_buffer_defaults_to_true() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(config.domains.traces.enable_container_tags_buffer);
+
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "enable_container_tags_buffer": false } }));
+        assert!(errors.is_none());
+        assert!(!config.domains.traces.enable_container_tags_buffer);
     }
 
     #[test]

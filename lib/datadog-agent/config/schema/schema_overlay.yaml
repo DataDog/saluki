@@ -249,6 +249,18 @@ inventory:
       least one. ADP reads a negative value as `0`, with a warning, where the trace-agent fails to
       start.
 
+  apm_config.enable_container_tags_buffer:
+    support: full
+    pipelines: [traces]
+    description: "Hold traces and stats for container tags"
+    documentation: |-
+      The buffer is active only in Kubernetes. It looks up high cardinality container tags and treats
+      a container with a `kube_` tag as complete. It retries each second and releases pending items
+      on the first tick after their 12-second wait. A timed-out container stays denied for two minutes
+      after the last lookup. Pending items use at most 10% of `apm_config.max_memory`, or 7 MB when
+      that limit is `0`. ADP detects Kubernetes from `KUBERNETES_SERVICE_PORT` or `KUBERNETES`.
+      The buffer flushes pending traces and stats when their components stop.
+
   apm_config.enable_rare_sampler:
     support: full
     pipelines: [traces]
@@ -4842,7 +4854,6 @@ excluded:
   apm_config.debugger_diagnostics_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.debugger_logs_enabled_override: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
-  apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
   apm_config.install_id: "ignored in initial audit 2026-04-23"
   apm_config.install_time: "ignored in initial audit 2026-04-23"

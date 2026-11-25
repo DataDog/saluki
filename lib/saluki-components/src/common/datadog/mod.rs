@@ -1,5 +1,6 @@
 pub(crate) mod api_key;
 pub mod config;
+pub(crate) mod container_tags;
 pub mod endpoints;
 pub mod io;
 pub mod middleware;

@@ -31,14 +31,18 @@ use saluki_env::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
-use tokio::{select, time::interval};
+use tokio::{
+    select,
+    time::{interval, Instant, MissedTickBehavior},
+};
 use tracing::{debug, error};
 
+use crate::common::datadog::container_tags::{self, ContainerTagsResolver, Released, Resolution, RETRY_INTERVAL};
 use crate::common::datadog::get_tracer_hostname;
 use crate::common::datadog::version_data::ContainerVersionData;
 use crate::common::otlp::traces::normalize::normalized_tag_value;
 use crate::common::otlp::util::extract_trace_container_tags;
-use crate::config::AgentEnv;
+use crate::config::{AgentEnv, ContainerTagsBuffer};
 
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
@@ -67,6 +71,9 @@ const TAG_GIT_COMMIT_SHA: &str = "_dd.git.commit.sha";
 /// Maximum number of `ClientGroupedStats` entries per `TraceStats` event.
 const MAX_STATS_GROUPS_PER_EVENT: usize = 4000;
 
+/// Approximate size of one grouped stats entry in a payload, as the trace-agent estimates it.
+const BYTES_PER_STATS_ENTRY: usize = 375;
+
 /// APM Stats transform configuration.
 ///
 /// Aggregates incoming `Trace` events into time-bucketed statistics, emitting
@@ -90,7 +97,20 @@ pub struct ApmStatsTransformConfiguration {
     pub default_hostname: Option<String>,
 
     /// Workload provider used to resolve container tags, if any.
+    ///
+    /// Each stats payload that has a container ID gets the tags of its container when the transform flushes it. A
+    /// container that the provider doesn't know loses its ID and its tags in the payload. Without a provider, a
+    /// payload keeps the container ID and tags that its traces carried.
     pub workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+
+    /// Buffer that holds stats payloads until their container has tags, if any.
+    ///
+    /// Without a buffer, the transform looks a container up once and never waits for its tags. With a buffer, the
+    /// transform holds a flushed payload whose container has no `kube_` tag yet. It sends the payload when the
+    /// container has one, or after 12 seconds. The buffer has no effect without a workload provider.
+    ///
+    /// The trace encoder shares this buffer and its cap, so the encoder declares the cap in its memory bounds.
+    pub container_tags_buffer: Option<ContainerTagsBuffer>,
 
     /// Provider of semantic mappings used to choose peer tag names for stats grouping.
     ///
@@ -125,12 +145,20 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
             now_nanos(),
         );
 
+        let tag_resolver = container_tags::resolver(
+            self.workload_provider.clone(),
+            self.container_tags_buffer.as_ref(),
+            &metrics_builder,
+        );
+
         Ok(Box::new(ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
             agent_env: self.agent_env.clone().into(),
             agent_hostname,
             workload_provider: self.workload_provider.clone(),
+            tag_resolver,
+            waits_for_container_tags: self.workload_provider.is_some() && self.container_tags_buffer.is_some(),
             splits: metrics_builder.register_counter("component_stats_splits_total"),
             future_clamps: metrics_builder.register_counter("component_stats_future_bucket_clamps_total"),
         }))
@@ -150,6 +178,9 @@ impl MemoryBounds for ApmStatsTransformConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<ApmStats>("component struct");
         // TODO: Think about everything we need to account for here.
+        //
+        // The pending payloads of the container tags buffer aren't declared here: the trace encoder shares the buffer,
+        // and declares its cap once, which bounds the pending bytes of both components.
     }
 }
 
@@ -159,6 +190,8 @@ struct ApmStats {
     agent_env: MetaString,
     agent_hostname: MetaString,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    tag_resolver: Box<dyn ContainerTagsResolver<ClientStatsPayload>>,
+    waits_for_container_tags: bool,
     splits: Counter,
     future_clamps: Counter,
 }
@@ -171,6 +204,14 @@ impl ApmStats {
             self.splits.increment(1);
         }
         events
+    }
+
+    /// Returns `true` if the payload needs the tags of its container resolved before it leaves.
+    ///
+    /// A payload that has no container ID has nothing to resolve. A payload that already has tags skips the lookup,
+    /// unless the transform waits for container tags: then the tags that the container has now replace the older ones.
+    fn needs_container_tags(&self, payload: &ClientStatsPayload) -> bool {
+        !payload.container_id().is_empty() && (self.waits_for_container_tags || payload.tags().is_empty())
     }
 
     fn process_trace(&mut self, trace: &Trace) {
@@ -475,6 +516,11 @@ impl Transform for ApmStats {
         let mut flush_ticker = interval(self.flush_interval);
         flush_ticker.tick().await;
 
+        // Flushed payloads wait here for the tags of their container. The resolver returns them in `released`.
+        let mut released = Vec::new();
+        let mut retry_ticker = interval(RETRY_INTERVAL);
+        retry_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         let mut final_flush = false;
 
         health.mark_ready();
@@ -484,20 +530,39 @@ impl Transform for ApmStats {
             select! {
                 _ = health.live() => continue,
 
+                _ = retry_ticker.tick() => {
+                    self.tag_resolver.tick(Instant::now().into_std(), &mut released);
+                    let ready = apply_container_tags(&mut released, Vec::new());
+                    let events = self.split_flushed_stats(ready);
+                    dispatch_stats(&context, events).await?;
+                },
+
                 _ = flush_ticker.tick() => {
                     let stats_payloads = self.concentrator.flush(now_nanos(), final_flush);
                     self.future_clamps.increment(self.concentrator.drain_future_clamps());
-                    if !stats_payloads.is_empty() {
-                        debug!(stats_payloads = stats_payloads.len(), "Flushing APM stats.");
 
-                        let events = self.split_flushed_stats(stats_payloads);
-                        let dispatcher = context.dispatcher().buffered()
-                            .error_context("Default output should be available.")?;
-
-                        if let Err(e) = dispatcher.send_all(events.into_iter().map(Event::TraceStats)).await {
-                            error!(error = %e, "Failed to dispatch events.");
+                    let was_pending = self.tag_resolver.has_pending();
+                    let now = Instant::now().into_std();
+                    let mut ready = Vec::new();
+                    for payload in stats_payloads {
+                        if self.needs_container_tags(&payload) {
+                            let container_id = MetaString::from(payload.container_id());
+                            let size = estimated_size(&payload);
+                            self.tag_resolver.submit(&container_id, payload, size, now, &mut released);
+                        } else {
+                            ready.push(payload);
                         }
                     }
+                    if final_flush {
+                        // No payload waits any longer. Send the held payloads with the tags known now.
+                        self.tag_resolver.flush_all(&mut released);
+                    } else if !was_pending && self.tag_resolver.has_pending() {
+                        // The first retry comes one interval after a payload started to wait.
+                        retry_ticker.reset();
+                    }
+                    let ready = apply_container_tags(&mut released, ready);
+                    let events = self.split_flushed_stats(ready);
+                    dispatch_stats(&context, events).await?;
 
                     if final_flush {
                         debug!("Final APM stats flush complete.");
@@ -529,6 +594,49 @@ impl Transform for ApmStats {
         debug!("APM Stats transform stopped.");
         Ok(())
     }
+}
+
+/// Sends stats events to the default output.
+async fn dispatch_stats(context: &TransformContext, events: Vec<TraceStats>) -> Result<(), GenericError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    debug!(stats_events = events.len(), "Flushing APM stats.");
+
+    let dispatcher = context
+        .dispatcher()
+        .buffered()
+        .error_context("Default output should be available.")?;
+    if let Err(e) = dispatcher.send_all(events.into_iter().map(Event::TraceStats)).await {
+        error!(error = %e, "Failed to dispatch events.");
+    }
+    Ok(())
+}
+
+/// Estimates the bytes that a stats payload holds while it waits for the tags of its container.
+fn estimated_size(payload: &ClientStatsPayload) -> usize {
+    (count_grouped_entries(payload) * BYTES_PER_STATS_ENTRY).max(BYTES_PER_STATS_ENTRY)
+}
+
+/// Appends the released payloads to `ready`, with the tags of their containers applied.
+fn apply_container_tags(
+    released: &mut Vec<Released<ClientStatsPayload>>, mut ready: Vec<ClientStatsPayload>,
+) -> Vec<ClientStatsPayload> {
+    ready.extend(
+        released
+            .drain(..)
+            .map(|Released { item, resolution }| match resolution {
+                Resolution::Tags(provider_tags) => {
+                    // A refreshed lookup replaces the snapshot captured during aggregation.
+                    let mut tags = TagSet::default();
+                    tags.merge_shared(&provider_tags);
+                    item.with_tags(tags)
+                }
+                // A container that the provider doesn't know loses its ID and tags, as in the Agent.
+                Resolution::Failed => item.with_container_id("").with_tags(TagSet::default()),
+            }),
+    );
+    ready
 }
 
 /// Returns the current time as nanoseconds since Unix epoch.
@@ -574,8 +682,10 @@ mod tests {
     use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
+    use saluki_core::data_model::tags::{SharedTagSet, Tag};
     use saluki_env::workload::providers::TestWorkloadProvider;
     use saluki_metrics::test::TestRecorder;
+    use tokio::time::Instant;
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -595,8 +705,13 @@ mod tests {
             agent_env,
             default_hostname: None,
             workload_provider: None,
+            container_tags_buffer: None,
             semantic_registry: SemanticRegistryProvider::default(),
         }
+    }
+
+    fn noop_tag_resolver() -> Box<dyn ContainerTagsResolver<ClientStatsPayload>> {
+        container_tags::resolver(None, None, &MetricsBuilder::default())
     }
 
     /// Creates a test span with the given parameters.
@@ -755,6 +870,8 @@ mod tests {
             agent_env: MetaString::from("none"),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            tag_resolver: noop_tag_resolver(),
+            waits_for_container_tags: false,
             splits: Counter::noop(),
             future_clamps: Counter::noop(),
         };
@@ -780,6 +897,8 @@ mod tests {
             agent_env: MetaString::from("none"),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            tag_resolver: noop_tag_resolver(),
+            waits_for_container_tags: false,
             splits: Counter::noop(),
             future_clamps: Counter::noop(),
         };
@@ -1594,6 +1713,8 @@ mod tests {
             agent_env: MetaString::default(),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            tag_resolver: noop_tag_resolver(),
+            waits_for_container_tags: false,
             splits: MetricsBuilder::default().register_counter("component_stats_splits_total"),
             future_clamps: Counter::noop(),
         };
@@ -1761,6 +1882,8 @@ mod tests {
             agent_env: MetaString::default(),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            tag_resolver: noop_tag_resolver(),
+            waits_for_container_tags: false,
             splits: Counter::noop(),
             future_clamps: Counter::noop(),
         };
@@ -1876,6 +1999,8 @@ mod tests {
             agent_hostname: MetaString::default(),
             workload_provider: workload_provider
                 .map(|provider| Arc::new(provider) as Arc<dyn WorkloadProvider + Send + Sync>),
+            tag_resolver: noop_tag_resolver(),
+            waits_for_container_tags: false,
             splits: Counter::noop(),
             future_clamps: Counter::noop(),
         }
@@ -1991,6 +2116,8 @@ mod tests {
             agent_env: MetaString::default(),
             agent_hostname: MetaString::from("agent-host"),
             workload_provider: None,
+            tag_resolver: noop_tag_resolver(),
+            waits_for_container_tags: false,
             splits: Counter::noop(),
             future_clamps: Counter::noop(),
         };
@@ -2029,6 +2156,8 @@ mod tests {
             agent_env: MetaString::default(),
             agent_hostname: MetaString::from("agent-host"),
             workload_provider: None,
+            tag_resolver: noop_tag_resolver(),
+            waits_for_container_tags: false,
             splits: Counter::noop(),
             future_clamps: Counter::noop(),
         };
@@ -2074,5 +2203,129 @@ mod tests {
                 prop_assert_eq!(trace_stats.is_split_payload(), result.len() > 1);
             }
         }
+    }
+
+    /// Runs the transform over one trace of the given container, and returns the container ID and tags of each stats
+    /// payload that it sends. Closing the input triggers the final flush.
+    async fn stats_for_container(
+        provider: &Arc<crate::common::datadog::container_tags::test_util::ScriptedProvider>, buffered: bool,
+        container_id: &str,
+    ) -> Vec<(String, Vec<String>)> {
+        let config = ApmStatsTransformConfiguration {
+            workload_provider: Some(provider.clone()),
+            container_tags_buffer: buffered.then(|| ContainerTagsBuffer::new(1_000_000)),
+            ..stats_configuration(AgentEnv::resolve(None, None, &[], &[]))
+        };
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the transform should start");
+
+        let span = make_top_level_span(
+            align_ts(now_nanos(), BUCKET_DURATION_NS),
+            1,
+            100,
+            0,
+            "svc",
+            "resource",
+            0,
+            None,
+        );
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from(container_id);
+        control.send_event(Event::Trace(trace)).await;
+        control.shutdown().await.expect("the transform should stop cleanly");
+
+        let mut payloads = Vec::new();
+        for event in outputs.default_output().collect_events().await {
+            let Event::TraceStats(stats) = event else {
+                panic!("unexpected event: {event:?}");
+            };
+            for payload in stats.stats() {
+                let mut tags: Vec<_> = payload.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
+                tags.sort();
+                payloads.push((payload.container_id().to_string(), tags));
+            }
+        }
+        payloads
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stats_of_a_container_the_provider_does_not_know_lose_the_container_id_and_tags() {
+        use crate::common::datadog::container_tags::test_util::ScriptedProvider;
+
+        for buffered in [false, true] {
+            let provider = Arc::new(ScriptedProvider::default());
+            let start = Instant::now();
+
+            let payloads = stats_for_container(&provider, buffered, "cid-unknown").await;
+
+            assert_eq!(
+                vec![(String::new(), Vec::<String>::new())],
+                payloads,
+                "buffered: {buffered}"
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "buffered: {buffered}: the transform waited"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stats_of_a_known_container_carry_its_tags_once_the_buffer_flushes_on_shutdown() {
+        use crate::common::datadog::container_tags::test_util::ScriptedProvider;
+
+        // The container has no `kube_` tag, so the buffer would hold its stats. The final flush sends them at once.
+        let provider = Arc::new(ScriptedProvider::default());
+        provider.set_tags("cid-1", &["image_tag:1"]);
+        let start = Instant::now();
+
+        let payloads = stats_for_container(&provider, true, "cid-1").await;
+
+        assert_eq!(vec![("cid-1".to_string(), vec!["image_tag:1".to_string()])], payloads);
+        assert!(start.elapsed() < Duration::from_secs(5), "the transform waited");
+    }
+
+    #[test]
+    fn refreshed_container_tags_replace_the_payload_snapshot() {
+        let payload = ClientStatsPayload::default()
+            .with_container_id("cid-1")
+            .with_tags(TagSet::from_iter(["team:core".into(), "image_tag:old".into()]));
+        let provider_tags: SharedTagSet = ["image_tag:new", "kube_namespace:prod"]
+            .into_iter()
+            .map(Tag::from)
+            .collect();
+        let mut released = vec![Released {
+            item: payload,
+            resolution: Resolution::Tags(provider_tags),
+        }];
+
+        let applied = apply_container_tags(&mut released, Vec::new());
+
+        assert!(released.is_empty());
+        let mut tags: Vec<_> = applied[0]
+            .tags()
+            .into_iter()
+            .map(|tag| tag.as_str().to_string())
+            .collect();
+        tags.sort();
+        assert_eq!(vec!["image_tag:new", "kube_namespace:prod"], tags);
+        assert_eq!("cid-1", applied[0].container_id());
+    }
+
+    #[test]
+    fn a_failed_resolution_clears_the_container_id_and_the_tags_of_the_payload() {
+        let payload = ClientStatsPayload::default()
+            .with_container_id("cid-1")
+            .with_tags(TagSet::from_iter(["team:core".into()]));
+        let mut released = vec![Released {
+            item: payload,
+            resolution: Resolution::Failed,
+        }];
+
+        let applied = apply_container_tags(&mut released, Vec::new());
+
+        assert_eq!("", applied[0].container_id());
+        assert_eq!(0, applied[0].tags().len());
     }
 }
