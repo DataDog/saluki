@@ -24,7 +24,7 @@ mod dogstatsd_mapper;
 pub use self::dogstatsd_mapper::{DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping};
 
 mod metric_region;
-pub use self::metric_region::MetricRegionConfiguration;
+pub use self::metric_region::{DogStatsDIngressPushdownHandle, MetricRegionConfiguration};
 
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;

@@ -365,3 +365,73 @@ fn stream_log_too_big_warns_for_enabled_length_delimited_stream_invalid_frames()
     assert!(!should_warn_stream_log_too_big(&named_pipe_stream, &error, true));
     assert!(!should_warn_stream_log_too_big(&tcp_stream, &error, true));
 }
+
+#[test]
+fn ingress_pushdown_drops_blocked_metrics_before_context_resolution() {
+    use saluki_metric_kernels::filterlist::MetricNameFilter;
+    use saluki_metric_plan::{
+        lowering::{lower_native_pipeline, NativePipelineConfig},
+        validate_plan, DogStatsDIngressPushdown,
+    };
+
+    let config = NativePipelineConfig {
+        dogstatsd_enabled: true,
+        metric_filter: MetricNameFilter {
+            values: vec!["blocked.counter".to_string()],
+            match_prefix: false,
+            prefix_rules: vec![],
+        },
+        ..NativePipelineConfig::default()
+    };
+    let validated = validate_plan(&lower_native_pipeline(&config)).unwrap();
+    use crate::{sources::dogstatsd::handle_frame_with_pushdown, transforms::DogStatsDIngressPushdownHandle};
+    let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+    let component_context = test_component_context();
+    let metrics = build_metrics(&listen_addr, &component_context, false);
+    let handle = DogStatsDIngressPushdownHandle::new(DogStatsDIngressPushdown::compile_from_plan(&validated));
+
+    let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+    let mut resolvers = ContextResolvers::for_tests(false, None);
+    let default_host = MetaString::from_static("default-host");
+    let mut scratch = String::new();
+
+    // Blocked metric is dropped before context resolution.
+    let dropped = handle_frame_with_pushdown(
+        b"blocked.counter:1|c|#env:prod,noise:1",
+        &codec,
+        &mut resolvers,
+        &metrics,
+        false,
+        None,
+        EnablePayloadsFilter::default(),
+        &[],
+        &default_host,
+        Some(handle.as_ref()),
+        &mut scratch,
+    )
+    .expect("frame should parse");
+    assert!(dropped.is_none());
+    assert_eq!(handle.take_dropped_points(), 1);
+
+    // Non-blocked metric resolves normally.
+    let kept = handle_frame_with_pushdown(
+        b"kept.counter:1|c|#env:prod",
+        &codec,
+        &mut resolvers,
+        &metrics,
+        false,
+        None,
+        EnablePayloadsFilter::default(),
+        &[],
+        &default_host,
+        Some(handle.as_ref()),
+        &mut scratch,
+    )
+    .expect("frame should parse")
+    .expect("metric should be emitted")
+    .try_into_metric()
+    .expect("event should be metric");
+    assert_eq!(kept.context().name(), "kept.counter");
+    assert!(kept.context().tags().has_tag("env:prod"));
+    assert_eq!(handle.take_dropped_points(), 0);
+}

@@ -154,6 +154,7 @@ fn test_decoder_context(origin_detection_enabled: bool) -> DecoderContext {
         disable_verbose_logs: false,
         additional_tags: Vec::<String>::new().into(),
         traffic_capture: TrafficCapture::new(PathBuf::new(), 1),
+        ingress_pushdown: None,
     }
 }
 

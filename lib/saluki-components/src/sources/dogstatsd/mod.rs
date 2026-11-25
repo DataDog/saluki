@@ -65,7 +65,7 @@ use self::forwarder::{forwarder_queue_capacity, PacketForwarder, PacketForwarder
 
 mod framer;
 use self::framer::{get_framer, DsdFramer, Frame};
-use crate::sources::dogstatsd::tags::WellKnownTags;
+use crate::{sources::dogstatsd::tags::WellKnownTags, transforms::DogStatsDIngressPushdownHandle};
 
 mod filters;
 use self::filters::EnablePayloadsFilter;
@@ -438,6 +438,12 @@ pub struct DogStatsDConfiguration {
     /// This is runtime wiring rather than configuration: the source binds the captured tagger to this handle, so the
     /// caller creates the handle and keeps a clone to serve the replay API.
     pub replay_control: DogStatsDReplayControl,
+
+    /// Optional shared pushdown handle supplied by a downstream programmable [`crate::transforms::MetricRegionConfiguration`].
+    ///
+    /// When present, DogStatsD evaluates pushed-down blocklist drops and raw tag filters before tag-set allocation and
+    /// `ContextResolver` interning. Always `None` in native mode.
+    pub ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -532,6 +538,7 @@ impl DogStatsDConfiguration {
             capture_depth: MIN_CAPTURE_DEPTH,
             capture_control: DogStatsDCaptureControl::default(),
             replay_control: DogStatsDReplayControl::default(),
+            ingress_pushdown: None,
         }
     }
 }
@@ -867,6 +874,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             traffic_capture,
             packet_forwarder_target,
+            ingress_pushdown: self.ingress_pushdown.clone(),
         }))
     }
 
@@ -943,6 +951,7 @@ pub struct DogStatsD {
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
     packet_forwarder_target: Option<PacketForwarderTarget>,
+    ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
 }
 
 struct ListenerContext {
@@ -980,6 +989,7 @@ struct DecoderContext {
     disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
     traffic_capture: TrafficCapture,
+    ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
 }
 
 struct DatagramSocketContext {
@@ -1005,6 +1015,8 @@ struct DogStatsDDecoder {
     disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
     traffic_capture: TrafficCapture,
+    ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
+    pushdown_name_scratch: String,
     event_buffer: Option<EventsBuffer>,
 }
 
@@ -1093,6 +1105,7 @@ impl Source for DogStatsD {
             disable_verbose_logs: self.disable_verbose_logs,
             additional_tags: self.additional_tags.clone(),
             traffic_capture: self.traffic_capture.clone(),
+            ingress_pushdown: self.ingress_pushdown.clone(),
         };
 
         // Decoders must drain their queue to completion, so they deliberately ignore the shutdown signal and stop only
@@ -1614,6 +1627,7 @@ impl DogStatsDDecoder {
             disable_verbose_logs,
             additional_tags,
             traffic_capture,
+            ingress_pushdown,
         } = decoder_context;
 
         Self {
@@ -1627,6 +1641,8 @@ impl DogStatsDDecoder {
             disable_verbose_logs,
             additional_tags,
             traffic_capture,
+            ingress_pushdown,
+            pushdown_name_scratch: String::new(),
             event_buffer: None,
         }
     }
@@ -1755,7 +1771,7 @@ impl DogStatsDDecoder {
             forwarder.forward(frame).await;
         }
 
-        match handle_frame(
+        match handle_frame_with_pushdown(
             frame,
             &self.codec,
             &mut self.context_resolvers,
@@ -1765,6 +1781,8 @@ impl DogStatsDDecoder {
             self.enabled_filter,
             &self.additional_tags,
             &self.default_hostname,
+            self.ingress_pushdown.as_deref(),
+            &mut self.pushdown_name_scratch,
         ) {
             Ok(Some(event)) => {
                 if let Some(event_buffer) = self.buffer_event(event) {
@@ -2077,11 +2095,35 @@ fn capture_timestamp_ns() -> i64 {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn handle_frame(
     frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
     origin_detection_enabled: bool, process_origin: Option<&ProcessOrigin>, enabled_filter: EnablePayloadsFilter,
     additional_tags: &[String], default_hostname: &MetaString,
+) -> Result<Option<Event>, ParseError> {
+    let mut scratch = String::new();
+    handle_frame_with_pushdown(
+        frame,
+        codec,
+        context_resolvers,
+        source_metrics,
+        origin_detection_enabled,
+        process_origin,
+        enabled_filter,
+        additional_tags,
+        default_hostname,
+        None,
+        &mut scratch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_frame_with_pushdown(
+    frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
+    origin_detection_enabled: bool, process_origin: Option<&ProcessOrigin>, enabled_filter: EnablePayloadsFilter,
+    additional_tags: &[String], default_hostname: &MetaString,
+    ingress_pushdown: Option<&DogStatsDIngressPushdownHandle>, pushdown_name_scratch: &mut String,
 ) -> Result<Option<Event>, ParseError> {
     let resolve_telemetry_origin = || {
         (source_metrics.origin_telemetry_enabled() && origin_detection_enabled)
@@ -2121,6 +2163,25 @@ fn handle_frame(
                     "Skipping metric due to filter configuration."
                 );
                 return Ok(None);
+            }
+
+            if let Some(handle) = ingress_pushdown {
+                let pushdown = handle.load();
+                if pushdown.is_active()
+                    && pushdown.should_drop_metric(
+                        metric_packet.metric_name,
+                        &metric_packet.values,
+                        pushdown_name_scratch,
+                    )
+                {
+                    source_metrics.record_metrics_received(events_len, resolve_telemetry_origin().as_deref());
+                    handle.record_dropped_points(1);
+                    trace!(
+                        metric.name = metric_packet.metric_name,
+                        "Dropped metric early via pushed-down plan predicate."
+                    );
+                    return Ok(None);
+                }
             }
 
             match handle_metric_packet(

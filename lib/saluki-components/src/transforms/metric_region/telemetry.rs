@@ -129,6 +129,18 @@ pub(super) struct RegionTelemetryEmitter {
 }
 
 impl RegionTelemetryEmitter {
+    pub(super) fn publish_pushdown_drops(&mut self, prefix_node: Option<&NodeId>, dropped_points: u64) {
+        if dropped_points > 0 {
+            if let Some(node_id) = prefix_node {
+                let handles = self
+                    .prefix_filters
+                    .entry(node_id.clone())
+                    .or_insert_with(|| PrefixFilterHandles::new(node_id));
+                handles.dropped_points.increment(dropped_points);
+            }
+        }
+    }
+
     pub(super) fn publish(&mut self, delta: RegionTelemetryDelta) {
         if delta.is_empty() {
             return;

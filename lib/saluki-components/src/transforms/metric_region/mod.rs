@@ -6,8 +6,17 @@
 
 mod telemetry;
 
-use std::{collections::BTreeMap, future::pending, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::pending,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
+use arc_swap::{ArcSwap, Guard};
 use async_trait::async_trait;
 use saluki_common::{sync::live::Live, time::get_unix_timestamp};
 use saluki_core::{
@@ -29,8 +38,8 @@ use saluki_metric_kernels::{
     tag_filter::DEFAULT_CONTEXT_CACHE_CAPACITY as TAG_FILTER_CONTEXT_CACHE_CAPACITY,
 };
 use saluki_metric_plan::{
-    lowering::TARGET_PRIMARY, validate_plan, GenerationManager, InstallOutcome, MetricPlan, Op, RuntimeBindings,
-    ValidatedPlan,
+    lowering::TARGET_PRIMARY, validate_plan, DogStatsDIngressPushdown, GenerationManager, InstallOutcome, MetricPlan,
+    Op, RuntimeBindings, ValidatedPlan,
 };
 use tokio::{
     select,
@@ -47,6 +56,45 @@ use crate::transforms::aggregate::{
 /// Classifier mapping an incoming metric to a logical plan source stream name.
 pub type StreamClassifier = Arc<dyn Fn(&Metric) -> &'static str + Send + Sync>;
 
+/// Shared, lock-free handle publishing compiled [`DogStatsDIngressPushdown`] snapshots from [`MetricRegion`] to
+/// DogStatsD ingress listeners, together with an atomic counter for early-dropped points.
+pub struct DogStatsDIngressPushdownHandle {
+    current: ArcSwap<DogStatsDIngressPushdown>,
+    dropped_points: AtomicU64,
+}
+
+impl DogStatsDIngressPushdownHandle {
+    /// Creates a new shared handle initialized from `initial`.
+    pub fn new(initial: DogStatsDIngressPushdown) -> Arc<Self> {
+        Arc::new(Self {
+            current: ArcSwap::from_pointee(initial),
+            dropped_points: AtomicU64::new(0),
+        })
+    }
+
+    /// Atomically replaces the active pushdown snapshot (called by [`MetricRegion`] on live plan reloads).
+    pub fn update(&self, next: DogStatsDIngressPushdown) {
+        self.current.store(Arc::new(next));
+    }
+
+    /// Loads the currently active pushdown snapshot without locking.
+    #[inline]
+    pub fn load(&self) -> Guard<Arc<DogStatsDIngressPushdown>> {
+        self.current.load()
+    }
+
+    /// Records `count` metric points dropped early at DogStatsD ingress.
+    #[inline]
+    pub fn record_dropped_points(&self, count: u64) {
+        self.dropped_points.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Drains and returns pushed-down dropped points since the last drain.
+    pub fn take_dropped_points(&self) -> u64 {
+        self.dropped_points.swap(0, Ordering::Relaxed)
+    }
+}
+
 /// Configuration for [`MetricRegion`], a single fused transform running compiled [`MetricPlan`] generations.
 pub struct MetricRegionConfiguration {
     plan: ValidatedPlan,
@@ -58,6 +106,7 @@ pub struct MetricRegionConfiguration {
     live_mirroring: Option<(String, Live<MetricMirroring>)>,
     host_tags_expiry: Option<(String, Duration)>,
     context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
+    ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
     outputs: Vec<OutputDefinition<EventType>>,
 }
 
@@ -89,6 +138,7 @@ impl MetricRegionConfiguration {
             live_mirroring: None,
             host_tags_expiry: None,
             context_snapshot_receiver: None,
+            ingress_pushdown: None,
             outputs,
         }
     }
@@ -129,6 +179,18 @@ impl MetricRegionConfiguration {
         self.context_snapshot_receiver = Some(receiver);
         self
     }
+
+    /// Attaches a shared DogStatsD ingress pushdown handle so this region keeps ingress pre-filtering synchronized
+    /// across live plan updates and avoids redundant regular-tag filtering for metrics without `origin_tags`.
+    pub fn with_ingress_pushdown(mut self, pushdown: Arc<DogStatsDIngressPushdownHandle>) -> Self {
+        self.ingress_pushdown = Some(pushdown);
+        self
+    }
+
+    /// Returns a reference to the validated initial plan.
+    pub fn plan(&self) -> &ValidatedPlan {
+        &self.plan
+    }
 }
 
 #[async_trait]
@@ -150,6 +212,9 @@ impl TransformBuilder for MetricRegionConfiguration {
         }
 
         let generations = GenerationManager::new(self.plan.clone(), bindings.clone())?;
+        if let Some(pushdown) = self.ingress_pushdown.as_ref() {
+            pushdown.update(DogStatsDIngressPushdown::compile_from_plan(&self.plan));
+        }
         if generations.active_engine().stream_index(&self.default_stream).is_none() {
             return Err(generic_error!(
                 "plan does not declare default stream `{}`",
@@ -186,6 +251,7 @@ impl TransformBuilder for MetricRegionConfiguration {
             live_mirroring: self.live_mirroring.clone(),
             host_tags_expiry: self.host_tags_expiry.clone(),
             context_snapshot_requests,
+            ingress_pushdown: self.ingress_pushdown.clone(),
             target_to_output,
         }))
     }
@@ -240,6 +306,7 @@ struct MetricRegion {
     live_mirroring: Option<(String, Live<MetricMirroring>)>,
     host_tags_expiry: Option<(String, Duration)>,
     context_snapshot_requests: Option<AggregateContextSnapshotRequestReceiver>,
+    ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
     target_to_output: BTreeMap<String, OutputName>,
 }
 
@@ -329,11 +396,19 @@ impl MetricRegion {
             }
         };
 
+        let next_pushdown = self
+            .ingress_pushdown
+            .as_ref()
+            .map(|_| DogStatsDIngressPushdown::compile_from_plan(&validated));
+
         match self.generations.install(validated, now) {
             Ok(InstallOutcome::SwitchedImmediately {
                 generation,
                 reused_stateful_nodes,
             }) => {
+                if let (Some(handle), Some(compiled)) = (self.ingress_pushdown.as_ref(), next_pushdown) {
+                    handle.update(compiled);
+                }
                 info!(
                     generation = generation.0,
                     reused_stateful_nodes, "Installed live metric plan generation atomically."
@@ -343,6 +418,9 @@ impl MetricRegion {
                 generation,
                 cut_timestamp_secs,
             }) => {
+                if let (Some(handle), Some(compiled)) = (self.ingress_pushdown.as_ref(), next_pushdown) {
+                    handle.update(compiled);
+                }
                 info!(
                     generation = generation.0,
                     cut_timestamp_secs, "Scheduled stateful metric plan cut at shared bucket boundary."
@@ -350,6 +428,17 @@ impl MetricRegion {
             }
             Err(e) => {
                 error!(error = %e, "Failed to compile live metric plan update; keeping active generation.");
+            }
+        }
+    }
+
+    fn flush_telemetry(&mut self, telemetry: &mut RegionTelemetryEmitter, include_gauges: bool) {
+        telemetry.publish(self.generations.take_telemetry(include_gauges));
+        if let Some(handle) = self.ingress_pushdown.as_ref() {
+            let dropped = handle.take_dropped_points();
+            if dropped > 0 {
+                let active = handle.load();
+                telemetry.publish_pushdown_drops(active.prefix_filter_node(), dropped);
             }
         }
     }
@@ -372,7 +461,7 @@ impl Transform for MetricRegion {
         let mut telemetry = RegionTelemetryEmitter::default();
 
         // Publish initial operator rule-count and active-context gauges before marking ready.
-        telemetry.publish(self.generations.take_telemetry(true));
+        self.flush_telemetry(&mut telemetry, true);
 
         health.mark_ready();
         debug!(
@@ -392,11 +481,12 @@ impl Transform for MetricRegion {
                         self.generations.flush(now, final_flush, |target, metric| {
                             push_emitted(&mut emitted, target, metric);
                         });
-                        telemetry.publish(self.generations.take_telemetry(false));
                         if let Err(e) = self.dispatch_emitted(&mut emitted, context.dispatcher()).await {
                             error!(error = %e, "Failed to dispatch flushed metrics from region.");
                         }
                     }
+                    // Always drain pushdown counters even when 100% of metrics were dropped before reaching the region.
+                    self.flush_telemetry(&mut telemetry, false);
 
                     if final_flush {
                         break;
@@ -420,7 +510,7 @@ impl Transform for MetricRegion {
                 maybe_plan = next_live_plan(&mut self.live_plans), if !final_flush => {
                     if let Some(candidate) = maybe_plan {
                         self.handle_plan_update(candidate, get_unix_timestamp());
-                        telemetry.publish(self.generations.take_telemetry(true));
+                        self.flush_telemetry(&mut telemetry, true);
                         if flush_timer.is_none() && self.generations.has_stateful_operators() {
                             flush_timer = Some(interval_at(
                                 tokio::time::Instant::now() + self.flush_interval,
@@ -441,7 +531,7 @@ impl Transform for MetricRegion {
                         trace!(events_len = events.len(), "Metric region received events.");
                         let now = get_unix_timestamp();
                         self.ingest_buffer(events, now, &mut emitted);
-                        telemetry.publish(self.generations.take_telemetry(false));
+                        self.flush_telemetry(&mut telemetry, false);
                         if let Err(e) = self.dispatch_emitted(&mut emitted, context.dispatcher()).await {
                             error!(error = %e, "Failed to dispatch metrics from region.");
                         }
