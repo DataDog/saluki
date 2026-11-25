@@ -5,5 +5,5 @@ volume: 1
 corpus:
   size: 1
   payload:
-    # ExportMetricsServiceRequest with one SummaryDataPoint and two quantiles.
-    static_base64: "CmMSYRJfChZvdGxwLnN1bW1hcnkucXVhbnRpbGVzWkUKQxkAACo2/pyXFyEKAAAAAAAAACkAAAAAAABZQDISCQAAAAAAAOA/EQAAAAAAAClAMhIJrkfhehSu7z8RAAAAAAAAOUA="
+    # ExportMetricsServiceRequest with two cumulative SummaryDataPoints of two quantiles each.
+    static_base64: "CqsBEqgBEqUBChZvdGxwLnN1bW1hcnkucXVhbnRpbGVzWooBCkMZAAAqNv6clxchCgAAAAAAAAApAAAAAAAAWUAyEgkAAAAAAADgPxEAAAAAAAApQDISCa5H4XoUru8/EQAAAAAAADlACkMZAOQ1igCdlxchGQAAAAAAAAApAAAAAABAcEAyEgkAAAAAAADgPxEAAAAAAAApQDISCa5H4XoUru8/EQAAAAAAADlA"
