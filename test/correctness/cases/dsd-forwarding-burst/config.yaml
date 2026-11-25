@@ -1,23 +1,48 @@
-type: correctness
-runtime: docker
-analysis_mode: metrics
-require_dogstatsd_forwarded_packets: true
+description: >-
+  ADP and the Agent each receive the same bursts of DogStatsD metrics over UDP and forward every packet to their intake,
+  which must hold the same metrics and the same forwarded messages.
+timeout: 8m
+subject_os: [linux]
 # This case intentionally reuses the same Agent configuration as dsd-forwarding. The distinct
 # coverage comes from the Millstone burst traffic shape, while analysis compares forwarded messages
 # instead of exact UDP packet boundaries.
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_AGGREGATE_CONTEXT_LIMIT: "500000"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_AGGREGATE_CONTEXT_LIMIT: "500000"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api, dogstatsd_forward: intake-adp.dogstatsd_forward}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api, dogstatsd_forward: intake-agent.dogstatsd_forward}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.dogstatsd_udp, baseline_target: agent.dogstatsd_udp}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they aggregated. Waiting slightly longer than an aggregation bucket, with the load running,
+  # lets the Agent and ADP resolve the senders while they flush.
+  - {step: process_stable_for, on: load, duration: 32s}
+  - step: compare
+    telemetry: metrics
+    comparison: intake-adp
+    baseline: intake-agent
+    require_dogstatsd_forwarded_packets: true

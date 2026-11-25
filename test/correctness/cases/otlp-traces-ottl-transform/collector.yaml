@@ -6,7 +6,7 @@ receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: "0.0.0.0:{{ self.endpoints.otel_otlp_grpc.port }}"
 
 processors:
   transform:
@@ -22,7 +22,7 @@ exporters:
     api:
       key: correctness-test
     traces:
-      endpoint: http://datadog-intake:2049
+      endpoint: "{{ self.connections.intake.url }}"
 
 service:
   pipelines:

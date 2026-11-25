@@ -24,6 +24,9 @@ warn() {
     exit 0
 }
 
+# GitLab runs `after_script` even when a job is canceled. Cancellation sends SIGTERM to nextest, which records the tests
+# still running as failures, so a report from a canceled job would show spurious failures.
+[[ "${CI_JOB_STATUS:-}" != "canceled" ]] || warn "job was canceled"
 [[ -f "$junit_file" ]] || warn "JUnit report '${junit_file}' not found"
 
 datadog_ci_asset=""

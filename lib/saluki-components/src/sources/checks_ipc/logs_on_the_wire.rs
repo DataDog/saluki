@@ -13,10 +13,11 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use datadog_protos::checks::{check_data::Data, log::Log as ProtoLog, log::LogLevel};
 use http_body_util::BodyExt as _;
+use saluki_common::time::Timestamp;
 use saluki_core::components::test_util::TestComponentDriver;
+use saluki_error::GenericError;
 use stringtheory::MetaString;
 
 use super::check_data_to_event;
@@ -25,10 +26,8 @@ use crate::encoders::{BufferedIncrementalConfiguration, DatadogLogsConfiguration
 /// The encoder's clock in these tests.
 const NOW: &str = "2026-01-02T03:04:05.678Z";
 
-fn fixed_clock() -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(NOW)
-        .expect("NOW should be RFC3339")
-        .with_timezone(&Utc)
+fn fixed_clock() -> Result<Timestamp, GenericError> {
+    Ok(NOW.parse().expect("NOW should be RFC3339"))
 }
 
 /// The envelope `timestamp` of every entry, from the encoder's clock.
@@ -72,12 +71,12 @@ fn log_data(level: i32, message: &str) -> Data {
 /// The source sets each log's ingestion time when it converts it, so the `dd-message-timestamp` header is checked to be
 /// within that conversion, and replaced with [`INGESTION_TIME`].
 async fn encode_check_data(data: impl IntoIterator<Item = Data>) -> Vec<WireRequest> {
-    let converted_after_ms = Utc::now().timestamp_millis();
+    let converted_after_ms = Timestamp::now().expect("clock should be in range").as_unix_millis();
     let events = data
         .into_iter()
         .filter_map(|data| check_data_to_event(data, &MetaString::from_static(DEFAULT_HOSTNAME)))
         .collect::<Vec<_>>();
-    let converted_before_ms = Utc::now().timestamp_millis();
+    let converted_before_ms = Timestamp::now().expect("clock should be in range").as_unix_millis();
 
     let encoder = BufferedIncrementalConfiguration::new(
         DatadogLogsConfiguration::new("zstd", 3)

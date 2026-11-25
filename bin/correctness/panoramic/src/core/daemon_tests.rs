@@ -1,10 +1,11 @@
 //! Tests of the container backend and the lifecycle against a real Docker daemon. They are ignored by default; run them
 //! by hand with `make test-container-daemon`, which builds the courier they copy into each container.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use airlock::image::{ensure_image, DAEMON_TEST_IMAGE};
@@ -17,18 +18,20 @@ use serde::Deserialize;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::backend::{Backend, Backends, Preparing, Scope};
 use super::case::{self, CASE_FILE};
-use super::container::{CaseContainers, ContainerBackend, LINUX};
+use super::container::{ContainerBackend, LINUX};
 use super::deadline::{Budget, Deadline};
 use super::ledger::ResourceLedger;
-use super::lifecycle::{self, CaseRun, Ran};
+use super::lifecycle::{self, CaseRun};
 use super::observe::{ExitStatus, ProcessExit, CONTAINER_LOG};
+use super::participant::Enclosure;
 use super::participant::Os;
 use super::plan::{plan, CasePlan};
 use super::record::{CaseRecord, StepStatus};
 use super::reference::Values;
 use super::registry::Registry;
-use super::result::{ErrorKind, PhaseTracker, ReclaimEntry, ReclaimResult, TestOutcome};
+use super::result::{ErrorKind, PhaseTracker, ReclaimEntry, ReclaimResult, TestOutcome, TestResult};
 use super::spec::Keep;
 use super::step::{Need, Step, StepContext, StepFactory, StepFields, StepReport};
 use super::tasks::{CaseTasks, TASK_STOP_TIME};
@@ -42,7 +45,7 @@ fn deadline() -> Instant {
 /// A planned case with its scope prepared.
 struct Case {
     plan: CasePlan,
-    containers: CaseContainers,
+    scope: Box<dyn Scope>,
     cancel: CancellationToken,
 }
 
@@ -51,7 +54,7 @@ fn plan_linux(config: &str, registry: &Registry) -> CasePlan {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(CASE_FILE), config.replace("{image}", DAEMON_TEST_IMAGE)).unwrap();
     case::load(dir.path(), registry)
-        .and_then(|case| plan(&case, Os::Linux, registry))
+        .and_then(|case| plan(&case, Os::Linux, registry, &BTreeMap::new()))
         .unwrap_or_else(|errors| panic!("the case should plan: {errors:?}"))
 }
 
@@ -93,16 +96,15 @@ where
     let ledger = ResourceLedger::default();
     let outcome = AssertUnwindSafe(async {
         let cancel = CancellationToken::new();
-        let containers = backend
-            .prepare(&ledger, &cancel, deadline())
-            .await
-            .expect("the scope should be prepared");
-        body(Case {
-            plan,
-            containers,
-            cancel,
-        })
-        .await;
+        let tasks = CaseTasks::new(&cancel);
+        let cx = Preparing {
+            ledger: &ledger,
+            tasks: &tasks,
+            cancel: &cancel,
+            deadline: deadline(),
+        };
+        let scope = backend.prepare(&cx).await.expect("the scope should be prepared");
+        body(Case { plan, scope, cancel }).await;
     })
     .catch_unwind()
     .await;
@@ -148,12 +150,12 @@ procedure: []
 "#;
     let entries = in_case(config, |case| async move {
         let values = Values::of_plan(&case.plan.participants);
-        let mut app = case
-            .containers
+        let app = case
+            .scope
             .create("app", &case.plan.participants["app"], &values, &case.cancel, deadline())
             .await
             .unwrap();
-        app.start(&case.cancel, deadline())
+        app.start(&values, &case.cancel, deadline())
             .await
             .expect_err("a missing program should fail the start");
     })
@@ -181,16 +183,16 @@ procedure: []
     let entries = in_case(config, |case| async move {
         let values = Values::of_plan(&case.plan.participants);
         let create = |name: &'static str| {
-            case.containers
+            case.scope
                 .create(name, &case.plan.participants[name], &values, &case.cancel, deadline())
         };
-        let mut app = create("app").await.unwrap();
-        app.start(&case.cancel, deadline()).await.unwrap();
+        let app = create("app").await.unwrap();
+        app.start(&values, &case.cancel, deadline()).await.unwrap();
 
         case.cancel.cancel();
-        let error = create("late")
-            .await
-            .expect_err("a cancelled case should create nothing more");
+        let Err(error) = create("late").await else {
+            panic!("a cancelled case should create nothing more");
+        };
         assert!(format!("{error:#}").contains("Cancelled"), "{error:#}");
     })
     .await;
@@ -278,7 +280,7 @@ impl Step for ExitsWithLine {
 
 /// A case the lifecycle ran, and what the runner made of it.
 struct Lived {
-    ran: Ran,
+    result: TestResult,
     entries: Vec<ReclaimEntry>,
     logs: tempfile::TempDir,
 }
@@ -286,7 +288,7 @@ struct Lived {
 impl Lived {
     /// How long the phase `name` of the lifecycle took.
     fn phase(&self, name: &str) -> Duration {
-        let timings = &self.ran.result.phase_timings;
+        let timings = &self.result.phase_timings;
         timings
             .iter()
             .find(|timing| timing.phase == name)
@@ -305,7 +307,9 @@ async fn run_case(config: &str, cancel_in_a_step: bool) -> Lived {
         cancel: cancel_in_a_step.then(|| cancel.clone()),
     }));
     let plan = plan_linux(config, &registry);
-    let (docker, containers) = backend().await;
+    let (docker, container_backend) = backend().await;
+    let mut backends = Backends::default();
+    backends.insert(Enclosure::LinuxContainer, Arc::new(container_backend));
     let logs = tempfile::tempdir().unwrap();
     let (ledger, record, phases) = (
         ResourceLedger::default(),
@@ -314,7 +318,7 @@ async fn run_case(config: &str, cancel_in_a_step: bool) -> Lived {
     );
     let tasks = CaseTasks::new(&cancel);
     let run = CaseRun {
-        containers: &containers,
+        backends: &backends,
         ledger: &ledger,
         tasks: &tasks,
         cancel: &cancel,
@@ -326,9 +330,9 @@ async fn run_case(config: &str, cancel_in_a_step: bool) -> Lived {
     let outcome = AssertUnwindSafe(lifecycle::run(&plan, &run)).catch_unwind().await;
     tasks.stop_all(Instant::now() + TASK_STOP_TIME).await;
     let (entries, _) = ledger.reclaim(deadline()).await;
-    let ran = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    let result = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     assert_scope_left_nothing(&docker, &entries).await;
-    Lived { ran, entries, logs }
+    Lived { result, entries, logs }
 }
 
 fn read(path: &Path) -> String {
@@ -350,7 +354,7 @@ participants:
     image: "{image}"
     command: [sh, -c, "sleep 1; echo listening; exec nc -lk -p 8080 -e true"]
     endpoints:
-      api: {tcp: 8080}
+      api: {protocol: tcp, port: 8080}
   worker:
     image: "{image}"
     command:
@@ -375,7 +379,7 @@ procedure:
   - {step: exits_with_line, on: worker, process: job, code: 3, line: done}
 "#;
     let lived = run_case(config, false).await;
-    let result = &lived.ran.result;
+    let result = &lived.result;
     assert_eq!(result.outcome, TestOutcome::Passed, "{result:?}");
     let phases: Vec<&str> = result
         .phase_timings
@@ -384,18 +388,17 @@ procedure:
         .collect();
     assert_eq!(phases, ["prepare", "create", "start", "procedure", "observe"]);
 
-    let processes = &lived.ran.processes;
+    let processes = |name: &str| &result.participants[name].processes;
     let exited = ProcessExit::Exited(ExitStatus { code: 3, signal: None });
-    assert_eq!(processes["worker"]["job"].exit, exited);
-    assert_eq!(processes["server"]["main"].exit, ProcessExit::Running);
-    let job = read(&processes["worker"]["job"].output);
+    assert_eq!(processes("worker")["job"].exit, exited);
+    assert_eq!(processes("server")["main"].exit, ProcessExit::Running);
+    let job = read(&processes("worker")["job"].output);
     assert!(job.contains("reached the server\ndone\n"), "{job}");
-    assert!(read(&processes["server"]["main"].output).contains("listening"));
+    assert!(read(&processes("server")["main"].output).contains("listening"));
     assert!(lived.logs.path().join("worker").join(CONTAINER_LOG).exists());
 
     // The case passed, so only the file kept always is left.
-    let collected: Vec<(&Path, Keep)> = lived
-        .ran
+    let collected: Vec<(&Path, Keep)> = result
         .collected
         .iter()
         .map(|file| (file.path.as_path(), file.keep))
@@ -424,7 +427,7 @@ participants:
     image: "{image}"
     command: [sh, -c, "echo going away; exit 4"]
     endpoints:
-      api: {tcp: 8080}
+      api: {protocol: tcp, port: 8080}
   client:
     image: "{image}"
     command: [sleep, "600"]
@@ -434,7 +437,7 @@ participants:
 procedure: []
 "#;
     let lived = run_case(config, false).await;
-    let result = &lived.ran.result;
+    let result = &lived.result;
     assert_eq!(result.outcome, TestOutcome::Errored, "{result:?}");
     let error = result.error.as_ref().expect("a failed start is a harness error");
     assert_eq!(error.kind, ErrorKind::Setup);
@@ -447,9 +450,9 @@ procedure: []
     assert!(lived.phase("start") < Duration::from_secs(30), "{result:?}");
 
     // The server started, so its output was captured, and the client never started.
-    let processes = &lived.ran.processes;
-    assert!(read(&processes["server"]["main"].output).contains("going away"));
-    assert!(!processes.contains_key("client"));
+    let processes = |name: &str| &result.participants[name].processes;
+    assert!(read(&processes("server")["main"].output).contains("going away"));
+    assert!(processes("client").is_empty());
     let results: Vec<ReclaimResult> = lived.entries.iter().map(|entry| entry.result).collect();
     assert_eq!(results, [ReclaimResult::Reclaimed]);
 }
@@ -469,20 +472,10 @@ procedure:
   - {step: exits_with_line, on: app, process: main, code: 0, line: never}
 "#;
     let lived = run_case(config, true).await;
-    let steps: Vec<StepStatus> = lived
-        .ran
-        .result
-        .assertion_results
-        .iter()
-        .map(|step| step.status)
-        .collect();
+    let steps: Vec<StepStatus> = lived.result.assertion_results.iter().map(|step| step.status).collect();
     assert_eq!(steps, [StepStatus::Interrupted]);
     // Well inside the step's own budget.
-    assert!(
-        lived.phase("procedure") < Duration::from_secs(10),
-        "{:?}",
-        lived.ran.result
-    );
+    assert!(lived.phase("procedure") < Duration::from_secs(10), "{:?}", lived.result);
     let results: Vec<ReclaimResult> = lived.entries.iter().map(|entry| entry.result).collect();
     assert_eq!(results, [ReclaimResult::Reclaimed]);
 }
