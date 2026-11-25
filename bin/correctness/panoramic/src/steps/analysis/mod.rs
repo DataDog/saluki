@@ -1,6 +1,7 @@
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 
+pub use self::expectations::{MetricsExpectations, TracesExpectations};
 pub use self::logs::LogsAnalysisOptions;
 use self::ratchet::KnownDifference;
 pub use self::traces::TracesOptions;
@@ -8,6 +9,7 @@ use crate::steps::intake::CollectedData;
 
 mod dogstatsd_forwarding;
 mod events;
+mod expectations;
 mod logs;
 mod metrics;
 mod ratchet;
@@ -36,8 +38,12 @@ pub enum AnalysisMode {
 
 /// Options for traces analysis. Used when `AnalysisMode` is `Traces`.
 pub struct TracesAnalysisOptions {
-    /// If true, use OTLP-direct analysis (baseline is OTel-based): skip trace stats comparison and don't require baseline SSI metadata.
+    /// If true, use OTLP-direct analysis (baseline is OTel-based): skip trace stats comparison and don't require SSI metadata.
     pub otlp_direct_analysis_mode: bool,
+
+    /// Whether each side must hold a span with Single Step Instrumentation (SSI) metadata. Has no effect in OTLP-direct
+    /// analysis, which never requires it.
+    pub require_ssi: bool,
 
     /// Additional span field paths to ignore when diffing baseline vs comparison. Merged with the built-in list.
     pub additional_span_ignore_fields: Vec<String>,
@@ -45,6 +51,22 @@ pub struct TracesAnalysisOptions {
     /// Trace statistics differences that are expected, each tagged with the gap and the issue that explain it. An
     /// entry that matches nothing fails the analysis.
     pub known_differences: Vec<KnownDifference>,
+
+    /// What each side must hold, checked before the sides are compared. An unmet expectation fails the analysis, and the
+    /// sides are still compared. A known difference never excuses an unmet expectation.
+    pub expectations: TracesExpectations,
+}
+
+impl Default for TracesAnalysisOptions {
+    fn default() -> Self {
+        Self {
+            otlp_direct_analysis_mode: false,
+            require_ssi: true,
+            additional_span_ignore_fields: Vec::new(),
+            known_differences: Vec::new(),
+            expectations: TracesExpectations::default(),
+        }
+    }
 }
 
 /// Analysis runner.
@@ -54,6 +76,7 @@ pub struct AnalysisRunner {
     comparison_data: CollectedData,
     traces_options: Option<TracesAnalysisOptions>,
     logs_options: LogsAnalysisOptions,
+    metrics_expectations: Option<MetricsExpectations>,
     require_dogstatsd_forwarded_packets: bool,
 }
 
@@ -71,6 +94,7 @@ impl AnalysisRunner {
             comparison_data,
             traces_options,
             logs_options: LogsAnalysisOptions::default(),
+            metrics_expectations: None,
             require_dogstatsd_forwarded_packets: false,
         }
     }
@@ -78,6 +102,12 @@ impl AnalysisRunner {
     /// Sets the options used when mode is `Logs`.
     pub fn with_logs_options(mut self, options: LogsAnalysisOptions) -> Self {
         self.logs_options = options;
+        self
+    }
+
+    /// Sets what each side must hold when mode is `Metrics`.
+    pub fn with_metrics_expectations(mut self, expectations: Option<MetricsExpectations>) -> Self {
+        self.metrics_expectations = expectations;
         self
     }
 
@@ -104,8 +134,12 @@ impl AnalysisRunner {
                 analyzer.run_analysis()
             }
             AnalysisMode::Metrics => {
-                let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)
-                    .map_err(|e| (e, vec![]))?;
+                let analyzer = metrics::MetricsAnalyzer::new(
+                    &self.baseline_data,
+                    &self.comparison_data,
+                    self.metrics_expectations,
+                )
+                .map_err(|e| (e, vec![]))?;
                 analyzer.run_analysis()
             }
             AnalysisMode::ServiceChecks => {
@@ -113,11 +147,7 @@ impl AnalysisRunner {
                 analyzer.run_analysis()
             }
             AnalysisMode::Traces => {
-                let opts = self.traces_options.unwrap_or(TracesAnalysisOptions {
-                    otlp_direct_analysis_mode: false,
-                    additional_span_ignore_fields: Vec::new(),
-                    known_differences: Vec::new(),
-                });
+                let opts = self.traces_options.unwrap_or_default();
                 let analyzer = traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data, opts)
                     .map_err(|e| (e, vec![]))?;
                 analyzer.run_analysis()
@@ -129,5 +159,25 @@ impl AnalysisRunner {
             self.comparison_data.dogstatsd_forwarded_packets(),
             self.require_dogstatsd_forwarded_packets,
         )
+    }
+}
+
+/// Joins the failures of an analysis into one, with each message on its own line and the details of each in order.
+///
+/// An analysis that finds more than one failure, such as an unmet expectation and a difference between the sides,
+/// reports them all.
+fn join_failures(
+    failures: impl IntoIterator<Item = Option<(GenericError, Vec<String>)>>,
+) -> Result<(), (GenericError, Vec<String>)> {
+    let mut messages = Vec::new();
+    let mut details = Vec::new();
+    for (error, more) in failures.into_iter().flatten() {
+        messages.push(error.to_string());
+        details.extend(more);
+    }
+    if messages.is_empty() {
+        Ok(())
+    } else {
+        Err((generic_error!("{}", messages.join("\n")), details))
     }
 }

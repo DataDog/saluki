@@ -337,7 +337,7 @@ template fields: `pattern` of the two log steps, `path` of `file_contains`, and 
 | `file_contains` | `on`, `path`, `pattern`, `timeout` | A file in the participant holds the text. |
 | `config_key_equals` | `on`, `key`, `value`, `view`, `timeout` | A key of the ADP configuration has the value. `view` is `source` or `runtime`. |
 | `intake_has_metric` | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match` (all optional), `timeout` | An intake holds a metric that meets every criterion. |
-| `compare` | `telemetry`, `comparison`, `baseline`, and options | The intake participants `comparison` and `baseline` hold the same telemetry. `telemetry` is `metrics`, `traces`, `logs`, `events` or `service_checks`. The options are `require_dogstatsd_forwarded_packets`, `otlp_direct_analysis_mode`, `additional_span_ignore_fields` and `traces` (traces only), and `logs` (logs only). It has no budget of its own: it has the rest of the case timeout. |
+| `compare` | `telemetry`, `comparison`, `baseline`, and options | The intake participants `comparison` and `baseline` hold the same telemetry. `telemetry` is `metrics`, `traces`, `logs`, `events` or `service_checks`. The options are `require_dogstatsd_forwarded_packets`, `metrics` (metrics only), `otlp_direct_analysis_mode`, `additional_span_ignore_fields` and `traces` (traces only), and `logs` (logs only). See [What each side must hold](#what-each-side-must-hold). It has no budget of its own: it has the rest of the case timeout. |
 | `exec` | `on`, `command`, `args` (optional), `env` (optional), `output_contains` (optional), `timeout` | Action. Runs a command in a running participant. `command` is a list, or the name of a command of the participant. |
 | `send` | `on`, `endpoint`, `payload`, `repeat` (optional, default 1), `timeout` | Action. Writes the text of `payload` to an endpoint `repeat` times, one datagram or connection each. |
 | `config_set` | `on`, `key`, `value`, `timeout` | Action. Sets a key of the runtime configuration, with the text `value`. It retries until `timeout`. |
@@ -511,3 +511,55 @@ A comparison case runs the Agent and ADP on the same load and compares what each
 
 The correctness cases have 8 or 12 minutes to run. A case with pods runs on kind: panoramic creates a missing
 cluster, with one node.
+
+### What each side must hold
+
+`compare` checks that the two intakes match. Two intakes that hold nothing, or the same unrelated records, match too.
+A case for metrics or traces says what each intake must hold, in the `metrics` or `traces` section of the step, as a
+case for logs does in `logs`. The step checks the baseline and the comparison one at a time, before it compares them.
+A failure names the side and the expectation that it leaves unmet. An unmet expectation does not stop the step from
+comparing the sides: the failure lists the unmet expectations first, and then the differences. A `metrics` section must
+set at least one field.
+
+For metrics, `metrics` takes these fields:
+
+- `min_series`: the fewest series that each side holds after the filter that removes internal telemetry. A series is a
+  metric name, tags and type.
+- `series`: a list of criteria. One series of each side must meet each criterion. A criterion has a `name`, and
+  optionally `tags`, `tags_match`, `metric_type` and `value`, as `intake_has_metric` does.
+
+For traces, `traces` takes these fields, besides `known_differences`:
+
+- `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
+- `spans`: a list of spans that each side must hold. An entry has a `service` and a `name` or a `resource`, and a span
+  of the side must match every field that the entry sets. The `name` is the operation name.
+- `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
+- `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
+  The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
+
+```yaml
+- step: compare
+  telemetry: traces
+  comparison: intake-adp
+  baseline: intake-agent
+  traces:
+    min_traces: 4
+    min_spans: 12
+    spans:
+      - {service: api-gateway, name: opentelemetry.server.request}
+      - {service: product-db, resource: SELECT * FROM products}
+    min_stats_groups: 3
+```
+
+A traces `compare` compares APM stats unless it sets `otlp_direct_analysis_mode`, which compares spans only. It
+also requires a span with Single Step Instrumentation metadata on each side, so two sides with no spans do not match.
+A case whose output carries no such metadata sets `require_ssi: false` to compare stats anyway. A `traces` section that
+sets expectations or `require_ssi: false`, on a step that compares stats, must set `min_stats_groups`. A step with
+`otlp_direct_analysis_mode` compares no stats, so it takes no `min_stats_groups`, no `require_ssi` and no
+`known_differences`.
+
+A known difference never excuses an unmet expectation. The step checks the expectations first, and it counts the groups
+that each side holds, whatever `known_differences` covers.
+
+Choose each expectation from what the fixture produces, not from what ADP sends now. In a case that drops or samples
+telemetry, name a series or span that survives. Never name one that the case drops.

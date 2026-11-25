@@ -42,7 +42,17 @@ procedure:
   - {step: process_stable_for, on: load, duration: 32s}
   # ADP sends the fixture's metrics itself, and does not proxy them to the Agent.
   - parallel:
-      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: compare
+        telemetry: metrics
+        comparison: intake-adp
+        baseline: intake-agent
+        # One series for each of the 10 data points of the fixture. Both sides keep the Kafka names of the fixture.
+        metrics:
+          min_series: 10
+          series:
+            - {name: kafka.producer.request-rate}
+            - {name: kafka.producer.byte-rate}
+            - {name: kafka.purgatory.size}
       - step: intake_from
         on: intake-adp
         telemetry: metrics

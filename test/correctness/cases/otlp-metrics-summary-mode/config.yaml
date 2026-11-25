@@ -42,7 +42,16 @@ procedure:
   - {step: process_stable_for, on: load, duration: 32s}
   # ADP sends the fixture's metrics itself, and does not proxy them to the Agent.
   - parallel:
-      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: compare
+        telemetry: metrics
+        comparison: intake-adp
+        baseline: intake-agent
+        # The first point primes the counters. The values are the differences of the two points.
+        metrics:
+          min_series: 2
+          series:
+            - {name: otlp.summary.quantiles.count, metric_type: count, value: 15}
+            - {name: otlp.summary.quantiles.sum, metric_type: count, value: 160}
       - step: intake_from
         on: intake-adp
         telemetry: metrics

@@ -42,7 +42,15 @@ procedure:
   - {step: process_stable_for, on: load, duration: 32s}
   # ADP sends the fixture's metrics itself, and does not proxy them to the Agent.
   - parallel:
-      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: compare
+        telemetry: metrics
+        comparison: intake-adp
+        baseline: intake-agent
+        metrics:
+          min_series: 2
+          series:
+            - {name: otlphost.metric, tags: ["correctness:configured", "host:correctness-testing"]}
+            - {name: otlphost.metric, tags: ["correctness:configured", "host:custom"]}
       - step: intake_from
         on: intake-adp
         telemetry: metrics

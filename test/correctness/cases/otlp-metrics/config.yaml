@@ -50,7 +50,18 @@ procedure:
   - {step: process_stable_for, on: load, duration: 32s}
   # ADP sends the control gauges itself, and does not proxy them to the Agent.
   - parallel:
-      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: compare
+        telemetry: metrics
+        comparison: intake-adp
+        baseline: intake-agent
+        # The random load has no known names, so `min_series` is a floor under the about 980 series that its seed gives. The
+        # control gauges have known names and values.
+        metrics:
+          min_series: 900
+          series:
+            - {name: otlpprobe.ctl.a, metric_type: gauge, value: 1}
+            - {name: otlpprobe.ctl.b, metric_type: gauge, value: 2}
+            - {name: otlpprobe.ctl.c, metric_type: gauge, value: 3}
       - step: intake_from
         on: intake-adp
         telemetry: metrics
