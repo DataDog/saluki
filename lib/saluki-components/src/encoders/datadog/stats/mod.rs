@@ -43,7 +43,11 @@ use crate::common::datadog::{
 };
 use crate::config::AgentEnv;
 
-const MAX_STATS_PER_PAYLOAD: usize = 4000;
+/// The most `TraceStats` in one request.
+///
+/// Each `TraceStats` encodes as one `StatsPayload`. Like the Agent, we send one `StatsPayload` per request: a reader
+/// decodes one MessagePack value from the body and ignores the rest.
+const MAX_STATS_PER_PAYLOAD: usize = 1;
 static CONTENT_TYPE_MSGPACK: HeaderValue = HeaderValue::from_static("application/msgpack");
 
 /// Configuration for the Datadog APM Stats encoder.
@@ -522,8 +526,13 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
 #[cfg(test)]
 mod tests {
+    use async_compression::tokio::bufread::GzipDecoder;
+    use http_body_util::BodyExt as _;
+    use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::data_model::event::Event;
     use saluki_metrics::test::TestRecorder;
+    use serde::Deserialize as _;
+    use tokio::io::AsyncReadExt as _;
 
     use super::*;
 
@@ -596,6 +605,79 @@ mod tests {
         );
     }
 
+    /// Builds one `TraceStats` with `groups` groups, named by the piece and their number.
+    fn split_piece(piece: usize, groups: usize) -> TraceStats {
+        let stats = (0..groups)
+            .map(|group| ClientGroupedStats::new("svc", "op", format!("piece-{piece}-group-{group}")))
+            .collect();
+        let payload = ClientStatsPayload::new("host", "env", "1.0.0").with_stats(vec![ClientStatsBucket::new(
+            1000,
+            10_000_000_000,
+            stats,
+        )]);
+        TraceStats::new(vec![payload]).with_split_payload(true)
+    }
+
+    // The Agent sends each `StatsPayload` of a split flush in its own request:
+    // https://github.com/DataDog/datadog-agent/blob/92824ec3d3f4a4c5b0926452999a39df5b4eb850/pkg/trace/writer/stats.go#L245-L265
+    #[tokio::test]
+    async fn every_group_decodes_from_the_request_that_carries_it() {
+        const PIECES: usize = 3;
+        const GROUPS_PER_PIECE: usize = 2;
+
+        let config = DatadogApmStatsEncoderConfiguration::new(
+            Duration::from_millis(10),
+            AgentEnv::resolve(None, Some("prod"), &[], &[]),
+        );
+        let (encoder, mut payloads) = TestComponentDriver::encoder(config)
+            .await
+            .expect("stats encoder should build");
+        // The pieces of one split flush reach the encoder together.
+        encoder
+            .send_events((0..PIECES).map(|piece| Event::TraceStats(split_piece(piece, GROUPS_PER_PIECE))))
+            .await;
+        encoder.shutdown().await.expect("stats encoder should stop cleanly");
+
+        let mut resources = Vec::new();
+        for payload in payloads.collect().await {
+            let (_, request) = payload
+                .try_into_http_payload()
+                .expect("stats are sent over HTTP")
+                .into_parts();
+            let compressed = request
+                .into_body()
+                .collect()
+                .await
+                .expect("body should collect")
+                .to_bytes();
+            let mut body = Vec::new();
+            GzipDecoder::new(compressed.as_ref())
+                .read_to_end(&mut body)
+                .await
+                .expect("body should decompress");
+
+            let mut remaining = body.as_slice();
+            let decoded = ProtoStatsPayload::deserialize(&mut rmp_serde::Deserializer::new(&mut remaining))
+                .expect("body should hold a StatsPayload");
+            assert!(
+                remaining.is_empty(),
+                "the request holds {} bytes after its first StatsPayload",
+                remaining.len()
+            );
+            for client in decoded.stats() {
+                for bucket in client.stats() {
+                    resources.extend(bucket.stats().iter().map(|group| group.resource().to_string()));
+                }
+            }
+        }
+
+        resources.sort();
+        let expected = (0..PIECES)
+            .flat_map(|piece| (0..GROUPS_PER_PIECE).map(move |group| format!("piece-{piece}-group-{group}")))
+            .collect::<Vec<_>>();
+        assert_eq!(resources, expected);
+    }
+
     #[tokio::test]
     async fn request_builder_tracks_written_stats_and_uncompressed_bytes() {
         let recorder = TestRecorder::default();
@@ -611,7 +693,7 @@ mod tests {
             TraceStats::new(vec![make_client_payload(&[4])]),
         ];
 
-        // Without compression or framing, the payload before compression is all stats encoded back to back.
+        // Without compression or framing, the payloads before compression add up to all stats encoded.
         let expected_uncompressed_len = all_stats
             .iter()
             .map(|stats| {
@@ -624,13 +706,14 @@ mod tests {
             })
             .sum::<u64>();
 
-        let request_builder = RequestBuilder::new(
+        let mut request_builder = RequestBuilder::new(
             config.endpoint_encoder(),
             CompressionScheme::noop(),
             RB_BUFFER_CHUNK_SIZE,
         )
         .await
         .expect("request builder should be created");
+        request_builder.with_max_inputs_per_payload(MAX_STATS_PER_PAYLOAD);
         let (events_tx, events_rx) = mpsc::channel(1);
         let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
 
@@ -656,7 +739,7 @@ mod tests {
         while payloads_rx.recv().await.is_some() {
             payloads += 1;
         }
-        assert_eq!(payloads, 1);
+        assert_eq!(payloads, 2);
 
         assert_eq!(
             recorder.counter("component_stats_client_payloads_encoded_total"),

@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Fix APM stats being lost when one flush has more than 4000 stats groups. Agent Data Plane now sends each APM stats
+    payload in its own request, as the Datadog Agent does. Before, it sent all payloads of such a flush in one request,
+    and only the first payload was read.
