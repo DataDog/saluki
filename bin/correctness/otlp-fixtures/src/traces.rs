@@ -98,7 +98,8 @@ struct ProbeSpan {
     trace_state: &'static str,
     error: bool,
 
-    /// The start of the span, in nanoseconds. A span with none starts a step after the span before it.
+    /// The start of the span, in nanoseconds. A span without one starts at the base time plus one step for each span
+    /// before it in its trace.
     start: Option<u64>,
 
     /// The duration of the span, in nanoseconds.
