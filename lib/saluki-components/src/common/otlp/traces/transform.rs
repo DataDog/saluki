@@ -1584,12 +1584,10 @@ fn get_otel_resource_v2(
 
     if get_both_string_attribute(span_attributes, resource_attributes, DB_SYSTEM_KEY).is_some() {
         if let Some(statement) = get_both_string_attribute(span_attributes, resource_attributes, DB_STATEMENT_KEY) {
-            normalize_tag_value_into_unchecked(statement, string_builder);
-            return string_builder.to_meta_string();
+            return MetaString::from(statement);
         }
         if let Some(query) = get_both_string_attribute(span_attributes, resource_attributes, DB_QUERY_TEXT_KEY) {
-            normalize_tag_value_into_unchecked(query, string_builder);
-            return string_builder.to_meta_string();
+            return MetaString::from(query);
         }
     }
 
@@ -3761,11 +3759,11 @@ mod tests {
                 expected: "GetObject S3",
             },
             Case {
-                name: "database statement is normalized",
+                name: "database statement preserves SQL syntax for obfuscation",
                 kind: SpanKind::Client,
                 span_name: "span-name",
                 attrs: vec![kv_str("db.system", "postgresql"), kv_str("db.statement", "SELECT 1")],
-                expected: "select_1",
+                expected: "SELECT 1",
             },
             Case {
                 name: "falls back to span name",
@@ -3972,7 +3970,7 @@ mod tests {
         // No service attribute => documented default service name.
         assert_eq!(dd_span.service(), "otlpresourcenoservicename");
         assert_eq!(dd_span.name(), "postgresql.query");
-        assert_eq!(dd_span.resource(), "select_1");
+        assert_eq!(dd_span.resource(), "SELECT 1");
         assert_eq!(dd_span.span_type(), "sql");
         assert_eq!(dd_span.error(), 1);
         assert_eq!(

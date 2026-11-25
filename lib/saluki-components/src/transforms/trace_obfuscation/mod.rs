@@ -15,24 +15,29 @@ use libdd_trace_obfuscation::{
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},
-    data_model::event::trace::Trace,
+    data_model::event::trace::{AttributeValue, AttributeValueExt, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
+use stringtheory::MetaString;
 
 /// Trace obfuscation configuration.
 pub struct TraceObfuscationConfiguration {
     config: ObfuscationConfig,
+    sql_dialect: MetaString,
 }
 
 impl TraceObfuscationConfiguration {
     /// Creates a new `TraceObfuscationConfiguration` from the obfuscation settings.
     ///
     /// This transform never applies tag replacement rules: `TraceTagReplacerConfiguration` owns them, so any rules in
-    /// `config` are ignored.
-    pub fn new(mut config: ObfuscationConfig) -> Self {
+    /// `config` are ignored. `sql_dialect` supplies the dialect when a span has no per-span hint.
+    pub fn new(mut config: ObfuscationConfig, sql_dialect: String) -> Self {
         config.tag_replace_rules.clear();
-        Self { config }
+        Self {
+            config,
+            sql_dialect: sql_dialect.into(),
+        }
     }
 }
 
@@ -41,6 +46,7 @@ impl SynchronousTransformBuilder for TraceObfuscationConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(TraceObfuscation {
             config: self.config.clone(),
+            sql_dialect: self.sql_dialect.clone(),
         }))
     }
 }
@@ -56,12 +62,33 @@ impl MemoryBounds for TraceObfuscationConfiguration {
 /// The obfuscation transform that processes traces.
 pub struct TraceObfuscation {
     config: ObfuscationConfig,
+    sql_dialect: MetaString,
 }
 
 impl TraceObfuscation {
     fn obfuscate_trace(&self, trace: &mut Trace) {
         for span in trace.spans_mut() {
+            // The shared SQL obfuscator reads `db.type`. Supply the OTLP hint or configured fallback only for this call.
+            let dialect = if matches!(span.span_type(), "sql" | "cassandra") && !span.attributes.contains_key("db.type")
+            {
+                span.attributes
+                    .get("db.system")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|hint| !hint.is_empty())
+                    .cloned()
+                    .or_else(|| (!self.sql_dialect.is_empty()).then(|| self.sql_dialect.clone()))
+            } else {
+                None
+            };
+            let temporary_hint = dialect.is_some();
+            if let Some(dialect) = dialect {
+                span.attributes
+                    .insert("db.type".into(), AttributeValue::String(dialect));
+            }
             obfuscate_span(span, &self.config);
+            if temporary_hint {
+                span.attributes.remove("db.type");
+            }
         }
 
         // Attributes shared by every span of the trace are scrubbed too, since they are merged into each span when the
@@ -91,12 +118,15 @@ mod tests {
     use super::*;
 
     fn transform(config: ObfuscationConfig) -> TraceObfuscation {
-        TraceObfuscationConfiguration::new(config).into_transform()
+        TraceObfuscationConfiguration::new(config, String::new()).into_transform()
     }
 
     impl TraceObfuscationConfiguration {
         fn into_transform(self) -> TraceObfuscation {
-            TraceObfuscation { config: self.config }
+            TraceObfuscation {
+                config: self.config,
+                sql_dialect: self.sql_dialect,
+            }
         }
     }
 
@@ -141,6 +171,36 @@ mod tests {
         let span = obfuscate(ObfuscationConfig::default(), span);
 
         assert_eq!(span.resource(), "SELECT * FROM users WHERE id = ?");
+    }
+
+    #[test]
+    fn sql_dialect_prefers_native_then_otlp_then_configured_hints() {
+        for (pairs, fallback, expected) in [
+            (vec![], "postgresql", "SELECT doc #>> ? FROM t"),
+            (vec![("db.system", "postgresql")], "mysql", "SELECT doc #>> ? FROM t"),
+            (
+                vec![("db.type", "postgresql"), ("db.system", "mysql")],
+                "mysql",
+                "SELECT doc #>> ? FROM t",
+            ),
+            (vec![("db.type", "mysql")], "postgresql", "SELECT doc"),
+        ] {
+            let span = Span::new("svc", "query", "SELECT doc #>> '{a,b}' FROM t", "sql", 1, 0, 0, 0, 0)
+                .with_attributes(attributes(&pairs));
+            let original = span.attributes.clone();
+            let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+            TraceObfuscationConfiguration::new(ObfuscationConfig::default(), fallback.into())
+                .into_transform()
+                .obfuscate_trace(&mut trace);
+            assert_eq!(trace.spans()[0].resource(), expected, "{pairs:?}, fallback {fallback}");
+            for key in ["db.type", "db.system"] {
+                assert_eq!(
+                    trace.spans()[0].attributes.get(key),
+                    original.get(key),
+                    "dialect tag {key}"
+                );
+            }
+        }
     }
 
     #[test]

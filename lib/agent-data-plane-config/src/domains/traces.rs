@@ -421,6 +421,9 @@ pub enum SqlObfuscationMode {
     #[default]
     Default,
 
+    /// The legacy obfuscator after an invalid mode, regardless of the `sqllexer` feature.
+    Legacy,
+
     /// Obfuscate the query with the `sqllexer` obfuscator (`obfuscate_only`).
     ObfuscateOnly,
 
@@ -436,7 +439,7 @@ impl SqlObfuscationMode {
     /// Returns the mode's configuration value: empty for the default obfuscator.
     pub fn as_str(&self) -> &'static str {
         match self {
-            SqlObfuscationMode::Default => "",
+            SqlObfuscationMode::Default | SqlObfuscationMode::Legacy => "",
             SqlObfuscationMode::ObfuscateOnly => "obfuscate_only",
             SqlObfuscationMode::NormalizeOnly => "normalize_only",
             SqlObfuscationMode::ObfuscateAndNormalize => "obfuscate_and_normalize",

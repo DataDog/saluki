@@ -128,13 +128,6 @@ pub(crate) fn obfuscation_configuration(traces: &traces::Domain) -> ObfuscationC
         ..SqlConfig::default()
     };
 
-    // The DBMS is read from each span, and table names can't be collected yet.
-    if !obfuscation.sql.dbms.is_empty() {
-        warn!(
-            config_key = "apm_config.obfuscation.sql.dbms",
-            "Ignoring the configured SQL dialect: the SQL obfuscator reads it from each span's `db.system` attribute."
-        );
-    }
     if obfuscation.sql.table_names {
         warn!(
             config_key = "apm_config.obfuscation.sql.table_names",
@@ -194,7 +187,7 @@ fn sql_obfuscation_mode(configured: traces::SqlObfuscationMode, sqllexer: bool) 
         traces::SqlObfuscationMode::NormalizeOnly => SqlObfuscationMode::NormalizeOnly,
         traces::SqlObfuscationMode::ObfuscateAndNormalize => SqlObfuscationMode::ObfuscateAndNormalize,
         traces::SqlObfuscationMode::Default if sqllexer => SqlObfuscationMode::ObfuscateOnly,
-        traces::SqlObfuscationMode::Default => SqlObfuscationMode::Unspecified,
+        traces::SqlObfuscationMode::Default | traces::SqlObfuscationMode::Legacy => SqlObfuscationMode::Unspecified,
     }
 }
 
@@ -507,6 +500,8 @@ mod tests {
         #[allow(deprecated)]
         let unspecified = SqlObfuscationMode::Unspecified;
         assert_eq!(unspecified, mode(traces::SqlObfuscationMode::Default, false));
+        assert_eq!(unspecified, mode(traces::SqlObfuscationMode::Legacy, true));
+        assert_eq!(unspecified, mode(traces::SqlObfuscationMode::Legacy, false));
     }
 
     #[test]

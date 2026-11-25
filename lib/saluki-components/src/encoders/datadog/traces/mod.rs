@@ -1523,6 +1523,128 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn otlp_sql_and_promoted_tags_survive_obfuscation_replacement_and_encoding() {
+        use std::num::NonZeroUsize;
+
+        use datadog_agent_apm::semantics::EMBEDDED_REGISTRY;
+        use libdd_trace_obfuscation::obfuscation_config::ObfuscationConfig;
+        use otlp_protos::opentelemetry::proto::{
+            common::v1::{any_value::Value, AnyValue, KeyValue},
+            resource::v1::Resource,
+            trace::v1::{span::SpanKind, Span as OtlpSpan},
+        };
+        use saluki_common::strings::StringBuilder;
+        use saluki_core::{
+            components::{transforms::SynchronousTransformBuilder, BuildContext},
+            topology::EventsBuffer,
+        };
+        use stringtheory::interning::GenericMapInterner;
+
+        use crate::common::otlp::traces::transform::{otel_span_to_dd_span, SpanConversion, SpanNaming};
+        use crate::transforms::{ReplaceRule, TraceObfuscationConfiguration, TraceTagReplacerConfiguration};
+
+        let conversion = SpanConversion {
+            ignore_missing_fields: false,
+            compute_top_level_by_span_kind: true,
+            max_resource_len: 5000,
+            naming: SpanNaming::V2,
+            emit_otel_scope: true,
+        };
+        let interner = GenericMapInterner::new(NonZeroUsize::new(65536).unwrap());
+        let mut strings = StringBuilder::new().with_interner(interner.clone());
+        let mut obfuscator = TraceObfuscationConfiguration::new(ObfuscationConfig::default(), "mysql".into())
+            .build(BuildContext::test_transform("obfuscate"))
+            .await
+            .unwrap();
+        let rules = [
+            ("component", "private", "redacted"),
+            ("version", "private", "redacted"),
+            ("span.kind", "client", "server"),
+            ("*", "redacted", "redacted+"),
+        ]
+        .into_iter()
+        .map(|(name, pattern, repl)| ReplaceRule {
+            name: name.into(),
+            pattern: pattern.into(),
+            repl: repl.into(),
+        })
+        .collect();
+        let mut replacer = TraceTagReplacerConfiguration::new(rules, false)
+            .build(BuildContext::test_transform("replace"))
+            .await
+            .unwrap();
+        let kv = |key: &str, value: &str| KeyValue {
+            key: key.into(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.into())),
+            }),
+        };
+
+        for (key, query, resource, expected) in [
+            ("db.statement", "SELECT 42", None, "SELECT ?"),
+            ("db.query.text", "SELECT 42", None, "SELECT ?"),
+            (
+                "db.statement",
+                "SELECT doc #>> '{a,b}' FROM t",
+                None,
+                "SELECT doc #>> ? FROM t",
+            ),
+            ("db.statement", "SELECT 42", Some("custom_resource"), "custom_resource"),
+        ] {
+            let mut attributes = vec![
+                kv("db.system", "postgresql"),
+                kv(key, query),
+                kv("component", "private"),
+                kv("service.version", "private"),
+            ];
+            if let Some(resource) = resource {
+                attributes.push(kv("datadog.resource", resource));
+            }
+            let otlp = OtlpSpan {
+                name: "query".into(),
+                kind: SpanKind::Client as i32,
+                attributes,
+                ..Default::default()
+            };
+            let span = otel_span_to_dd_span(
+                &otlp,
+                &Resource::default(),
+                None,
+                &conversion,
+                &EMBEDDED_REGISTRY,
+                &interner,
+                &mut strings,
+                None,
+            );
+            let mut events = EventsBuffer::default();
+            assert!(events
+                .try_push(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+                .is_none());
+            obfuscator.transform_buffer(&mut events);
+            replacer.transform_buffer(&mut events);
+            let trace = events.events::<Trace>().next().unwrap();
+            assert!(
+                !trace.spans()[0].attributes.contains_key("db.type"),
+                "temporary dialect hint must not leak"
+            );
+            let mut bytes = Vec::new();
+            make_encoder(false).encode(trace, &mut bytes).unwrap();
+            let payload = AgentPayload::parse_from_bytes(&bytes).unwrap();
+            let tracer = &payload.idxTracerPayloads[0];
+            let span = &tracer.chunks()[0].spans()[0];
+            assert_eq!(
+                resolve_ref(tracer.strings(), span.resourceRef()),
+                expected,
+                "{key}: {query}"
+            );
+            let attrs = string_attrs(span.attributes(), tracer.strings());
+            assert_eq!(attrs.get("component").map(String::as_str), Some("redacted+"));
+            assert_eq!(attrs.get("version").map(String::as_str), Some("redacted+"));
+            assert_eq!(attrs.get("span.kind").map(String::as_str), Some("server"));
+        }
+    }
+
     /// Translates a single-span `ResourceSpans` with the given resource attributes, encodes the trace, and returns
     /// the decoded string-valued tracer payload attributes and span attributes.
     fn encode_translated_trace(

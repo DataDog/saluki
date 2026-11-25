@@ -869,7 +869,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
                 config_key = "apm_config.sql_obfuscation_mode",
                 "{error}; falling back to the default obfuscator."
             );
-            SqlObfuscationMode::Default
+            SqlObfuscationMode::Legacy
         });
     }
 
@@ -2949,8 +2949,20 @@ mod tests {
 
     #[test]
     fn an_unknown_sql_obfuscation_mode_falls_back_to_the_default_obfuscator() {
-        let (config, errors) = translate_explicit(json!({ "apm_config": { "sql_obfuscation_mode": "obfuscate" } }));
+        for features in [json!([]), json!(["sqllexer"])] {
+            let (config, errors) = translate_explicit(json!({
+                "apm_config": { "sql_obfuscation_mode": "typo", "features": features }
+            }));
+            assert!(errors.is_none());
+            assert_eq!(
+                config.domains.traces.obfuscation.sql_obfuscation_mode,
+                SqlObfuscationMode::Legacy
+            );
+        }
 
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "sql_obfuscation_mode": "", "features": ["sqllexer"] }
+        }));
         assert!(errors.is_none());
         assert_eq!(
             config.domains.traces.obfuscation.sql_obfuscation_mode,

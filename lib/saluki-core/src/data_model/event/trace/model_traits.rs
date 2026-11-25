@@ -10,9 +10,9 @@
 //!
 //! # Promoted tags
 //!
-//! The traits expect these tags to live only in their dedicated fields, never in the attribute map: `env`, `version`,
-//! `component` and `span.kind` on spans, and the origin, sampling priority and sampling mechanism on traces. The
-//! attribute getters and setters implemented here never touch those fields.
+//! The span traits expose `env`, `version`, `component` and `span.kind` through dedicated accessors.
+//! Those accessors also reach values stored in the attribute map. The attribute traits hide these tags, so each
+//! replacement rule visits them once. Trace origin, sampling priority and sampling mechanism use their fields.
 
 use std::sync::Arc;
 
@@ -213,63 +213,99 @@ fn i64_of(m: &AttrMap, k: &str) -> Option<i64> {
 }
 
 macro_rules! impl_attributes {
-    ($ty:ty, |$s:ident| $map:expr, |$m:ident| $map_mut:expr) => {
+    ($ty:ty, $excluded:expr, |$s:ident| $map:expr, |$m:ident| $map_mut:expr) => {
         impl model::Attributes for $ty {
             type Text = MetaString;
             type Bytes = Vec<u8>;
             type Values = SalukiValues;
             fn attribute_str(&self, key: &str) -> Option<&str> {
                 let $s = self;
-                str_of($map, key)
+                if $excluded.contains(&key) {
+                    None
+                } else {
+                    str_of($map, key)
+                }
             }
             fn attribute_f64(&self, key: &str) -> Option<f64> {
                 let $s = self;
-                f64_of($map, key)
+                if $excluded.contains(&key) {
+                    None
+                } else {
+                    f64_of($map, key)
+                }
             }
             fn attribute_i64(&self, key: &str) -> Option<i64> {
                 let $s = self;
-                i64_of($map, key)
+                if $excluded.contains(&key) {
+                    None
+                } else {
+                    i64_of($map, key)
+                }
             }
             fn has_attribute(&self, key: &str) -> bool {
                 let $s = self;
-                $map.contains_key(key)
+                !$excluded.contains(&key) && $map.contains_key(key)
             }
         }
         impl model::AttributesIter for $ty {
             fn attributes(&self) -> impl Iterator<Item = (&str, AttributeRef<'_, SalukiValues>)> {
                 let $s = self;
-                $map.iter().map(|(k, v)| (k.as_ref(), AttributeRef::from(v)))
+                $map.iter()
+                    .filter(|(k, _)| !$excluded.contains(&k.as_ref()))
+                    .map(|(k, v)| (k.as_ref(), AttributeRef::from(v)))
             }
         }
         impl model::AttributesMut for $ty {
             fn retain_attributes(&mut self, mut f: impl FnMut(&str, &mut AttributeValue) -> bool) {
                 let $m = self;
-                $map_mut.retain(|k, v| f(k.as_ref(), v));
+                $map_mut.retain(|k, v| $excluded.contains(&k.as_ref()) || f(k.as_ref(), v));
             }
             fn attribute_mut(&mut self, key: &str) -> Option<&mut AttributeValue> {
                 let $m = self;
-                $map_mut.get_mut(key)
+                if $excluded.contains(&key) {
+                    None
+                } else {
+                    $map_mut.get_mut(key)
+                }
             }
             fn set_attribute(&mut self, key: MetaString, value: AttributeValue) {
                 let $m = self;
-                $map_mut.insert(key, value);
+                if !$excluded.contains(&key.as_ref()) {
+                    $map_mut.insert(key, value);
+                }
             }
             fn remove_attribute(&mut self, key: &str) -> Option<AttributeValue> {
                 let $m = self;
-                $map_mut.remove(key)
+                if $excluded.contains(&key) {
+                    None
+                } else {
+                    $map_mut.remove(key)
+                }
             }
         }
     };
 }
 
-impl_attributes!(Span, |s| &s.attributes, |m| &mut m.attributes);
-impl_attributes!(SpanEvent, |s| &s.attributes, |m| &mut m.attributes);
-impl_attributes!(SpanLink, |s| &s.attributes, |m| &mut m.attributes);
+impl_attributes!(Span, model::PROMOTED_SPAN_TAGS, |s| &s.attributes, |m| &mut m
+    .attributes);
+impl_attributes!(SpanEvent, [], |s| &s.attributes, |m| &mut m.attributes);
+impl_attributes!(SpanLink, [], |s| &s.attributes, |m| &mut m.attributes);
 // Trace-level attributes are behind an `Arc`: every write is copy-on-write.
-impl_attributes!(Trace, |s| &*s.attributes, |m| Arc::make_mut(&mut m.attributes));
+impl_attributes!(Trace, [], |s| &*s.attributes, |m| Arc::make_mut(&mut m.attributes));
 
 fn non_empty(s: &MetaString) -> Option<&str> {
     (!s.is_empty()).then_some(s.as_ref())
+}
+
+/// Updates the stored tag and keeps an existing dedicated field consistent with it.
+fn set_promoted_text(field: &mut MetaString, attributes: &mut AttrMap, key: &str, value: MetaString) {
+    if let Some(attribute) = attributes.get_mut(key) {
+        *attribute = AttributeValue::String(value.clone());
+        if field.is_empty() {
+            return;
+        }
+    }
+    *field = value;
 }
 
 fn start_to_i64(value: u64) -> i64 {
@@ -361,16 +397,16 @@ impl model::Span for Span {
         self.error != 0
     }
     fn span_kind(&self) -> Option<&str> {
-        span_kind_name(self.kind)
+        span_kind_name(self.kind).or_else(|| str_of(&self.attributes, "span.kind").filter(|value| !value.is_empty()))
     }
     fn env(&self) -> Option<&str> {
-        non_empty(&self.env)
+        non_empty(&self.env).or_else(|| str_of(&self.attributes, "env").filter(|value| !value.is_empty()))
     }
     fn version(&self) -> Option<&str> {
-        non_empty(&self.version)
+        non_empty(&self.version).or_else(|| str_of(&self.attributes, "version").filter(|value| !value.is_empty()))
     }
     fn component(&self) -> Option<&str> {
-        non_empty(&self.component)
+        non_empty(&self.component).or_else(|| str_of(&self.attributes, "component").filter(|value| !value.is_empty()))
     }
     fn span_events(&self) -> impl Iterator<Item = &SpanEvent> {
         self.span_events.iter()
@@ -406,16 +442,25 @@ impl model::SpanMut for Span {
         self.error = i32::from(value);
     }
     fn set_span_kind(&mut self, value: &str) {
-        self.kind = span_kind_from_name(value);
+        let kind = span_kind_from_name(value);
+        if kind == 0 {
+            self.attributes.remove("span.kind");
+        } else if let Some(attribute) = self.attributes.get_mut("span.kind") {
+            *attribute = AttributeValue::String(value.to_owned().into());
+            if self.kind == 0 {
+                return;
+            }
+        }
+        self.kind = kind;
     }
     fn set_env(&mut self, value: MetaString) {
-        self.env = value;
+        set_promoted_text(&mut self.env, &mut self.attributes, "env", value);
     }
     fn set_version(&mut self, value: MetaString) {
-        self.version = value;
+        set_promoted_text(&mut self.version, &mut self.attributes, "version", value);
     }
     fn set_component(&mut self, value: MetaString) {
-        self.component = value;
+        set_promoted_text(&mut self.component, &mut self.attributes, "component", value);
     }
     fn span_events_mut(&mut self) -> impl Iterator<Item = &mut SpanEvent> {
         self.span_events.iter_mut()
@@ -558,6 +603,37 @@ mod tests {
 
         // The compat view is what bridges the two.
         assert_eq!(span.compat().attribute_str("env"), Some("staging"));
+    }
+
+    #[test]
+    fn map_backed_promoted_tags_use_the_dedicated_trait_view() {
+        let mut span = Span::default().with_attributes(FastHashMap::from_iter([
+            ("env".into(), string("prod")),
+            ("version".into(), string("private")),
+            ("component".into(), string("private")),
+            ("span.kind".into(), string("client")),
+        ]));
+        assert_eq!(span.env(), Some("prod"));
+        assert_eq!(span.version(), Some("private"));
+        assert_eq!(span.component(), Some("private"));
+        assert_eq!(span.span_kind(), Some("client"));
+        assert_eq!(span.attributes().count(), 0);
+        for key in model::PROMOTED_SPAN_TAGS {
+            assert!(!span.has_attribute(key));
+            assert!(span.attribute_str(key).is_none());
+            assert!(span.attribute_mut(key).is_none());
+        }
+        span.retain_attributes(|_, _| panic!("promoted tags use their own setters"));
+
+        model::SpanMut::set_component(&mut span, "redacted".into());
+        model::SpanMut::set_version(&mut span, "redacted".into());
+        model::SpanMut::set_span_kind(&mut span, "server");
+        assert_eq!(span.attributes.get("component"), Some(&string("redacted")));
+        assert_eq!(span.attributes.get("version"), Some(&string("redacted")));
+        assert_eq!(span.attributes.get("span.kind"), Some(&string("server")));
+        model::SpanMut::set_span_kind(&mut span, "redacted");
+        assert_eq!(span.span_kind(), None);
+        assert!(!span.attributes.contains_key("span.kind"));
     }
 
     #[test]

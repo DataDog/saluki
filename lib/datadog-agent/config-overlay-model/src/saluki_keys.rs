@@ -258,8 +258,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         description: "SQL obfuscation DBMS dialect",
         default: "",
         documentation: Some(
-            "ADP ignores this key and logs a warning when it is set. The SQL obfuscator reads the DBMS from each \
-             span's `db.system` attribute.",
+            "SQL dialect to use when a span has neither `db.type` nor `db.system`. Per-span hints take precedence.",
         ),
     },
     SalukiKey {

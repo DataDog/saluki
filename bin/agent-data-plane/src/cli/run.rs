@@ -613,8 +613,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         trace_sampling.unwrap_or_default(),
     );
 
-    let trace_obfuscation_config =
-        TraceObfuscationConfiguration::new(obfuscation_configuration(&config.domains.traces));
+    let trace_obfuscation_config = TraceObfuscationConfiguration::new(
+        obfuscation_configuration(&config.domains.traces),
+        config.domains.traces.obfuscation.sql.dbms.clone(),
+    );
     let trace_tag_replacer_config = trace_tag_replacer_configuration(&config.domains.traces);
 
     let ottl_filter = &config.domains.traces.ottl_filter;
