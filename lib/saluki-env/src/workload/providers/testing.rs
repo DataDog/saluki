@@ -55,8 +55,8 @@ impl EntityTags {
 ///
 /// Entities are seeded with per-cardinality tags and looked up cumulatively, matching the behavior of the live
 /// workload provider. Entity aliases work as in the live tag store: a tag lookup for an aliased entity reads the tags of
-/// its target, and an alias from a cgroup inode to a container resolves through
-/// [`get_container_entity_for_inode`][WorkloadProvider::get_container_entity_for_inode].
+/// its target, and an alias to a container resolves through
+/// [`get_aliased_container_entity`][WorkloadProvider::get_aliased_container_entity].
 ///
 /// [`get_resolved_origin`][WorkloadProvider::get_resolved_origin] resolves the raw origin's process ID, Local Data, and
 /// pod UID into entity IDs with the rules of the production resolver. It resolves External Data from the entries that
@@ -177,9 +177,9 @@ impl WorkloadProvider for TestWorkloadProvider {
         ))
     }
 
-    fn get_container_entity_for_inode(&self, inode: u64) -> Option<EntityId> {
+    fn get_aliased_container_entity(&self, entity_id: &EntityId) -> Option<EntityId> {
         self.aliases
-            .get(&EntityId::ContainerInode(inode))
+            .get(entity_id)
             .filter(|entity_id| matches!(entity_id, EntityId::Container(_)))
             .cloned()
     }

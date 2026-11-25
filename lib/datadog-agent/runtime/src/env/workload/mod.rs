@@ -251,10 +251,10 @@ impl WorkloadProvider for RemoteAgentWorkloadProvider {
         self.origin_resolver.get_resolved_origin(origin)
     }
 
-    fn get_container_entity_for_inode(&self, inode: u64) -> Option<EntityId> {
-        // The cgroups collector aliases each container cgroup inode to its container.
+    fn get_aliased_container_entity(&self, entity_id: &EntityId) -> Option<EntityId> {
+        // The containerd collector aliases container process IDs, and the cgroups collector aliases cgroup inodes.
         self.tags_querier
-            .get_entity_alias(&EntityId::ContainerInode(inode))
+            .get_entity_alias(entity_id)
             .filter(|entity_id| matches!(entity_id, EntityId::Container(_)))
     }
 }

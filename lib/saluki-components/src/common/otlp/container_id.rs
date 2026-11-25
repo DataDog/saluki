@@ -8,6 +8,12 @@
 //! 2. the cgroup inode
 //! 3. the pod UID and the container name, as External Data
 //!
+//! The Agent asks its container runtime collectors and procfs for the container of a process ID, in an order that
+//! depends on the deployment. This lookup asks the workload provider first, which knows the processes of containerd
+//! containers, and then procfs. The order matches the tag lookup of process IDs in the workload provider. It also makes
+//! a container that the workload provider tracks win over a cached procfs result, which stays cached while it's in
+//! use and can be stale after the process ID is reused.
+//!
 //! The Agent's first step reads a container ID from Local Data. OTLP origin information never carries one, so the
 //! lookup starts at the process ID.
 //!
@@ -67,7 +73,7 @@ pub struct ContainerIdResolver {
 impl ContainerIdResolver {
     /// Creates a new `ContainerIdResolver`.
     ///
-    /// Without `capture_entity_resolver`, the lookup skips the process ID.
+    /// Without `capture_entity_resolver`, the lookup doesn't ask procfs for the container of a process ID.
     pub fn new(
         capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
         workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
@@ -95,10 +101,15 @@ impl ContainerIdResolver {
         if process_id == 0 {
             return None;
         }
-        self.capture_entity_resolver
-            .as_deref()?
-            .resolve_container_entity_for_live_pid(process_id)
+        self.workload_provider
+            .get_aliased_container_entity(&EntityId::ContainerPid(process_id))
             .filter(is_container_id)
+            .or_else(|| {
+                self.capture_entity_resolver
+                    .as_deref()?
+                    .resolve_container_entity_for_live_pid(process_id)
+                    .filter(is_container_id)
+            })
     }
 
     fn container_for_inode(&self, inode: u64) -> Option<EntityId> {
@@ -106,7 +117,7 @@ impl ContainerIdResolver {
             return None;
         }
         self.workload_provider
-            .get_container_entity_for_inode(inode)
+            .get_aliased_container_entity(&EntityId::ContainerInode(inode))
             .filter(is_container_id)
     }
 
@@ -394,7 +405,31 @@ mod tests {
     }
 
     #[test]
-    fn skips_the_process_id_without_a_capture_entity_resolver() {
+    fn prefers_the_workload_provider_for_the_process_id() {
+        let mut provider = provider();
+        provider.add_entity_alias(EntityId::ContainerPid(42), container("containerd-container"));
+        let resolver = resolver(provider);
+        let origin = OriginInfo {
+            process_id: 42,
+            ..Default::default()
+        };
+        assert_eq!(resolver.resolve(&origin).as_deref(), Some("containerd-container"));
+    }
+
+    #[test]
+    fn finds_the_process_id_in_the_workload_provider_without_a_capture_entity_resolver() {
+        let mut provider = provider();
+        provider.add_entity_alias(EntityId::ContainerPid(7), container("containerd-container"));
+        let resolver = ContainerIdResolver::new(None, Arc::new(provider));
+        let origin = OriginInfo {
+            process_id: 7,
+            ..Default::default()
+        };
+        assert_eq!(resolver.resolve(&origin).as_deref(), Some("containerd-container"));
+    }
+
+    #[test]
+    fn skips_procfs_without_a_capture_entity_resolver() {
         let resolver = ContainerIdResolver::new(None, Arc::new(provider()));
         let origin = OriginInfo {
             process_id: 42,

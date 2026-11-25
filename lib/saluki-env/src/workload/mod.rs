@@ -82,11 +82,11 @@ pub trait WorkloadProvider {
     ///  fully resolved versions of the raw origin components.
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin>;
 
-    /// Gets the container entity that owns a cgroup, by the inode of the cgroup.
+    /// Gets the container entity that an entity is an alias of, such as a container process ID or a cgroup inode.
     ///
-    /// The container doesn't need tags. Returns `None` if no known container owns the cgroup, or if the provider
-    /// can't map cgroup inodes to containers.
-    fn get_container_entity_for_inode(&self, _inode: u64) -> Option<EntityId> {
+    /// The container doesn't need tags. Returns `None` if the entity is no alias of a container, or if the provider
+    /// doesn't track aliases.
+    fn get_aliased_container_entity(&self, _entity_id: &EntityId) -> Option<EntityId> {
         None
     }
 }
@@ -116,9 +116,9 @@ where
         }
     }
 
-    fn get_container_entity_for_inode(&self, inode: u64) -> Option<EntityId> {
+    fn get_aliased_container_entity(&self, entity_id: &EntityId) -> Option<EntityId> {
         match self.as_ref() {
-            Some(provider) => provider.get_container_entity_for_inode(inode),
+            Some(provider) => provider.get_aliased_container_entity(entity_id),
             None => None,
         }
     }
