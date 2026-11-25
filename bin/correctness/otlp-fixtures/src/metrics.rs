@@ -376,8 +376,8 @@ pub fn histogram_fixture() -> Vec<u8> {
 
 /// Two cumulative points of a summary with two quantiles, ten seconds apart.
 ///
-/// Summary counts and sums are cumulative, so the first point only sets the start value, and the second gives the delta
-/// that both sides send.
+/// Summary counts and sums are cumulative. A receiver that sends them as deltas, as the Agent and ADP do, uses the
+/// first point as the start value only, and sends the count and sum deltas of the second.
 pub fn summary_fixture() -> Vec<u8> {
     let summary_point = |time_unix_nano, count, sum| SummaryDataPoint {
         time_unix_nano,
