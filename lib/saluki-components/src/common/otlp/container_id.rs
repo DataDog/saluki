@@ -25,6 +25,7 @@
 
 use std::{borrow::Cow, sync::Arc};
 
+use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_CONTAINER_NAME, K8S_POD_UID, PROCESS_PID};
 use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
 use saluki_core::data_model::origin::RawOrigin;
 use saluki_env::{
@@ -33,14 +34,8 @@ use saluki_env::{
 };
 use stringtheory::MetaString;
 
+use super::util::{KEY_DATADOG_CONTAINER_CGROUP_INODE, KEY_DATADOG_CONTAINER_IS_INIT};
 use super::value::otlp_value_as_string;
-
-const CONTAINER_ID: &str = "container.id";
-const PROCESS_PID: &str = "process.pid";
-const K8S_POD_UID: &str = "k8s.pod.uid";
-const K8S_CONTAINER_NAME: &str = "k8s.container.name";
-const CGROUP_INODE: &str = "datadog.container.cgroup_inode";
-const INIT_CONTAINER: &str = "datadog.container.is_init";
 
 /// Origin information that identifies the container of an OTLP resource.
 ///
@@ -168,10 +163,10 @@ impl<'a> OriginInfo<'a> {
         if let Some(value) = attribute(attributes, K8S_CONTAINER_NAME) {
             origin.container_name = otlp_value_as_string(value);
         }
-        if let Some(Value::IntValue(inode)) = attribute_value(attributes, CGROUP_INODE) {
+        if let Some(Value::IntValue(inode)) = attribute_value(attributes, KEY_DATADOG_CONTAINER_CGROUP_INODE) {
             origin.cgroup_inode = *inode as u64;
         }
-        if let Some(Value::BoolValue(init_container)) = attribute_value(attributes, INIT_CONTAINER) {
+        if let Some(Value::BoolValue(init_container)) = attribute_value(attributes, KEY_DATADOG_CONTAINER_IS_INIT) {
             origin.init_container = *init_container;
         }
         origin
@@ -463,7 +458,7 @@ mod tests {
         use Value::{BoolValue, DoubleValue, IntValue, StringValue};
 
         let pid = |value| attribute(PROCESS_PID, value);
-        let inode = |value| attribute(CGROUP_INODE, value);
+        let inode = |value| attribute(KEY_DATADOG_CONTAINER_CGROUP_INODE, value);
         let pod_uid = |value| attribute(K8S_POD_UID, value);
         let container_name = |value| attribute(K8S_CONTAINER_NAME, value);
         let string = |value: &str| StringValue(value.to_owned());
@@ -590,7 +585,7 @@ mod tests {
             (Value::StringValue("true".into()), false),
             (Value::IntValue(1), false),
         ] {
-            let attributes = [attribute(INIT_CONTAINER, value.clone())];
+            let attributes = [attribute(KEY_DATADOG_CONTAINER_IS_INIT, value.clone())];
             assert_eq!(
                 OriginInfo::from_attributes(&attributes).init_container,
                 expected,

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_CONTAINER_NAME, K8S_POD_UID, PROCESS_PID};
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::FastHashSet;
 use saluki_core::data_model::{
@@ -10,18 +11,15 @@ use saluki_env::{workload::EntityId, WorkloadProvider};
 use stringtheory::MetaString;
 use tracing::trace;
 
-const CONTAINER_ID: &str = "container.id";
+use crate::common::otlp::util::{
+    KEY_DATADOG_CONTAINER_CGROUP_INODE, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_CONTAINER_IS_INIT,
+};
+
 const OCI_MANIFEST_DIGEST: &str = "oci.manifest.digest";
 const ECS_TASK_ARN: &str = "aws.ecs.task.arn";
-const K8S_CONTAINER_NAME: &str = "k8s.container.name";
 const K8S_DEPLOYMENT_NAME: &str = "k8s.deployment.name";
 const K8S_NAMESPACE_NAME: &str = "k8s.namespace.name";
 const K8S_NODE_NAME: &str = "k8s.node.name";
-const K8S_POD_UID: &str = "k8s.pod.uid";
-const PROCESS_PID: &str = "process.pid";
-const CGROUP_INODE: &str = "datadog.container.cgroup_inode";
-const INIT_CONTAINER: &str = "datadog.container.is_init";
-const DATADOG_CONTAINER_ID: &str = "datadog.container_id";
 
 /// Recognized OTLP resource attributes used for entity tag resolution.
 #[derive(Default)]
@@ -51,7 +49,7 @@ impl<'a> OtlpResourceAttributes<'a> {
 
             match (attribute.key.as_str(), value) {
                 (CONTAINER_ID, Value::StringValue(value)) => extracted.container_id = Some(value),
-                (DATADOG_CONTAINER_ID, Value::StringValue(value)) => extracted.datadog_container_id = Some(value),
+                (KEY_DATADOG_CONTAINER_ID, Value::StringValue(value)) => extracted.datadog_container_id = Some(value),
                 (OCI_MANIFEST_DIGEST, Value::StringValue(value)) => extracted.oci_manifest_digest = Some(value),
                 (ECS_TASK_ARN, Value::StringValue(value)) => extracted.ecs_task_arn = Some(value),
                 (K8S_CONTAINER_NAME, Value::StringValue(value)) => extracted.k8s_container_name = Some(value),
@@ -60,8 +58,8 @@ impl<'a> OtlpResourceAttributes<'a> {
                 (K8S_NODE_NAME, Value::StringValue(value)) => extracted.k8s_node_name = Some(value),
                 (K8S_POD_UID, Value::StringValue(value)) => extracted.k8s_pod_uid = Some(value),
                 (PROCESS_PID, Value::IntValue(value)) => extracted.process_pid = Some(*value),
-                (CGROUP_INODE, Value::IntValue(value)) => extracted.cgroup_inode = Some(*value),
-                (INIT_CONTAINER, Value::BoolValue(value)) => extracted.init_container = Some(*value),
+                (KEY_DATADOG_CONTAINER_CGROUP_INODE, Value::IntValue(value)) => extracted.cgroup_inode = Some(*value),
+                (KEY_DATADOG_CONTAINER_IS_INIT, Value::BoolValue(value)) => extracted.init_container = Some(*value),
                 _ => {}
             }
         }
@@ -310,12 +308,12 @@ mod tests {
         // The alias wins over the semantic convention regardless of attribute order.
         for resource in [
             vec![
-                attribute(DATADOG_CONTAINER_ID, Value::StringValue("alias-id".into())),
+                attribute(KEY_DATADOG_CONTAINER_ID, Value::StringValue("alias-id".into())),
                 attribute(CONTAINER_ID, Value::StringValue("semconv-id".into())),
             ],
             vec![
                 attribute(CONTAINER_ID, Value::StringValue("semconv-id".into())),
-                attribute(DATADOG_CONTAINER_ID, Value::StringValue("alias-id".into())),
+                attribute(KEY_DATADOG_CONTAINER_ID, Value::StringValue("alias-id".into())),
             ],
         ] {
             let mut provider = TestWorkloadProvider::new();
@@ -335,12 +333,12 @@ mod tests {
     fn an_empty_datadog_container_id_alias_does_not_shadow_the_semantic_convention() {
         for resource in [
             vec![
-                attribute(DATADOG_CONTAINER_ID, Value::StringValue(String::new())),
+                attribute(KEY_DATADOG_CONTAINER_ID, Value::StringValue(String::new())),
                 attribute(CONTAINER_ID, Value::StringValue("semconv-id".into())),
             ],
             vec![
                 attribute(CONTAINER_ID, Value::StringValue("semconv-id".into())),
-                attribute(DATADOG_CONTAINER_ID, Value::StringValue(String::new())),
+                attribute(KEY_DATADOG_CONTAINER_ID, Value::StringValue(String::new())),
             ],
         ] {
             let mut provider = TestWorkloadProvider::new();
@@ -431,7 +429,7 @@ mod tests {
             &["service:container", "container:present"],
         );
         let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
-        let resource = vec![attribute(CGROUP_INODE, Value::IntValue(123))];
+        let resource = vec![attribute(KEY_DATADOG_CONTAINER_CGROUP_INODE, Value::IntValue(123))];
 
         assert_eq!(
             tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),

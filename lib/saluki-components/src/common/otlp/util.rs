@@ -22,6 +22,8 @@ pub const KEY_DATADOG_VERSION: &str = "datadog.version";
 pub const KEY_DATADOG_ENVIRONMENT: &str = "datadog.env";
 pub const KEY_DATADOG_CONTAINER_ID: &str = "datadog.container_id";
 pub const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
+pub const KEY_DATADOG_CONTAINER_CGROUP_INODE: &str = "datadog.container.cgroup_inode";
+pub const KEY_DATADOG_CONTAINER_IS_INIT: &str = "datadog.container.is_init";
 pub const DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 
 /// The kind of source that produced telemetry data.
