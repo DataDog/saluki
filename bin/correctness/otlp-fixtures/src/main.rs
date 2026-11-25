@@ -140,6 +140,10 @@ fn main() -> ExitCode {
             metrics::summary_fixture,
         ),
         (
+            "test/correctness/cases/otlp-traces-conversion/millstone.yaml",
+            traces::conversion_fixture,
+        ),
+        (
             "test/correctness/cases/otlp-traces-defaults/millstone.yaml",
             traces::defaults_fixture,
         ),

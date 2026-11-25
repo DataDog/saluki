@@ -4,11 +4,19 @@ use otlp_protos::opentelemetry::proto::{
     collector::trace::v1::ExportTraceServiceRequest,
     common::v1::{AnyValue, KeyValue},
     resource::v1::Resource,
-    trace::v1::{span::SpanKind, status::StatusCode, ResourceSpans, ScopeSpans, Span, Status},
+    trace::v1::{
+        span::{Event, Link, SpanKind},
+        status::StatusCode,
+        ResourceSpans, ScopeSpans, Span, Status,
+    },
 };
 use prost::Message as _;
 
 use crate::common::{double, int, kv, string};
+
+mod conversion;
+
+pub use self::conversion::conversion_fixture;
 
 /// 2023-11-14T22:13:20Z, in nanoseconds.
 const BASE_TIME_NANOS: u64 = 1_700_000_000_000_000_000;
@@ -92,11 +100,21 @@ struct ProbeSpan {
 
     /// The OTLP name of the span.
     name: &'static str,
-    kind: SpanKind,
+
+    /// The number of the OTLP span kind.
+    kind: i32,
     parent: Parent,
     attributes: Vec<KeyValue>,
     trace_state: &'static str,
-    error: bool,
+    status: Option<Status>,
+    events: Vec<Event>,
+    links: Vec<Link>,
+
+    /// The high and low halves of the trace ID. A span without them has the ID of its trace.
+    trace_id: Option<(u64, u64)>,
+
+    /// Whether the span ID is zero, which is not valid.
+    zero_span_id: bool,
 
     /// The start of the span, in nanoseconds. A span without one starts at the base time plus one step for each span
     /// before it in its trace.
@@ -112,14 +130,24 @@ impl ProbeSpan {
         Self {
             service,
             name,
-            kind,
+            kind: kind as i32,
             parent: Parent::Root,
             attributes: Vec::new(),
             trace_state: "",
-            error: false,
+            status: None,
+            events: Vec::new(),
+            links: Vec::new(),
+            trace_id: None,
+            zero_span_id: false,
             start: None,
             duration: SPAN_DURATION_NANOS,
         }
+    }
+
+    /// Gives the span the span kind with number `kind`, which can be one that OTLP does not define.
+    fn with_kind_number(mut self, kind: i32) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// Makes the span a child of span `number` of its trace, counted from 1.
@@ -138,9 +166,46 @@ impl ProbeSpan {
         self
     }
 
+    /// Adds a string attribute for each of `attributes`.
+    fn with_strings(self, attributes: &[(&str, &str)]) -> Self {
+        attributes
+            .iter()
+            .fold(self, |span, (key, value)| span.with_attribute(key, string(value)))
+    }
+
     /// Gives the span the status `ERROR`.
-    fn failed(mut self) -> Self {
-        self.error = true;
+    fn failed(self) -> Self {
+        self.with_status(StatusCode::Error, "probe error")
+    }
+
+    /// Gives the span a status with `code` and `message`.
+    fn with_status(mut self, code: StatusCode, message: &str) -> Self {
+        self.status = Some(Status {
+            message: message.to_string(),
+            code: code as i32,
+        });
+        self
+    }
+
+    fn with_event(mut self, event: Event) -> Self {
+        self.events.push(event);
+        self
+    }
+
+    fn with_link(mut self, link: Link) -> Self {
+        self.links.push(link);
+        self
+    }
+
+    /// Gives the span the trace ID with the high half `high` and the low half `low`, not the ID of its trace.
+    fn with_trace_id(mut self, high: u64, low: u64) -> Self {
+        self.trace_id = Some((high, low));
+        self
+    }
+
+    /// Gives the span the span ID zero.
+    fn with_zero_span_id(mut self) -> Self {
+        self.zero_span_id = true;
         self
     }
 
@@ -161,8 +226,15 @@ impl ProbeSpan {
             .start
             .unwrap_or(BASE_TIME_NANOS + u64::from(number - 1) * SPAN_STEP_NANOS);
         Span {
-            trace_id: trace_id(seed),
-            span_id: span_id(seed, number),
+            trace_id: match self.trace_id {
+                Some((high, low)) => ((u128::from(high) << 64) | u128::from(low)).to_be_bytes().to_vec(),
+                None => trace_id(seed),
+            },
+            span_id: if self.zero_span_id {
+                vec![0; 8]
+            } else {
+                span_id(seed, number)
+            },
             parent_span_id: match self.parent {
                 Parent::Root => Vec::new(),
                 Parent::Span(parent) => span_id(seed, parent),
@@ -170,14 +242,13 @@ impl ProbeSpan {
             },
             trace_state: self.trace_state.to_string(),
             name: self.name.to_string(),
-            kind: self.kind as i32,
+            kind: self.kind,
             start_time_unix_nano: start,
             end_time_unix_nano: start + self.duration,
             attributes: self.attributes.clone(),
-            status: self.error.then(|| Status {
-                message: "probe error".to_string(),
-                code: StatusCode::Error as i32,
-            }),
+            events: self.events.clone(),
+            links: self.links.clone(),
+            status: self.status.clone(),
             ..Default::default()
         }
     }
@@ -195,6 +266,14 @@ impl ProbeResource {
         Self {
             service,
             attributes: vec![kv("service.name", string(service))],
+        }
+    }
+
+    /// Builds a resource with no attributes. Its spans name it as their `service`, which is not a `service.name`.
+    fn without_service_name(id: &'static str) -> Self {
+        Self {
+            service: id,
+            attributes: Vec::new(),
         }
     }
 
