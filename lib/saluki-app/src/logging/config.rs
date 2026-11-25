@@ -24,9 +24,10 @@ pub struct LoggingConfiguration {
     /// Whether to emit log records as JSON instead of the default human-readable format.
     pub log_format_json: bool,
 
-    /// Whether to use RFC 3339 timestamps (`2024-12-31T23:59:59Z`) in log output.
+    /// Whether to use RFC 3339 timestamps (`2024-12-31T18:59:59.123456789-05:00`) in log output.
     ///
-    /// When `false` (the default), timestamps use the legacy format (`2024-12-31 23:59:59 UTC`).
+    /// When `false` (the default), timestamps use the legacy format (`2024-12-31 18:59:59 EST`). Both formats use the
+    /// system's local time zone.
     ///
     /// Defaults to `false`.
     pub log_format_rfc3339: bool,
@@ -62,7 +63,7 @@ pub struct LoggingConfiguration {
     /// Maximum size of a log file before it's rolled over.
     pub log_file_max_size: ByteSize,
 
-    /// Maximum number of rolled-over log files to retain.
+    /// Maximum number of rolled-over log files to retain. `0` retains one.
     pub log_file_max_rolls: usize,
 }
 

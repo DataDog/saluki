@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 mod builder;
+mod derived;
 mod mapped;
 
 // The `metrics` handle types are re-exported so that structs using the `static_metrics` macro can name their fields
@@ -11,10 +12,15 @@ pub use ::metrics::{Counter, Gauge, Histogram};
 pub use saluki_metrics_macros::static_metrics;
 
 pub use self::builder::{MetricTag, MetricsBuilder};
+pub use self::derived::{DerivedGauge, DerivedHistogram};
 pub use self::mapped::MappedMetric;
 
-#[cfg(feature = "test")]
+#[cfg(any(test, feature = "test"))]
 pub mod test;
+
+// Lets unit tests in this crate use `static_metrics`, whose generated code refers to `::saluki_metrics`.
+#[cfg(test)]
+extern crate self as saluki_metrics;
 
 #[doc(hidden)]
 pub mod reexport {

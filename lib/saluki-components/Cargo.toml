@@ -21,7 +21,6 @@ backon = { workspace = true, features = ["tokio-sleep"] }
 base64 = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }
-chrono = { workspace = true }
 datadog-agent-apm = { workspace = true }
 datadog-agent-commons = { workspace = true }
 datadog-agent-metrics-v3 = { workspace = true }
@@ -41,6 +40,7 @@ http-serde-ext = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-http-proxy = { workspace = true }
 itoa = { workspace = true }
+libdd-trace-normalization = { workspace = true }
 libdd-trace-obfuscation = { workspace = true }
 lru-slab = { workspace = true }
 memchr = { workspace = true }
@@ -97,13 +97,13 @@ tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tower-http = { workspace = true, features = ["cors"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
-tracing-rolling-file = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }
 
 [dev-dependencies]
 async-compression = { workspace = true, features = ["gzip", "tokio"] }
+axum = { workspace = true, features = ["http2"] }
 criterion = { workspace = true }
 datadog-agent-apm = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }
@@ -117,6 +117,20 @@ tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time", "io-util", "net", "rt", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+[target.'cfg(not(target_os = "aix"))'.dev-dependencies]
+dhat = { workspace = true }
+
+# Run the allocation test without the libtest harness, so that the lazy initializations of the harness don't count as
+# allocations of the code under test. See issue #625.
+[[bench]]
+name = "dd_trace_normalizer"
+harness = false
+
+[[test]]
+name = "dd_trace_normalizer_allocations"
+path = "tests/dd_trace_normalizer_allocations.rs"
+harness = false
 
 [[bench]]
 name = "v04_decoder"

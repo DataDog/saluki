@@ -59,22 +59,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         ),
     },
     SalukiKey {
-        yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
-        description: "ADP OTLP gRPC listen endpoint",
-        default: "localhost:6317",
-        documentation: Some(
-            "Temporary development key for setting ADP's OTLP listen endpoints independently from the Agent's.",
-        ),
-    },
-    SalukiKey {
-        yaml_path: "data_plane.otlp.receiver_http_endpoint_temporary",
-        description: "ADP OTLP HTTP listen endpoint",
-        default: "localhost:6318",
-        documentation: Some(
-            "Temporary development key for setting ADP's OTLP listen endpoints independently from the Agent's.",
-        ),
-    },
-    SalukiKey {
         yaml_path: "dogstatsd_allow_context_heap_allocs",
         description: "Allow heap allocations for contexts",
         default: "true",

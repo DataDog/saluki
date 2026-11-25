@@ -82,25 +82,19 @@ impl ContextResolvers {
         })
     }
 
+    /// Creates test resolvers, where the primary and no-aggregation resolvers are the same resolver.
     #[cfg(test)]
-    pub fn manual(primary: ContextResolver, no_agg: ContextResolver, tags: TagsResolver) -> Self {
+    pub fn for_tests(heap_allocations: bool, origin_tags: Option<DogStatsDOriginTagResolver>) -> Self {
+        let tags = TagsResolverBuilder::for_tests().build();
+        let primary = ContextResolverBuilder::for_tests()
+            .with_heap_allocations(heap_allocations)
+            .with_tags_resolver(Some(tags.clone()))
+            .build();
         ContextResolvers {
+            no_agg: primary.clone(),
             primary,
-            no_agg,
             tags,
-            origin_tags: None,
-        }
-    }
-
-    #[cfg(all(test, target_os = "linux"))]
-    pub fn manual_with_origin(
-        primary: ContextResolver, no_agg: ContextResolver, tags: TagsResolver, origin_tags: DogStatsDOriginTagResolver,
-    ) -> Self {
-        ContextResolvers {
-            primary,
-            no_agg,
-            tags,
-            origin_tags: Some(origin_tags),
+            origin_tags,
         }
     }
 

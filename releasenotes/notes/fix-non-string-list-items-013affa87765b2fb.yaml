@@ -1,0 +1,7 @@
+fixes:
+  - |
+    Agent Data Plane no longer fails to start when a list setting such as ``tags`` or ``extra_tags`` contains an item
+    that isn't a string. A number or boolean item, such as ``- 123``, now reads as its string form. A map item, such
+    as ``- product: contentcontrol``, now reads as an empty string, as in the Datadog Agent. Previously, Agent Data
+    Plane stopped with ``invalid type: map, expected a string``, even when ``data_plane.enabled`` was ``false``. Write
+    each tag as a ``key:value`` string so that it applies.
