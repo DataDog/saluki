@@ -138,6 +138,7 @@ async fn build_source() -> (Box<DogStatsD>, SocketAddr) {
         capture_entity_resolver: None,
         traffic_capture: TrafficCapture::new(PathBuf::new(), 1),
         packet_forwarder_target: None,
+        ingress_pushdown: None,
     });
 
     (source, listen_addr)

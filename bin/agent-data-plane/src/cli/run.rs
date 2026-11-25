@@ -50,8 +50,8 @@ use saluki_components::{
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
         AggregateContextSnapshotReceiver, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
-        DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
-        HostEnrichmentConfiguration, TraceObfuscationConfiguration,
+        DogStatsDIngressPushdownHandle, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
+        HistogramConfiguration, HostEnrichmentConfiguration, TraceObfuscationConfiguration,
     },
 };
 use saluki_core::{
@@ -66,7 +66,7 @@ use saluki_metric_plan::{
     lowering::{
         HOST_TAGS_BINDING, MRF_SIGNAL_BINDING, TARGET_AUTOSCALING_FAILOVER, TARGET_CLIENT_TELEMETRY, TARGET_MRF,
     },
-    RuntimeBindings,
+    DogStatsDIngressPushdown, RuntimeBindings,
 };
 use stringtheory::MetaString;
 use tracing::{debug, error, info, warn};
@@ -228,6 +228,8 @@ async fn create_topology(
     } else {
         (None, None)
     };
+    let dsd_ingress_pushdown = (dp.dogstatsd_enabled() && dp.programmable_metrics_enabled())
+        .then(|| DogStatsDIngressPushdownHandle::new(DogStatsDIngressPushdown::disabled()));
 
     if dp.metrics_pipeline_required() {
         let routing_targets =
@@ -245,6 +247,7 @@ async fn create_topology(
             &routing_targets,
             env_provider,
             region_snapshot_receiver,
+            dsd_ingress_pushdown.clone(),
         )
         .await?;
     }
@@ -300,6 +303,7 @@ async fn create_topology(
                 env_provider,
                 dsd_context_snapshot_handle.expect("handle created when dogstatsd is enabled"),
                 dsd_context_snapshot_receiver,
+                dsd_ingress_pushdown,
             )
             .await?,
         )
@@ -378,6 +382,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
     routing_targets: &Arc<RoutingTargetCatalog>, env_provider: &RemoteAgentEnvironmentProvider,
     context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
+    dsd_ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -391,6 +396,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
             shared,
             routing_targets,
             context_snapshot_receiver,
+            dsd_ingress_pushdown,
         )
         .await;
     }
@@ -430,6 +436,7 @@ async fn add_programmable_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
     routing_targets: &Arc<RoutingTargetCatalog>, context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
+    dsd_ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -452,6 +459,9 @@ async fn add_programmable_metrics_pipeline_to_blueprint(
     }
     if let Some(receiver) = context_snapshot_receiver {
         region_config = region_config.with_context_snapshot_receiver(receiver);
+    }
+    if let Some(pushdown) = dsd_ingress_pushdown {
+        region_config = region_config.with_ingress_pushdown(pushdown);
     }
 
     let fallback_plan = initial_plan;
@@ -949,6 +959,7 @@ fn dogstatsd_source_configuration(
         capture_depth: listeners.capture_depth,
         capture_control,
         replay_control,
+        ingress_pushdown: None,
     }
 }
 
@@ -956,6 +967,7 @@ async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     env_provider: &RemoteAgentEnvironmentProvider, dsd_context_snapshot_handle: AggregateContextSnapshotHandle,
     dsd_context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
+    dsd_ingress_pushdown: Option<Arc<DogStatsDIngressPushdownHandle>>,
 ) -> Result<DogStatsDAPIWorker, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -1000,13 +1012,14 @@ async fn add_dsd_pipeline_to_blueprint(
     let typed = config_system.config();
     let dsd_capture_control = DogStatsDCaptureControl::default();
     let dsd_replay_control = DogStatsDReplayControl::default();
-    let dsd_config = dogstatsd_source_configuration(
+    let mut dsd_config = dogstatsd_source_configuration(
         &typed,
         env_provider,
         default_hostname.into(),
         dsd_capture_control.clone(),
         dsd_replay_control.clone(),
     );
+    dsd_config.ingress_pushdown = dsd_ingress_pushdown;
     let prefix_filter = &typed.domains.dogstatsd.prefix_filter;
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::new(
         prefix_filter.metric_namespace.clone(),
