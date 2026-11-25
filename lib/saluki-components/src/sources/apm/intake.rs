@@ -7,18 +7,21 @@
 //!
 //! Status codes, in the order a request can meet them:
 //!
-//! | Condition | Status |
-//! |---|---|
-//! | A MessagePack body sent to `/v0.2/traces` | 415 |
-//! | `Sec-Fetch-Site: cross-site` | 403 |
-//! | `receiver_timeout` elapses waiting for a decoder | 429, no body |
-//! | `decoder_timeout` elapses waiting for a decoder | 200, or 429 with feature `429` or `Datadog-Send-Real-Http-Status`, after draining the body |
-//! | `Content-Length` over `max_request_bytes` | 413 |
-//! | Body reaches `max_request_bytes` | 413 |
-//! | `receiver_timeout` elapses reading the body | 408 |
-//! | The body ends early | 400 `unexpected-eof` |
-//! | The payload doesn't decode | 400 |
-//! | Accepted | 200 |
+//! | Condition                                        | Status                    |
+//! |--------------------------------------------------|---------------------------|
+//! | A MessagePack body sent to `/v0.2/traces`        | 415                       |
+//! | `Sec-Fetch-Site: cross-site`                     | 403                       |
+//! | `receiver_timeout` elapses waiting for a decoder | 429, no body              |
+//! | `decoder_timeout` elapses waiting for a decoder  | 200, or 429 when opted in |
+//! | `Content-Length` over `max_request_bytes`        | 413                       |
+//! | Body reaches `max_request_bytes`                 | 413                       |
+//! | `receiver_timeout` elapses reading the body      | 408                       |
+//! | The body ends early                              | 400 `unexpected-eof`      |
+//! | The payload doesn't decode                       | 400                       |
+//! | Accepted                                         | 200                       |
+//!
+//! A request opts in to 429 with the `429` APM feature or the `Datadog-Send-Real-Http-Status` header. Either way, the
+//! body is drained first.
 //!
 //! Accepted payloads, and those refused for want of a decoder, are answered as the trace-agent answers them: `OK` on
 //! `/v0.2/traces` and `/v0.3/traces`, and the [sampling rates by service](crate::common::traces::rates) the priority

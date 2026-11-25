@@ -1,14 +1,14 @@
 //! Defines Panoramic's command-line interface.
 
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use airlock::driver::DEFAULT_ALPINE_IMAGE;
-use chrono::Local;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 
 use crate::core::participant::Os;
-use crate::{image_override::ImageOverride, reporter::OutputFormat, test::RunnerSettings};
+use crate::participant_case::Replacement;
+use crate::reporter::OutputFormat;
 
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
 ///
@@ -21,12 +21,6 @@ Environment variables:
                  non-standard locations are probed.
   RUST_LOG       tracing-subscriber filter, for expert use. When set, it takes precedence over
                  --log-level and applies to every crate, including external dependencies.";
-
-/// Default `agent-data-plane` binary for host-process tests, resolved against the current directory.
-const DEFAULT_ADP_BINARY_PATH: &str = "target/release/agent-data-plane";
-
-/// Default Datadog Agent binary for host-process tests: the sandbox install `make provision-macos-test-env` writes.
-const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/agent/agent";
 
 /// Crates that `--log-level` applies to: Panoramic itself and the first-party libraries it links.
 ///
@@ -73,8 +67,8 @@ impl LogLevel {
 //
 // Panoramic-owned settings should preferably be passed by command-line argument. If an
 // environment variable is desired, it should be prefixed with PANORAMIC_. For example:
-// CLI arg: --adp-binary-path
-// ENV var: PANORAMIC_ADP_BINARY_PATH
+// CLI arg: --log-dir
+// ENV var: PANORAMIC_LOG_DIR
 //
 // Saluki-repo-owned settings need not have a PANORAMIC_ prefix if they are shared with other
 // processes, build or CI environments. These SHOULD have an addressable command-line argument.
@@ -128,7 +122,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Run integration tests.
-    Run(RunCommand),
+    Run(Box<RunCommand>),
 
     /// List available integration tests.
     List(ListCommand),
@@ -151,13 +145,26 @@ pub struct RunCommand {
     #[arg(short = 't', long)]
     pub tests: Option<String>,
 
-    /// Integration-test runtime to scope discovery to (for example, `linux`, `mac`,
-    /// or `windows`). Only integration tests whose `runtimes:` list contains this
-    /// value are eligible to run. Defaults to the host's own runtime: `mac` on
-    /// macOS, `windows` on Windows, and `linux` everywhere else. Correctness tests
-    /// are unaffected by this flag
-    #[arg(long, verbatim_doc_comment)]
-    pub runtime: Option<String>,
+    /// Subject OS to run participant cases for: `linux`, `macos` or `windows`. A
+    /// participant case that does not declare it is skipped. Defaults to the host's
+    /// OS
+    #[arg(long, value_parser = str::parse::<Os>, default_value_t = Os::host(), verbatim_doc_comment)]
+    pub subject_os: Os,
+
+    /// Image or host program a participant case runs in place of one it names, as
+    /// `<name>=<reference>`, where `<name>` is the image or program path exactly as the
+    /// case or its participant type writes it. Repeat the flag for more than one; the
+    /// environment variable takes them as one comma-separated list. A name given twice,
+    /// or one no discovered case uses, is an error. CI uses this to run the cases
+    /// against the images and binaries built for the commit
+    #[arg(
+        long = "set",
+        value_name = "NAME=REFERENCE",
+        env = "PANORAMIC_SET",
+        value_delimiter = ',',
+        verbatim_doc_comment
+    )]
+    pub set: Vec<Replacement>,
 
     /// Number of tests to run in parallel.
     #[arg(short = 'p', long, default_value = "4")]
@@ -184,81 +191,33 @@ pub struct RunCommand {
     #[arg(short = 'l', long, env = "PANORAMIC_LOG_DIR", verbatim_doc_comment)]
     log_dir: Option<PathBuf>,
 
-    /// Directory whose contents are read-only bind mounted into every target
-    /// container panoramic launches (not millstone or datadog-intake). The directory
-    /// is treated as the container root: `<mounts-dir>/etc/foo` maps to `/etc/foo`.
-    /// Defaults to `bin/correctness/panoramic/mounts/` in the Saluki workspace where
-    /// this binary was compiled
-    #[arg(long, default_value_os_t = default_mounts_dir(), verbatim_doc_comment)]
-    mounts_dir: PathBuf,
-
-    /// Name of the kind cluster to create or reuse for kind-runtime tests.
+    /// Name of the kind cluster to create or reuse for pod-backend tests.
     #[arg(long, default_value = crate::kind::DEFAULT_CLUSTER_NAME)]
     pub kind_cluster_name: String,
 
-    /// Don't delete the kind cluster after kind-runtime tests complete (useful for
-    /// local iteration)
+    /// Don't delete the kind cluster after the run completes (useful for local
+    /// iteration)
     #[arg(long, verbatim_doc_comment)]
     pub no_delete_kind_cluster: bool,
-
-    /// `agent-data-plane` binary that host-process (`runtime: mac`) tests spawn. A
-    /// relative path resolves against the current directory
-    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", default_value = DEFAULT_ADP_BINARY_PATH, verbatim_doc_comment)]
-    adp_binary_path: PathBuf,
-
-    /// Datadog Agent binary that converged host-process tests spawn. Point this at
-    /// another install (a system-wide /opt/datadog-agent, for example) to test
-    /// against it
-    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", default_value = DEFAULT_CORE_AGENT_BINARY_PATH, verbatim_doc_comment)]
-    core_agent_binary_path: PathBuf,
-
-    /// Alpine image for the short-lived container that fixes up shared-volume
-    /// permissions. CI points this at an internal registry
-    #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", default_value = DEFAULT_ALPINE_IMAGE, verbatim_doc_comment)]
-    alpine_image: String,
-
-    /// Image to run for one of a test's containers, as `<name>=<image>`, replacing
-    /// what the test case declares. Repeat the flag to name more than one container; the
-    /// environment variable takes them as one comma-separated list. CI uses this to run
-    /// the cases against the images built for the commit. `panoramic list --json`
-    /// reports the container names each test declares, and a name no test in the run
-    /// declares is an error
-    #[arg(
-        long = "image-override",
-        value_name = "NAME=IMAGE",
-        env = "PANORAMIC_IMAGE_OVERRIDES",
-        value_delimiter = ',',
-        verbatim_doc_comment
-    )]
-    pub image_overrides: Vec<ImageOverride>,
 }
 
 impl RunCommand {
-    /// Collects the settings that the runner hands to every test.
-    pub(crate) fn runner_settings(&self) -> RunnerSettings {
-        RunnerSettings {
-            mounts_dir: self.mounts_dir.clone(),
-            adp_binary_path: self.adp_binary_path.clone(),
-            core_agent_binary_path: self.core_agent_binary_path.clone(),
-            alpine_image: self.alpine_image.clone(),
-        }
-    }
-
     /// Gets the log directory for this run.
     ///
     /// The base comes from `--log-dir`/`PANORAMIC_LOG_DIR`, falling back to a temporary directory.
-    pub fn log_dir(&self) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system clock is out of range, since the directory is named after the current time.
+    pub fn log_dir(&self) -> Result<PathBuf, String> {
         let base = self.log_dir.clone().unwrap_or_else(std::env::temp_dir);
 
         // Always append a timestamped subdirectory so artifacts from separate runs never mix. The
         // reports name the directory they landed in.
-        let timestamp = Local::now().format("%Y%m%d-%H%M%S");
-        base.join(format!("panoramic-{}", timestamp))
+        let now = Timestamp::now().map_err(|e| e.to_string())?;
+        let timestamp = now.format(TimestampFormat::CompactDateTime(TimeZone::system()));
+        Ok(base.join(format!("panoramic-{}", timestamp)))
     }
-}
-
-fn default_mounts_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("mounts")
 }
 
 /// List available integration tests.
@@ -269,14 +228,13 @@ pub struct ListCommand {
     #[arg(short = 'd', long)]
     pub test_dirs: Vec<PathBuf>,
 
-    /// Integration-test runtime to scope discovery to. Same semantics as on `run`:
-    /// defaults to `mac` on macOS, `windows` on Windows, and `linux` everywhere
-    /// else. Correctness tests are unaffected
-    #[arg(long, verbatim_doc_comment)]
-    pub runtime: Option<String>,
+    /// Subject OS to list participant cases for. Same semantics as on `run`: a
+    /// participant case that does not declare it is left out
+    #[arg(long, value_parser = str::parse::<Os>, default_value_t = Os::host(), verbatim_doc_comment)]
+    pub subject_os: Os,
 
-    /// Output the discovered tests as json along with their image dependencies. A
-    /// `ci` script depends on this for dynamic pipeline creation
+    /// Output the discovered tests as json. A `ci` script depends on this for
+    /// dynamic pipeline creation
     #[arg(long, verbatim_doc_comment)]
     pub json: bool,
 }
@@ -299,11 +257,24 @@ pub struct PlanCommand {
     /// Print the plan in a format for people instead of JSON.
     #[arg(long)]
     pub text: bool,
+
+    /// Image or host program the case runs in place of one it names, as
+    /// `<name>=<reference>`. Same semantics as on `run`: the plan shows both, and a
+    /// name the case does not use is an error
+    #[arg(
+        long = "set",
+        value_name = "NAME=REFERENCE",
+        env = "PANORAMIC_SET",
+        value_delimiter = ',',
+        verbatim_doc_comment
+    )]
+    pub set: Vec<Replacement>,
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use std::path::Path;
 
     use clap::CommandFactory as _;
 
@@ -315,13 +286,7 @@ mod tests {
 
     /// Panoramic's own settings, each an argument on `run` with a `PANORAMIC_*` fallback that clap
     /// renders next to the flag.
-    const PANORAMIC_ENV_FALLBACKS: &[(&str, &str)] = &[
-        ("adp_binary_path", "PANORAMIC_ADP_BINARY_PATH"),
-        ("core_agent_binary_path", "PANORAMIC_CORE_AGENT_BINARY_PATH"),
-        ("alpine_image", "PANORAMIC_ALPINE_IMAGE"),
-        ("log_dir", "PANORAMIC_LOG_DIR"),
-        ("image_overrides", "PANORAMIC_IMAGE_OVERRIDES"),
-    ];
+    const PANORAMIC_ENV_FALLBACKS: &[(&str, &str)] = &[("log_dir", "PANORAMIC_LOG_DIR"), ("set", "PANORAMIC_SET")];
 
     fn run_command_of(cli: &Cli) -> &RunCommand {
         match &cli.command {
@@ -474,59 +439,14 @@ mod tests {
 
         assert_eq!(cmd.parallelism.get(), 4);
         assert!(matches!(cmd.output, OutputFormat::Text));
-        assert_eq!(cmd.mounts_dir, default_mounts_dir());
         assert_eq!(cmd.kind_cluster_name, crate::kind::DEFAULT_CLUSTER_NAME);
-        assert!(cmd.runtime.is_none());
+        assert_eq!(cmd.subject_os, Os::host());
         assert!(cmd.tests.is_none());
         assert!(!cmd.fail_fast);
         assert!(!cmd.verbose);
         assert!(!cmd.no_tui);
         assert!(!cmd.no_delete_kind_cluster);
-        assert!(cmd.image_overrides.is_empty());
-    }
-
-    #[test]
-    fn image_overrides_accept_a_repeated_flag_and_a_delimited_list() {
-        let repeated = Cli::try_parse_from([
-            "panoramic",
-            "run",
-            "-d",
-            "cases",
-            "--image-override",
-            "millstone=registry.example.com/tools:abc123",
-            "--image-override",
-            "baseline=registry.example.com/agent:abc123",
-        ])
-        .expect("repeated flags should parse");
-
-        // The same pairs as one delimited value, which is the shape the environment variable takes.
-        let delimited = Cli::try_parse_from([
-            "panoramic",
-            "run",
-            "-d",
-            "cases",
-            "--image-override",
-            "millstone=registry.example.com/tools:abc123,baseline=registry.example.com/agent:abc123",
-        ])
-        .expect("a delimited value should parse");
-
-        for cmd in [run_command_of(&repeated), run_command_of(&delimited)] {
-            let pairs: Vec<(&str, &str)> = cmd
-                .image_overrides
-                .iter()
-                .map(|entry| (entry.name.as_str(), entry.image.as_str()))
-                .collect();
-            assert_eq!(
-                pairs,
-                vec![
-                    ("millstone", "registry.example.com/tools:abc123"),
-                    ("baseline", "registry.example.com/agent:abc123")
-                ]
-            );
-        }
-
-        // A value that isn't a `name=image` pair fails at parse time rather than mid-run.
-        assert!(Cli::try_parse_from(["panoramic", "run", "-d", "cases", "--image-override", "millstone"]).is_err());
+        assert!(cmd.set.is_empty());
     }
 
     #[test]
@@ -548,7 +468,10 @@ mod tests {
         assert_eq!(cmd.test_dirs, vec![PathBuf::from("test/correctness/cases")]);
         assert!(cmd.no_tui);
         assert_eq!(cmd.parallelism.get(), 1);
-        assert!(cmd.log_dir().starts_with("integration-logs"));
+        assert!(cmd
+            .log_dir()
+            .expect("log dir should resolve")
+            .starts_with("integration-logs"));
 
         // `-d` accumulates; `-t` takes the last value, matching the previous parser.
         let cli = Cli::try_parse_from([
@@ -564,8 +487,8 @@ mod tests {
             "two",
             "-f",
             "-v",
-            "--runtime",
-            "mac",
+            "--subject-os",
+            "macos",
             "--kind-cluster-name",
             "custom",
             "--no-delete-kind-cluster",
@@ -582,48 +505,60 @@ mod tests {
         assert_eq!(cmd.tests.as_deref(), Some("two"));
         assert!(cmd.fail_fast);
         assert!(cmd.verbose);
-        assert_eq!(cmd.runtime.as_deref(), Some("mac"));
+        assert_eq!(cmd.subject_os, Os::Macos);
         assert_eq!(cmd.kind_cluster_name, "custom");
         assert!(cmd.no_delete_kind_cluster);
     }
 
     #[test]
-    fn runner_settings_fall_back_to_the_documented_defaults() {
-        let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases"]).expect("minimal run should parse");
-        let settings = run_command_of(&cli).runner_settings();
-
-        assert_eq!(settings.mounts_dir, default_mounts_dir());
-        assert_eq!(settings.adp_binary_path, Path::new(DEFAULT_ADP_BINARY_PATH));
-        assert_eq!(
-            settings.core_agent_binary_path,
-            Path::new(DEFAULT_CORE_AGENT_BINARY_PATH)
-        );
-        assert_eq!(settings.alpine_image, DEFAULT_ALPINE_IMAGE);
-    }
-
-    #[test]
-    fn explicit_run_flags_plumb_into_runner_settings() {
-        let cli = Cli::try_parse_from([
+    fn set_accepts_a_repeated_flag_and_a_delimited_list() {
+        let repeated = Cli::try_parse_from([
             "panoramic",
             "run",
             "-d",
             "cases",
-            "--adp-binary-path",
-            "/build/adp",
-            "--core-agent-binary-path",
-            "/build/agent",
-            "--alpine-image",
-            "registry.example/alpine:3.20",
-            "--mounts-dir",
-            "/build/mounts",
+            "--set",
+            "saluki-images/correctness-tools:latest=registry.example.com/tools:abc123",
+            "--set",
+            "saluki-images/datadog-agent:testing-devel=registry.example.com/agent:abc123",
         ])
-        .expect("run with explicit paths should parse");
-        let settings = run_command_of(&cli).runner_settings();
+        .expect("repeated flags should parse");
 
-        assert_eq!(settings.adp_binary_path, Path::new("/build/adp"));
-        assert_eq!(settings.core_agent_binary_path, Path::new("/build/agent"));
-        assert_eq!(settings.alpine_image, "registry.example/alpine:3.20");
-        assert_eq!(settings.mounts_dir, Path::new("/build/mounts"));
+        // The same pairs as one delimited value, which is the shape the environment variable takes.
+        let delimited = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            "cases",
+            "--set",
+            "saluki-images/correctness-tools:latest=registry.example.com/tools:abc123,\
+             saluki-images/datadog-agent:testing-devel=registry.example.com/agent:abc123",
+        ])
+        .expect("a delimited value should parse");
+
+        for cmd in [run_command_of(&repeated), run_command_of(&delimited)] {
+            let pairs: Vec<(&str, &str)> = cmd
+                .set
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.reference.as_str()))
+                .collect();
+            assert_eq!(
+                pairs,
+                vec![
+                    (
+                        "saluki-images/correctness-tools:latest",
+                        "registry.example.com/tools:abc123"
+                    ),
+                    (
+                        "saluki-images/datadog-agent:testing-devel",
+                        "registry.example.com/agent:abc123"
+                    )
+                ]
+            );
+        }
+
+        // A value that isn't a `name=reference` pair fails at parse time rather than mid-run.
+        assert!(Cli::try_parse_from(["panoramic", "run", "-d", "cases", "--set", "millstone"]).is_err());
     }
 
     #[test]
@@ -689,7 +624,7 @@ mod tests {
     fn log_dir_appends_a_timestamped_subdirectory() {
         let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases", "-l", "/tmp/panoramic-test"])
             .expect("run with a log dir should parse");
-        let log_dir = run_command_of(&cli).log_dir();
+        let log_dir = run_command_of(&cli).log_dir().expect("log dir should resolve");
 
         let parent = log_dir.parent().expect("log dir should have a parent");
         assert_eq!(parent, Path::new("/tmp/panoramic-test"));

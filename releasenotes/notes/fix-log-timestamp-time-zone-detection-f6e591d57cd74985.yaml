@@ -1,0 +1,11 @@
+---
+fixes:
+  - |
+    Timestamps in text-format logs now use the time zone set by the ``TZ`` environment variable, as the Datadog Agent
+    does on Linux, and follow ``/etc/localtime`` even when it's a regular file rather than a symbolic link. On Windows,
+    ``TZ`` now also takes precedence over the system time zone setting, which the Datadog Agent doesn't do. If ``TZ``
+    names a time zone that can't be found, timestamps use UTC, and ``/etc/timezone`` is no longer read. Time zone rules
+    come from the host's time zone database, or from a built-in copy when the host doesn't have one. When
+    ``log_format_rfc3339`` is enabled and the time zone's offset has seconds, which RFC 3339 can't represent, the offset
+    is rounded to the nearest minute and the time is shifted to match, so that timestamps still mark the exact moment.
+    JSON-format logs still use UTC.
