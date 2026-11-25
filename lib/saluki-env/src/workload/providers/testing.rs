@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use saluki_common::collections::FastIndexMap;
 use saluki_core::data_model::{
-    origin::{ExternalData, OriginTagCardinality, RawOrigin},
+    origin::{ExternalData, OriginTagCardinality, RawExternalData, RawOrigin},
     tags::{SharedTagSet, Tag, TagSet},
 };
 use stringtheory::MetaString;
@@ -59,8 +59,9 @@ impl EntityTags {
 /// [`get_aliased_container_entity`][WorkloadProvider::get_aliased_container_entity].
 ///
 /// [`get_resolved_origin`][WorkloadProvider::get_resolved_origin] resolves the raw origin's process ID, Local Data, and
-/// pod UID into entity IDs with the rules of the production resolver. It resolves External Data from the entries that
-/// [`add_external_data`][Self::add_external_data] adds.
+/// pod UID into entity IDs with the rules of the production resolver. It resolves External Data, there and in
+/// [`get_container_entity_for_external_data`][WorkloadProvider::get_container_entity_for_external_data], from the
+/// entries that [`add_external_data`][Self::add_external_data] adds.
 ///
 /// The provider also implements [`CaptureEntityResolver`], for the process IDs that
 /// [`add_live_process`][Self::add_live_process] adds.
@@ -175,6 +176,12 @@ impl WorkloadProvider for TestWorkloadProvider {
                 .external_data()
                 .and_then(|raw| self.external_data.get(raw).cloned()),
         ))
+    }
+
+    fn get_container_entity_for_external_data(&self, external_data: &RawExternalData<'_>) -> Option<EntityId> {
+        self.external_data
+            .get(external_data)
+            .map(|resolved| resolved.container_entity_id().clone())
     }
 
     fn get_aliased_container_entity(&self, entity_id: &EntityId) -> Option<EntityId> {

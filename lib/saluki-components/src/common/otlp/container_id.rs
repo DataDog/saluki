@@ -27,7 +27,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_CONTAINER_NAME, K8S_POD_UID, PROCESS_PID};
 use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
-use saluki_core::data_model::origin::RawOrigin;
+use saluki_core::data_model::origin::RawExternalData;
 use saluki_env::{
     workload::{CaptureEntityResolver, EntityId},
     WorkloadProvider,
@@ -121,12 +121,6 @@ impl ContainerIdResolver {
         if pod_uid.is_empty() || container_name.is_empty() {
             return None;
         }
-        // The External Data format separates its fields with commas, so a value with a comma can't round-trip. No
-        // Kubernetes pod UID or container name contains a comma.
-        if pod_uid.contains(',') || container_name.contains(',') {
-            return None;
-        }
-
         // The Agent's kubelet lookup ignores the init container flag, and searches all containers of the pod
         // (https://github.com/DataDog/datadog-agent/blob/d22eedcd06ef9fcedad3d43bcab45795068b8ecc/pkg/util/containers/metrics/kubelet/collector.go#L106-L129).
         // The External Data store keys entries by the flag, so the lookup tries both values. Container names are
@@ -134,13 +128,9 @@ impl ContainerIdResolver {
         [origin.init_container, !origin.init_container]
             .into_iter()
             .find_map(|init_container| {
-                let external_data = format!("pu-{pod_uid},cn-{container_name},it-{init_container}");
-                let mut raw_origin = RawOrigin::default();
-                raw_origin.set_external_data(external_data.as_str());
+                let external_data = RawExternalData::new(pod_uid, container_name, init_container);
                 self.workload_provider
-                    .get_resolved_origin(raw_origin)?
-                    .resolved_external_data()
-                    .map(|resolved| resolved.container_entity_id().clone())
+                    .get_container_entity_for_external_data(&external_data)
             })
             .filter(is_container_id)
     }
@@ -214,7 +204,14 @@ fn is_container_id(entity_id: &EntityId) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use saluki_env::workload::providers::TestWorkloadProvider;
+    use saluki_core::data_model::{
+        origin::{OriginTagCardinality, RawOrigin},
+        tags::SharedTagSet,
+    };
+    use saluki_env::workload::{
+        origin::{ResolvedExternalData, ResolvedOrigin},
+        providers::TestWorkloadProvider,
+    };
 
     use super::*;
 
@@ -370,9 +367,50 @@ mod tests {
         }
     }
 
+    /// Regression test: the External Data step went through the origin cache, which keeps a resolved origin, misses
+    /// included, while it's in use. A container that started after a miss, or that replaced another one, then never
+    /// showed up while logs kept arriving.
     #[test]
-    fn external_data_rejects_values_with_commas() {
-        // Without the guard, the External Data parser reads `cn-app` from the container name, and the lookup matches.
+    fn external_data_reads_current_workload_metadata_not_the_origin_cache() {
+        struct StaleOriginCache;
+
+        impl WorkloadProvider for StaleOriginCache {
+            fn get_tags_for_entity(&self, _: &EntityId, _: OriginTagCardinality) -> Option<SharedTagSet> {
+                None
+            }
+
+            fn get_resolved_origin(&self, _: RawOrigin<'_>) -> Option<ResolvedOrigin> {
+                Some(ResolvedOrigin::from_parts(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(ResolvedExternalData::new(
+                        EntityId::PodUid("pod-uid".into()),
+                        container("previous-container"),
+                    )),
+                ))
+            }
+
+            fn get_container_entity_for_external_data(&self, external_data: &RawExternalData<'_>) -> Option<EntityId> {
+                (external_data == &RawExternalData::new("pod-uid", "app", false))
+                    .then(|| container("current-container"))
+            }
+        }
+
+        let resolver = ContainerIdResolver::new(None, Arc::new(StaleOriginCache));
+        let origin = OriginInfo {
+            pod_uid: "pod-uid".into(),
+            container_name: "app".into(),
+            ..Default::default()
+        };
+        assert_eq!(resolver.resolve(&origin).as_deref(), Some("current-container"));
+    }
+
+    #[test]
+    fn external_data_matches_only_the_exact_values() {
+        // The lookup passes the pod UID and the container name as they are, as the Agent does, so a value with a comma
+        // can't make another container match.
         let resolver = resolver(provider());
         let origin = OriginInfo {
             pod_uid: "pod-uid".into(),

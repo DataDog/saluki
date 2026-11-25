@@ -7,7 +7,7 @@
 //! aggregation.
 
 use saluki_core::data_model::{
-    origin::{OriginTagCardinality, RawOrigin},
+    origin::{OriginTagCardinality, RawExternalData, RawOrigin},
     tags::SharedTagSet,
 };
 
@@ -90,6 +90,14 @@ pub trait WorkloadProvider {
     fn get_aliased_container_entity(&self, _entity_id: &EntityId) -> Option<EntityId> {
         None
     }
+
+    /// Gets the container entity that External Data identifies.
+    ///
+    /// The lookup reads the current workload metadata, and doesn't cache its result. The container doesn't need tags.
+    /// Returns `None` if no known container matches, or if the provider doesn't track External Data.
+    fn get_container_entity_for_external_data(&self, _external_data: &RawExternalData<'_>) -> Option<EntityId> {
+        None
+    }
 }
 
 impl<T> WorkloadProvider for Option<T>
@@ -120,6 +128,13 @@ where
     fn get_aliased_container_entity(&self, entity_id: &EntityId) -> Option<EntityId> {
         match self.as_ref() {
             Some(provider) => provider.get_aliased_container_entity(entity_id),
+            None => None,
+        }
+    }
+
+    fn get_container_entity_for_external_data(&self, external_data: &RawExternalData<'_>) -> Option<EntityId> {
+        match self.as_ref() {
+            Some(provider) => provider.get_container_entity_for_external_data(external_data),
             None => None,
         }
     }
