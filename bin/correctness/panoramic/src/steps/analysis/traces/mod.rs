@@ -76,6 +76,9 @@ const STATS_PREFIX: &str = "stats.";
 /// The prefix of the paths of a traces known difference that cover the fields of a span on both sides.
 const SPAN_PREFIX: &str = "span.";
 
+/// The path of a traces known difference that covers a span on one side only.
+const SPANS_PATH: &str = "spans";
+
 /// The span field that a split or merged trace differs in, on the spans that both sides hold. Neither a known difference
 /// nor `additional_span_ignore_fields` may cover it.
 pub const TRACE_ID_FIELD: &str = "trace_id";
@@ -85,9 +88,9 @@ const SPAN_VIEW_FIELDS: &[&str] = &["service", "name", "resource"];
 
 /// Options for traces analysis, set in the `traces` section of a `compare` step.
 ///
-/// The expectations (`min_traces`, `min_spans`, `spans` and `min_stats_groups`) say what each side must hold. The
-/// step checks them first, and still compares the sides when one is unmet. A known difference never excuses an unmet
-/// expectation.
+/// The expectations (`min_traces`, `min_spans`, `spans`, `absent` and `min_stats_groups`) say what each side must hold.
+/// The step checks them first, and still compares the sides when one is unmet. A known difference never excuses an
+/// unmet expectation.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesOptions {
@@ -121,6 +124,13 @@ pub struct TracesOptions {
     #[serde(default)]
     pub spans: Vec<ExpectedSpan>,
 
+    /// Spans that neither side may hold, one entry for each, with the fields of an entry of `spans`.
+    ///
+    /// Name a span that both sides drop, and keep a span of the same trace or service that both sides hold, so that the
+    /// check can't pass because the whole family of spans is missing.
+    #[serde(default)]
+    pub absent: Vec<ExpectedSpan>,
+
     /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
     ///
     /// A step that compares stats and sets other expectations, or sets `require_ssi` to `false`, must set it, so that two
@@ -134,11 +144,11 @@ impl TracesOptions {
     ///
     /// # Errors
     ///
-    /// If an entry names no issue, has a path outside the trace statistics and the span fields, has a path that covers
-    /// the trace ID of a span, or has a span path and doesn't scope itself to spans by service, name or resource, or if
-    /// `otlp_direct_analysis_mode` skips the statistics comparison that an option or an entry's path applies to, or if
-    /// a step that compares stats sets expectations or turns off `require_ssi` and sets no `min_stats_groups`, an error
-    /// is returned.
+    /// If an entry names no issue, has a path outside the trace statistics, the span fields and the spans on one side
+    /// only, has a path that covers the trace ID of a span, or has a span path and doesn't scope itself to spans by
+    /// service, name or resource, or if `otlp_direct_analysis_mode` skips the statistics comparison that an option or an
+    /// entry's path applies to, or if a step that compares stats sets expectations or turns off `require_ssi` and sets
+    /// no `min_stats_groups`, an error is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
         if otlp_direct_analysis_mode {
             let compares_nothing = "which compares no stats";
@@ -170,7 +180,8 @@ impl TracesOptions {
             && (self.require_ssi == Some(false)
                 || self.min_traces.is_some()
                 || self.min_spans.is_some()
-                || !self.spans.is_empty())
+                || !self.spans.is_empty()
+                || !self.absent.is_empty())
         {
             return Err(
                 "'traces' sets expectations or turns off 'require_ssi', so it must set 'min_stats_groups' while \
@@ -182,15 +193,13 @@ impl TracesOptions {
             if entry.issue.is_none() {
                 return Err(format!("known difference '{}' names no 'issue'", entry.gap));
             }
-            if let Some(path) = entry
-                .paths
-                .iter()
-                .find(|path| !path.starts_with(STATS_PREFIX) && !path.starts_with(SPAN_PREFIX))
-            {
+            if let Some(path) = entry.paths.iter().find(|path| {
+                !path.starts_with(STATS_PREFIX) && !path.starts_with(SPAN_PREFIX) && path.as_str() != SPANS_PATH
+            }) {
                 return Err(format!(
                     "known difference '{}' has the path '{}': a traces known difference covers only '{}*' and '{}*' \
-                     paths",
-                    entry.gap, path, STATS_PREFIX, SPAN_PREFIX
+                     paths, and '{}'",
+                    entry.gap, path, STATS_PREFIX, SPAN_PREFIX, SPANS_PATH
                 ));
             }
             let trace_id = format!("{}{}", SPAN_PREFIX, TRACE_ID_FIELD);
@@ -205,10 +214,14 @@ impl TracesOptions {
                     .when
                     .keys()
                     .all(|field| SPAN_VIEW_FIELDS.contains(&field.as_str()));
-            if entry.paths.iter().any(|path| path.starts_with(SPAN_PREFIX)) && !scoped {
+            if entry
+                .paths
+                .iter()
+                .any(|path| path.starts_with(SPAN_PREFIX) || path.as_str() == SPANS_PATH)
+                && !scoped
+            {
                 return Err(format!(
-                    "known difference '{}' covers span fields, so its `when` must name the spans by {}, and nothing \
-                     else",
+                    "known difference '{}' covers spans, so its `when` must name the spans by {}, and nothing else",
                     entry.gap,
                     SPAN_VIEW_FIELDS.join(", ")
                 ));
@@ -223,6 +236,7 @@ impl TracesOptions {
             min_traces: self.min_traces,
             min_spans: self.min_spans,
             spans: self.spans.clone(),
+            absent: self.absent.clone(),
             min_stats_groups: self.min_stats_groups,
         }
     }
@@ -739,32 +753,21 @@ impl Mismatch {
 /// Compares the spans of both sides by span ID, and returns the spans with differences that no entry of `ratchet`
 /// covers.
 ///
-/// A span on one side only is a mismatch of its own, which does not stop the comparison of the other spans. These come
-/// first, named with their trace ID and in its order, so that the spans of a lost trace stay together. The spans whose
-/// fields differ follow, in the order of their IDs. A field that differs in a span on both sides is a difference at
-/// `span.<field>`. The view that an entry's `when` matches is the span's service, name and resource, from the baseline.
+/// A span on one side only is a difference at `spans`: `missing` when only the baseline has it, and `extra` when only
+/// the comparison has it. One that no entry covers is a mismatch of its own, which does not stop the comparison of the
+/// other spans. These come first, named with their trace ID and in its order, so that the spans of a lost trace stay
+/// together. The spans whose fields differ follow, in the order of their IDs. A field that differs in a span on both
+/// sides is a difference at `span.<field>`. The view that an entry's `when` matches is the span's service, name and
+/// resource, from the baseline, or from the comparison for a span that only it has.
 fn compare_spans(
     baseline: &HashMap<u64, Span>, comparison: &HashMap<u64, Span>, recorder: &mut DifferenceRecorder,
     ratchet: &mut Ratchet<'_>,
 ) -> Vec<Mismatch> {
     let mut one_sided = Vec::new();
-    let only = |span: &Span, side: &str| {
-        let view = span_view(&serde_json::to_value(span).unwrap());
-        let mismatch = Mismatch {
-            subject: format!(
-                "span {} (trace_id={} {})",
-                span.span_id(),
-                span.trace_id(),
-                span_name(&view)
-            ),
-            diffs: vec![format!("only in {}", side)],
-        };
-        ((span.trace_id(), span.span_id()), mismatch)
-    };
     let mut differing = Vec::new();
     for (span_id, baseline_span) in baseline {
         let Some(comparison_span) = comparison.get(span_id) else {
-            one_sided.push(only(baseline_span, "baseline"));
+            one_sided.extend(uncovered_one_sided_span(baseline_span, DiffKind::Missing, ratchet));
             continue;
         };
         let baseline_span = serde_json::to_value(baseline_span).unwrap();
@@ -794,7 +797,7 @@ fn compare_spans(
     }
     for (span_id, comparison_span) in comparison {
         if !baseline.contains_key(span_id) {
-            one_sided.push(only(comparison_span, "comparison"));
+            one_sided.extend(uncovered_one_sided_span(comparison_span, DiffKind::Extra, ratchet));
         }
     }
 
@@ -805,6 +808,46 @@ fn compare_spans(
         .map(|(_, mismatch)| mismatch)
         .chain(differing.into_iter().map(|(_, mismatch)| mismatch))
         .collect()
+}
+
+/// Returns the mismatch of a span on one side only, with its trace ID and span ID, unless an entry of `ratchet` covers
+/// it. `kind` is `Missing` for a span that only the baseline has, and `Extra` for one that only the comparison has.
+fn uncovered_one_sided_span(span: &Span, kind: DiffKind, ratchet: &mut Ratchet<'_>) -> Option<((u64, u64), Mismatch)> {
+    let value = serde_json::to_value(span).unwrap();
+    let view = span_view(&value);
+    let (side, diff) = match kind {
+        DiffKind::Missing => (
+            "baseline",
+            FieldDiff {
+                path: SPANS_PATH.to_string(),
+                kind,
+                baseline: Some(value),
+                comparison: None,
+            },
+        ),
+        _ => (
+            "comparison",
+            FieldDiff {
+                path: SPANS_PATH.to_string(),
+                kind,
+                baseline: None,
+                comparison: Some(value),
+            },
+        ),
+    };
+    if ratchet.allows(&diff, &view) {
+        return None;
+    }
+    let mismatch = Mismatch {
+        subject: format!(
+            "span {} (trace_id={} {})",
+            span.span_id(),
+            span.trace_id(),
+            span_name(&view)
+        ),
+        diffs: vec![format!("only in {}", side)],
+    };
+    Some(((span.trace_id(), span.span_id()), mismatch))
 }
 
 /// Compares the statistics groups of both sides, and returns the groups with differences that no entry of `ratchet`

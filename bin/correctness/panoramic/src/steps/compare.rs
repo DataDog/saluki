@@ -359,6 +359,31 @@ mod tests {
 
         let error = build("", "{gap: gap/a, issue: 1, paths: [meta.foo], reason: r}").unwrap_err();
         assert!(error.contains("only 'stats.*' and 'span.*' paths"), "{}", error);
+        let error = build(
+            "",
+            "{gap: gap/a, issue: 1, paths: [spans.foo], when: {resource: [r]}, reason: r}",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("only 'stats.*' and 'span.*' paths, and 'spans'"),
+            "{}",
+            error
+        );
+
+        let spans_entry = "{gap: gap/a, issue: 1, paths: [spans], when: {resource: [r]}, reason: r}";
+        assert!(build("", spans_entry).is_ok());
+        assert!(build("otlp_direct_analysis_mode: true,", spans_entry).is_ok());
+        for unscoped in [
+            "{gap: gap/a, issue: 1, paths: [spans], reason: r}",
+            "{gap: gap/a, issue: 1, paths: [spans], when: {hits: [1]}, reason: r}",
+        ] {
+            let error = build("", unscoped).unwrap_err();
+            assert!(
+                error.contains("must name the spans by service, name, resource"),
+                "{}",
+                error
+            );
+        }
 
         let span_entry = "{gap: gap/a, issue: 1, paths: [span.metrics._top_level], when: {resource: [r]}, reason: r}";
         assert!(build("", span_entry).is_ok());
@@ -1118,6 +1143,148 @@ mod tests {
         assert!(!report.message.contains("is \"GET /\""), "{}", report.message);
     }
 
+    /// A spans-only step that expects `traces`.
+    fn direct(traces: &str) -> String {
+        format!(
+            "{{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \
+             traces: {{{}}}}}",
+            traces
+        )
+    }
+
+    /// The fixture spans without the span `span_id`.
+    fn spans_without(span_id: u64) -> Vec<Value> {
+        let mut spans = fixture_spans(false);
+        spans.retain(|span| span["span_id"] != span_id);
+        spans
+    }
+
+    #[tokio::test]
+    async fn a_span_that_a_side_holds_fails_the_absent_check_and_names_the_side() {
+        let both = tracing(fixture_spans(false), &[]);
+
+        // Neither side holds the span, and each holds the named sibling.
+        let fields = direct("spans: [{service: api, name: web.request}], absent: [{service: api, name: dropped}]");
+        let report = compare(&fields, &both, &both).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // Both sides hold the two spans of the service.
+        let fields = direct("absent: [{service: db, name: db.query}, {service: api, name: web.request}]");
+        let report = compare(&fields, &both, &both).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        for side in ["comparison", "baseline"] {
+            for expected in [
+                format!(
+                    "The {} holds 1 span(s) that meet `absent[0]` (service=db, name=db.query), but it must hold \
+                     none.",
+                    side
+                ),
+                format!(
+                    "The {} holds 2 span(s) that meet `absent[1]` (service=api, name=web.request), but it must hold \
+                     none.",
+                    side
+                ),
+            ] {
+                assert!(report.message.contains(&expected), "{}: {}", expected, report.message);
+            }
+        }
+
+        // One side holds the span: only that side is named, and the entry matches the resource too.
+        let without_db = tracing(spans_without(11), &[]);
+        let fields = direct("absent: [{service: db, resource: SELECT 1}]");
+        let report = compare(&fields, &both, &without_db).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains("The comparison holds 1 span(s) that meet `absent[0]` (service=db, resource=SELECT 1)"),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+
+        // A span of the same service with another resource does not meet the entry.
+        let fields = direct("absent: [{service: api, resource: GET /missing}]");
+        let report = compare(&fields, &both, &both).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_known_span_difference_covers_a_span_on_one_side_only_by_name() {
+        let entry = |kind: &str, resources: &str| {
+            direct(&format!(
+                "known_differences: [{{gap: gap/lost, issue: 1, paths: [spans], kinds: [{}], \
+                 when: {{resource: [{}]}}, reason: a side drops the span}}]",
+                kind, resources
+            ))
+        };
+        let baseline = tracing(fixture_spans(false), &[]);
+        let comparison = tracing(spans_without(11), &[]);
+
+        // The comparison lacks the named span, as the entry says.
+        let report = compare(&entry("missing", "SELECT 1"), &comparison, &baseline).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // Another span of one side only is not covered, and the failure names it.
+        let comparison = tracing(
+            spans_without(11)
+                .into_iter()
+                .filter(|span| span["span_id"] != 20)
+                .collect(),
+            &[],
+        );
+        let report = compare(&entry("missing", "SELECT 1"), &comparison, &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "span 20 (trace_id=2 service=\"api\" name=\"web.request\" resource=\"GET /x\"):\n    only in baseline"
+            ),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("span 11 "), "{}", report.message);
+
+        // The kind says which side holds the span: `missing` does not cover a span that only the comparison holds.
+        let report = compare(
+            &entry("missing", "SELECT 1"),
+            &baseline,
+            &tracing(spans_without(11), &[]),
+        )
+        .await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(report.message.contains("only in comparison"), "{}", report.message);
+        assert!(report.message.contains("gap/lost (#1)"), "{}", report.message);
+        let report = compare(&entry("extra", "SELECT 1"), &baseline, &tracing(spans_without(11), &[])).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_known_span_difference_for_a_span_on_one_side_only_is_stale_once_both_sides_hold_it() {
+        let fields = direct(
+            "known_differences: [{gap: gap/lost, issue: 1, paths: [spans], kinds: [missing], \
+             when: {resource: [SELECT 1, GET /x]}, reason: a side drops the span}]",
+        );
+        let baseline = tracing(fixture_spans(false), &[]);
+
+        // Both sides hold both named spans, so each value of `when` is stale.
+        let report = compare(&fields, &baseline, &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        for resource in ["SELECT 1", "GET /x"] {
+            let expected = format!(
+                "path `spans` when `resource` is \"{}\" (a side drops the span). Remove it from the case.",
+                resource
+            );
+            assert!(report.message.contains(&expected), "{}", report.message);
+        }
+
+        // Once the comparison holds one of them again, only the other is stale.
+        let comparison = tracing(spans_without(20), &[]);
+        let report = compare(&fields, &comparison, &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(report.message.contains("is \"SELECT 1\""), "{}", report.message);
+        assert!(!report.message.contains("is \"GET /x\""), "{}", report.message);
+    }
+
     #[tokio::test]
     async fn span_expectations_of_a_spans_only_comparison_ignore_stats() {
         let direct = "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \
@@ -1170,6 +1337,15 @@ mod tests {
                 "{telemetry: traces, comparison: app, baseline: peer, \
                  traces: {min_stats_groups: 1, spans: [{name: web.request}]}}",
                 "missing field `service`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, traces: {absent: [{service: api, name: x}]}}",
+                "'traces' sets expectations or turns off 'require_ssi', so it must set 'min_stats_groups'",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, absent: [{service: api}]}}",
+                "a span of service 'api' needs a `name` or a `resource`",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, traces: {min_traces: 0}}",

@@ -535,6 +535,9 @@ For traces, set expectations under `traces`:
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
 - `spans`: a list of spans that each side must hold. An entry has a `service` and a `name` or a `resource`, and a span
   of the side must match every field that the entry sets. The `name` is the operation name.
+- `absent`: a list of spans that neither side may hold, with the fields of an entry of `spans`. A failure names the
+  side that holds a span that meets an entry. Name a span that both sides drop, and keep a span of the same trace or
+  service in `spans`, so that the check can't pass because the whole family of spans is missing.
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
   The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
@@ -675,6 +678,23 @@ The case uses two `stats.groups` entries for [the same gap](https://github.com/D
 
 Each entry's `when` names the operation and its root flag. If ADP starts counting the child but still counts the root,
 only the `missing` entry goes stale. A separate `span.parent_id` entry covers the field on the span itself.
+
+**Known differences of traces.** A traces `compare` reports every difference in the spans and the APM statistics,
+not only the first. A span or a statistics group on one side only does not stop the comparison of the spans and
+groups on both sides. A span on one side only fails the step. A split trace shows up as a different `trace_id` of
+the spans on both sides, so no known difference can cover `span.trace_id`, and `additional_span_ignore_fields` can't
+hold `trace_id`.
+`traces: {known_differences: [...]}` lists the differences that an open gap explains, as
+`logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
+`paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
+compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a statistics group on one side only,
+`stats.<field>`, for a field of a group on both sides, `span.<field>`, such as `span.metrics._top_level`, for a field
+of a span on both sides, or `spans`, for a span on one side only. `stats.<field>` covers a difference anywhere inside
+the field, such as in a sketch. A kind is `missing` (only in the baseline), `extra` (only in the comparison) or
+`value`. `when` matches the fields of the group, for example `{service: [api-gateway]}`, or the `service`, `name` and
+`resource` of the span. An entry with a `span.` path or the path `spans` must name its spans with `when`. A difference
+that no entry covers fails the step, and so does an entry path that matches no difference for one of the values in
+`when`, so that a fix removes its entries.
 
 ### A span field or an ignored field?
 

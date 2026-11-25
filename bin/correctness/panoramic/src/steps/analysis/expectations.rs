@@ -94,6 +94,9 @@ pub struct TracesExpectations {
     /// Spans that each side must hold, one entry for each. A span of the side must meet every field of an entry.
     pub spans: Vec<ExpectedSpan>,
 
+    /// Spans that neither side may hold, one entry for each. No span of a side may meet every field of an entry.
+    pub absent: Vec<ExpectedSpan>,
+
     /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
     ///
     /// It applies only when the step compares stats.
@@ -160,11 +163,24 @@ impl TracesExpectations {
             }
         }
 
+        for (idx, unexpected) in self.absent.iter().enumerate() {
+            let held = held.spans.values().filter(|span| unexpected.is_met_by(span)).count();
+            if held > 0 {
+                unmet.push(format!(
+                    "The {} holds {} span(s) that meet `absent[{}]` ({}), but it must hold none.",
+                    side,
+                    held,
+                    idx,
+                    unexpected.describe()
+                ));
+            }
+        }
+
         unmet
     }
 }
 
-/// A span that a side must hold, by its service and its operation name or its resource.
+/// A span that a side must hold or must not hold, by its service and its operation name or its resource.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "ExpectedSpanFields")]
 pub struct ExpectedSpan {
