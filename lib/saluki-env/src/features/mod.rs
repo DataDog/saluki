@@ -66,6 +66,18 @@ pub fn is_ecs_fargate() -> bool {
     is_env_var_present("ECS_FARGATE") || get_env_var_or_empty("AWS_EXECUTION_ENV") == "AWS_ECS_FARGATE"
 }
 
+/// Returns whether the process runs in a Kubernetes cluster.
+///
+/// Kubernetes injects `KUBERNETES_SERVICE_PORT` into each container. `KUBERNETES` is the variable that Datadog
+/// deployments set when the injected variable isn't available.
+pub fn is_kubernetes() -> bool {
+    is_kubernetes_with(is_env_var_present)
+}
+
+fn is_kubernetes_with(is_present: impl Fn(&str) -> bool) -> bool {
+    is_present("KUBERNETES_SERVICE_PORT") || is_present("KUBERNETES")
+}
+
 fn file_exists<P>(path: P) -> bool
 where
     P: AsRef<Path>,
@@ -246,5 +258,23 @@ fn has_legacy_cgroupfs_root() -> bool {
     match std::fs::metadata(LEGACY_CGROUPFS_ROOT_MARKER) {
         Ok(_) => true,
         Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_kubernetes_with;
+
+    #[test]
+    fn kubernetes_is_detected_from_either_environment_variable() {
+        let cases: [(&[&str], bool); 4] = [
+            (&[], false),
+            (&["KUBERNETES_SERVICE_PORT"], true),
+            (&["KUBERNETES"], true),
+            (&["KUBERNETES_SERVICE_HOST"], false),
+        ];
+        for (present, expected) in cases {
+            assert_eq!(expected, is_kubernetes_with(|name| present.contains(&name)), "{present:?}");
+        }
     }
 }

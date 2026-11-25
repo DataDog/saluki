@@ -9,5 +9,6 @@ pub mod mrf;
 pub use self::agent_env::AgentEnv;
 pub use self::autoscaling_failover::AutoscalingFailoverConfiguration;
 pub use self::cluster_agent::ClusterAgentConfiguration;
+pub use crate::common::datadog::container_tags::ContainerTagsBuffer;
 pub use self::metrics_endpoint_routing::MetricsEndpointRoutingConfiguration;
 pub use self::mrf::MrfConfiguration;
