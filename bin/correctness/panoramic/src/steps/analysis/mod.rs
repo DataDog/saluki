@@ -2,6 +2,8 @@ use saluki_error::GenericError;
 use serde::Deserialize;
 
 pub use self::logs::LogsAnalysisOptions;
+use self::ratchet::KnownDifference;
+pub use self::traces::TracesOptions;
 use crate::steps::intake::CollectedData;
 
 mod dogstatsd_forwarding;
@@ -39,6 +41,10 @@ pub struct TracesAnalysisOptions {
 
     /// Additional span field paths to ignore when diffing baseline vs comparison. Merged with the built-in list.
     pub additional_span_ignore_fields: Vec<String>,
+
+    /// Trace statistics differences that are expected, each tagged with the gap and the issue that explain it. An
+    /// entry that matches nothing fails the analysis.
+    pub known_differences: Vec<KnownDifference>,
 }
 
 /// Analysis runner.
@@ -110,6 +116,7 @@ impl AnalysisRunner {
                 let opts = self.traces_options.unwrap_or(TracesAnalysisOptions {
                     otlp_direct_analysis_mode: false,
                     additional_span_ignore_fields: Vec::new(),
+                    known_differences: Vec::new(),
                 });
                 let analyzer = traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data, opts)
                     .map_err(|e| (e, vec![]))?;

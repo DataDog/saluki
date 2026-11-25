@@ -1,15 +1,19 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt,
     time::Duration,
 };
 
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use serde::Deserialize;
 use serde_json::{Number, Value};
-use stele::{AggregationKey, BucketedClientStatistics, ClientStatistics, Span};
+use stele::{AggregationKey, BucketedClientStatistics, Span};
 use tracing::{error, info};
 use treediff::value::Key;
 
+use super::ratchet::{DiffKind, FieldDiff, KnownDifference, Ratchet};
+use crate::steps::analysis::TracesAnalysisOptions;
 use crate::steps::intake::CollectedData;
 
 /// Built-in span field paths always ignored when diffing. Configurable additions via `TracesAnalysisOptions::additional_span_ignore_fields`.
@@ -29,6 +33,27 @@ static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[("start", &
 const SAMPLE_MISMATCH_LIMIT: usize = 5;
 const SAMPLE_DIFFS_PER_SPAN: usize = 3;
 
+/// The path of a difference in the set of statistics groups. The other statistics paths are `stats.<field>`.
+const STATS_GROUPS_PATH: &str = "stats.groups";
+
+/// The fields of a statistics group that name it in a failure, in the order they're shown. A field at its default value
+/// is left out.
+const STATS_GROUP_NAME_FIELDS: &[&str] = &[
+    "service",
+    "name",
+    "resource",
+    "type_",
+    "span_kind",
+    "http_method",
+    "http_endpoint",
+    "http_status_code",
+    "grpc_status_code",
+    "db_type",
+    "is_trace_root",
+    "synthetics",
+    "peer_tags",
+];
+
 trait FieldComparator: Sync {
     fn compare(&self, baseline: &Value, comparison: &Value) -> Result<(), String>;
 }
@@ -42,18 +67,60 @@ where
     }
 }
 
-use crate::steps::analysis::TracesAnalysisOptions;
+/// The prefix of the paths that a traces known difference covers: the trace statistics.
+const STATS_PREFIX: &str = "stats.";
+
+/// Options for traces analysis, set in the `traces` section of a `compare` step.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TracesOptions {
+    /// Trace statistics differences that are expected, each tagged with the gap and the issue that explain it.
+    ///
+    /// A matching difference doesn't fail the case, but an entry path that matches nothing does, so that fixing a gap
+    /// requires removing its entries.
+    #[serde(default)]
+    pub known_differences: Vec<KnownDifference>,
+}
+
+impl TracesOptions {
+    /// Checks the options against the other options of the step.
+    ///
+    /// # Errors
+    ///
+    /// If an entry names no issue or a path outside the trace statistics, or if `otlp_direct_analysis_mode` skips the
+    /// statistics comparison that the entries apply to, an error is returned.
+    pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
+        if otlp_direct_analysis_mode && !self.known_differences.is_empty() {
+            return Err(
+                "'otlp_direct_analysis_mode' skips the trace stats comparison, so it takes no 'known_differences'"
+                    .to_string(),
+            );
+        }
+        for entry in &self.known_differences {
+            if entry.issue.is_none() {
+                return Err(format!("known difference '{}' names no 'issue'", entry.gap));
+            }
+            if let Some(path) = entry.paths.iter().find(|path| !path.starts_with(STATS_PREFIX)) {
+                return Err(format!(
+                    "known difference '{}' has the path '{}': a traces known difference covers only '{}*' paths",
+                    entry.gap, path, STATS_PREFIX
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Analyzes traces for correctness.
 pub struct TracesAnalyzer {
     baseline_total_traces: usize,
     baseline_spans: HashMap<u64, Span>,
     baseline_ssi_metadata_present: bool,
-    baseline_trace_stats: FastHashMap<AggregationKey, ClientStatistics>,
+    baseline_trace_stats: FastHashMap<AggregationKey, Value>,
     comparison_total_traces: usize,
     comparison_spans: HashMap<u64, Span>,
     comparison_ssi_metadata_present: bool,
-    comparison_trace_stats: FastHashMap<AggregationKey, ClientStatistics>,
+    comparison_trace_stats: FastHashMap<AggregationKey, Value>,
     options: TracesAnalysisOptions,
     ignored_fields: HashSet<String>,
 }
@@ -236,128 +303,38 @@ impl TracesAnalyzer {
         }
 
         // Compare the baseline and comparison trace statistics when not in OTLP-direct mode.
+        let mut ratchet = Ratchet::new(&self.options.known_differences);
         if !self.options.otlp_direct_analysis_mode {
-            let baseline_stats_aggregation_keys = self.baseline_trace_stats.keys().cloned().collect::<HashSet<_>>();
-            let comparison_stats_aggregation_keys = self.comparison_trace_stats.keys().cloned().collect::<HashSet<_>>();
-
-            // We should have an identical number of aggregation keys.
-            if baseline_stats_aggregation_keys.len() != comparison_stats_aggregation_keys.len() {
-                return Err((
-                    generic_error!(
-                        "Number of aggregation keys do not match: {} (baseline) vs {} (comparison)",
-                        baseline_stats_aggregation_keys.len(),
-                        comparison_stats_aggregation_keys.len()
-                    ),
-                    vec![],
-                ));
-            }
-
-            if baseline_stats_aggregation_keys != comparison_stats_aggregation_keys {
-                let baseline_only_aggregation_keys: Vec<_> = baseline_stats_aggregation_keys
-                    .difference(&comparison_stats_aggregation_keys)
-                    .collect();
-
-                let comparison_only_aggregation_keys: Vec<_> = comparison_stats_aggregation_keys
-                    .difference(&baseline_stats_aggregation_keys)
-                    .collect();
-
-                // Print details of mismatched stats for debugging
-                error!(
-                    "Aggregation key mismatch: {} baseline-only keys, {} comparison-only keys.",
-                    baseline_only_aggregation_keys.len(),
-                    comparison_only_aggregation_keys.len()
-                );
-
-                // Show samples of baseline-only stats
-                for key in baseline_only_aggregation_keys.iter().take(SAMPLE_DIFFS_PER_SPAN) {
-                    if let Some(stats) = self.baseline_trace_stats.get(key) {
-                        error!(
-                            "Baseline-only key {}: {}",
-                            key,
-                            serde_json::to_string(stats).unwrap_or_else(|_| "<serialization error>".to_string())
-                        );
-                    }
-                }
-
-                // Show samples of comparison-only stats
-                for key in comparison_only_aggregation_keys.iter().take(SAMPLE_DIFFS_PER_SPAN) {
-                    if let Some(stats) = self.comparison_trace_stats.get(key) {
-                        error!(
-                            "Comparison-only key {}: {}",
-                            key,
-                            serde_json::to_string(stats).unwrap_or_else(|_| "<serialization error>".to_string())
-                        );
-                    }
-                }
-
-                return Err((
-                    generic_error!(
-                        "Baseline and comparison targets have non-overlapped set of statistic aggregation keys: {} baseline-only keys and {} comparison-only keys.",
-                        baseline_only_aggregation_keys.len(),
-                        comparison_only_aggregation_keys.len()
-                    ),
-                    vec![],
-                ));
-            }
-
             info!(
-                "Analyzing {} aggregated statistics groups from baseline and comparison target.",
-                baseline_stats_aggregation_keys.len()
+                "Analyzing {} aggregated statistics groups from baseline and {} from comparison target.",
+                self.baseline_trace_stats.len(),
+                self.comparison_trace_stats.len()
             );
 
-            // Go through each baseline aggregated stats group, and look for a matching group (by ID) on the comparison target side.
-            //
-            // If found, compare the groups.
-            for (baseline_aggegation_key, baseline_stats) in self.baseline_trace_stats.iter() {
-                match self.comparison_trace_stats.get(baseline_aggegation_key) {
-                    Some(comparison_stats) => {
-                        // We serialize both spans to JSON for deep comparison.
-                        let baseline_stats_json = serde_json::to_value(baseline_stats).unwrap();
-                        let comparison_stats_json = serde_json::to_value(comparison_stats).unwrap();
-
-                        diff_recorder.clear();
-                        treediff::diff(&baseline_stats_json, &comparison_stats_json, &mut diff_recorder);
-
-                        if !diff_recorder.is_empty() {
-                            error!("Detected mismatched stats group ({}):", baseline_aggegation_key);
-                            for stats_diff in diff_recorder.diffs() {
-                                error!("- {}", stats_diff);
-                            }
-                            error!("");
-
-                            error_count += 1;
-
-                            let all_diffs = diff_recorder
-                                .diffs()
-                                .iter()
-                                .map(|d| format!("    {}", d))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            all_stats_details
-                                .push(format!("  stats group {}:\n{}", baseline_aggegation_key, all_diffs));
-
-                            if stats_samples.len() < SAMPLE_MISMATCH_LIMIT {
-                                let sample_diffs = diff_recorder
-                                    .diffs()
-                                    .iter()
-                                    .take(SAMPLE_DIFFS_PER_SPAN)
-                                    .map(|d| format!("    {}", d))
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                stats_samples
-                                    .push(format!("  stats group {}:\n{}", baseline_aggegation_key, sample_diffs));
-                            }
-                        }
-                    }
-                    None => {
-                        error!(
-                            "Failed to find matching comparison aggregation key ({}).",
-                            baseline_aggegation_key
-                        );
-                        error_count += 1;
-                    }
+            let mismatches = compare_stats(
+                &self.baseline_trace_stats,
+                &self.comparison_trace_stats,
+                &mut diff_recorder,
+                &mut ratchet,
+            );
+            for mismatch in mismatches {
+                error!("Detected mismatched stats group:\n{}", mismatch.render(usize::MAX));
+                error_count += 1;
+                if stats_samples.len() < SAMPLE_MISMATCH_LIMIT {
+                    stats_samples.push(mismatch.render(SAMPLE_DIFFS_PER_SPAN));
                 }
+                all_stats_details.push(mismatch.render(usize::MAX));
             }
+        }
+
+        // A known difference that matched nothing is stale: its gap is fixed, or the entry is wrong.
+        for stale in ratchet.stale_entries() {
+            error!("{}", stale);
+            error_count += 1;
+            if stats_samples.len() < SAMPLE_MISMATCH_LIMIT {
+                stats_samples.push(format!("  {}", stale));
+            }
+            all_stats_details.push(format!("  {}", stale));
         }
 
         // Ensure that we observe at least one span on each side where Single Step Instrumentation-related metadata is
@@ -411,9 +388,36 @@ impl TracesAnalyzer {
     }
 }
 
+/// A difference that `DifferenceRecorder` found, with what a custom comparator said about it.
+struct RecordedDiff {
+    /// The path of the field, the kind of difference, and the value on each side.
+    diff: FieldDiff,
+
+    /// Why the custom comparator of the field rejected the two values, such as a start time difference over the
+    /// allowed maximum. A failure shows it after the values. `None` when no custom comparator checks the field.
+    detail: Option<String>,
+}
+
+impl fmt::Display for RecordedDiff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let show = |value: &Option<Value>| value.as_ref().map_or_else(|| "<missing>".to_string(), Value::to_string);
+        write!(
+            f,
+            "{}: baseline={} comparison={}",
+            self.diff.path,
+            show(&self.diff.baseline),
+            show(&self.diff.comparison)
+        )?;
+        if let Some(detail) = &self.detail {
+            write!(f, " ({})", detail)?;
+        }
+        Ok(())
+    }
+}
+
 struct DifferenceRecorder {
     key_stack: Vec<Key>,
-    detected_diffs: Vec<String>,
+    detected_diffs: Vec<RecordedDiff>,
     ignored_fields: HashSet<String>,
     custom_field_comparators: HashMap<&'static str, &'static dyn FieldComparator>,
 }
@@ -439,7 +443,7 @@ impl DifferenceRecorder {
         self.detected_diffs.is_empty()
     }
 
-    fn diffs(&self) -> &[String] {
+    fn diffs(&self) -> &[RecordedDiff] {
         &self.detected_diffs
     }
 
@@ -488,28 +492,20 @@ impl DifferenceRecorder {
             _ => None,
         };
 
-        // Render the explanation of the difference, including any additional details we captured.
-        let baseline_value_str = maybe_baseline
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "<missing>".to_string());
-        let comparison_value_str = maybe_comparison
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "<missing>".to_string());
-
-        match maybe_diff_detail {
-            None => {
-                self.detected_diffs.push(format!(
-                    "{}: baseline={} comparison={}",
-                    field_path, baseline_value_str, comparison_value_str
-                ));
-            }
-            Some(diff_detail) => {
-                self.detected_diffs.push(format!(
-                    "{}: baseline={} comparison={} ({})",
-                    field_path, baseline_value_str, comparison_value_str, diff_detail
-                ));
-            }
-        }
+        let kind = match (maybe_baseline, maybe_comparison) {
+            (Some(_), None) => DiffKind::Missing,
+            (None, Some(_)) => DiffKind::Extra,
+            _ => DiffKind::Value,
+        };
+        self.detected_diffs.push(RecordedDiff {
+            diff: FieldDiff {
+                path: field_path,
+                kind,
+                baseline: maybe_baseline.cloned(),
+                comparison: maybe_comparison.cloned(),
+            },
+            detail: maybe_diff_detail,
+        });
     }
 
     fn process_difference_with_key(
@@ -615,7 +611,7 @@ fn get_number_type_str(number: &Number) -> &'static str {
 
 fn get_merged_trace_stats(
     groups: &FastHashMap<AggregationKey, BucketedClientStatistics>,
-) -> Result<FastHashMap<AggregationKey, ClientStatistics>, GenericError> {
+) -> Result<FastHashMap<AggregationKey, Value>, GenericError> {
     let mut merged_trace_stats = FastHashMap::default();
     for (k, v) in groups {
         let merged_stats = match v.merged() {
@@ -629,8 +625,266 @@ fn get_merged_trace_stats(
             Err(e) => return Err(e).error_context("Failed to merge client statstics."),
         };
 
+        let merged_stats =
+            serde_json::to_value(&merged_stats).error_context("Failed to serialize client statistics.")?;
         merged_trace_stats.insert(k.clone(), merged_stats);
     }
 
     Ok(merged_trace_stats)
+}
+
+/// A statistics group whose differences no known difference covers.
+struct StatsMismatch {
+    /// The group, named by its fields.
+    group: String,
+
+    /// The differences, one line each.
+    diffs: Vec<String>,
+}
+
+impl StatsMismatch {
+    /// Renders the group and up to `limit` of its differences.
+    fn render(&self, limit: usize) -> String {
+        let mut text = format!("  stats group {}:", self.group);
+        for diff in self.diffs.iter().take(limit) {
+            text.push_str("\n    ");
+            text.push_str(diff);
+        }
+        text
+    }
+}
+
+/// Compares the statistics groups of both sides, and returns the groups with differences that no entry of `ratchet`
+/// covers, in the order of their names.
+///
+/// A group on one side only is a difference at `stats.groups`: `missing` when only the baseline has it, and `extra` when
+/// only the comparison has it. A field that differs in a group on both sides is a difference at `stats.<field>`, however
+/// deep inside the field the difference is. The view that an entry's `when` matches is the group's fields, from the side that has the group, or the baseline.
+fn compare_stats(
+    baseline: &FastHashMap<AggregationKey, Value>, comparison: &FastHashMap<AggregationKey, Value>,
+    recorder: &mut DifferenceRecorder, ratchet: &mut Ratchet<'_>,
+) -> Vec<StatsMismatch> {
+    let mut mismatches = Vec::new();
+    for (key, baseline_group) in baseline {
+        let view = stats_group_view(baseline_group);
+        let unknown = match comparison.get(key) {
+            Some(comparison_group) => {
+                recorder.clear();
+                treediff::diff(baseline_group, comparison_group, recorder);
+                recorder
+                    .diffs()
+                    .iter()
+                    .filter(|recorded| {
+                        let diff = FieldDiff {
+                            path: stats_field_path(&recorded.diff.path),
+                            ..recorded.diff.clone()
+                        };
+                        !ratchet.allows(&diff, &view)
+                    })
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            }
+            None => {
+                let diff = FieldDiff {
+                    path: STATS_GROUPS_PATH.to_string(),
+                    kind: DiffKind::Missing,
+                    baseline: Some(baseline_group.clone()),
+                    comparison: None,
+                };
+                if ratchet.allows(&diff, &view) {
+                    Vec::new()
+                } else {
+                    vec!["only in baseline".to_string()]
+                }
+            }
+        };
+        if !unknown.is_empty() {
+            mismatches.push(StatsMismatch {
+                group: stats_group_name(baseline_group),
+                diffs: unknown,
+            });
+        }
+    }
+
+    for (key, comparison_group) in comparison {
+        if baseline.contains_key(key) {
+            continue;
+        }
+        let diff = FieldDiff {
+            path: STATS_GROUPS_PATH.to_string(),
+            kind: DiffKind::Extra,
+            baseline: None,
+            comparison: Some(comparison_group.clone()),
+        };
+        if !ratchet.allows(&diff, &stats_group_view(comparison_group)) {
+            mismatches.push(StatsMismatch {
+                group: stats_group_name(comparison_group),
+                diffs: vec!["only in comparison".to_string()],
+            });
+        }
+    }
+
+    mismatches.sort_by(|a, b| a.group.cmp(&b.group));
+    mismatches
+}
+
+/// Returns the `stats.<field>` path for the path of a difference inside a statistics group. The path of a nested or
+/// array difference, such as `ok_summary[3]`, is cut at the field, because a glob segment cannot match `ok_summary[3]`.
+fn stats_field_path(path: &str) -> String {
+    let field = path.find(['.', '[']).map_or(path, |end| &path[..end]);
+    format!("{STATS_PREFIX}{field}")
+}
+
+/// The fields of a statistics group, as the view that a known difference's `when` matches.
+fn stats_group_view(group: &Value) -> BTreeMap<String, Value> {
+    group
+        .as_object()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|(field, value)| (field.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Names a statistics group by the fields in `STATS_GROUP_NAME_FIELDS` that are not at their default value.
+fn stats_group_name(group: &Value) -> String {
+    let is_default = |value: &Value| match value {
+        Value::Null => true,
+        Value::Bool(value) => !value,
+        Value::Number(value) => value.as_u64() == Some(0),
+        Value::String(value) => value.is_empty(),
+        Value::Array(values) => values.is_empty(),
+        Value::Object(fields) => fields.is_empty(),
+    };
+    STATS_GROUP_NAME_FIELDS
+        .iter()
+        .filter_map(|field| {
+            let value = group.get(field)?;
+            (!is_default(value)).then(|| format!("{}={}", field, value))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn key(value: u64) -> AggregationKey {
+        value.to_string().parse().unwrap()
+    }
+
+    fn group(resource: &str, hits: u64) -> Value {
+        json!({"service": "svc", "name": "op", "resource": resource, "hits": hits, "errors": 0})
+    }
+
+    fn known(gap: &str, paths: &[&str], kinds: &[&str]) -> KnownDifference {
+        serde_json::from_value(json!({"gap": gap, "issue": 1, "paths": paths, "kinds": kinds, "reason": "test"}))
+            .expect("entry should parse")
+    }
+
+    fn compare(
+        baseline: &[(u64, Value)], comparison: &[(u64, Value)], entries: &[KnownDifference],
+    ) -> (Vec<String>, Vec<String>) {
+        let side = |groups: &[(u64, Value)]| {
+            groups
+                .iter()
+                .map(|(k, group)| (key(*k), group.clone()))
+                .collect::<FastHashMap<_, _>>()
+        };
+        let mut recorder = DifferenceRecorder::new(HashSet::new());
+        let mut ratchet = Ratchet::new(entries);
+        let mismatches = compare_stats(&side(baseline), &side(comparison), &mut recorder, &mut ratchet);
+        let rendered = mismatches.iter().map(|mismatch| mismatch.render(usize::MAX)).collect();
+        (rendered, ratchet.stale_entries())
+    }
+
+    #[test]
+    fn every_stats_difference_is_reported() {
+        let (mismatches, _) = compare(
+            &[(1, group("a", 2)), (2, group("b", 1))],
+            &[(1, group("a", 1)), (3, group("c", 1))],
+            &[],
+        );
+
+        assert_eq!(
+            mismatches,
+            vec![
+                "  stats group service=\"svc\" name=\"op\" resource=\"a\":\n    hits: baseline=2 comparison=1",
+                "  stats group service=\"svc\" name=\"op\" resource=\"b\":\n    only in baseline",
+                "  stats group service=\"svc\" name=\"op\" resource=\"c\":\n    only in comparison",
+            ]
+        );
+    }
+
+    #[test]
+    fn known_stats_differences_are_allowed_by_path_and_kind() {
+        let entries = [
+            known("gap/missing-groups", &["stats.groups"], &["missing"]),
+            known("gap/fewer-hits", &["stats.hits"], &["value"]),
+        ];
+
+        let (mismatches, stale) = compare(
+            &[(1, group("a", 2)), (2, group("b", 1))],
+            &[(1, group("a", 1))],
+            &entries,
+        );
+        assert!(mismatches.is_empty(), "{:?}", mismatches);
+        assert!(stale.is_empty(), "{:?}", stale);
+
+        // A group only in the comparison is `extra`, which the entry does not cover.
+        let (mismatches, _) = compare(
+            &[(1, group("a", 2))],
+            &[(1, group("a", 1)), (3, group("c", 1))],
+            &entries,
+        );
+        assert_eq!(mismatches.len(), 1, "{:?}", mismatches);
+        assert!(mismatches[0].contains("only in comparison"), "{}", mismatches[0]);
+    }
+
+    #[test]
+    fn a_known_stats_difference_covers_nested_differences_of_the_field() {
+        let sketch = |bins: Value| json!({"service": "svc", "name": "op", "ok_summary": bins});
+        let entries = [known("gap/sketch", &["stats.ok_summary"], &["value"])];
+
+        let (mismatches, stale) = compare(
+            &[(1, sketch(json!([1, 2, 3, 4]))), (2, sketch(json!({"bins": [1, 2]})))],
+            &[(1, sketch(json!([1, 2, 3, 5]))), (2, sketch(json!({"bins": [1, 3]})))],
+            &entries,
+        );
+
+        assert!(mismatches.is_empty(), "{:?}", mismatches);
+        assert!(stale.is_empty(), "{:?}", stale);
+    }
+
+    #[test]
+    fn known_stats_differences_can_be_scoped_to_groups() {
+        let mut entry = known("gap/fewer-hits", &["stats.hits"], &["value"]);
+        entry.when = BTreeMap::from([("resource".to_string(), vec![json!("a")])]);
+
+        let (mismatches, stale) = compare(
+            &[(1, group("a", 2)), (2, group("b", 2))],
+            &[(1, group("a", 1)), (2, group("b", 1))],
+            &[entry],
+        );
+
+        assert_eq!(mismatches.len(), 1, "{:?}", mismatches);
+        assert!(mismatches[0].contains("resource=\"b\""), "{}", mismatches[0]);
+        assert!(stale.is_empty(), "{:?}", stale);
+    }
+
+    #[test]
+    fn a_known_stats_difference_that_matches_nothing_is_stale() {
+        let entries = [known("gap/missing-groups", &["stats.groups"], &["missing"])];
+
+        let (mismatches, stale) = compare(&[(1, group("a", 1))], &[(1, group("a", 1))], &entries);
+
+        assert!(mismatches.is_empty(), "{:?}", mismatches);
+        assert_eq!(stale.len(), 1, "{:?}", stale);
+        assert!(stale[0].contains("gap/missing-groups (#1)"), "{}", stale[0]);
+    }
 }

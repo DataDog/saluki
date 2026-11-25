@@ -62,6 +62,10 @@ pub struct KnownDifference {
     /// The gap ID that explains the difference, such as `gap/content-in-message`.
     pub gap: String,
 
+    /// The number of the GitHub issue that tracks the gap.
+    #[serde(default)]
+    pub issue: Option<u64>,
+
     /// Location-qualified field paths the difference applies to.
     ///
     /// Paths are matched segment by segment, splitting on `.`. A segment of `*` matches any one segment, and a segment
@@ -132,9 +136,10 @@ impl<'a> Ratchet<'a> {
         for (entry, used) in self.entries.iter().zip(&self.used) {
             for (path, used) in entry.paths.iter().zip(used) {
                 if !used {
+                    let issue = entry.issue.map(|issue| format!(" (#{})", issue)).unwrap_or_default();
                     stale.push(format!(
-                        "Known difference for {} no longer occurs: path `{}` ({}). Remove it from the case.",
-                        entry.gap, path, entry.reason
+                        "Known difference for {}{} no longer occurs: path `{}` ({}). Remove it from the case.",
+                        entry.gap, issue, path, entry.reason
                     ));
                 }
             }
@@ -179,6 +184,7 @@ mod tests {
     fn entry(gap: &str, paths: &[&str], kinds: &[DiffKind]) -> KnownDifference {
         KnownDifference {
             gap: gap.to_string(),
+            issue: None,
             paths: paths.iter().map(|path| path.to_string()).collect(),
             kinds: kinds.to_vec(),
             when: BTreeMap::new(),

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::time::Instant;
 
-use super::analysis::{AnalysisMode, AnalysisRunner, LogsAnalysisOptions, TracesAnalysisOptions};
+use super::analysis::{AnalysisMode, AnalysisRunner, LogsAnalysisOptions, TracesAnalysisOptions, TracesOptions};
 use super::intake::CollectedData;
 use super::stopped;
 use crate::core::handle::HandleError;
@@ -47,6 +47,7 @@ impl StepFactory for CompareFactory {
             require_dogstatsd_forwarded_packets,
             otlp_direct_analysis_mode,
             additional_span_ignore_fields,
+            traces,
             logs,
         } = fields.decode()?;
         if comparison == baseline {
@@ -74,14 +75,19 @@ impl StepFactory for CompareFactory {
             "additional_span_ignore_fields",
             Telemetry::Traces,
         )?;
+        only_for(traces.is_some(), "traces", Telemetry::Traces)?;
         only_for(logs.is_some(), "logs", Telemetry::Logs)?;
+        let otlp_direct_analysis_mode = otlp_direct_analysis_mode.unwrap_or_default();
+        let traces = traces.unwrap_or_default();
+        traces.validate(otlp_direct_analysis_mode)?;
         Ok(Box::new(Compare {
             telemetry,
             comparison,
             baseline,
             require_dogstatsd_forwarded_packets,
-            otlp_direct_analysis_mode: otlp_direct_analysis_mode.unwrap_or_default(),
+            otlp_direct_analysis_mode,
             additional_span_ignore_fields: additional_span_ignore_fields.unwrap_or_default(),
+            traces,
             logs: logs.unwrap_or_default(),
         }))
     }
@@ -101,6 +107,8 @@ struct Fields {
     otlp_direct_analysis_mode: Option<bool>,
     /// Traces only: more span fields to leave out of the comparison.
     additional_span_ignore_fields: Option<Vec<String>>,
+    /// Traces only: the differences expected, each with the gap and the issue that explain it.
+    traces: Option<TracesOptions>,
     /// Logs only: how logs are paired and counted, and the differences expected.
     logs: Option<LogsAnalysisOptions>,
 }
@@ -158,6 +166,7 @@ struct Compare {
     require_dogstatsd_forwarded_packets: bool,
     otlp_direct_analysis_mode: bool,
     additional_span_ignore_fields: Vec<String>,
+    traces: TracesOptions,
     logs: LogsAnalysisOptions,
 }
 
@@ -186,6 +195,7 @@ impl Step for Compare {
             let traces = TracesAnalysisOptions {
                 otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
                 additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
+                known_differences: self.traces.known_differences.clone(),
             };
             let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, Some(traces))
                 .with_logs_options(self.logs.clone())
@@ -296,5 +306,38 @@ mod tests {
             .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
             .unwrap_err();
         assert_eq!(error, "'logs' is an option for logs, not metrics");
+    }
+
+    #[test]
+    fn a_traces_known_difference_names_an_issue_and_covers_only_stats() {
+        let build = |options: &str, entry: &str| {
+            let fields = format!(
+                "{{telemetry: traces, comparison: app, baseline: peer, {} traces: {{known_differences: [{}]}}}}",
+                options, entry
+            );
+            CompareFactory.build(&StepFields(serde_saphyr::from_str(&fields).unwrap()))
+        };
+
+        assert!(build("", "{gap: gap/a, issue: 1, paths: [stats.hits], reason: r}").is_ok());
+
+        let error = build("", "{gap: gap/a, paths: [stats.hits], reason: r}").unwrap_err();
+        assert_eq!(error, "known difference 'gap/a' names no 'issue'");
+
+        let error = build("", "{gap: gap/a, issue: 1, paths: [meta.foo], reason: r}").unwrap_err();
+        assert!(error.contains("only 'stats.*' paths"), "{}", error);
+
+        // The mode skips the stats comparison, so every entry would be stale.
+        let error = build(
+            "otlp_direct_analysis_mode: true,",
+            "{gap: gap/a, issue: 1, paths: [stats.hits], reason: r}",
+        )
+        .unwrap_err();
+        assert!(error.contains("takes no 'known_differences'"), "{}", error);
+
+        let fields = "{telemetry: metrics, comparison: app, baseline: peer, traces: {}}";
+        let error = CompareFactory
+            .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
+            .unwrap_err();
+        assert_eq!(error, "'traces' is an option for traces, not metrics");
     }
 }
