@@ -143,21 +143,42 @@ impl<'a> OriginInfo<'a> {
     /// a boolean. An integer converts with two's-complement truncation, as Go's `uint32(...)` and `uint64(...)` do. The
     /// pod UID and the container name accept any type, and convert to a string as `pdata`'s `AsString` does.
     pub fn from_attributes(attributes: &'a [KeyValue]) -> Self {
+        // Each slot holds the value of the first attribute with its key, as `Map.Get` does. A valueless attribute
+        // fills its slot with `None`, so a later attribute with the same key doesn't count.
+        let mut process_id = None;
+        let mut pod_uid = None;
+        let mut container_name = None;
+        let mut cgroup_inode = None;
+        let mut init_container = None;
+        for attribute in attributes {
+            let slot = match attribute.key.as_str() {
+                PROCESS_PID => &mut process_id,
+                K8S_POD_UID => &mut pod_uid,
+                K8S_CONTAINER_NAME => &mut container_name,
+                KEY_DATADOG_CONTAINER_CGROUP_INODE => &mut cgroup_inode,
+                KEY_DATADOG_CONTAINER_IS_INIT => &mut init_container,
+                _ => continue,
+            };
+            if slot.is_none() {
+                *slot = Some(attribute_value(attribute));
+            }
+        }
+
         let mut origin = Self::default();
-        if let Some(Value::IntValue(process_id)) = attribute_value(attributes, PROCESS_PID) {
+        if let Some(Some(Value::IntValue(process_id))) = process_id {
             origin.process_id = *process_id as u32;
         }
-        if let Some(value) = attribute(attributes, K8S_POD_UID) {
+        if let Some(value) = pod_uid {
             origin.pod_uid = otlp_value_as_string(value);
         }
-        if let Some(value) = attribute(attributes, K8S_CONTAINER_NAME) {
+        if let Some(value) = container_name {
             origin.container_name = otlp_value_as_string(value);
         }
-        if let Some(Value::IntValue(inode)) = attribute_value(attributes, KEY_DATADOG_CONTAINER_CGROUP_INODE) {
+        if let Some(Some(Value::IntValue(inode))) = cgroup_inode {
             origin.cgroup_inode = *inode as u64;
         }
-        if let Some(Value::BoolValue(init_container)) = attribute_value(attributes, KEY_DATADOG_CONTAINER_IS_INIT) {
-            origin.init_container = *init_container;
+        if let Some(Some(Value::BoolValue(is_init))) = init_container {
+            origin.init_container = *is_init;
         }
         origin
     }
@@ -167,7 +188,7 @@ impl<'a> OriginInfo<'a> {
 ///
 /// A `container.id` of any type, including an empty value, counts as present.
 pub fn inject_container_id(attributes: &mut Vec<KeyValue>, resolver: &ContainerIdResolver) {
-    if attribute(attributes, CONTAINER_ID).is_some() {
+    if has_attribute(attributes, CONTAINER_ID) {
         return;
     }
     let Some(container_id) = resolver.resolve(&OriginInfo::from_attributes(attributes)) else {
@@ -181,18 +202,14 @@ pub fn inject_container_id(attributes: &mut Vec<KeyValue>, resolver: &ContainerI
     });
 }
 
-/// Returns the value of the first attribute with `key`, as `pdata`'s `Map.Get` does.
-///
-/// The value of an attribute without a value is `None`, as `pdata`'s empty value.
-fn attribute<'a>(attributes: &'a [KeyValue], key: &str) -> Option<Option<&'a Value>> {
-    attributes
-        .iter()
-        .find(|attribute| attribute.key == key)
-        .map(|attribute| attribute.value.as_ref().and_then(|value| value.value.as_ref()))
+/// Returns `true` if an attribute with `key` is present, with or without a value, as `Map.Get` reports.
+fn has_attribute(attributes: &[KeyValue], key: &str) -> bool {
+    attributes.iter().any(|attribute| attribute.key == key)
 }
 
-fn attribute_value<'a>(attributes: &'a [KeyValue], key: &str) -> Option<&'a Value> {
-    attribute(attributes, key).flatten()
+/// Returns the value of an attribute, or `None` for an attribute without a value, which `pdata` reads as empty.
+fn attribute_value(attribute: &KeyValue) -> Option<&Value> {
+    attribute.value.as_ref().and_then(|value| value.value.as_ref())
 }
 
 /// Returns `true` if `entity_id` is a container with an ID that isn't empty.
@@ -586,6 +603,17 @@ mod tests {
             (
                 "string PID before integer PID",
                 vec![pid(string("42")), pid(IntValue(42))],
+                None,
+            ),
+            (
+                "valueless PID before integer PID",
+                vec![
+                    KeyValue {
+                        key: PROCESS_PID.to_owned(),
+                        value: None,
+                    },
+                    pid(IntValue(42)),
+                ],
                 None,
             ),
         ];

@@ -134,9 +134,9 @@ pub struct OtlpConfiguration {
     /// Workload provider to utilize for origin detection/enrichment.
     pub workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 
-    /// Resolves the process ID of an OTLP resource to its container.
+    /// Resolves the process ID of an OTLP resource to its container through procfs.
     ///
-    /// Without a resolver, container ID detection skips the process ID.
+    /// Container ID detection asks the workload provider first. Without a resolver, it skips only the procfs fallback.
     pub capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
 }
 
