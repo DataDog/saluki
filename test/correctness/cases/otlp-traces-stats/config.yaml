@@ -47,7 +47,6 @@ procedure:
         # The fixture holds 37 traces and 48 spans. Its spans have the 35 groups that both sides must compute, and a few
         # more that only one side computes.
         traces:
-          require_ssi: false
           min_traces: 37
           min_spans: 48
           spans:
