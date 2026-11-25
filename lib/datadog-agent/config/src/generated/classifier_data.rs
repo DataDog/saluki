@@ -10,6 +10,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Partial,
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("1"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "min_tls_version",
@@ -17,6 +18,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Partial,
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("\"tlsv1.2\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "aggregator_buffer_size",
@@ -24,6 +26,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("100"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "aggregator_flush_metrics_and_serialize_in_parallel_buffer_size",
@@ -31,6 +34,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("4000"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "aggregator_flush_metrics_and_serialize_in_parallel_chan_size",
@@ -38,6 +42,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("200"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "aggregator_use_tags_store",
@@ -45,6 +50,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("true"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "config_id",
@@ -52,6 +58,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("\"\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "data_plane.telemetry_enabled",
@@ -59,6 +66,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "data_plane.telemetry_listen_addr",
@@ -66,6 +74,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("\"tcp://0.0.0.0:5102\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_experimental_http.max_concurrent_requests",
@@ -73,6 +82,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("8"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_experimental_http.max_payload_size",
@@ -80,6 +90,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("262144"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_experimental_http.read_timeout",
@@ -87,6 +98,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::DurationNanos(1000000000),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_host_socket_path",
@@ -94,6 +106,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("\"/var/run/datadog\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.enabled",
@@ -101,6 +114,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.go_gc",
@@ -108,6 +122,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("1"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.high_soft_limit",
@@ -115,6 +130,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("0.8"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.low_soft_limit",
@@ -122,6 +138,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("0.7"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.memory_ballast",
@@ -129,6 +146,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("8589934592"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.rate_check.factor",
@@ -136,6 +154,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("2"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.rate_check.max",
@@ -143,6 +162,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("1"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.rate_check.min",
@@ -150,6 +170,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("0.01"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.factor",
@@ -157,6 +178,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("1.5"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max",
@@ -164,6 +186,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("0.1"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min",
@@ -171,6 +194,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("0.01"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_no_aggregation_pipeline_batch_size",
@@ -178,6 +202,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("2048"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_no_aggregation_pipeline_workers_count",
@@ -185,6 +210,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("1"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_packet_buffer_flush_timeout",
@@ -192,6 +218,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::DurationNanos(100000000),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_packet_buffer_size",
@@ -199,6 +226,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("32"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_pipeline_autoadjust",
@@ -206,6 +234,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_pipeline_count",
@@ -213,6 +242,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("1"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_queue_size",
@@ -220,6 +250,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("1024"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_stats_buffer",
@@ -227,6 +258,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("10"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_stats_enable",
@@ -234,6 +266,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_stats_port",
@@ -241,6 +274,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("5000"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_telemetry_enabled_listener_id",
@@ -248,6 +282,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "enable_json_stream_shared_compressor_buffers",
@@ -255,6 +290,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
         default: DefaultValue::Json("true"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "entity_id",
@@ -262,6 +298,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("\"\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "forwarder_requeue_buffer_size",
@@ -269,6 +306,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("100"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "heroku_dyno",
@@ -276,6 +314,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "logging_frequency",
@@ -283,6 +322,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("500"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.capacity",
@@ -290,6 +330,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("262144"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.dogstatsd.metric_names",
@@ -297,6 +338,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("[]"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.egress.post_recovery_window",
@@ -304,6 +346,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::DurationNanos(30000000000),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.egress.pre_trigger_window",
@@ -311,6 +354,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::DurationNanos(0),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.enabled",
@@ -318,6 +362,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.monitor.evaluation_interval",
@@ -325,6 +370,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::DurationNanos(30000000000),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.monitor.metric_name",
@@ -332,6 +378,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("\"\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.monitor.mode",
@@ -339,6 +386,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("\"disabled\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.monitor.partition_tags",
@@ -346,6 +394,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("[]"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.monitor.range_epsilon",
@@ -353,6 +402,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("0"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "metric_lookback.shard_count",
@@ -360,6 +410,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("16"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.metrics.batch.flush_timeout",
@@ -367,6 +418,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Json("\"200ms\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.metrics.batch.max_size",
@@ -374,6 +426,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Json("0"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.metrics.batch.min_size",
@@ -381,6 +434,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Json("8192"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.metrics.infra_attributes.as_tags",
@@ -388,6 +442,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.include_metadata",
@@ -395,6 +450,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time",
@@ -402,6 +458,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::DurationNanos(300000000000),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream",
@@ -409,6 +466,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle",
@@ -416,6 +474,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.read_buffer_size",
@@ -423,6 +482,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Json("524288"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.ca_pem",
@@ -430,6 +490,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.cert_pem",
@@ -437,6 +498,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.cipher_suites",
@@ -444,6 +506,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.client_ca_file",
@@ -451,6 +514,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload",
@@ -458,6 +522,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.curve_preferences",
@@ -465,6 +530,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool",
@@ -472,6 +538,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.key_pem",
@@ -479,6 +546,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.max_version",
@@ -486,6 +554,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.min_version",
@@ -493,6 +562,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.reload_interval",
@@ -500,6 +570,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.tpm.auth",
@@ -507,6 +578,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.tpm.enabled",
@@ -514,6 +586,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth",
@@ -521,6 +594,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.tpm.path",
@@ -528,6 +602,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.write_buffer_size",
@@ -535,6 +610,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Json("0"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.include_metadata",
@@ -542,6 +618,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Json("false"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.ca_pem",
@@ -549,6 +626,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.cert_pem",
@@ -556,6 +634,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.cipher_suites",
@@ -563,6 +642,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.client_ca_file",
@@ -570,6 +650,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.client_ca_file_reload",
@@ -577,6 +658,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.curve_preferences",
@@ -584,6 +666,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool",
@@ -591,6 +674,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.key_pem",
@@ -598,6 +682,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.max_version",
@@ -605,6 +690,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.min_version",
@@ -612,6 +698,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.reload_interval",
@@ -619,6 +706,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.tpm.auth",
@@ -626,6 +714,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.tpm.enabled",
@@ -633,6 +722,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.tpm.owner_auth",
@@ -640,6 +730,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.tpm.path",
@@ -647,6 +738,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "otlp_config.traces.infra_attributes.container_tag_promotion",
@@ -654,6 +746,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
         default: DefaultValue::Json("\"off\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.sketches.beta_route",
@@ -661,6 +754,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("\"/api/intake/metrics/v3beta/sketches\""),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.sketches.shadow_sample_rate",
@@ -668,6 +762,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("0.001"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.sketches.shadow_sites",
@@ -675,6 +770,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("[\"datadoghq.com\"]"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.aggregator_channel_latency_buckets",
@@ -682,6 +778,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("[]"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.listeners_channel_latency_buckets",
@@ -689,6 +786,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("[]"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.listeners_latency_buckets",
@@ -696,6 +794,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("[]"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "use_dogstatsd",
@@ -703,6 +802,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("true"),
+        presence_matters: false,
     },
     ClassifierEntry {
         yaml_path: "forwarder_low_prio_buffer_size",
@@ -710,5 +810,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: DefaultValue::Json("100"),
+        presence_matters: false,
     },
 ];

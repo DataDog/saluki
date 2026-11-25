@@ -15,16 +15,56 @@ use crate::ConfigurationSystem;
 
 impl ConfigurationSystem {
     /// Checks settings that an input set explicitly and that affect active pipelines, logging the
-    /// severity of each.
+    /// severity of each. A setting at its default value is skipped, unless the Agent's behavior
+    /// depends on whether the key is set.
     ///
     /// # Errors
     ///
     /// Returns an error if high-severity incompatibilities exist. All keys are checked before
     /// returning, so the error includes the total count.
     pub fn check_compatibility(&self, active_pipelines: &HashSet<Pipeline>) -> Result<(), GenericError> {
-        let classifier = ConfigClassifier::new();
         let mut high_severity_incompatibilities = 0u32;
         debug!("Analyzing configuration.");
+        for (key, support_level) in self.compatibility_findings(active_pipelines) {
+            match support_level {
+                SupportLevel::Incompatible(Severity::Low) => {
+                    debug!("Low-severity incompatible key detected. Proceeding.")
+                }
+                SupportLevel::Partial => {
+                    warn!(key = %key, "Partially supported configuration key. See documentation for details. Proceeding.")
+                }
+                SupportLevel::Incompatible(Severity::Medium) => {
+                    warn!(key = %key, "Unsupported configuration key. Proceeding.")
+                }
+                SupportLevel::Incompatible(Severity::High) => {
+                    error!(key = %key, "Unsupported configuration key is set to a value other than its default. ADP \
+                    cannot run safely with this setting.");
+                    high_severity_incompatibilities += 1;
+                }
+                SupportLevel::Ignored | SupportLevel::Unrecognized => {
+                    trace!(key = %key, "Configuration key not-applicable. Silently ignoring.")
+                }
+            }
+        }
+
+        if high_severity_incompatibilities > 0 {
+            return Err(generic_error!(
+                "{high_severity_incompatibilities} incompatible configuration detected. ADP cannot start. Review error \
+                logs for details."
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Returns each classified key that an input set explicitly and that affects an active pipeline,
+    /// with its support level.
+    ///
+    /// A key set to its default value is left out, unless the Agent's behavior depends on whether the
+    /// key is set.
+    fn compatibility_findings(&self, active_pipelines: &HashSet<Pipeline>) -> Vec<(String, SupportLevel)> {
+        let classifier = ConfigClassifier::new();
+        let mut findings = Vec::new();
         for (key, value, provenance) in self.sources().flattened_keys() {
             let Some(classification) = classifier.classify(&key, value) else {
                 continue;
@@ -45,35 +85,19 @@ impl ConfigurationSystem {
                 continue;
             }
 
-            match classification.support_level {
-                SupportLevel::Incompatible(Severity::Low) => {
-                    debug!("Low-severity incompatible key detected. Proceeding.")
-                }
-                SupportLevel::Partial => {
-                    warn!(key = %key, "Partially supported configuration key. See documentation for details. Proceeding.")
-                }
-                SupportLevel::Incompatible(Severity::Medium) => {
-                    warn!(key = %key, "Unsupported configuration key. Proceeding.")
-                }
-                SupportLevel::Incompatible(Severity::High) => {
-                    error!(key = %key, "Unsupported configuration key with non-default value. ADP cannot run safely with \
-                    this setting.");
-                    high_severity_incompatibilities += 1;
-                }
-                SupportLevel::Ignored | SupportLevel::Unrecognized => {
-                    trace!(key = %key, "Configuration key not-applicable. Silently ignoring.")
-                }
+            // A key set explicitly to its schema default asks for the behavior ADP has when nobody
+            // sets it. The comparison can miss a default written in another form, such as a duration
+            // or a coerced scalar. A miss reports the key, so the check fails safe. A key whose
+            // presence alone changes the Agent's behavior is reported at its default too.
+            if classification.is_default && !classification.presence_matters {
+                trace!(key = %key, "Configuration key is set to its default value.");
+                continue;
             }
+
+            findings.push((key, classification.support_level));
         }
 
-        if high_severity_incompatibilities > 0 {
-            return Err(generic_error!(
-                "{high_severity_incompatibilities} incompatible configuration detected. ADP cannot start. Review error \
-                logs for details."
-            ));
-        }
-
-        Ok(())
+        findings
     }
 }
 
@@ -81,7 +105,7 @@ impl ConfigurationSystem {
 mod tests {
     use std::collections::HashSet;
 
-    use datadog_agent_config::classifier::Pipeline;
+    use datadog_agent_config::classifier::{Pipeline, Severity, SupportLevel};
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use serde_json::{json, Value};
 
@@ -162,16 +186,80 @@ mod tests {
     }
 
     #[test]
-    fn a_high_severity_key_set_to_its_default_value_is_still_checked() {
-        // Writing an unsupported key is a request ADP cannot honor, so it is reported even when the
-        // value written happens to be the one the schema would have supplied.
-        let system = system_with(otlp_tls_settings("", ""));
+    fn a_high_severity_key_set_to_its_default_value_is_skipped() {
+        // A key written at its schema default asks for the behavior ADP has when nobody sets it, so
+        // it isn't an incompatibility.
+        let system = system_with(json!({ "heroku_dyno": false }));
 
-        let error = system
+        system
+            .check_compatibility(&pipelines(&[]))
+            .expect("a key set to its default value is not an incompatibility");
+        assert!(system.compatibility_findings(&pipelines(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_key_whose_presence_matters_is_reported_at_its_default_value() {
+        // Any value under `tls`, an empty one included, makes the Agent's OTLP receiver configure TLS.
+        let no_schema_default = system_with(otlp_tls_settings("", ""));
+        let error = no_schema_default
             .check_compatibility(&pipelines(&[Pipeline::Otlp]))
-            .expect_err("an explicitly set key should fail the check");
-
+            .expect_err("a key without a schema default is checked whatever its value");
         assert!(error.to_string().contains("2 incompatible configuration detected"));
+
+        // On 1.8.x no classified key carries `presence_matters: true` in the overlay:
+        // `logs_config.compression_kind`, the only marked key on main, is not classified here.
+    }
+
+    #[test]
+    fn a_warning_key_set_to_its_default_value_is_skipped() {
+        let system = system_with(json!({
+            "min_tls_version": "tlsv1.2",
+            "dogstatsd_telemetry_enabled_listener_id": false,
+        }));
+
+        assert!(system
+            .compatibility_findings(&pipelines(&[Pipeline::DogStatsD]))
+            .is_empty());
+    }
+
+    #[test]
+    fn a_warning_key_set_to_a_non_default_value_is_reported() {
+        let system = system_with(json!({
+            "min_tls_version": "tlsv1.3",
+            "dogstatsd_telemetry_enabled_listener_id": true,
+        }));
+
+        let mut findings = system.compatibility_findings(&pipelines(&[Pipeline::DogStatsD]));
+        findings.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            findings,
+            vec![
+                (
+                    "dogstatsd_telemetry_enabled_listener_id".to_string(),
+                    SupportLevel::Incompatible(Severity::Medium)
+                ),
+                ("min_tls_version".to_string(), SupportLevel::Partial),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_default_value_the_comparison_misses_is_still_reported() {
+        // The default comparison does not coerce a string to a boolean, or a float to integer
+        // nanoseconds. A value it can't match is reported, so a miss fails safe.
+        let coerced_scalar = system_with(json!({ "heroku_dyno": "false" }));
+        coerced_scalar
+            .check_compatibility(&pipelines(&[]))
+            .expect_err("a default value the comparison misses is still checked");
+
+        let duration = system_with(json!({ "dogstatsd_packet_buffer_flush_timeout": 100_000_000.0 }));
+        assert_eq!(
+            duration.compatibility_findings(&pipelines(&[Pipeline::DogStatsD])),
+            vec![(
+                "dogstatsd_packet_buffer_flush_timeout".to_string(),
+                SupportLevel::Incompatible(Severity::Low)
+            )]
+        );
     }
 
     #[test]

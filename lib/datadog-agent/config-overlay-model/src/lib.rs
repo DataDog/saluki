@@ -102,6 +102,11 @@ pub struct Unsupported {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
+    /// Whether the core Agent's behavior depends on whether the key is set, not only on its value.
+    /// When true, the compatibility check reports the key even when it is set to its default value.
+    /// Keys without a schema default are always treated this way. Defaults to false.
+    #[serde(default)]
+    pub presence_matters: bool,
 }
 
 /// Metadata for a key whose support level has not yet been determined.

@@ -38,6 +38,11 @@
 #
 # excluded                   -> no classifier entry; no docs table entry
 #
+# The startup compatibility check skips a classified key that is set to its schema default. Set
+# `presence_matters: true` on a none key when the core Agent's behavior depends on whether the key
+# is set, so that the check reports it at its default too. Keys without a schema default are always
+# reported.
+#
 # Validation rules are somewhat complex. For complete rules, see the code in `config-overlay-model`,
 # but here are some of the basics:
 #
