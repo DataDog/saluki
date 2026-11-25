@@ -88,6 +88,9 @@
 //! A child that can start again, and that you declare in advance with [`Supervisor::add_worker`], is needed by default.
 //! This is because it is part of the purpose of its supervisor. Every other child is hosted by default.
 //!
+//! A restart builds the work of the child again. To keep the state of the work across restarts instead, run it in a
+//! [`ResumableWorker`].
+//!
 //! # Scopes
 //!
 //! A supervisor owns its children. Every supervised worker also owns the children that it spawns, and keeps them in its
@@ -101,6 +104,15 @@
 //! [`scope::nested`]. You can also create a scope before the process that will own it exists, with [`UnadoptedScope`].
 //! This lets work spawned during the construction of something belong to the process that later runs that thing.
 //!
+//! # Work that starts before supervision
+//!
+//! Some work has to start before any supervisor runs, and then continue under one. For example, a registration with a
+//! remote service that expires unless it is refreshed has to keep being refreshed while the supervision tree is built.
+//! A running task can't move into a supervision tree, so [`ResumableWorker::start_early`] runs such work in a plain
+//! task, and returns a worker that takes the work over when it first starts, continuing from the state that the task
+//! left.
+//! Unlike the children of an [`UnadoptedScope`], which wait for a worker to adopt them, the work runs while it waits.
+//!
 //! # Where to spawn a child
 //!
 //! Spawn most children into the scope of the current process with [`spawn`]. Use a different way only when one of these
@@ -113,6 +125,8 @@
 //!   [`Supervisor`], and spawn the child through its [`SupervisorHandle`].
 //! - Children need their own restart strategy, resource group, or runtime. A scope restarts its children at most once
 //!   in each five-second period, for all of its children together. Put these children under a [`Supervisor`].
+//! - The work must start before any supervisor runs. Start it with [`ResumableWorker::start_early`], and add the worker
+//!   to a supervisor once there is one.
 //!
 //! If a worker body only waits for a stop request while its children do the work, use a [`Supervisor`] instead.
 //!
@@ -191,6 +205,9 @@ pub use self::builder::{
 
 mod workers;
 pub use self::workers::{FnWorker, IntoWorkerResult};
+
+mod resumable;
+pub use self::resumable::{Resumable, ResumableWorker};
 
 mod worker_state;
 

@@ -12,7 +12,7 @@ use otlp_protos::opentelemetry::proto::{
 };
 use prost::Message as _;
 
-use crate::common::{array, boolean, bytes, double, empty, int, kv, map, string};
+use crate::common::{array, boolean, bytes, double, empty, int, kv, map, string, LAMBDA_ARN};
 
 /// 2026-10-29T10:00:00Z, in nanoseconds.
 const BASE_TIME_NANOS: u64 = 1_793_268_000_000_000_000;
@@ -559,6 +559,51 @@ pub fn resource_host_fixture() -> Vec<u8> {
                 scope_logs(no_scope(), vec![record(5, "carry-over-next-scope", vec![])]),
             ],
         ),
+        // The record-level host fallback resolves the record's source like a resource's: `datadog.host.name` wins and
+        // sticks.
+        resource_logs(
+            vec![],
+            vec![scope_logs(
+                no_scope(),
+                vec![
+                    record(
+                        60,
+                        "carry-over-datadog-host",
+                        vec![
+                            kv("datadog.host.name", string("record-datadog-host")),
+                            kv("host.name", string("record-host")),
+                        ],
+                    ),
+                    record(61, "carry-over-datadog-host-second", vec![]),
+                ],
+            )],
+        ),
+        // A serverless record has no host, so the host of a later record sticks.
+        resource_logs(
+            vec![],
+            vec![scope_logs(
+                no_scope(),
+                vec![
+                    record(
+                        62,
+                        "carry-over-serverless",
+                        vec![
+                            kv("cloud.platform", string("azure.functions")),
+                            kv("service.name", string("record-function")),
+                            kv("cloud.account.id", string("sub-1")),
+                            kv("azure.resource_group.name", string("rg-1")),
+                            kv("host.name", string("serverless-host")),
+                        ],
+                    ),
+                    record(
+                        63,
+                        "carry-over-after-serverless",
+                        vec![kv("host.name", string("later-host"))],
+                    ),
+                    record(64, "carry-over-after-serverless-second", vec![]),
+                ],
+            )],
+        ),
     ];
 
     // gap/host-resolution: resource host precedence.
@@ -688,6 +733,82 @@ pub fn resource_host_fixture() -> Vec<u8> {
         resources.push(resource_logs(
             attributes,
             vec![scope_logs(no_scope(), vec![record(20 + index as u64, id, vec![])])],
+        ));
+    }
+
+    // Serverless sources take precedence over the resource's `host.name`, and non-string literal `host` values.
+    let azure = |platform: &str| {
+        vec![
+            kv("cloud.platform", string(platform)),
+            kv("cloud.account.id", string("sub-1")),
+            kv("azure.resource_group.name", string("rg-1")),
+        ]
+    };
+    let gcp = |platform: &str| {
+        vec![
+            kv("cloud.platform", string(platform)),
+            kv("cloud.account.id", string("project-1")),
+            kv("cloud.region", string("us-central1")),
+            kv("faas.name", string("svc-1")),
+            kv("faas.instance", string("instance-1")),
+            kv("faas.version", string("rev-1")),
+        ]
+    };
+    let without = |mut attributes: Vec<KeyValue>, key: &str| {
+        attributes.retain(|attribute| attribute.key != key);
+        attributes
+    };
+    let with = |mut attributes: Vec<KeyValue>, attribute: KeyValue| {
+        attributes.push(attribute);
+        attributes
+    };
+    let source_cases: Vec<(&str, Vec<KeyValue>)> = vec![
+        ("source-azure-functions", azure("azure.functions")),
+        (
+            "source-azure-functions-incomplete",
+            without(azure("azure.functions"), "azure.resource_group.name"),
+        ),
+        ("source-azure-app-service", azure("azure.app_service")),
+        (
+            "source-azure-app-service-incomplete",
+            without(azure("azure.app_service"), "cloud.account.id"),
+        ),
+        (
+            "source-azure-container-apps",
+            with(
+                azure("azure.container_apps"),
+                kv("azure.container_app.instance.id", string("replica-1")),
+            ),
+        ),
+        ("source-azure-container-apps-no-replica", azure("azure.container_apps")),
+        ("source-gcp-cloud-run", gcp("gcp_cloud_run")),
+        ("source-gcp-cloud-functions", gcp("gcp_cloud_functions")),
+        (
+            "source-gcp-cloud-run-incomplete",
+            without(gcp("gcp_cloud_run"), "faas.instance"),
+        ),
+        (
+            "source-gcp-cloud-run-job",
+            with(gcp("gcp_cloud_run"), kv("gcp.cloud_run.job.execution", string("job-1"))),
+        ),
+        (
+            "source-aws-lambda",
+            vec![
+                kv("cloud.provider", string("aws")),
+                kv("cloud.platform", string("aws_lambda")),
+                kv("faas.id", string(LAMBDA_ARN)),
+            ],
+        ),
+        ("source-literal-host-int", vec![kv("host", int(5))]),
+        ("source-literal-host-bool", vec![kv("host", boolean(true))]),
+        ("source-literal-host-double", vec![kv("host", double(1.5))]),
+    ];
+    for (index, (id, mut attributes)) in source_cases.into_iter().enumerate() {
+        attributes.push(kv("service.name", string("fixture-source")));
+        attributes.push(kv("host.name", string("source-host")));
+        resources.push(resource_logs(
+            attributes,
+            vec![scope_logs(no_scope(), vec![record(40 + index as u64, id, vec![])])],
         ));
     }
 

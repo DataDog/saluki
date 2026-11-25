@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use airlock::driver::{Driver, DriverDetails};
+use airlock::container::Container;
+use airlock::host::HostProcess;
 use airlock::scope::CaseScope;
-use airlock::unix::UnixProcess;
 use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{Api, DeleteParams};
@@ -22,6 +22,25 @@ use crate::core::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 
 /// Shared budget for stopping a case's tracked tasks and removing its resources.
 pub(crate) const RECLAIM_TIME: Duration = Duration::from_secs(30);
+
+/// How long a stopped host process has to exit after SIGTERM before it is sent SIGKILL.
+const STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Kills every process of the node that runs a program from directory `$1`, waits until none is left, and removes the
+/// directory. Nothing else stops such a process: it runs in the node, outside every namespace.
+const REMOVE_NODE_DIRECTORY: &str = r#"
+while :; do
+    left=
+    for proc in /proc/[0-9]*; do
+        case "$(readlink "$proc/exe" 2>/dev/null)" in
+            "$1"/*) kill -9 "${proc#/proc/}" 2>/dev/null && left=1 ;;
+        esac
+    done
+    [ -z "$left" ] && break
+    sleep 0.1
+done
+rm -rf "$1"
+"#;
 
 /// How often reclaim checks whether a deleted namespace is gone.
 const NAMESPACE_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -37,7 +56,7 @@ pub(crate) fn random_id() -> String {
 
 /// Shares a case's registered resources between its test body and the runner.
 ///
-/// Register isolation groups, case scopes and namespaces before creation requests. The runner calls
+/// Register case scopes and namespaces before creation requests. The runner calls
 /// [`Self::reclaim`] to attempt removal in reverse registration order. Dropping the last ledger handle sends SIGKILL to
 /// registered process groups; directories, Docker resources, and namespaces require explicit reclaim.
 #[derive(Clone, Debug, Default)]
@@ -54,16 +73,18 @@ struct Entry {
 
 /// A resource the runner knows how to remove.
 enum Resource {
-    /// The containers, shared volume, and network labeled with this isolation-group ID.
-    IsolationGroup(String),
     /// The containers, volume and network of one case scope.
     CaseScope(CaseScope),
-    /// A host process and its process group.
-    Process(UnixProcess),
+    /// A host program and its process group.
+    HostProcess(HostProcess),
     /// A Kubernetes namespace, removed through the client that created it.
     Namespace { name: String, client: Client },
     /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),
+    /// A directory on a kind node, removed through the node's container once every namespace of the walk is gone, so a
+    /// pod still running cannot lose the files it mounts. The processes the node runs from the directory, such as a
+    /// courier following a pod's log file, are killed first.
+    NodeDirectory { node: Container, path: String },
 }
 
 /// A namespace awaiting confirmation that deletion finished.
@@ -79,6 +100,8 @@ type Settled = (ReclaimResult, Option<String>);
 enum Removal {
     Settled(Settled),
     Terminating(Box<Terminating>),
+    /// A resource removed after every namespace is confirmed gone.
+    AfterNamespaces(Resource),
 }
 
 impl Resource {
@@ -88,9 +111,8 @@ impl Resource {
     /// blocking thread after its future is dropped. A case scope's Docker requests are bounded by `deadline`.
     async fn remove(self, deadline: Instant) -> Result<Option<Terminating>, GenericError> {
         match self {
-            Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
             Self::CaseScope(scope) => scope.reclaim(deadline).await.map(|()| None),
-            Self::Process(process) => process.cleanup().await.map(|()| None),
+            Self::HostProcess(process) => process.stop(STOP_GRACE).await.map(|()| None),
             Self::Namespace { name, client } => {
                 let api = Api::<Namespace>::all(client);
                 match api.delete(&name, &DeleteParams::default()).await {
@@ -105,6 +127,25 @@ impl Resource {
                     .map(|()| None)
                     .with_error_context(|| format!("Failed to remove '{}'", path.display())),
             },
+            Self::NodeDirectory { node, path } => {
+                let argv = ["sh", "-c", REMOVE_NODE_DIRECTORY, "sh", &path]
+                    .map(str::to_string)
+                    .to_vec();
+                let removed = node
+                    .exec(argv, None, deadline)
+                    .await
+                    .with_error_context(|| format!("Failed to remove '{}' on node '{}'", path, node.name()))?;
+                if removed.exit_code != 0 {
+                    return Err(generic_error!(
+                        "Failed to remove '{}' on node '{}': the removal exited with {}: {}",
+                        path,
+                        node.name(),
+                        removed.exit_code,
+                        String::from_utf8_lossy(&removed.stderr).trim()
+                    ));
+                }
+                Ok(None)
+            }
         }
     }
 }
@@ -113,11 +154,15 @@ impl fmt::Debug for Resource {
     /// Omits a namespace's client, which isn't `Debug`, and names a case scope by its resource name.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::IsolationGroup(id) => f.debug_tuple("IsolationGroup").field(id).finish(),
             Self::CaseScope(scope) => f.debug_tuple("CaseScope").field(&scope.resource_name()).finish(),
-            Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
+            Self::HostProcess(process) => f.debug_tuple("HostProcess").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
+            Self::NodeDirectory { node, path } => f
+                .debug_struct("NodeDirectory")
+                .field("node", &node.name())
+                .field("path", path)
+                .finish(),
         }
     }
 }
@@ -126,11 +171,11 @@ impl fmt::Display for Resource {
     /// Resource label used in cleanup reports.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
             Self::CaseScope(scope) => write!(f, "case_scope:{}", scope.resource_name()),
-            Self::Process(process) => write!(f, "process:{}", process.name()),
+            Self::HostProcess(process) => write!(f, "host_process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
             Self::Directory(path) => write!(f, "directory:{}", path.display()),
+            Self::NodeDirectory { path, .. } => write!(f, "node_directory:{}", path),
         }
     }
 }
@@ -152,6 +197,11 @@ impl Terminating {
             }
         }
     }
+}
+
+/// Why a resource is kept when `kept_by` was not reclaimed.
+fn kept(kept_by: &str) -> Option<String> {
+    Some(format!("kept because {} was not reclaimed", kept_by))
 }
 
 /// Keeps a completed removal unsettled when creation may still finish afterward.
@@ -179,21 +229,14 @@ impl ResourceLedger {
         });
     }
 
-    /// Registers a new isolation group and returns its ID. Call it before creating anything in the group.
-    pub(crate) fn isolation_group(&self) -> String {
-        let id = random_id();
-        self.register(Resource::IsolationGroup(id.clone()));
-        id
-    }
-
     /// Registers a case scope. Call it before preparing the scope.
     pub(crate) fn case_scope(&self, scope: CaseScope) {
         self.register(Resource::CaseScope(scope));
     }
 
-    /// Takes ownership of a spawned process.
-    pub(crate) fn process(&self, process: UnixProcess) {
-        self.register(Resource::Process(process));
+    /// Takes ownership of a started host program. Call it as soon as the program starts.
+    pub(crate) fn host_process(&self, process: HostProcess) {
+        self.register(Resource::HostProcess(process));
     }
 
     /// Registers a namespace, which reclaim deletes through `client`. Call it before creating the namespace.
@@ -201,19 +244,25 @@ impl ResourceLedger {
         self.register(Resource::Namespace { name, client });
     }
 
-    /// Registers a directory the case created.
+    /// Registers a directory the case created. Call it before creating the directory.
     pub(crate) fn directory(&self, path: PathBuf) {
         self.register(Resource::Directory(path));
+    }
+
+    /// Registers a directory the case creates on the kind node `node`. Call it before creating the directory, and
+    /// before registering the namespaces whose pods mount it.
+    pub(crate) fn node_directory(&self, node: Container, path: String) {
+        self.register(Resource::NodeDirectory { node, path });
     }
 
     /// Marks a creation request cut short: the runtime may finish creating the resource after removal.
     fn mark_unsettled(&self, name: &str) {
         for entry in self.lock().iter_mut() {
             let named = match &entry.resource {
-                Resource::IsolationGroup(id) => id == name,
                 Resource::CaseScope(scope) => scope.resource_name() == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
-                Resource::Process(_) | Resource::Directory(_) => false,
+                Resource::NodeDirectory { path, .. } => path == name,
+                Resource::HostProcess(_) | Resource::Directory(_) => false,
             };
             if named {
                 entry.unsettled = true;
@@ -221,8 +270,9 @@ impl ResourceLedger {
         }
     }
 
-    /// Runs a creation request for the registered isolation group, case scope or namespace `name`. A case scope's name
-    /// is its resource name.
+    /// Runs a creation request for the registered case scope, namespace or node directory `name`. A
+    /// case scope's name is its resource name, and a node directory's is its path. A write into a node directory counts
+    /// as creating it.
     ///
     /// If cancellation drops the request, returns `None` and marks the resource unsettled.
     pub(crate) async fn create<F>(&self, name: &str, cancel: &CancellationToken, request: F) -> Option<F::Output>
@@ -251,36 +301,11 @@ impl ResourceLedger {
         created
     }
 
-    /// Creates and starts `driver`'s container in `isolation_group`, returning early when `cancel` fires.
-    ///
-    /// An interrupted creation marks the group unsettled. Starting uses the existing container, so an interrupted start
-    /// preserves the group's current mark.
-    pub(crate) async fn start_container(
-        &self, driver: &Driver, isolation_group: &str, cancel: &CancellationToken,
-    ) -> Result<DriverDetails, GenericError> {
-        self.create(isolation_group, cancel, driver.create())
-            .await
-            .ok_or_else(|| {
-                generic_error!(
-                    "Cancelled while creating a container in isolation group '{}'.",
-                    isolation_group
-                )
-            })??;
-        cancel
-            .run_until_cancelled(driver.start_container())
-            .await
-            .unwrap_or_else(|| {
-                Err(generic_error!(
-                    "Cancelled while starting a container in isolation group '{}'.",
-                    isolation_group
-                ))
-            })
-    }
-
     /// Attempts cleanup in reverse registration order under one deadline.
     ///
-    /// Namespace deletions start during the walk; confirmation polls run concurrently afterward. Returns results in
-    /// reverse registration order and an issue for each failed or unconfirmed removal. Expiry drops pending removal
+    /// Namespace deletions start during the walk; confirmation polls run concurrently afterward, and a node directory
+    /// is removed once every namespace is confirmed gone. Returns results in reverse registration order and an issue
+    /// for each failed or unconfirmed removal. Expiry drops pending removal
     /// futures; dropping a process sends SIGKILL if needed.
     pub(crate) async fn reclaim(&self, deadline: Instant) -> (Vec<ReclaimEntry>, Vec<Issue>) {
         let entries = std::mem::take(&mut *self.lock());
@@ -291,11 +316,12 @@ impl ResourceLedger {
 
         for Entry { resource, unsettled } in entries.into_iter().rev() {
             let label = resource.to_string();
+            let namespace = matches!(resource, Resource::Namespace { .. });
             let removal = match (&resource, &kept_by) {
-                (Resource::Directory(_), Some(kept_by)) => Removal::Settled((
-                    ReclaimResult::Leaked,
-                    Some(format!("kept because {} was not reclaimed", kept_by)),
-                )),
+                (Resource::Directory(_) | Resource::NodeDirectory { .. }, Some(kept_by)) => {
+                    Removal::Settled((ReclaimResult::Leaked, kept(kept_by)))
+                }
+                (Resource::NodeDirectory { .. }, None) => Removal::AfterNamespaces(resource),
                 _ => match timeout_at(deadline, resource.remove(deadline)).await {
                     Ok(Ok(Some(terminating))) => Removal::Terminating(Box::new(terminating)),
                     Ok(Ok(None)) => Removal::Settled(removed(unsettled)),
@@ -312,27 +338,59 @@ impl ResourceLedger {
             if let Removal::Settled((_, Some(_))) = removal {
                 kept_by.get_or_insert_with(|| label.clone());
             }
-            removals.push((label, unsettled, removal));
+            removals.push((label, unsettled, namespace, removal));
         }
 
-        let settled = join_all(removals.into_iter().map(|(label, unsettled, removal)| async move {
-            let settled = match removal {
-                Removal::Settled(settled) => settled,
-                Removal::Terminating(terminating) => match timeout_at(deadline, terminating.gone()).await {
-                    Ok(Ok(())) => removed(unsettled),
+        let confirmed = join_all(
+            removals
+                .into_iter()
+                .map(|(label, unsettled, namespace, removal)| async move {
+                    let settled = match removal {
+                        Removal::Settled(settled) => Ok(settled),
+                        Removal::Terminating(terminating) => Ok(match timeout_at(deadline, terminating.gone()).await {
+                            Ok(Ok(())) => removed(unsettled),
+                            Ok(Err(e)) => (ReclaimResult::Leaked, Some(format!("{:#}", e))),
+                            Err(_) => (
+                                ReclaimResult::Unsettled,
+                                Some(format!(
+                                    "still terminating when the {:?} reclaim budget expired",
+                                    RECLAIM_TIME
+                                )),
+                            ),
+                        }),
+                        Removal::AfterNamespaces(resource) => Err(resource),
+                    };
+                    (label, unsettled, namespace, settled)
+                }),
+        )
+        .await;
+
+        // A pod of a namespace that is not gone may still use the node directory.
+        let namespace_kept = confirmed
+            .iter()
+            .find_map(|(label, _, namespace, settled)| match settled {
+                Ok((result, _)) if *namespace && *result != ReclaimResult::Reclaimed => Some(label.clone()),
+                _ => None,
+            });
+        let mut settled = Vec::with_capacity(confirmed.len());
+        for (label, unsettled, _, outcome) in confirmed {
+            let outcome = match (outcome, &namespace_kept) {
+                (Ok(settled), _) => settled,
+                (Err(_), Some(kept_by)) => (ReclaimResult::Leaked, kept(kept_by)),
+                (Err(resource), None) => match timeout_at(deadline, resource.remove(deadline)).await {
+                    Ok(Ok(_)) => removed(unsettled),
                     Ok(Err(e)) => (ReclaimResult::Leaked, Some(format!("{:#}", e))),
                     Err(_) => (
                         ReclaimResult::Unsettled,
                         Some(format!(
-                            "still terminating when the {:?} reclaim budget expired",
+                            "still being removed when the {:?} reclaim budget expired",
                             RECLAIM_TIME
                         )),
                     ),
                 },
             };
-            (label, settled)
-        }))
-        .await;
+            settled.push((label, outcome));
+        }
 
         let mut reclaim = Vec::with_capacity(settled.len());
         let mut issues = Vec::new();

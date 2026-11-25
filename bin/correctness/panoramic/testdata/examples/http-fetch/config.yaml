@@ -9,7 +9,7 @@ participants:
     files:
       /srv/site/: site/
     endpoints:
-      api: {http: 8080}
+      api: {protocol: http, port: 8080}
     ready:
       api: {http: /index.html}
   client:

@@ -16,6 +16,7 @@ futures = { workspace = true }
 http-body = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }
+jiff = { workspace = true }
 papaya = { workspace = true }
 pin-project = { workspace = true }
 regex = { workspace = true, features = ["unicode-perl", "unicode-case"] }
@@ -40,4 +41,5 @@ metrics = { workspace = true }
 proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio-test = { workspace = true }

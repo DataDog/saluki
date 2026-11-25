@@ -1,6 +1,10 @@
 .setup-smp-env: &setup-smp-env
   - export AWS_NAMED_PROFILE=single-machine-performance
   - export SMP_VERSION=0.29.1
+  # The Cargo profile for the SMP baseline and comparison images. We use the profile we ship, so that SMP and the
+  # binary size analysis measure the production binary. The correctness tests build with `release` and cover debug
+  # assertions.
+  - export SMP_BUILD_PROFILE=optimized-release
   - export RUST_LOG=info,aws_config::profile::credentials=error
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
@@ -11,8 +15,8 @@
   - export SMP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
 
-# Layer the ADP image at ${ADP_IMG} into the converged Datadog Agent image and push it as
-# ${SMP_IMG}. Both the baseline and comparison build jobs end with this.
+# Layer the ADP image at ${ADP_IMG} into the converged Datadog Agent image at ${SMP_AGENT_IMAGE}, and
+# push it as ${SMP_IMG}. Both the baseline and comparison build jobs end with this.
 #
 # SMP fixes one target image per job, and the tag filtering experiments need the Core Agent in the
 # picture: a `metric_tag_filterlist` is Agent configuration, and only reaches ADP over the config
@@ -22,7 +26,7 @@
   - docker buildx build
     --file ./docker/Dockerfile.datadog-agent
     --tag ${SMP_IMG}
-    --build-arg DD_AGENT_IMAGE=registry.datadoghq.com/agent:${PUBLIC_DD_AGENT_VERSION}
+    --build-arg DD_AGENT_IMAGE=${SMP_AGENT_IMAGE}
     --build-arg ADP_IMAGE=${ADP_IMG}
     --label git.repository=${CI_PROJECT_NAME}
     --label git.branch=${CI_COMMIT_REF_NAME}
@@ -32,8 +36,52 @@
     --push
     .
 
+# Resolve, and build if needed, the slim SMP build image at ${SMP_BUILD_IMAGE} (see
+# ci/images/definitions/smp-build/Dockerfile). Pulling it costs much less time than pulling all of `build-ci`.
+#
+# The tag is a hash of the image inputs: the Dockerfile and the digests of the two images it starts from. Thus a job
+# builds and pushes the image only when an input changes, and other jobs reuse it. This must run before a job switches
+# to the commit that it builds. Thus the image always comes from the Dockerfile of the pipeline commit. It needs the ECR
+# login and the `adp-builder` builder.
+.resolve-smp-build-image: &resolve-smp-build-image
+  - SMP_BUILD_BASE_DIGEST=$(docker buildx imagetools inspect ${SMP_BUILD_BASE_IMAGE} --format '{{json .Manifest}}' | jq -er .digest) || exit 1
+  - SMP_BUILD_TOOLCHAIN_DIGEST=$(docker buildx imagetools inspect ${ADP_BUILD_IMAGE} --format '{{json .Manifest}}' | jq -er .digest) || exit 1
+  - SMP_BUILD_INPUTS_HASH=$( (cat ci/images/definitions/smp-build/Dockerfile; echo ${SMP_BUILD_BASE_DIGEST} ${SMP_BUILD_TOOLCHAIN_DIGEST}) | sha256sum | cut -c1-16)
+  - export SMP_BUILD_IMAGE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:smp-build-${SMP_BUILD_INPUTS_HASH}"
+  # The repositories of the two source images, without a tag or a digest. We pin each one to the digest from above.
+  - SMP_BUILD_BASE_REPO=${SMP_BUILD_BASE_IMAGE%%@*}
+  - SMP_BUILD_BASE_REPO=${SMP_BUILD_BASE_REPO%:*}
+  - SMP_BUILD_TOOLCHAIN_REPO=${ADP_BUILD_IMAGE%%@*}
+  - SMP_BUILD_TOOLCHAIN_REPO=${SMP_BUILD_TOOLCHAIN_REPO%:*}
+  - echo "SMP build image is ${SMP_BUILD_IMAGE} (base ${SMP_BUILD_BASE_DIGEST}, toolchain ${SMP_BUILD_TOOLCHAIN_DIGEST})"
+  - |
+    if docker buildx imagetools inspect ${SMP_BUILD_IMAGE} > /dev/null 2>&1; then
+      echo "Reusing the existing SMP build image."
+    else
+      echo "Building the SMP build image."
+      docker buildx build \
+        --file ./ci/images/definitions/smp-build/Dockerfile \
+        --build-arg BASE_IMAGE=${SMP_BUILD_BASE_REPO}@${SMP_BUILD_BASE_DIGEST} \
+        --build-arg TOOLCHAIN_IMAGE=${SMP_BUILD_TOOLCHAIN_REPO}@${SMP_BUILD_TOOLCHAIN_DIGEST} \
+        --tag ${SMP_BUILD_IMAGE} \
+        --output type=registry,compression=zstd,force-compression=true,oci-mediatypes=true \
+        --provenance=false \
+        ci/images/definitions/smp-build
+    fi
+
+# Shared settings for the SMP baseline and comparison image builds. They build on the slim SMP build image (see
+# `.resolve-smp-build-image`), with the same shared compiler cache as the shipped artifacts (see
+# `.build-adp-definition`). `.build-amd64-variables` gives DinD the larger loopback volume: with the default 20G
+# volume, the final LTO link fails with "No space left on device".
+.smp-adp-image-build:
+  extends: [.build-common-variables, .build-amd64-variables, .buildcache-variables]
+  variables:
+    # The base of the slim SMP build image. It is a separate variable so that it can change independently of the base
+    # of the shipped app image (`ADP_PUBLIC_BASE_IMAGE`).
+    SMP_BUILD_BASE_IMAGE: "${PUBLIC_BASE_IMAGE}"
+
 build-adp-baseline-image:
-  extends: .build-common-variables
+  extends: .smp-adp-image-build
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
@@ -45,7 +93,8 @@ build-adp-baseline-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 15m
+  # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
+  timeout: 30m
   before_script:
     - *setup-smp-env
   script:
@@ -59,16 +108,27 @@ build-adp-baseline-image:
     # ci/tooling/compute-smp-sha.sh.
     - export BASELINE_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh baseline)
     - export BASELINE_ADP_IMG="${ADP_IMG_BASE}-${BASELINE_ADP_SHA}"
-    - git switch --detach ${BASELINE_ADP_SHA}
-    # Actually build.
+    # Both sides run the Agent from the pipeline commit's `.datadog-agent-version.json`, read before the switch, so
+    # the comparison measures only the ADP change. The baseline commit may predate the file.
+    - SMP_AGENT_IMAGE=$(jq -er '.integration.linux.image' .datadog-agent-version.json) || exit 1
+    - export SMP_AGENT_IMAGE
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx create --name adp-builder --driver docker-container --use
+    - *resolve-smp-build-image
+    - git switch --detach ${BASELINE_ADP_SHA}
+    # Actually build.
+    # Temporary credentials (from the runner's own IAM role, not the SMP profile) for the shared build cache.
+    - ci/tooling/get-temporary-aws-credentials.sh
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
-      --build-arg BUILD_PROFILE=release
-      --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
-      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=${SMP_BUILD_PROFILE}
+      --build-arg BUILD_TARGET=${BUILD_TARGET}
+      --build-arg BUILD_IMAGE=${SMP_BUILD_IMAGE}
+      --build-arg BUILD_BASE=build-prepped
+      --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
+      --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
+      --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
@@ -93,7 +153,7 @@ build-adp-baseline-image:
       dotenv: smp-vars.env
 
 build-adp-comparison-image:
-  extends: .build-common-variables
+  extends: .smp-adp-image-build
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
@@ -105,7 +165,8 @@ build-adp-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 15m
+  # Fat LTO with a single codegen unit (`optimized-release`) takes roughly 15 minutes to build.
+  timeout: 30m
   before_script:
     - *setup-smp-env
   script:
@@ -116,16 +177,26 @@ build-adp-comparison-image:
     # ci/tooling/compute-smp-sha.sh.
     - export COMPARISON_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh comparison)
     - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
-    - git switch --detach ${COMPARISON_ADP_SHA}
-    # Actually build.
+    # The same Agent as the baseline: see build-adp-baseline-image.
+    - SMP_AGENT_IMAGE=$(jq -er '.integration.linux.image' .datadog-agent-version.json) || exit 1
+    - export SMP_AGENT_IMAGE
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx create --name adp-builder --driver docker-container --use
+    - *resolve-smp-build-image
+    - git switch --detach ${COMPARISON_ADP_SHA}
+    # Actually build.
+    # Temporary credentials (from the runner's own IAM role, not the SMP profile) for the shared build cache.
+    - ci/tooling/get-temporary-aws-credentials.sh
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
-      --build-arg BUILD_PROFILE=release
-      --build-arg BUILD_TARGET=x86_64-unknown-linux-gnu
-      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=${SMP_BUILD_PROFILE}
+      --build-arg BUILD_TARGET=${BUILD_TARGET}
+      --build-arg BUILD_IMAGE=${SMP_BUILD_IMAGE}
+      --build-arg BUILD_BASE=build-prepped
+      --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
+      --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
+      --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
@@ -351,12 +422,15 @@ binary-size-analysis:
     - docker rm comparison-container
 
     # Extract debug info and strip binaries for accurate release size comparison.
-    # This gives us stripped binaries (reflecting actual release artifact size) while
-    # preserving symbol information in separate debug files for bloaty's analysis.
+    # The strip flags match the flags that the Datadog Agent's Linux packaging applies to ADP, so the stripped size
+    # is the size that ships. The separate debug files keep the symbol information for bloaty's analysis. The Agent
+    # strips its install directory with omnibus `strip_build`, which runs `strip --strip-debug --strip-unneeded`:
+    # https://github.com/DataDog/datadog-agent/blob/ef7d0646bc86573f1c370f866d606d7ad5391179/omnibus/config/projects/agent.rb#L391
+    # https://github.com/DataDog/omnibus-ruby/blob/564a6f11686c655771da48765ae65a11c479d625/lib/omnibus/stripper.rb#L95
     - objcopy --only-keep-debug binaries/baseline-adp binaries/baseline-adp.debug
     - objcopy --only-keep-debug binaries/comparison-adp binaries/comparison-adp.debug
-    - strip --strip-debug binaries/baseline-adp
-    - strip --strip-debug binaries/comparison-adp
+    - strip --strip-debug --strip-unneeded binaries/baseline-adp
+    - strip --strip-debug --strip-unneeded binaries/comparison-adp
 
     # Run the analysis script to generate bloaty output, markdown report, and check threshold.
     # The script exits with code 1 if size increased by more than 5%.
@@ -372,6 +446,7 @@ binary-size-analysis:
       --output-csv size-diff.csv
       --output-txt size-diff.txt
       --threshold 5
+      --build-profile ${SMP_BUILD_PROFILE}
 
     # Post the report to the linked PR.
     - cat size-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Binary Size Analysis (Agent Data Plane)"
