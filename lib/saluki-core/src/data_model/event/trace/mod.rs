@@ -2,34 +2,59 @@
 
 use std::sync::Arc;
 
+use libdd_trace_model::ValueTypes;
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
+
+mod model;
+
+/// The value types of the trace model, for the `libdd-trace-model` traits.
+///
+/// A key-value list is a `Vec` of pairs, so it keeps the order of its entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SalukiValues;
+
+impl ValueTypes for SalukiValues {
+    type Text = MetaString;
+    type Bytes = Vec<u8>;
+    type Array = Vec<AttributeValue>;
+    type Map = Vec<(MetaString, AttributeValue)>;
+}
 
 /// Typed value for attributes at every level of the trace model: span attributes,
 /// span event attributes, span link attributes, and trace-level attributes.
 ///
-/// Covers all variants carried by the V1 APM `idx` wire format (`RawAnyValue`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum AttributeValue {
-    /// String-valued attribute.
-    String(MetaString),
-    /// Boolean attribute.
-    Bool(bool),
-    /// Integer attribute.
-    Int(i64),
-    /// Floating-point attribute.
-    Float(f64),
-    /// Raw bytes attribute.
-    Bytes(Vec<u8>),
-    /// Array of attribute values (may be heterogeneous).
-    Array(Vec<AttributeValue>),
-    /// List of key-value pairs.
-    KeyValueList(Vec<(MetaString, AttributeValue)>),
+/// Covers all variants carried by the V1 APM `idx` wire format (`RawAnyValue`). `libdd-trace-model` defines the type,
+/// so that its traits can give mutable access to attributes. [`AttributeValueExt`] adds Saluki's typed accessors.
+pub type AttributeValue = libdd_trace_model::AttributeValue<SalukiValues>;
+
+/// Typed accessors for an [`AttributeValue`].
+///
+/// `libdd-trace-model` gives the other accessors: [`AttributeValue::as_str`] returns a string slice, and
+/// [`AttributeValue::as_f64`] returns either an integer or a float as an `f64`.
+pub trait AttributeValueExt {
+    /// Returns the inner string if this is a `String` variant.
+    fn as_string(&self) -> Option<&MetaString>;
+
+    /// Returns the inner float if this is a `Float` variant.
+    ///
+    /// Returns `Some` only when the stored variant is `Float`. For numeric semantic tags
+    /// where the source may store an integer (for example, sampling priority, `_sample_rate`,
+    /// `_top_level`), use [`AttributeValue::as_f64`] instead.
+    fn as_float(&self) -> Option<f64>;
+
+    /// Returns the inner bool if this is a `Bool` variant.
+    fn as_bool(&self) -> Option<bool>;
+
+    /// Returns the inner integer if this is an `Int` variant.
+    fn as_int(&self) -> Option<i64>;
+
+    /// Returns the inner bytes if this is a `Bytes` variant.
+    fn as_bytes(&self) -> Option<&[u8]>;
 }
 
-impl AttributeValue {
-    /// Returns the inner string if this is a `String` variant.
-    pub fn as_string(&self) -> Option<&MetaString> {
+impl AttributeValueExt for AttributeValue {
+    fn as_string(&self) -> Option<&MetaString> {
         if let AttributeValue::String(s) = self {
             Some(s)
         } else {
@@ -37,12 +62,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns the inner float if this is a `Float` variant.
-    ///
-    /// Returns `Some` only when the stored variant is `Float`. For numeric semantic tags
-    /// where the source may store an integer (for example, sampling priority, `_sample_rate`,
-    /// `_top_level`), use [`as_num`][AttributeValue::as_num] instead.
-    pub fn as_float(&self) -> Option<f64> {
+    fn as_float(&self) -> Option<f64> {
         if let AttributeValue::Float(f) = self {
             Some(*f)
         } else {
@@ -50,8 +70,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns the inner bool if this is a `Bool` variant.
-    pub fn as_bool(&self) -> Option<bool> {
+    fn as_bool(&self) -> Option<bool> {
         if let AttributeValue::Bool(b) = self {
             Some(*b)
         } else {
@@ -59,8 +78,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns the inner integer if this is an `Int` variant.
-    pub fn as_int(&self) -> Option<i64> {
+    fn as_int(&self) -> Option<i64> {
         if let AttributeValue::Int(i) = self {
             Some(*i)
         } else {
@@ -68,20 +86,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns a numeric value as `f64` for either `Float` or `Int` variants.
-    ///
-    /// Use this when the caller only needs a number and doesn't care whether
-    /// the stored type is integral or floating-point (for example, sampling priority).
-    pub fn as_num(&self) -> Option<f64> {
-        match self {
-            AttributeValue::Float(f) => Some(*f),
-            AttributeValue::Int(i) => Some(*i as f64),
-            _ => None,
-        }
-    }
-
-    /// Returns the inner bytes if this is a `Bytes` variant.
-    pub fn as_bytes(&self) -> Option<&[u8]> {
+    fn as_bytes(&self) -> Option<&[u8]> {
         if let AttributeValue::Bytes(b) = self {
             Some(b)
         } else {
@@ -485,19 +490,9 @@ impl Span {
         &self.service
     }
 
-    /// Sets the service name.
-    pub fn set_service(&mut self, service: impl Into<MetaString>) {
-        self.service = service.into();
-    }
-
     /// Returns the operation name.
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// Sets the operation name.
-    pub fn set_name(&mut self, name: impl Into<MetaString>) {
-        self.name = name.into();
     }
 
     /// Returns the resource name.
@@ -520,29 +515,14 @@ impl Span {
         self.parent_id
     }
 
-    /// Sets the parent span identifier.
-    pub fn set_parent_id(&mut self, parent_id: u64) {
-        self.parent_id = parent_id;
-    }
-
     /// Returns the start timestamp.
     pub fn start(&self) -> u64 {
         self.start
     }
 
-    /// Sets the start timestamp.
-    pub fn set_start(&mut self, start: u64) {
-        self.start = start;
-    }
-
     /// Returns the span duration.
     pub fn duration(&self) -> u64 {
         self.duration
-    }
-
-    /// Sets the span duration.
-    pub fn set_duration(&mut self, duration: u64) {
-        self.duration = duration;
     }
 
     /// Returns the error flag.
@@ -553,11 +533,6 @@ impl Span {
     /// Returns the span type.
     pub fn span_type(&self) -> &str {
         &self.span_type
-    }
-
-    /// Sets the span type.
-    pub fn set_span_type(&mut self, span_type: impl Into<MetaString>) {
-        self.span_type = span_type.into();
     }
 
     /// Returns the span links collection.
@@ -662,11 +637,6 @@ impl SpanLink {
     /// Returns the attributes map.
     pub fn attributes(&self) -> &FastHashMap<MetaString, AttributeValue> {
         &self.attributes
-    }
-
-    /// Returns a mutable reference to the attributes map.
-    pub fn attributes_mut(&mut self) -> &mut FastHashMap<MetaString, AttributeValue> {
-        &mut self.attributes
     }
 
     /// Returns the W3C tracestate value.

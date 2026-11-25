@@ -10,6 +10,7 @@ use std::{
 use async_trait::async_trait;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use metrics::Counter;
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},

@@ -2,6 +2,7 @@
 
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use saluki_common::collections::FastHashMap;
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::data_model::{
     event::{
         trace::{AttributeValue, Span},
@@ -210,7 +211,7 @@ impl SpanConcentrator {
         if span
             .attributes
             .get(METRIC_TOP_LEVEL)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
             .is_some_and(|v| v == 1.0)
         {
             return true;
@@ -218,7 +219,7 @@ impl SpanConcentrator {
         if span
             .attributes
             .get(METRIC_MEASURED)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
             .is_some_and(|v| v == 1.0)
         {
             return true;
@@ -251,7 +252,7 @@ impl SpanConcentrator {
         let is_top_level = span
             .attributes
             .get(METRIC_TOP_LEVEL)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
             .is_some_and(|v| v == 1.0);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 
@@ -359,7 +360,7 @@ fn is_partial_snapshot(span: &Span) -> bool {
     match span
         .attributes
         .get(METRIC_PARTIAL_VERSION)
-        .and_then(AttributeValue::as_num)
+        .and_then(AttributeValue::as_f64)
     {
         Some(v) => v >= 0.0,
         None => false,

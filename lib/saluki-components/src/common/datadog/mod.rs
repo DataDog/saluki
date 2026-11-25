@@ -19,7 +19,7 @@ pub mod validation;
 pub(crate) mod version_data;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt, Span, Trace, TraceIngestInfo};
 use stringtheory::MetaString;
 use tracing::debug;
 
@@ -204,7 +204,7 @@ pub fn get_root_span_index(spans: &[Span]) -> Option<usize> {
 pub fn update_tracer_top_level(spans: &mut [Span], ingest_info: TraceIngestInfo) {
     let read_flag = match ingest_info {
         TraceIngestInfo::Datadog => as_double_value,
-        TraceIngestInfo::Otlp { .. } => AttributeValue::as_num,
+        TraceIngestInfo::Otlp { .. } => AttributeValue::as_f64,
     };
     for span in spans {
         if span.attributes.get(TRACER_TOP_LEVEL_KEY).and_then(read_flag) == Some(1.0) {
