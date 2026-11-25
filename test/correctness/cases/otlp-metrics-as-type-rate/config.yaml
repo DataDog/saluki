@@ -11,7 +11,7 @@ participants:
     env:
       DD_API_KEY: correctness-test
       DD_DATA_PLANE_ENABLED: "true"
-      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
       DD_DATA_PLANE_OTLP_ENABLED: "true"
       DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
       DD_AGGREGATE_CONTEXT_LIMIT: "500000"
@@ -39,4 +39,12 @@ procedure:
   # Both sides flush what they aggregated. Waiting slightly longer than an aggregation bucket, with the load running,
   # lets the Agent and ADP flush.
   - {step: process_stable_for, on: load, duration: 32s}
-  - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+  # ADP sends the fixture's metrics itself, and does not proxy them to the Agent.
+  - parallel:
+      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlp.rate.sum"}
+        sender: adp
+        timeout: 1m
