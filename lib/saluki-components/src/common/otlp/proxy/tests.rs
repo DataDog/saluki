@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 use super::*;
-use crate::common::datadog::test_util::init_tls;
+use crate::common::datadog::test_util::init_crypto_provider;
 use crate::common::otlp::test_util::{
     grpc_frame, grpc_response, header_map, http_ok, FakeUpstream, RecordingHandler, TestClient, TestServers,
 };
@@ -45,7 +45,7 @@ const COMPONENT_ID: &str = "otlp_proxy_test";
 ///
 /// Set a local metrics recorder before the call to see the proxy's counters.
 async fn start_proxy(id: &str, grpc: &Destination, http: &Destination, connect_timeout: Duration) -> TestServers {
-    init_tls();
+    init_crypto_provider();
     let destinations = OtlpProxyDestinations {
         grpc: Some(grpc.clone()),
         http: Some(http.clone()),

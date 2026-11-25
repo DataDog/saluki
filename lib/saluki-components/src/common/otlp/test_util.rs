@@ -31,7 +31,7 @@ use tokio::net::TcpListener;
 
 use super::proxy::{OtlpProxy, OtlpProxyDestinations};
 use super::{Metrics, OtlpHandler, OtlpServerConfiguration, Signal};
-use crate::common::datadog::test_util::init_tls;
+use crate::common::datadog::test_util::init_crypto_provider;
 use crate::common::proxy::Destination;
 
 /// A request that a fake upstream receiver got.
@@ -177,11 +177,8 @@ pub(super) fn http_ok(_: &SeenRequest) -> Response {
 }
 
 /// Returns a proxy to `grpc` and `http`, with counters that no recorder sees.
-///
-/// It installs the TLS crypto provider first, as application bootstrap does. Without it, a FIPS build falls back to a
-/// provider whose cipher suites aren't all FIPS-approved, and the proxy's HTTP clients refuse to build.
 pub(super) fn proxy_to(grpc: &FakeUpstream, http: &FakeUpstream) -> OtlpProxy {
-    init_tls();
+    init_crypto_provider();
     let destinations = OtlpProxyDestinations {
         grpc: Some(grpc.destination.clone()),
         http: Some(http.destination.clone()),
