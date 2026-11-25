@@ -337,7 +337,7 @@ template fields: `pattern` of the two log steps, `path` of `file_contains`, and 
 | `file_contains` | `on`, `path`, `pattern`, `timeout` | A file in the participant holds the text. |
 | `config_key_equals` | `on`, `key`, `value`, `view`, `timeout` | A key of the ADP configuration has the value. `view` is `source` or `runtime`. |
 | `intake_has_metric` | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match` (all optional), `timeout` | An intake holds a metric that meets every criterion. |
-| `compare` | `telemetry`, `comparison`, `baseline`, and options | The intake participants `comparison` and `baseline` hold the same telemetry. `telemetry` is `metrics`, `traces`, `logs`, `events` or `service_checks`. The options are `require_dogstatsd_forwarded_packets`, `otlp_direct_analysis_mode` and `additional_span_ignore_fields` (traces only), and `logs` (logs only). It has no budget of its own: it has the rest of the case timeout. |
+| `compare` | `telemetry`, `comparison`, `baseline`, and options | The intake participants `comparison` and `baseline` hold the same telemetry. `telemetry` is `metrics`, `traces`, `logs`, `events` or `service_checks`. The options are `require_dogstatsd_forwarded_packets`, `otlp_direct_analysis_mode`, `additional_span_ignore_fields` and `traces` (traces only), and `logs` (logs only). It has no budget of its own: it has the rest of the case timeout. |
 | `exec` | `on`, `command`, `args` (optional), `env` (optional), `output_contains` (optional), `timeout` | Action. Runs a command in a running participant. `command` is a list, or the name of a command of the participant. |
 | `send` | `on`, `endpoint`, `payload`, `repeat` (optional, default 1), `timeout` | Action. Writes the text of `payload` to an endpoint `repeat` times, one datagram or connection each. |
 | `config_set` | `on`, `key`, `value`, `timeout` | Action. Sets a key of the runtime configuration, with the text `value`. It retries until `timeout`. |
@@ -356,6 +356,16 @@ equality, and is an error with `metric_type: sketch`. `tags_match` is `subset`, 
 of the tags are sorted and deduplicated first. Under `exact`, `tags: []` means no tags and no host. `exact` does not
 show that no other context arrived. A failure lists the contexts with the expected name, or the other names when
 none has it.
+
+**Known differences of traces.** A traces `compare` reports every difference in the APM statistics, not only the
+first. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
+`logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
+`paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
+compared, so the step takes no entries. A path is `stats.groups`, for a
+statistics group on one side only, or `stats.<field>`, for a field of a group on both sides. A kind is `missing`
+(only in the baseline), `extra` (only in the comparison) or `value`. `when` matches the fields of the group, for
+example `{service: [api-gateway]}`. A difference that no entry covers fails the step, and so does an entry path that
+matches no difference, so that a fix removes its entries.
 
 Steps run in order. A step that does not pass stops the procedure, and the steps after it are `not_run`. A
 `parallel` block runs its members together, and holds assertions only. A step reaches a participant through its
