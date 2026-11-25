@@ -143,7 +143,7 @@ impl SpanConcentrator {
     ///
     /// `now` is the current Unix timestamp in nanoseconds. A span that ends after the bucket of `now` goes into that
     /// bucket instead, so that a span from a client with a skewed clock does not hold a future bucket until the clock
-    /// reaches it. `ApmStats::process_trace` reads the clock once per trace, as the Agent does.
+    /// reaches it. `ApmStats::process_trace` reads the clock once per trace.
     pub fn add_span(
         &mut self, stat_span: &StatSpan, weight: f64, payload_key: &PayloadAggregationKey, infra_tags: &InfraTags,
         origin: &str, now: u64,
