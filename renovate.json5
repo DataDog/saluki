@@ -220,12 +220,11 @@
       ],
       enabled: false,
     },
-    // aws-lc-rs is intentionally pinned below 1.18 in Cargo.toml to stay on the
-    // NIST CMVP validated FIPS 140-3 module (AWS-LC-FIPS 3.x); 1.18.0 switches
-    // the `fips` feature to the not-yet-certified AWS-LC-FIPS 4.x module. Without
-    // this rule Renovate keeps proposing to widen the `<1.18` upper bound in the
-    // weekly non-major group PR. Remove once AWS-LC-FIPS 4.x is certified (see
-    // the pin comment next to the `aws-lc-rs` workspace dependency).
+    // aws-lc-rs selects the AWS-LC FIPS module through its `aws-lc-fips-sys` dependency, and it has only moved to a
+    // new FIPS module in a minor release (1.18.0 moved from FIPS 3 to FIPS 4). FIPS builds must stay on a certified
+    // module, and the `aws-lc-fips-sys` ban in deny.toml fails CI for an uncertified one. Without this rule, a minor
+    // release that moves to the uncertified AWS-LC-FIPS 5 module would fail the weekly non-major group PR. Allow patch
+    // releases, and raise this bound by hand after checking which module the next minor release bundles.
     {
       matchManagers: [
         "cargo",
@@ -233,32 +232,11 @@
       matchPackageNames: [
         "aws-lc-rs",
       ],
-      allowedVersions: "<1.18",
-    },
-    // Crates whose newer patch releases raised their aws-lc-rs floor to ^1.18, which conflicts with the
-    // aws-lc-rs pin above. Renovate cannot generate a Cargo.lock for these bumps, and a single failed
-    // `cargo update` leaves the entire weekly non-major group PR with an empty diff. Remove alongside the
-    // aws-lc-rs rule above.
-    {
-      matchManagers: [
-        "cargo",
-      ],
-      matchPackageNames: [
-        "rcgen",
-      ],
-      allowedVersions: "<0.14.10",
-    },
-    {
-      matchManagers: [
-        "cargo",
-      ],
-      matchPackageNames: [
-        "rustls-webpki",
-      ],
-      allowedVersions: "<0.103.14",
+      allowedVersions: "<1.20",
     },
     // smallvec 1.16 is blocked transitively: serde-saphyr 0.0.29 (via kube-client, used by panoramic)
-    // requires `smallvec <1.16`. As above, the failed lock file update would empty the whole group PR.
+    // requires `smallvec <1.16`. Renovate cannot generate a Cargo.lock for this bump, and a single failed
+    // `cargo update` leaves the entire weekly non-major group PR with an empty diff.
     // Remove once serde-saphyr/kube accept smallvec 1.16.
     {
       matchManagers: [
