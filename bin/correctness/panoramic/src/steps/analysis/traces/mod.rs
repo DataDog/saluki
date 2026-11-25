@@ -390,7 +390,11 @@ impl TracesAnalyzer {
 
 /// A difference that `DifferenceRecorder` found, with what a custom comparator said about it.
 struct RecordedDiff {
+    /// The path of the field, the kind of difference, and the value on each side.
     diff: FieldDiff,
+
+    /// Why the custom comparator of the field rejected the two values, such as a start time difference over the
+    /// allowed maximum. A failure shows it after the values. `None` when no custom comparator checks the field.
     detail: Option<String>,
 }
 
