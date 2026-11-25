@@ -104,4 +104,14 @@ $PanoramicArgs = @(
     "-p", "4",
     "-l", $env:PANORAMIC_LOG_DIR
 )
-Invoke-Native -FilePath $Panoramic -Arguments $PanoramicArgs
+& $Panoramic @PanoramicArgs
+$PanoramicExitCode = $LASTEXITCODE
+if ($env:CI_JOB_ID) {
+    try {
+        & python (Join-Path $PSScriptRoot "panoramic_junit.py") $env:PANORAMIC_LOG_DIR integration
+        if ($LASTEXITCODE -ne 0) { Write-Warning "Panoramic JUnit conversion failed (exit $LASTEXITCODE)." }
+    } catch {
+        Write-Warning "Panoramic JUnit conversion failed: $_"
+    }
+}
+exit $PanoramicExitCode

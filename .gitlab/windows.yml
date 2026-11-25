@@ -79,6 +79,9 @@ unit-tests-windows-amd64:
 test-integration-windows-amd64:
   extends: .windows-amd64-test-job
   stage: e2e
+  id_tokens:
+    DD_STS_OIDC_TOKEN:
+      aud: dd-sts
   needs: []
   # Matches the retry policy on the linux/darwin integration jobs (see `test-integration` and
   # `.test-integration-macos-base` in .gitlab/e2e.yml). This is a last-resort net stacked under
@@ -99,11 +102,13 @@ test-integration-windows-amd64:
       - .ci-cache/rustup/
   artifacts:
     expire_in: 1 week
+    reports:
+      junit: $PANORAMIC_LOG_DIR/panoramic.xml
     paths:
-      - integration-logs/
+      - $PANORAMIC_LOG_DIR/
     when: always
   variables:
-    PANORAMIC_LOG_DIR: integration-logs
+    PANORAMIC_LOG_DIR: integration-logs/${CI_JOB_ID}
   script:
     - *windows-build-image-pull-script
     - |
@@ -143,11 +148,19 @@ test-integration-windows-amd64:
       -e WINDOWS_ADP_BASE_IMAGE="$WindowsAdpBaseImage"
       -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
       -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
-      -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"
+      -e PANORAMIC_LOG_DIR="c:\mnt\$env:PANORAMIC_LOG_DIR"
       -e BUILD_PROFILE
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
+  after_script:
+    - |
+      if (-not $env:CI_COMMIT_TAG) {
+        $Channel = if ($env:AGENT_NIGHTLY -eq "true") { "nightly" } else { "pinned" }
+        if ($env:DD_TAGS) { $env:DD_TAGS += "," }
+        $env:DD_TAGS += "os.platform:windows,os.architecture:x64,test.configuration.agent_channel:$Channel"
+        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ci\tooling\windows-upload-test-results.ps1 -JUnitPath "$env:PANORAMIC_LOG_DIR/panoramic.xml"
+      }
 
 # Builds the Windows release zip (agent-data-plane.{exe,pdb} + LICENSE/NOTICE/LICENSE-3rdparty.csv +
 # LICENSES/THIRD-PARTY-*) inside the cached LTSC2022 build image and exposes it as a job
