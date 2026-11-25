@@ -2,6 +2,7 @@
 
 use otlp_protos::opentelemetry::proto::{
     collector::trace::v1::ExportTraceServiceRequest,
+    common::v1::KeyValue,
     resource::v1::Resource,
     trace::v1::{span::SpanKind, ResourceSpans, ScopeSpans, Span},
 };
@@ -72,90 +73,101 @@ pub fn trace_fixture(seed: u32, service: &str, span_count: u32) -> Vec<u8> {
     .encode_to_vec()
 }
 
-/// The seed of the traces of `defaults_fixture`: trace `n`, counted from 1, has the seed `DEFAULTS_SEED + n`.
-const DEFAULTS_SEED: u32 = 0x0900;
+/// How a probe span relates to its parent.
+enum Parent {
+    /// The span has no parent.
+    Root,
 
-/// A span of `defaults_fixture`: its service, OTLP name, kind, and the number of its parent in the same trace.
-struct DefaultsSpan {
-    service: &'static str,
-    name: &'static str,
-    kind: SpanKind,
-    parent: Option<u32>,
+    /// The parent is span `n` of the same trace, counted from 1.
+    Span(u32),
 }
 
-/// The traces of `defaults_fixture`, each a list of spans numbered from 1.
-///
-/// - Trace 1 crosses services: a `SERVER` root and its `CLIENT` child in `probe-tl-a`, and an `INTERNAL` grandchild in
-///   `probe-tl-b`.
-/// - Trace 2 is an `INTERNAL` span in `probe-tl-a` whose parent, span 9, is never sent.
-/// - Trace 3 is a `SERVER` root in `probe-ssi`.
-const DEFAULTS_TRACES: &[&[DefaultsSpan]] = &[
-    &[
-        DefaultsSpan {
-            service: "probe-tl-a",
-            name: "tl.root",
-            kind: SpanKind::Server,
-            parent: None,
-        },
-        DefaultsSpan {
-            service: "probe-tl-a",
-            name: "tl.client",
-            kind: SpanKind::Client,
-            parent: Some(1),
-        },
-        DefaultsSpan {
-            service: "probe-tl-b",
-            name: "tl.b.internal",
-            kind: SpanKind::Internal,
-            parent: Some(2),
-        },
-    ],
-    &[DefaultsSpan {
-        service: "probe-tl-a",
-        name: "tl.orphan",
-        kind: SpanKind::Internal,
-        parent: Some(9),
-    }],
-    &[DefaultsSpan {
-        service: "probe-ssi",
-        name: "ssi.root",
-        kind: SpanKind::Server,
-        parent: None,
-    }],
-];
+/// A span of a probe fixture: what the trace builders need to build it.
+struct ProbeSpan {
+    /// The `service.name` of the resource that holds the span. It names one of the fixture's resources.
+    service: &'static str,
 
-/// Spans that leave top-level marking to the defaults: a root, a client, a span below a service boundary, an orphan,
-/// and a root in another service.
+    /// The OTLP name of the span.
+    name: &'static str,
+    kind: SpanKind,
+    parent: Parent,
+}
+
+impl ProbeSpan {
+    /// Builds a span with no parent.
+    fn new(service: &'static str, name: &'static str, kind: SpanKind) -> Self {
+        Self {
+            service,
+            name,
+            kind,
+            parent: Parent::Root,
+        }
+    }
+
+    /// Makes the span a child of span `number` of its trace, counted from 1.
+    fn child_of(mut self, number: u32) -> Self {
+        self.parent = Parent::Span(number);
+        self
+    }
+
+    /// Builds span `number`, counted from 1, in the trace for `seed`.
+    fn build(&self, seed: u32, number: u32) -> Span {
+        let start = BASE_TIME_NANOS + u64::from(number - 1) * SPAN_STEP_NANOS;
+        Span {
+            trace_id: trace_id(seed),
+            span_id: span_id(seed, number),
+            parent_span_id: match self.parent {
+                Parent::Root => Vec::new(),
+                Parent::Span(parent) => span_id(seed, parent),
+            },
+            name: self.name.to_string(),
+            kind: self.kind as i32,
+            start_time_unix_nano: start,
+            end_time_unix_nano: start + SPAN_DURATION_NANOS,
+            ..Default::default()
+        }
+    }
+}
+
+/// A resource of a probe fixture.
+struct ProbeResource {
+    service: &'static str,
+    attributes: Vec<KeyValue>,
+}
+
+impl ProbeResource {
+    /// Builds a resource with only the `service.name` attribute.
+    fn new(service: &'static str) -> Self {
+        Self {
+            service,
+            attributes: vec![kv("service.name", string(service))],
+        }
+    }
+}
+
+/// Builds a request from probe traces.
 ///
-/// Each service has its own `ResourceSpans`, so a trace that crosses services spans more than one of them.
-pub fn defaults_fixture() -> Vec<u8> {
-    let mut by_service: Vec<(&str, Vec<Span>)> = Vec::new();
-    for (seed, trace) in (DEFAULTS_SEED + 1..).zip(DEFAULTS_TRACES) {
-        for (number, spec) in (1..).zip(trace.iter()) {
-            let start = BASE_TIME_NANOS + u64::from(number - 1) * SPAN_STEP_NANOS;
-            let span = Span {
-                trace_id: trace_id(seed),
-                span_id: span_id(seed, number),
-                parent_span_id: spec.parent.map(|parent| span_id(seed, parent)).unwrap_or_default(),
-                name: spec.name.to_string(),
-                kind: spec.kind as i32,
-                start_time_unix_nano: start,
-                end_time_unix_nano: start + SPAN_DURATION_NANOS,
-                ..Default::default()
-            };
-            match by_service.iter_mut().find(|(service, _)| *service == spec.service) {
-                Some((_, spans)) => spans.push(span),
-                None => by_service.push((spec.service, vec![span])),
-            }
+/// Each resource has one `ResourceSpans` that holds the spans of its service, so a trace that crosses services spans more
+/// than one of them. Trace `n`, counted from 1, has the seed `seed_base + n`.
+fn probe_request(resources: &[ProbeResource], seed_base: u32, traces: &[Vec<ProbeSpan>]) -> Vec<u8> {
+    let mut spans: Vec<Vec<Span>> = resources.iter().map(|_| Vec::new()).collect();
+    for (seed, trace) in (seed_base + 1..).zip(traces) {
+        for (number, spec) in (1..).zip(trace) {
+            let index = resources
+                .iter()
+                .position(|resource| resource.service == spec.service)
+                .unwrap_or_else(|| panic!("no resource for the service {}", spec.service));
+            spans[index].push(spec.build(seed, number));
         }
     }
 
     ExportTraceServiceRequest {
-        resource_spans: by_service
-            .into_iter()
-            .map(|(service, spans)| ResourceSpans {
+        resource_spans: resources
+            .iter()
+            .zip(spans)
+            .map(|(resource, spans)| ResourceSpans {
                 resource: Some(Resource {
-                    attributes: vec![kv("service.name", string(service))],
+                    attributes: resource.attributes.clone(),
                     ..Default::default()
                 }),
                 scope_spans: vec![ScopeSpans {
@@ -167,6 +179,37 @@ pub fn defaults_fixture() -> Vec<u8> {
             .collect(),
     }
     .encode_to_vec()
+}
+
+/// The seed of the traces of `defaults_fixture`: trace `n`, counted from 1, has the seed `DEFAULTS_SEED + n`.
+const DEFAULTS_SEED: u32 = 0x0900;
+
+/// Spans that leave top-level marking to the defaults: a root, a client, a span below a service boundary, an orphan,
+/// and a root in another service.
+///
+/// - Trace 1 crosses services: a `SERVER` root and its `CLIENT` child in `probe-tl-a`, and an `INTERNAL` grandchild in
+///   `probe-tl-b`.
+/// - Trace 2 is an `INTERNAL` span in `probe-tl-a` whose parent, span 9, is never sent.
+/// - Trace 3 is a `SERVER` root in `probe-ssi`.
+pub fn defaults_fixture() -> Vec<u8> {
+    let traces = vec![
+        vec![
+            ProbeSpan::new("probe-tl-a", "tl.root", SpanKind::Server),
+            ProbeSpan::new("probe-tl-a", "tl.client", SpanKind::Client).child_of(1),
+            ProbeSpan::new("probe-tl-b", "tl.b.internal", SpanKind::Internal).child_of(2),
+        ],
+        vec![ProbeSpan::new("probe-tl-a", "tl.orphan", SpanKind::Internal).child_of(9)],
+        vec![ProbeSpan::new("probe-ssi", "ssi.root", SpanKind::Server)],
+    ];
+    probe_request(
+        &[
+            ProbeResource::new("probe-tl-a"),
+            ProbeResource::new("probe-tl-b"),
+            ProbeResource::new("probe-ssi"),
+        ],
+        DEFAULTS_SEED,
+        &traces,
+    )
 }
 
 #[cfg(test)]
