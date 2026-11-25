@@ -144,6 +144,10 @@ fn main() -> ExitCode {
             traces::defaults_fixture,
         ),
         (
+            "test/correctness/cases/otlp-traces-stats/millstone.yaml",
+            traces::stats_fixture,
+        ),
+        (
             "test/integration/cases/otlp-routing-mixed-grpc/millstone-metrics-grpc.yaml",
             || routing::metrics_fixture("mixed-grpc", "grpc"),
         ),
