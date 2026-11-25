@@ -22,10 +22,26 @@ const STATUS_KEYS: &[&str] = &["status", "severity", "level", "syslog.severity"]
 const MESSAGE_KEYS: &[&str] = &["msg", "message", "log"];
 const TRACE_ID_ATTR_KEYS: &[&str] = &["traceid", "trace_id", "contextmap.traceid", "oteltraceid"];
 const SPAN_ID_ATTR_KEYS: &[&str] = &["spanid", "span_id", "contextmap.spanid", "otelspanid"];
+
+// Property keys that keep the OpenTelemetry fields of a record, as in the Agent's `transform.go`.
+const OTEL_TRACE_ID: &str = "otel.trace_id";
+const OTEL_SPAN_ID: &str = "otel.span_id";
+const OTEL_SEVERITY_NUMBER: &str = "otel.severity_number";
+const OTEL_SEVERITY_TEXT: &str = "otel.severity_text";
+const OTEL_TIMESTAMP: &str = "otel.timestamp";
 const OTEL_SCOPE_NAME: &str = "otel.scope.name";
 const OTEL_SCOPE_VERSION: &str = "otel.scope.version";
 const OTEL_LIBRARY_NAME: &str = "otel.library.name";
 const OTEL_LIBRARY_VERSION: &str = "otel.library.version";
+const OTEL_EVENT_NAME: &str = "otel.event_name";
+const OTEL_HOSTNAME: &str = "otel.hostname";
+const OTEL_SERVICE: &str = "otel.service";
+
+// Property keys of the Datadog counterparts of those fields.
+const DD_TRACE_ID: &str = "dd.trace_id";
+const DD_SPAN_ID: &str = "dd.span_id";
+const DD_STATUS: &str = "status";
+const DD_TIMESTAMP: &str = "@timestamp";
 
 static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion");
 
@@ -50,13 +66,13 @@ pub(super) fn transform_log_record(
     let status = derive_status(reserved.status, &lr.severity_text, lr.severity_number);
     // The Agent sends the derived status in place of any resource or scope attribute named `status`. The encoder
     // writes additional properties over the status, so the attribute must not be among them.
-    properties.remove("status");
+    properties.remove(DD_STATUS);
 
     apply_severity(&lr, &mut properties);
     apply_timestamp(&lr, &mut properties);
     // The event name overwrites an `otel.event_name` attribute from any source.
     if !lr.event_name.is_empty() {
-        properties.insert_static("otel.event_name", lr.event_name);
+        properties.insert_static(OTEL_EVENT_NAME, lr.event_name);
     }
 
     Log::new(message(reserved.message, lr.body.as_ref()))
@@ -127,7 +143,7 @@ fn apply_record_attributes<'a>(
             k if is_reserved(k, STATUS_KEYS) => reserved.status = Some(string_value_or_empty(kv)),
             k if is_reserved(k, TRACE_ID_ATTR_KEYS) => {
                 if let Some(OtlpStringValue(trace_hex)) = kv.value.as_ref().and_then(|av| av.value.as_ref()) {
-                    if !properties.contains("dd.trace_id") {
+                    if !properties.contains(DD_TRACE_ID) {
                         if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
                             insert_trace_id(properties, trace_hex.clone(), &bytes);
                         }
@@ -136,7 +152,7 @@ fn apply_record_attributes<'a>(
             }
             k if is_reserved(k, SPAN_ID_ATTR_KEYS) => {
                 if let Some(OtlpStringValue(span_hex)) = kv.value.as_ref().and_then(|av| av.value.as_ref()) {
-                    if !properties.contains("dd.span_id") {
+                    if !properties.contains(DD_SPAN_ID) {
                         if let Some(bytes) = decode_hex_exact_to_bytes(span_hex, 8) {
                             insert_span_id(properties, span_hex.clone(), &bytes);
                         }
@@ -190,7 +206,8 @@ fn apply_resource_attributes(attributes: &[otlp_common::KeyValue], properties: &
                     };
                     if !val.is_null() {
                         match key {
-                            "hostname" | "service" => properties.insert(format!("otel.{}", key), val),
+                            "hostname" => properties.insert(MetaString::from_static(OTEL_HOSTNAME), val),
+                            "service" => properties.insert(MetaString::from_static(OTEL_SERVICE), val),
                             _ => properties.insert(key, val),
                         }
                     }
@@ -235,23 +252,23 @@ fn apply_trace_context(lr: &LogRecord, properties: &mut Properties) {
 
 /// Sets `otel.trace_id` to the hex form of a trace ID, and `dd.trace_id` to the decimal form of its last 8 bytes.
 fn insert_trace_id(properties: &mut Properties, hex: String, bytes: &[u8]) {
-    properties.insert_static("otel.trace_id", hex);
-    properties.insert_static("dd.trace_id", u64_from_last_8(bytes).to_string());
+    properties.insert_static(OTEL_TRACE_ID, hex);
+    properties.insert_static(DD_TRACE_ID, u64_from_last_8(bytes).to_string());
 }
 
 /// Sets `otel.span_id` to the hex form of a span ID, and `dd.span_id` to the decimal form of its first 8 bytes.
 fn insert_span_id(properties: &mut Properties, hex: String, bytes: &[u8]) {
-    properties.insert_static("otel.span_id", hex);
-    properties.insert_static("dd.span_id", u64_from_first_8(bytes).to_string());
+    properties.insert_static(OTEL_SPAN_ID, hex);
+    properties.insert_static(DD_SPAN_ID, u64_from_first_8(bytes).to_string());
 }
 
 /// Sets the severity text and number of the record, when they're set.
 fn apply_severity(lr: &LogRecord, properties: &mut Properties) {
     if !lr.severity_text.is_empty() {
-        properties.insert_static("otel.severity_text", lr.severity_text.clone());
+        properties.insert_static(OTEL_SEVERITY_TEXT, lr.severity_text.clone());
     }
     if lr.severity_number != 0 {
-        properties.insert_static("otel.severity_number", lr.severity_number.to_string());
+        properties.insert_static(OTEL_SEVERITY_NUMBER, lr.severity_number.to_string());
     }
 }
 
@@ -269,11 +286,11 @@ fn apply_timestamp(lr: &LogRecord, properties: &mut Properties) {
         return;
     }
     let nanos = timestamp as i64;
-    properties.insert_static("otel.timestamp", nanos.to_string());
+    properties.insert_static(OTEL_TIMESTAMP, nanos.to_string());
     let instant = Timestamp::from_unix_nanos(i128::from(nanos))
         .expect("any signed 64-bit count of nanoseconds should be a valid timestamp");
     properties.insert_static(
-        "@timestamp",
+        DD_TIMESTAMP,
         instant.format(TimestampFormat::Rfc3339UtcMillis).to_string(),
     );
 }
