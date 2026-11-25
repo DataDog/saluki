@@ -9,9 +9,11 @@ pub fn macros() {
     t.pass("tests/macros/11_mapped_typed.rs");
     t.pass("tests/macros/12_mapped_mixed.rs");
     t.pass("tests/macros/13_mapped_concurrent.rs");
+    t.pass("tests/macros/14_derived.rs");
     t.compile_fail("tests/macros/05_empty_struct.rs");
     t.compile_fail("tests/macros/06_invalid_level.rs");
     t.compile_fail("tests/macros/07_not_a_struct.rs");
     t.compile_fail("tests/macros/08_bad_field_type.rs");
     t.compile_fail("tests/macros/09_missing_prefix.rs");
+    t.compile_fail("tests/macros/15_derived_with_mapped.rs");
 }

@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    The Agent Data Plane log file no longer rolls over at local midnight. It now rolls over only when it reaches
+    ``log_file_max_size``, as the Datadog Agent does. This also fixes file logging stopping until restart on some days
+    when a daylight saving time change happens at local midnight, for example in the ``Atlantic/Azores`` and
+    ``America/Havana`` time zones.
+  - |
+    Lines in the DogStatsD debug log (``dogstatsd_log_file``) are no longer split across rolled-over files, or
+    truncated or merged with the next line when the log can't keep up with incoming metrics.

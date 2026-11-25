@@ -347,6 +347,15 @@ mod tests {
     static EID_LOCAL_POD: EntityId = EntityId::PodUid(MetaString::from_static("local-pod-uid"));
     static EID_EXTERNAL_POD: EntityId = EntityId::PodUid(MetaString::from_static("external-pod-uid"));
 
+    /// The tag the default workload provider holds for each entity. `EID_EXTERNAL_CID_INVALID` has none.
+    static ENTITY_TAGS: [(&EntityId, &str); 5] = [
+        (&EID_PID, "tag_source:pid"),
+        (&EID_LOCAL_CID, "tag_source:local-cid"),
+        (&EID_EXTERNAL_CID_VALID, "tag_source:external-cid"),
+        (&EID_LOCAL_POD, "tag_source:local-pod"),
+        (&EID_EXTERNAL_POD, "tag_source:external-pod"),
+    ];
+
     fn single_tag(tag: &str) -> SharedTagSet {
         let mut tag_set = TagSet::default();
         tag_set.insert_tag(tag);
@@ -354,19 +363,11 @@ mod tests {
     }
 
     fn tags_for_entity(entity_id: &EntityId) -> SharedTagSet {
-        if entity_id == &EID_PID {
-            single_tag("tag_source:pid")
-        } else if entity_id == &EID_LOCAL_CID {
-            single_tag("tag_source:local-cid")
-        } else if entity_id == &EID_EXTERNAL_CID_VALID {
-            single_tag("tag_source:external-cid")
-        } else if entity_id == &EID_LOCAL_POD {
-            single_tag("tag_source:local-pod")
-        } else if entity_id == &EID_EXTERNAL_POD {
-            single_tag("tag_source:external-pod")
-        } else {
-            SharedTagSet::default()
-        }
+        ENTITY_TAGS
+            .iter()
+            .find(|(id, _)| *id == entity_id)
+            .map(|(_, tag)| single_tag(tag))
+            .unwrap_or_default()
     }
 
     fn origin(
@@ -384,72 +385,47 @@ mod tests {
 
     fn build_tags_resolver_with_default_tags(config: OriginEnrichmentConfiguration) -> DogStatsDOriginTagResolver {
         let mut workload_provider = TestWorkloadProvider::new();
-        workload_provider.add_entity_shared_tags(EID_PID.clone(), tags_for_entity(&EID_PID));
-        workload_provider.add_entity_shared_tags(EID_LOCAL_CID.clone(), tags_for_entity(&EID_LOCAL_CID));
-        workload_provider
-            .add_entity_shared_tags(EID_EXTERNAL_CID_VALID.clone(), tags_for_entity(&EID_EXTERNAL_CID_VALID));
-        workload_provider.add_entity_shared_tags(EID_LOCAL_POD.clone(), tags_for_entity(&EID_LOCAL_POD));
-        workload_provider.add_entity_shared_tags(EID_EXTERNAL_POD.clone(), tags_for_entity(&EID_EXTERNAL_POD));
+        for (entity_id, tag) in ENTITY_TAGS {
+            workload_provider.add_entity_shared_tags(entity_id.clone(), single_tag(tag));
+        }
 
-        let erased_workload_provider = Arc::new(workload_provider);
-
-        DogStatsDOriginTagResolver::new(config, erased_workload_provider, CapturedTaggerHandle::new())
+        DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), CapturedTaggerHandle::new())
     }
 
-    #[test]
-    fn metric_cardinality_precedence() {
-        // Tests that the cardinality specified in a metric packet (`|card:high`, etc) takes precedence over the cardinality
-        // specified via the deprecated `dd.internal.card` tag.
-        let raw_tags_input = "dd.internal.card:high";
-        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+    /// Builds a resolver with origin detection enabled at `tag_cardinality`.
+    fn enabled_resolver(
+        tag_cardinality: OriginTagCardinality, workload_provider: TestWorkloadProvider,
+        captured_tagger: CapturedTaggerHandle,
+    ) -> DogStatsDOriginTagResolver {
+        let config = OriginEnrichmentConfiguration {
+            enabled: true,
+            tag_cardinality,
+            ..OriginEnrichmentConfiguration::for_test()
+        };
+        DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), captured_tagger)
+    }
 
-        let (well_known_tags, _) = WellKnownTags::split_raw_tags(&raw_tags);
-        assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::High));
-
-        let packet_with_card = MetricPacket {
+    fn metric_origin_cardinality(
+        tags: RawTags<'_>, cardinality: Option<OriginTagCardinality>, well_known_tags: &WellKnownTags<'_>,
+    ) -> Option<OriginTagCardinality> {
+        let packet = MetricPacket {
             metric_name: "test_metric",
-            tags: raw_tags.clone(),
+            tags,
             values: MetricValues::counter(1.0),
             num_points: 1,
             timestamp: None,
             local_data: None,
             external_data: None,
-            cardinality: Some(OriginTagCardinality::Low),
+            cardinality,
             unit: None,
         };
-
-        let packet_without_card = MetricPacket {
-            metric_name: "test_metric",
-            tags: raw_tags.clone(),
-            values: MetricValues::counter(1.0),
-            num_points: 1,
-            timestamp: None,
-            local_data: None,
-            external_data: None,
-            cardinality: None,
-            unit: None,
-        };
-
-        let with_card_origin = origin_from_metric_packet(&packet_with_card, &well_known_tags);
-        assert_ne!(packet_with_card.cardinality, well_known_tags.cardinality);
-        assert_eq!(with_card_origin.cardinality(), packet_with_card.cardinality);
-
-        let without_card_origin = origin_from_metric_packet(&packet_without_card, &well_known_tags);
-        assert_ne!(packet_without_card.cardinality, well_known_tags.cardinality);
-        assert_eq!(without_card_origin.cardinality(), well_known_tags.cardinality);
+        origin_from_metric_packet(&packet, well_known_tags).cardinality()
     }
 
-    #[test]
-    fn event_cardinality_precedence() {
-        // Tests that the cardinality specified in an event packet (`|card:high`, etc) takes precedence over the cardinality
-        // specified via the deprecated `dd.internal.card` tag.
-        let raw_tags_input = "dd.internal.card:low";
-        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
-
-        let (well_known_tags, _) = WellKnownTags::split_raw_tags(&raw_tags);
-        assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::Low));
-
-        let packet_with_card = EventPacket {
+    fn event_origin_cardinality(
+        tags: RawTags<'_>, cardinality: Option<OriginTagCardinality>, well_known_tags: &WellKnownTags<'_>,
+    ) -> Option<OriginTagCardinality> {
+        let packet = EventPacket {
             title: MetaString::empty(),
             text: MetaString::empty(),
             timestamp: None,
@@ -458,77 +434,84 @@ mod tests {
             priority: None,
             alert_type: None,
             source_type_name: None,
-            tags: raw_tags.clone(),
+            tags,
             local_data: None,
             external_data: None,
-            cardinality: Some(OriginTagCardinality::Orchestrator),
+            cardinality,
         };
+        origin_from_event_packet(&packet, well_known_tags).cardinality()
+    }
 
-        let packet_without_card = EventPacket {
-            title: MetaString::empty(),
-            text: MetaString::empty(),
+    fn service_check_origin_cardinality(
+        tags: RawTags<'_>, cardinality: Option<OriginTagCardinality>, well_known_tags: &WellKnownTags<'_>,
+    ) -> Option<OriginTagCardinality> {
+        let packet = ServiceCheckPacket {
+            name: MetaString::empty(),
+            status: CheckStatus::Ok,
             timestamp: None,
             hostname: None,
-            aggregation_key: None,
-            priority: None,
-            alert_type: None,
-            source_type_name: None,
-            tags: raw_tags.clone(),
+            message: None,
+            tags,
             local_data: None,
             external_data: None,
-            cardinality: None,
+            cardinality,
         };
-
-        let with_card_origin = origin_from_event_packet(&packet_with_card, &well_known_tags);
-        assert_ne!(packet_with_card.cardinality, well_known_tags.cardinality);
-        assert_eq!(with_card_origin.cardinality(), packet_with_card.cardinality);
-
-        let without_card_origin = origin_from_event_packet(&packet_without_card, &well_known_tags);
-        assert_ne!(packet_without_card.cardinality, well_known_tags.cardinality);
-        assert_eq!(without_card_origin.cardinality(), well_known_tags.cardinality);
+        origin_from_service_check_packet(&packet, well_known_tags).cardinality()
     }
 
     #[test]
-    fn service_check_cardinality_precedence() {
-        // Tests that the cardinality specified in an event packet (`|card:high`, etc) takes precedence over the cardinality
-        // specified via the deprecated `dd.internal.card` tag.
-        let raw_tags_input = "dd.internal.card:orchestrator";
-        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+    fn packet_cardinality_takes_precedence_over_cardinality_tag() {
+        // The cardinality specified in a packet (`|card:high`, etc) takes precedence over the cardinality specified via
+        // the deprecated `dd.internal.card` tag.
+        type OriginCardinality =
+            fn(RawTags<'_>, Option<OriginTagCardinality>, &WellKnownTags<'_>) -> Option<OriginTagCardinality>;
+        let cases: [(
+            &str,
+            OriginCardinality,
+            &str,
+            OriginTagCardinality,
+            OriginTagCardinality,
+        ); 3] = [
+            (
+                "metric",
+                metric_origin_cardinality,
+                "dd.internal.card:high",
+                OriginTagCardinality::High,
+                OriginTagCardinality::Low,
+            ),
+            (
+                "event",
+                event_origin_cardinality,
+                "dd.internal.card:low",
+                OriginTagCardinality::Low,
+                OriginTagCardinality::Orchestrator,
+            ),
+            (
+                "service check",
+                service_check_origin_cardinality,
+                "dd.internal.card:orchestrator",
+                OriginTagCardinality::Orchestrator,
+                OriginTagCardinality::Low,
+            ),
+        ];
 
-        let (well_known_tags, _) = WellKnownTags::split_raw_tags(&raw_tags);
-        assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::Orchestrator));
+        for (name, origin_cardinality, raw_tags, tag_cardinality, packet_cardinality) in cases {
+            let raw_tags = RawTags::new(raw_tags, usize::MAX, usize::MAX);
+            let (well_known_tags, _) = WellKnownTags::split_raw_tags(&raw_tags);
+            assert_eq!(well_known_tags.cardinality, Some(tag_cardinality), "{name}");
+            assert_ne!(packet_cardinality, tag_cardinality, "{name}");
 
-        let packet_with_card = ServiceCheckPacket {
-            name: MetaString::empty(),
-            status: CheckStatus::Ok,
-            timestamp: None,
-            hostname: None,
-            message: None,
-            tags: raw_tags.clone(),
-            local_data: None,
-            external_data: None,
-            cardinality: Some(OriginTagCardinality::Low),
-        };
-
-        let packet_without_card = ServiceCheckPacket {
-            name: MetaString::empty(),
-            status: CheckStatus::Ok,
-            timestamp: None,
-            hostname: None,
-            message: None,
-            tags: raw_tags.clone(),
-            local_data: None,
-            external_data: None,
-            cardinality: None,
-        };
-
-        let with_card_origin = origin_from_service_check_packet(&packet_with_card, &well_known_tags);
-        assert_ne!(packet_with_card.cardinality, well_known_tags.cardinality);
-        assert_eq!(with_card_origin.cardinality(), packet_with_card.cardinality);
-
-        let without_card_origin = origin_from_service_check_packet(&packet_without_card, &well_known_tags);
-        assert_ne!(packet_without_card.cardinality, well_known_tags.cardinality);
-        assert_eq!(without_card_origin.cardinality(), well_known_tags.cardinality);
+            assert_eq!(
+                origin_cardinality(raw_tags.clone(), Some(packet_cardinality), &well_known_tags),
+                Some(packet_cardinality),
+                "{name} with packet cardinality"
+            );
+            assert_eq!(
+                origin_cardinality(raw_tags.clone(), None, &well_known_tags),
+                Some(tag_cardinality),
+                "{name} without packet cardinality"
+            );
+        }
     }
 
     #[test]
@@ -736,13 +719,7 @@ mod tests {
 
         // Build a resolver whose live workload provider is empty; if the replay path is wired wrong, we'd get
         // no tags. If it's wired right, we get the captured tags.
-        let config = OriginEnrichmentConfiguration {
-            enabled: true,
-            tag_cardinality: OriginTagCardinality::Low,
-            ..OriginEnrichmentConfiguration::for_test()
-        };
-        let live = Arc::new(TestWorkloadProvider::new());
-        let resolver = DogStatsDOriginTagResolver::new(config, live, captured_tagger);
+        let resolver = enabled_resolver(OriginTagCardinality::Low, TestWorkloadProvider::new(), captured_tagger);
 
         let mut origin = RawOrigin::default();
         origin.set_process_id(mark_replay_process_id(7777));
@@ -758,13 +735,11 @@ mod tests {
     fn resolve_origin_tags_returns_empty_when_replay_flag_set_but_no_captured_store() {
         // If the replay flag is set but no captured store is current, the resolver returns an empty tag set
         // (no fallback to the live tagger). This guards against accidentally serving live tags for replay packets.
-        let config = OriginEnrichmentConfiguration {
-            enabled: true,
-            tag_cardinality: OriginTagCardinality::Low,
-            ..OriginEnrichmentConfiguration::for_test()
-        };
-        let live = Arc::new(TestWorkloadProvider::new());
-        let resolver = DogStatsDOriginTagResolver::new(config, live, CapturedTaggerHandle::new());
+        let resolver = enabled_resolver(
+            OriginTagCardinality::Low,
+            TestWorkloadProvider::new(),
+            CapturedTaggerHandle::new(),
+        );
 
         let mut origin = RawOrigin::default();
         origin.set_process_id(mark_replay_process_id(7777));
@@ -782,16 +757,13 @@ mod tests {
         // resolve the raw origin, then walks the resolved entity IDs to collect tags. Every other test either drives
         // the internal `collect_origin_tags` directly or takes the replay bypass, so this is the only coverage of the
         // live `get_resolved_origin` -> `collect_origin_tags` path through the trait method.
-        let config = OriginEnrichmentConfiguration {
-            enabled: true,
-            tag_cardinality: OriginTagCardinality::High,
-            ..OriginEnrichmentConfiguration::for_test()
-        };
-
         let mut workload_provider = TestWorkloadProvider::new();
         workload_provider.add_entity_shared_tags(EntityId::ContainerPid(4242), single_tag("tag_source:live-pid"));
-        let resolver =
-            DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), CapturedTaggerHandle::new());
+        let resolver = enabled_resolver(
+            OriginTagCardinality::High,
+            workload_provider,
+            CapturedTaggerHandle::new(),
+        );
 
         // A plain process ID (no replay marker bit) resolves to `EntityId::ContainerPid(4242)` via the live path.
         let mut origin = RawOrigin::default();
@@ -804,15 +776,13 @@ mod tests {
     #[test]
     fn resolve_origin_tags_uses_pinned_process_entity() {
         let pinned_entity = EntityId::Container(MetaString::from_static("original-container"));
-        let config = OriginEnrichmentConfiguration {
-            enabled: true,
-            tag_cardinality: OriginTagCardinality::High,
-            ..OriginEnrichmentConfiguration::for_test()
-        };
         let workload_provider =
             TestWorkloadProvider::with_entity(pinned_entity.clone(), &["tag_source:pinned-container"]);
-        let resolver =
-            DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), CapturedTaggerHandle::new());
+        let resolver = enabled_resolver(
+            OriginTagCardinality::High,
+            workload_provider,
+            CapturedTaggerHandle::new(),
+        );
         let process_origin = ProcessOrigin::Pinned(Some(pinned_entity));
 
         let tags = resolver.resolve_origin_tags_with_process_origin(RawOrigin::default(), Some(&process_origin));
@@ -824,14 +794,9 @@ mod tests {
     fn resolve_origin_tags_live_path_returns_empty_when_origin_unresolved() {
         // When the workload provider can't resolve the origin (here, an empty origin resolves to `None`), the live
         // path returns an empty tag set rather than falling through to anything else.
-        let config = OriginEnrichmentConfiguration {
-            enabled: true,
-            tag_cardinality: OriginTagCardinality::High,
-            ..OriginEnrichmentConfiguration::for_test()
-        };
-        let resolver = DogStatsDOriginTagResolver::new(
-            config,
-            Arc::new(TestWorkloadProvider::new()),
+        let resolver = enabled_resolver(
+            OriginTagCardinality::High,
+            TestWorkloadProvider::new(),
             CapturedTaggerHandle::new(),
         );
 

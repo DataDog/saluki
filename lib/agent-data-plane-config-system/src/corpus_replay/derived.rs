@@ -96,10 +96,6 @@ pub(crate) const NOT_REPLAYED: &[(&str, &str)] = &[
         "the Agent derives it in a consumer; no recorded getter returns the derived URL",
     ),
     (
-        "otlp-receiver-endpoint-override",
-        "ADP-only keys overwrite the Agent's endpoint by design; never equal",
-    ),
-    (
         "extra-sample-rate-default",
         "an unset `apm_config.extra_sample_rate` becomes 1.0; the Agent's trace config also starts at 1.0 \
          (pkg/trace/config/config.go) and reads the getter only when the key is configured \

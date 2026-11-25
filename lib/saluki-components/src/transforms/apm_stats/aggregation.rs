@@ -8,7 +8,7 @@ use std::{
 
 use fnv::FnvHasher;
 use saluki_common::collections::{FastHashMap, PrehashedHashMap};
-use saluki_core::data_model::event::trace::AttributeValue;
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt};
 use stringtheory::MetaString;
 
 pub const BUCKET_DURATION_NS: u64 = 10_000_000_000;
@@ -40,7 +40,10 @@ pub enum SpanKind {
     /// Consumer span (receiving message from queue/topic).
     Consumer = 5,
 
-    /// Unrecognized span kind of a Datadog span, as the trace-agent names it.
+    /// Kind of a v1.0 Datadog span whose kind is 0 or unrecognized, which the trace-agent reports as `unknown`.
+    ///
+    /// Kept apart from [`Unspecified`][Self::Unspecified], which is the OTLP name for kind 0 and reads `unspecified`
+    /// in the stats.
     Unknown = 6,
 }
 
@@ -472,7 +475,7 @@ pub fn process_tags_hash(process_tags: &str) -> u64 {
 }
 
 pub fn get_status_code(attributes: &FastHashMap<MetaString, AttributeValue>) -> u32 {
-    if let Some(code) = attributes.get(TAG_STATUS_CODE).and_then(AttributeValue::as_num) {
+    if let Some(code) = attributes.get(TAG_STATUS_CODE).and_then(AttributeValue::as_f64) {
         return code as u32;
     }
 
@@ -504,7 +507,7 @@ pub fn get_grpc_status_code(attributes: &FastHashMap<MetaString, AttributeValue>
     }
 
     for key in STATUS_CODE_FIELDS {
-        if let Some(code) = attributes.get(*key).and_then(AttributeValue::as_num) {
+        if let Some(code) = attributes.get(*key).and_then(AttributeValue::as_f64) {
             return GrpcStatusCode::from_code(code as u8);
         }
     }
