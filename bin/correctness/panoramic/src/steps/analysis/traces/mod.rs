@@ -658,8 +658,8 @@ impl StatsMismatch {
 /// covers, in the order of their names.
 ///
 /// A group on one side only is a difference at `stats.groups`: `missing` when only the baseline has it, and `extra` when
-/// only the comparison has it. A field that differs in a group on both sides is a difference at `stats.<field>`. The
-/// view that an entry's `when` matches is the group's fields, from the side that has the group, or the baseline.
+/// only the comparison has it. A field that differs in a group on both sides is a difference at `stats.<field>`, however
+/// deep inside the field the difference is. The view that an entry's `when` matches is the group's fields, from the side that has the group, or the baseline.
 fn compare_stats(
     baseline: &FastHashMap<AggregationKey, Value>, comparison: &FastHashMap<AggregationKey, Value>,
     recorder: &mut DifferenceRecorder, ratchet: &mut Ratchet<'_>,
@@ -676,7 +676,7 @@ fn compare_stats(
                     .iter()
                     .filter(|recorded| {
                         let diff = FieldDiff {
-                            path: format!("stats.{}", recorded.diff.path),
+                            path: stats_field_path(&recorded.diff.path),
                             ..recorded.diff.clone()
                         };
                         !ratchet.allows(&diff, &view)
@@ -726,6 +726,13 @@ fn compare_stats(
 
     mismatches.sort_by(|a, b| a.group.cmp(&b.group));
     mismatches
+}
+
+/// Returns the `stats.<field>` path for the path of a difference inside a statistics group. The path of a nested or
+/// array difference, such as `ok_summary[3]`, is cut at the field, because a glob segment cannot match `ok_summary[3]`.
+fn stats_field_path(path: &str) -> String {
+    let field = path.find(['.', '[']).map_or(path, |end| &path[..end]);
+    format!("{STATS_PREFIX}{field}")
 }
 
 /// The fields of a statistics group, as the view that a known difference's `when` matches.
@@ -837,6 +844,21 @@ mod tests {
         );
         assert_eq!(mismatches.len(), 1, "{:?}", mismatches);
         assert!(mismatches[0].contains("only in comparison"), "{}", mismatches[0]);
+    }
+
+    #[test]
+    fn a_known_stats_difference_covers_nested_differences_of_the_field() {
+        let sketch = |bins: Value| json!({"service": "svc", "name": "op", "ok_summary": bins});
+        let entries = [known("gap/sketch", &["stats.ok_summary"], &["value"])];
+
+        let (mismatches, stale) = compare(
+            &[(1, sketch(json!([1, 2, 3, 4]))), (2, sketch(json!({"bins": [1, 2]})))],
+            &[(1, sketch(json!([1, 2, 3, 5]))), (2, sketch(json!({"bins": [1, 3]})))],
+            &entries,
+        );
+
+        assert!(mismatches.is_empty(), "{:?}", mismatches);
+        assert!(stale.is_empty(), "{:?}", stale);
     }
 
     #[test]

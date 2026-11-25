@@ -362,7 +362,8 @@ first. `traces: {known_differences: [...]}` lists the differences that an open g
 `logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
 `paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
 compared, so the step takes no entries. A path is `stats.groups`, for a
-statistics group on one side only, or `stats.<field>`, for a field of a group on both sides. A kind is `missing`
+statistics group on one side only, or `stats.<field>`, for a field of a group on both sides. `stats.<field>`
+covers a difference anywhere inside the field, such as in a sketch. A kind is `missing`
 (only in the baseline), `extra` (only in the comparison) or `value`. `when` matches the fields of the group, for
 example `{service: [api-gateway]}`. A difference that no entry covers fails the step, and so does an entry path that
 matches no difference, so that a fix removes its entries.
