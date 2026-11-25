@@ -132,6 +132,7 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
             agent_hostname,
             workload_provider: self.workload_provider.clone(),
             splits: metrics_builder.register_counter("component_stats_splits_total"),
+            future_clamps: metrics_builder.register_counter("component_stats_future_bucket_clamps_total"),
         }))
     }
 
@@ -159,6 +160,7 @@ struct ApmStats {
     agent_hostname: MetaString,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
     splits: Counter,
+    future_clamps: Counter,
 }
 
 impl ApmStats {
@@ -193,10 +195,11 @@ impl ApmStats {
             .map(|s| s.as_ref())
             .unwrap_or("");
 
+        let now = now_nanos();
         for span in trace.spans() {
             if let Some(stat_span) = self.concentrator.new_stat_span_from_span(span) {
                 self.concentrator
-                    .add_span(&stat_span, trace_weight, &payload_key, &infra_tags, origin);
+                    .add_span(&stat_span, trace_weight, &payload_key, &infra_tags, origin, now);
             }
         }
     }
@@ -483,6 +486,7 @@ impl Transform for ApmStats {
 
                 _ = flush_ticker.tick() => {
                     let stats_payloads = self.concentrator.flush(now_nanos(), final_flush);
+                    self.future_clamps.increment(self.concentrator.drain_future_clamps());
                     if !stats_payloads.is_empty() {
                         debug!(stats_payloads = stats_payloads.len(), "Flushing APM stats.");
 
@@ -752,6 +756,7 @@ mod tests {
             agent_hostname: MetaString::default(),
             workload_provider: None,
             splits: Counter::noop(),
+            future_clamps: Counter::noop(),
         };
 
         let span = make_test_span("test-service", "test-operation", "test-resource");
@@ -776,6 +781,7 @@ mod tests {
             agent_hostname: MetaString::default(),
             workload_provider: None,
             splits: Counter::noop(),
+            future_clamps: Counter::noop(),
         };
 
         // Create a span with 0.5 sample rate (weight = 2.0)
@@ -829,7 +835,7 @@ mod tests {
 
         for span in trace.spans() {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
         }
 
@@ -870,7 +876,7 @@ mod tests {
 
         for span in trace.spans() {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
         }
 
@@ -906,7 +912,7 @@ mod tests {
 
         for span in &spans {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
         }
 
@@ -989,7 +995,7 @@ mod tests {
 
         for span in &spans {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
         }
 
@@ -1042,7 +1048,7 @@ mod tests {
             let infra_tags = InfraTags::default();
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
 
             // Client span with span.kind=client but no _top_level or _dd.measured
@@ -1056,7 +1062,7 @@ mod tests {
                 .with_attributes(client_attrs);
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
 
             let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -1087,7 +1093,7 @@ mod tests {
             let infra_tags = InfraTags::default();
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
 
             // Client span with span.kind=client
@@ -1101,7 +1107,7 @@ mod tests {
                 .with_attributes(client_attrs);
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
 
             let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -1150,7 +1156,7 @@ mod tests {
             let infra_tags = InfraTags::default();
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
 
             let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -1197,7 +1203,7 @@ mod tests {
             let infra_tags = InfraTags::default();
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
             }
 
             let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -1259,7 +1265,7 @@ mod tests {
 
             for span in &spans {
                 if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
-                    concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                    concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
                 }
             }
 
@@ -1589,6 +1595,7 @@ mod tests {
             agent_hostname: MetaString::default(),
             workload_provider: None,
             splits: MetricsBuilder::default().register_counter("component_stats_splits_total"),
+            future_clamps: Counter::noop(),
         };
         let flush = |groups: usize| vec![make_payload_with_buckets("host1", vec![make_bucket_with_stats(groups)])];
 
@@ -1755,6 +1762,7 @@ mod tests {
             agent_hostname: MetaString::default(),
             workload_provider: None,
             splits: Counter::noop(),
+            future_clamps: Counter::noop(),
         };
 
         // Root span carries a span-level version attribute (set by otel_span_to_dd_span with
@@ -1847,7 +1855,7 @@ mod tests {
         let stat_span = concentrator
             .new_stat_span_from_span(span)
             .expect("a client span with a peer tag should produce stats");
-        concentrator.add_span(&stat_span, 1.0, &payload_key, &InfraTags::default(), "");
+        concentrator.add_span(&stat_span, 1.0, &payload_key, &InfraTags::default(), "", now);
 
         let payloads = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
         let peer_tags: Vec<String> = payloads
@@ -1869,6 +1877,7 @@ mod tests {
             workload_provider: workload_provider
                 .map(|provider| Arc::new(provider) as Arc<dyn WorkloadProvider + Send + Sync>),
             splits: Counter::noop(),
+            future_clamps: Counter::noop(),
         }
     }
 
@@ -1983,6 +1992,7 @@ mod tests {
             agent_hostname: MetaString::from("agent-host"),
             workload_provider: None,
             splits: Counter::noop(),
+            future_clamps: Counter::noop(),
         };
         let trace_with = |payload_hostname: &str, root_hostname: Option<&str>| {
             let mut attrs = FastHashMap::default();
@@ -2020,6 +2030,7 @@ mod tests {
             agent_hostname: MetaString::from("agent-host"),
             workload_provider: None,
             splits: Counter::noop(),
+            future_clamps: Counter::noop(),
         };
 
         // A serverless OTLP resource reports no hostname, so its stats use the configured one. The trace payload

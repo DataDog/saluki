@@ -934,6 +934,7 @@ mod tests {
         bound_port, grpc_ok, http_ok, proxy_to, wait_for_port, FakeUpstream, RecordingHandler, TestClient, TestServers,
     };
     use super::*;
+    use crate::common::datadog::test_util::init_crypto_provider;
 
     struct NoopHandler;
 
@@ -1901,6 +1902,7 @@ mod tests {
     #[tokio::test]
     async fn build_fails_for_a_proxied_signal_without_a_destination_for_its_protocol() {
         let upstream = FakeUpstream::tcp(http_ok).await;
+        init_crypto_provider();
         let proxy = OtlpProxy::new(
             &OtlpProxyDestinations {
                 grpc: None,

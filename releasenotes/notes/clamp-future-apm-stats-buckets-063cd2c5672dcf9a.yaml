@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Count the APM stats of a span that ends in the future in the current stats bucket, as the Datadog Agent does.
+    Before, Agent Data Plane kept those stats in a future bucket that it did not flush until its clock reached the
+    bucket, so the stats were late and held memory until then. A new telemetry counter of the APM stats component,
+    ``component_stats_future_bucket_clamps_total``, counts these spans.

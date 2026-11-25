@@ -630,6 +630,7 @@ mod tests {
         HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings, OtlpDebugVerbosity,
         OtlpMetricsSettings, SummaryMode,
     };
+    use crate::common::datadog::test_util::init_crypto_provider;
     use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::common::otlp::proxy::OtlpProxyDestinations;
     use crate::common::otlp::receiver::receiver;
@@ -1218,6 +1219,7 @@ mod tests {
     async fn a_source_without_internal_signals_keeps_its_outputs_open() {
         // With no internal signal, the topology connects the source to a destination that drops everything. That
         // destination stops once its input closes, which would stop the topology.
+        init_crypto_provider();
         let mut config = source_configuration();
         config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
         config.receiver.http.endpoint = "127.0.0.1:0".to_string();
@@ -1252,6 +1254,7 @@ mod tests {
     async fn settings_of_disabled_metrics_do_not_stop_the_traces_proxy() {
         // `nobuckets` without aggregation metrics is invalid, but only for the metrics translator. The source doesn't
         // translate disabled metrics, so these settings don't matter.
+        init_crypto_provider();
         let mut config = source_configuration();
         config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
         config.receiver.http.endpoint = "127.0.0.1:0".to_string();
@@ -1313,6 +1316,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_proxied_signal_needs_proxy_destinations() {
+        init_crypto_provider();
         let mut config = source_configuration();
         config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
         config.receiver.http.endpoint = "127.0.0.1:0".to_string();
