@@ -126,8 +126,9 @@ pub struct TracesOptions {
 
     /// Spans that neither side may hold, one entry for each, with the fields of an entry of `spans`.
     ///
-    /// Name a span that both sides drop, and keep a span of the same trace or service that both sides hold, so that the
-    /// check can't pass because the whole family of spans is missing.
+    /// Name a span that both sides drop, and name a span of the same service in `spans`, one that both sides hold, so
+    /// that the check can't pass because the whole service is missing. The step rejects an entry whose service has no
+    /// entry in `spans`.
     #[serde(default)]
     pub absent: Vec<ExpectedSpan>,
 
@@ -146,7 +147,8 @@ impl TracesOptions {
     ///
     /// If an entry names no issue, has a path outside the trace statistics, the span fields and the spans on one side
     /// only, has a path that covers the trace ID of a span, or has a span path and doesn't scope itself to spans by
-    /// service, name or resource, or if `otlp_direct_analysis_mode` skips the statistics comparison that an option or an
+    /// service, name or resource, or covers whole spans without `kinds` or without a `name` or `resource` in `when`, or
+    /// if an `absent` entry has a service that no `spans` entry has, or if `otlp_direct_analysis_mode` skips the statistics comparison that an option or an
     /// entry's path applies to, or if a step that compares stats sets expectations or turns off `require_ssi` and sets
     /// no `min_stats_groups`, an error is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
@@ -226,6 +228,28 @@ impl TracesOptions {
                     SPAN_VIEW_FIELDS.join(", ")
                 ));
             }
+            // A span on one side only is excused as a whole, with all of its fields. The entry must not excuse every
+            // span of a service, nor both a lost span ID's `missing` copy and its `extra` copy.
+            if entry.paths.iter().any(|path| path.as_str() == SPANS_PATH)
+                && (entry.kinds.is_empty() || !(entry.when.contains_key("name") || entry.when.contains_key("resource")))
+            {
+                return Err(format!(
+                    "known difference '{}' covers whole spans, so it must set `kinds` and its `when` must name the \
+                     spans by `name` or `resource`",
+                    entry.gap
+                ));
+            }
+        }
+        if let Some(unexpected) = self
+            .absent
+            .iter()
+            .find(|unexpected| !self.spans.iter().any(|span| span.service() == unexpected.service()))
+        {
+            return Err(format!(
+                "`absent` names a span of service '{}', but `spans` holds no span of that service. Add one that both \
+                 sides hold, so that the check can't pass because the whole service is missing",
+                unexpected.service()
+            ));
         }
         Ok(())
     }

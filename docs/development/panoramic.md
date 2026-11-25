@@ -536,8 +536,9 @@ For traces, set expectations under `traces`:
 - `spans`: a list of spans that each side must hold. An entry has a `service` and a `name` or a `resource`, and a span
   of the side must match every field that the entry sets. The `name` is the operation name.
 - `absent`: a list of spans that neither side may hold, with the fields of an entry of `spans`. A failure names the
-  side that holds a span that meets an entry. Name a span that both sides drop, and keep a span of the same trace or
-  service in `spans`, so that the check can't pass because the whole family of spans is missing.
+  side that holds a span that meets an entry. Name a span that both sides drop, and name a span of the same service in
+  `spans`, one that both sides hold, so that the check can't pass because the whole service is missing. The step
+  rejects an `absent` entry whose service has no entry in `spans`.
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
   The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
@@ -692,9 +693,10 @@ compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a s
 of a span on both sides, or `spans`, for a span on one side only. `stats.<field>` covers a difference anywhere inside
 the field, such as in a sketch. A kind is `missing` (only in the baseline), `extra` (only in the comparison) or
 `value`. `when` matches the fields of the group, for example `{service: [api-gateway]}`, or the `service`, `name` and
-`resource` of the span. An entry with a `span.` path or the path `spans` must name its spans with `when`. A difference
-that no entry covers fails the step, and so does an entry path that matches no difference for one of the values in
-`when`, so that a fix removes its entries.
+`resource` of the span. An entry with a `span.` path or the path `spans` must name its spans with `when`. An entry with
+the path `spans` excuses a whole span, so it must also set `kinds` and name its spans by `name` or `resource`, not by
+`service` alone. A difference that no entry covers fails the step, and so does an entry path that matches no difference
+for one of the values in `when`, so that a fix removes its entries.
 
 ### A span field or an ignored field?
 

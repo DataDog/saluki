@@ -370,9 +370,14 @@ mod tests {
             error
         );
 
-        let spans_entry = "{gap: gap/a, issue: 1, paths: [spans], when: {resource: [r]}, reason: r}";
+        let spans_entry = "{gap: gap/a, issue: 1, paths: [spans], kinds: [missing], when: {resource: [r]}, reason: r}";
         assert!(build("", spans_entry).is_ok());
         assert!(build("otlp_direct_analysis_mode: true,", spans_entry).is_ok());
+        assert!(build(
+            "",
+            "{gap: gap/a, issue: 1, paths: [spans], kinds: [extra], when: {service: [s], name: [n]}, reason: r}"
+        )
+        .is_ok());
         for unscoped in [
             "{gap: gap/a, issue: 1, paths: [spans], reason: r}",
             "{gap: gap/a, issue: 1, paths: [spans], when: {hits: [1]}, reason: r}",
@@ -384,6 +389,22 @@ mod tests {
                 error
             );
         }
+
+        // A known difference that covers whole spans names them by `name` or `resource`, and sets `kinds`.
+        for loose in [
+            "{gap: gap/a, issue: 1, paths: [spans], when: {resource: [r]}, reason: r}",
+            "{gap: gap/a, issue: 1, paths: [spans], kinds: [], when: {resource: [r]}, reason: r}",
+            "{gap: gap/a, issue: 1, paths: [spans], kinds: [missing], when: {service: [s]}, reason: r}",
+        ] {
+            let error = build("", loose).unwrap_err();
+            assert!(error.contains("covers whole spans"), "{}", error);
+        }
+        // A `span.` path is not a whole span, so it needs neither.
+        assert!(build(
+            "",
+            "{gap: gap/a, issue: 1, paths: [span.metrics._top_level], when: {service: [s]}, reason: r}"
+        )
+        .is_ok());
 
         let span_entry = "{gap: gap/a, issue: 1, paths: [span.metrics._top_level], when: {resource: [r]}, reason: r}";
         assert!(build("", span_entry).is_ok());
@@ -1169,7 +1190,10 @@ mod tests {
         assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
 
         // Both sides hold the two spans of the service.
-        let fields = direct("absent: [{service: db, name: db.query}, {service: api, name: web.request}]");
+        let fields = direct(
+            "spans: [{service: db, name: db.query}, {service: api, name: web.request}], \
+             absent: [{service: db, name: db.query}, {service: api, name: web.request}]",
+        );
         let report = compare(&fields, &both, &both).await;
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
         for side in ["comparison", "baseline"] {
@@ -1190,21 +1214,22 @@ mod tests {
         }
 
         // One side holds the span: only that side is named, and the entry matches the resource too.
-        let without_db = tracing(spans_without(11), &[]);
-        let fields = direct("absent: [{service: db, resource: SELECT 1}]");
-        let report = compare(&fields, &both, &without_db).await;
+        let without_x = tracing(spans_without(20), &[]);
+        let fields = direct("spans: [{service: api, resource: GET /}], absent: [{service: api, resource: GET /x}]");
+        let report = compare(&fields, &both, &without_x).await;
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
         assert!(
             report
                 .message
-                .contains("The comparison holds 1 span(s) that meet `absent[0]` (service=db, resource=SELECT 1)"),
+                .contains("The comparison holds 1 span(s) that meet `absent[0]` (service=api, resource=GET /x)"),
             "{}",
             report.message
         );
         assert!(!report.message.contains("The baseline holds"), "{}", report.message);
 
         // A span of the same service with another resource does not meet the entry.
-        let fields = direct("absent: [{service: api, resource: GET /missing}]");
+        let fields =
+            direct("spans: [{service: api, name: web.request}], absent: [{service: api, resource: GET /missing}]");
         let report = compare(&fields, &both, &both).await;
         assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
     }
@@ -1341,6 +1366,11 @@ mod tests {
             (
                 "{telemetry: traces, comparison: app, baseline: peer, traces: {absent: [{service: api, name: x}]}}",
                 "'traces' sets expectations or turns off 'require_ssi', so it must set 'min_stats_groups'",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \
+                 traces: {spans: [{service: db, name: x}], absent: [{service: api, name: x}]}}",
+                "`absent` names a span of service 'api', but `spans` holds no span of that service",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, \

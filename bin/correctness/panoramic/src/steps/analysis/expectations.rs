@@ -220,6 +220,11 @@ impl TryFrom<ExpectedSpanFields> for ExpectedSpan {
 }
 
 impl ExpectedSpan {
+    /// Returns the service of the expected span.
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
     /// Returns whether `span` has the service, and the name and the resource that the expectation sets.
     fn is_met_by(&self, span: &Span) -> bool {
         span.service() == self.service
