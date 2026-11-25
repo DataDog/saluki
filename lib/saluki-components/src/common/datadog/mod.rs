@@ -19,7 +19,7 @@ pub mod validation;
 pub(crate) mod version_data;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt, Span, Trace};
 use stringtheory::MetaString;
 use tracing::debug;
 
