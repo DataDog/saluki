@@ -115,6 +115,21 @@ planned.
 Date exclusion notes and name the feature: `YYYY-MM-DD: ADP does not currently support <feature>.` Avoid generic
 reasons such as "Core Agent-only" or claims that support can never be added.
 
+### Keys set to their default value
+
+At startup, the compatibility check reports a classified key only when an input sets it explicitly to a value other
+than its schema default. A key set to its default gets the behavior ADP has when nobody sets it, so the check skips it.
+The check reports a value that the default comparison can't match, such as a duration in an unexpected form.
+
+The check trusts the schema default, and assumes that the Agent reads the key's value. When you classify a key as
+`none`, check how the Agent reads it:
+
+- When the Agent's behavior depends on whether the key is set, for example through `IsConfigured` or `IsSet`, set
+  `presence_matters: true` on the entry. The check then reports the key at its default value too. Keys without a
+  schema default are always treated this way, because any value makes them present in the Agent's configuration.
+- When the key's effective default depends on the platform or is computed, check that its schema default matches the
+  Agent's effective default. Otherwise, the check can skip a value that changes behavior.
+
 ## Environment variables and key shape
 
 The Datadog Agent doesn't derive a variable's name from its key path: `DD_PROXY_HTTP` reaches `proxy.http`, while

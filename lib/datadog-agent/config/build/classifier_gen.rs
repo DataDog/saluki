@@ -31,6 +31,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         writeln!(out, "        support_level: SupportLevel::Partial,").unwrap();
         writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
         writeln!(out, "        default: {},", default_expr).unwrap();
+        writeln!(out, "        presence_matters: false,").unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
@@ -49,6 +50,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
         writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
         writeln!(out, "        default: {},", default_expr).unwrap();
+        writeln!(out, "        presence_matters: {},", u.presence_matters).unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
@@ -67,6 +69,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
         writeln!(out, "        pipeline_affinity: PipelineAffinity::CrossCutting,").unwrap();
         writeln!(out, "        default: {},", default_expr).unwrap();
+        writeln!(out, "        presence_matters: false,").unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
