@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
-use datadog_protos::agent::{Container, KubernetesPod, WorkloadmetaEventType};
+use datadog_protos::agent::{Container, KubernetesPod, OrchestratorContainer, WorkloadmetaEventType};
 use futures::{StreamExt as _, TryStreamExt as _};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -39,8 +39,7 @@ enum EventType {
 pub struct RemoteAgentWorkloadMetadataCollector {
     client: RemoteAgentClient,
     health: Health,
-    interner: GenericMapInterner,
-    telemetry: Telemetry,
+    event_handler: EventHandler,
 }
 
 impl RemoteAgentWorkloadMetadataCollector {
@@ -58,9 +57,23 @@ impl RemoteAgentWorkloadMetadataCollector {
         Ok(Self {
             client,
             health,
+            event_handler: EventHandler::new(interner),
+        })
+    }
+}
+
+/// Turns workloadmeta events into metadata operations.
+struct EventHandler {
+    interner: GenericMapInterner,
+    telemetry: Telemetry,
+}
+
+impl EventHandler {
+    fn new(interner: GenericMapInterner) -> Self {
+        Self {
             interner,
             telemetry: Telemetry::new(),
-        })
+        }
     }
 
     fn try_intern(&self, value: &str) -> Option<MetaString> {
@@ -112,10 +125,7 @@ impl RemoteAgentWorkloadMetadataCollector {
         &self, operations_tx: &mut mpsc::Sender<MetadataOperation>, pod_uid: MetaString, kubernetes_pod: KubernetesPod,
     ) -> Result<(), GenericError> {
         // When a pod is created/updated, generate External Data entries for every container within the pod.
-        let init_containers = kubernetes_pod.init_containers.iter().map(|container| (container, true));
-        let non_init_containers = kubernetes_pod.containers.iter().map(|container| (container, false));
-
-        for (container, is_init) in init_containers.chain(non_init_containers) {
+        for (container, is_init) in pod_containers(&kubernetes_pod) {
             let container_name = match self.try_intern(&container.name) {
                 Some(container_name) => container_name,
                 None => {
@@ -147,10 +157,7 @@ impl RemoteAgentWorkloadMetadataCollector {
         let operation = MetadataOperation::delete(EntityId::PodUid(pod_uid));
         send_metadata_operation(operations_tx, operation).await;
 
-        let init_containers = kubernetes_pod.init_containers.iter();
-        let non_init_containers = kubernetes_pod.containers.iter();
-
-        for container in init_containers.chain(non_init_containers) {
+        for (container, _) in pod_containers(&kubernetes_pod) {
             let container_entity_id = match self.try_intern(&container.id) {
                 Some(entity_id) => EntityId::Container(entity_id),
                 None => {
@@ -215,6 +222,7 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
+        let event_handler = &self.event_handler;
         self.health.mark_ready();
 
         let mut entity_stream = self.client.get_workloadmeta_stream().map_err(StatusError::from);
@@ -244,18 +252,18 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
                             };
 
                             if let Some(kubernetes_pod) = event.kubernetes_pod {
-                                self.handle_kubernetes_pod_event(operations_tx, event_type, kubernetes_pod).await?;
+                                event_handler.handle_kubernetes_pod_event(operations_tx, event_type, kubernetes_pod).await?;
                             }
 
                             if let Some(container) = event.container {
-                                self.handle_container_event(operations_tx, event_type, container).await?;
+                                event_handler.handle_container_event(operations_tx, event_type, container).await?;
                             }
                         }
 
                         trace!("Processed workload metadata stream event.");
                     },
                     Some(Err(e)) => {
-                        self.telemetry.rpc_errors_total().increment(1);
+                        event_handler.telemetry.rpc_errors_total().increment(1);
                         return Err(e.into())
                     },
                     None => break,
@@ -279,8 +287,161 @@ impl MemoryBounds for RemoteAgentWorkloadMetadataCollector {
     }
 }
 
+/// Returns every container in the pod, with a flag that is `true` for init containers.
+///
+/// Ephemeral containers aren't init containers. The Agent resolves External Data against all three lists.
+fn pod_containers(kubernetes_pod: &KubernetesPod) -> impl Iterator<Item = (&OrchestratorContainer, bool)> {
+    let init_containers = kubernetes_pod.init_containers.iter().map(|container| (container, true));
+    let containers = kubernetes_pod.containers.iter().map(|container| (container, false));
+    let ephemeral_containers = kubernetes_pod
+        .ephemeral_containers
+        .iter()
+        .map(|container| (container, false));
+
+    init_containers.chain(containers).chain(ephemeral_containers)
+}
+
 async fn send_metadata_operation(operations_tx: &mut mpsc::Sender<MetadataOperation>, operation: MetadataOperation) {
     if let Err(e) = operations_tx.send(operation).await {
         debug!(error = %e, "Failed to send metadata operation.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use datadog_protos::agent::WorkloadmetaEntityId;
+    use saluki_core::data_model::origin::RawExternalData;
+    use saluki_env::workload::{aggregator::MetadataStore as _, stores::ExternalDataStore, MetadataAction};
+
+    use super::*;
+
+    const POD_UID: &str = "pod-uid";
+
+    #[derive(Debug, PartialEq)]
+    enum Op {
+        Attach(EntityId, ExternalData),
+        Delete(EntityId),
+    }
+
+    fn event_handler() -> EventHandler {
+        EventHandler::new(GenericMapInterner::new(NonZeroUsize::new(64 * 1024).unwrap()))
+    }
+
+    fn orchestrator_container(id: &str, name: &str) -> OrchestratorContainer {
+        OrchestratorContainer {
+            id: id.to_string(),
+            name: name.to_string(),
+            image: None,
+        }
+    }
+
+    fn pod_with_all_container_kinds() -> KubernetesPod {
+        KubernetesPod {
+            entity_id: Some(WorkloadmetaEntityId {
+                id: POD_UID.to_string(),
+                ..Default::default()
+            }),
+            init_containers: vec![orchestrator_container("init-id", "init")],
+            containers: vec![orchestrator_container("app-id", "app")],
+            ephemeral_containers: vec![orchestrator_container("debugger-id", "debugger")],
+            ..Default::default()
+        }
+    }
+
+    async fn pod_event_operations(
+        handler: &EventHandler, event_type: EventType, pod: KubernetesPod,
+    ) -> Vec<MetadataOperation> {
+        let (mut operations_tx, mut operations_rx) = mpsc::channel(16);
+        handler
+            .handle_kubernetes_pod_event(&mut operations_tx, event_type, pod)
+            .await
+            .unwrap();
+        drop(operations_tx);
+
+        let mut operations = Vec::new();
+        while let Some(operation) = operations_rx.recv().await {
+            operations.push(operation);
+        }
+        operations
+    }
+
+    fn summarize(operations: &[MetadataOperation]) -> Vec<Op> {
+        operations
+            .iter()
+            .flat_map(|operation| {
+                operation.actions.clone().into_iter().map(|action| match action {
+                    MetadataAction::AttachExternalData { external_data } => {
+                        Op::Attach(operation.entity_id.clone(), external_data)
+                    }
+                    MetadataAction::Delete => Op::Delete(operation.entity_id.clone()),
+                    other => panic!("unexpected action: {other:?}"),
+                })
+            })
+            .collect()
+    }
+
+    fn container(id: &str) -> EntityId {
+        EntityId::Container(id.into())
+    }
+
+    fn external_data(container_name: &str, is_init: bool) -> ExternalData {
+        ExternalData::new(POD_UID.into(), container_name.into(), is_init)
+    }
+
+    #[tokio::test]
+    async fn pod_update_attaches_external_data_for_every_container_kind() {
+        let handler = event_handler();
+        let operations =
+            pod_event_operations(&handler, EventType::CreatedOrUpdated, pod_with_all_container_kinds()).await;
+
+        assert_eq!(
+            summarize(&operations),
+            vec![
+                Op::Attach(container("init-id"), external_data("init", true)),
+                Op::Attach(container("app-id"), external_data("app", false)),
+                Op::Attach(container("debugger-id"), external_data("debugger", false)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn pod_removal_deletes_the_pod_and_every_container_kind() {
+        let handler = event_handler();
+        let operations = pod_event_operations(&handler, EventType::Removed, pod_with_all_container_kinds()).await;
+
+        assert_eq!(
+            summarize(&operations),
+            vec![
+                Op::Delete(EntityId::PodUid(POD_UID.into())),
+                Op::Delete(container("init-id")),
+                Op::Delete(container("app-id")),
+                Op::Delete(container("debugger-id")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn external_data_store_resolves_ephemeral_container_until_pod_removal() {
+        let handler = event_handler();
+        let mut store = ExternalDataStore::with_entity_limit(NonZeroUsize::new(16).unwrap());
+        let resolver = store.resolver();
+        let raw = format!("pu-{POD_UID},cn-debugger,it-false");
+        let raw = RawExternalData::try_from_str(&raw).unwrap();
+
+        for operation in
+            pod_event_operations(&handler, EventType::CreatedOrUpdated, pod_with_all_container_kinds()).await
+        {
+            store.process_operation(operation);
+        }
+        let resolved = resolver.resolve(&raw).expect("ephemeral container should resolve");
+        assert_eq!(resolved.pod_entity_id(), &EntityId::PodUid(POD_UID.into()));
+        assert_eq!(resolved.container_entity_id(), &container("debugger-id"));
+
+        for operation in pod_event_operations(&handler, EventType::Removed, pod_with_all_container_kinds()).await {
+            store.process_operation(operation);
+        }
+        assert_eq!(resolver.resolve(&raw), None);
     }
 }
