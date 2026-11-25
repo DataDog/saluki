@@ -27,6 +27,8 @@ use saluki_env::{
 };
 use stringtheory::MetaString;
 
+use super::value::otlp_value_as_string;
+
 const CONTAINER_ID: &str = "container.id";
 const PROCESS_PID: &str = "process.pid";
 const K8S_POD_UID: &str = "k8s.pod.uid";
@@ -143,18 +145,17 @@ impl<'a> OriginInfo<'a> {
     ///
     /// As in the Agent, the process ID and the cgroup inode count only as integers, and the init container flag only as
     /// a boolean. An integer converts with two's-complement truncation, as Go's `uint32(...)` and `uint64(...)` do. The
-    /// pod UID and the container name accept any type. A string, integer, or boolean value converts to a string as
-    /// `pdata`'s `AsString` does, and any other value converts to an empty string (`gap/value-formatting`).
+    /// pod UID and the container name accept any type, and convert to a string as `pdata`'s `AsString` does.
     pub fn from_attributes(attributes: &'a [KeyValue]) -> Self {
         let mut origin = Self::default();
         if let Some(Value::IntValue(process_id)) = attribute_value(attributes, PROCESS_PID) {
             origin.process_id = *process_id as u32;
         }
         if let Some(value) = attribute(attributes, K8S_POD_UID) {
-            origin.pod_uid = as_string(value);
+            origin.pod_uid = otlp_value_as_string(value);
         }
         if let Some(value) = attribute(attributes, K8S_CONTAINER_NAME) {
-            origin.container_name = as_string(value);
+            origin.container_name = otlp_value_as_string(value);
         }
         if let Some(Value::IntValue(inode)) = attribute_value(attributes, CGROUP_INODE) {
             origin.cgroup_inode = *inode as u64;
@@ -196,19 +197,6 @@ fn attribute<'a>(attributes: &'a [KeyValue], key: &str) -> Option<Option<&'a Val
 
 fn attribute_value<'a>(attributes: &'a [KeyValue], key: &str) -> Option<&'a Value> {
     attribute(attributes, key).flatten()
-}
-
-/// Converts a value to a string, as `pdata`'s `AsString` does for empty, string, integer, and boolean values.
-///
-/// Other types convert to an empty string, which the lookup treats as absent. `pdata` formats them, but a pod UID or a
-/// container name of such a type identifies no container.
-fn as_string(value: Option<&Value>) -> Cow<'_, str> {
-    match value {
-        Some(Value::StringValue(value)) => Cow::Borrowed(value),
-        Some(Value::IntValue(value)) => Cow::Owned(value.to_string()),
-        Some(Value::BoolValue(value)) => Cow::Borrowed(if *value { "true" } else { "false" }),
-        _ => Cow::Borrowed(""),
-    }
 }
 
 /// Returns `true` if `entity_id` is a container with an ID that isn't empty.
@@ -576,11 +564,9 @@ mod tests {
         }
     }
 
-    /// `pdata`'s `AsString` formats doubles, bytes, arrays, and maps. The lookup treats them as absent until the OTLP
-    /// path has a shared `AsString` that matches `pdata`.
+    /// The pod UID and the container name convert doubles, bytes, arrays, and maps as `pdata`'s `AsString` does.
     #[test]
-    #[ignore = "target for `gap/value-formatting`"]
-    fn target_value_formatting() {
+    fn converts_other_value_types_as_pdata_does() {
         use otlp_protos::opentelemetry::proto::common::v1::{ArrayValue, KeyValueList};
 
         let mut provider = TestWorkloadProvider::new();
