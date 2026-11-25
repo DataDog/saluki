@@ -143,6 +143,8 @@ pub struct ClassifierEntry {
     pub pipeline_affinity: PipelineAffinity,
     /// Default value from the Agent schema (normalized at build time).
     pub default: DefaultValue,
+    /// Whether the overlay marks the Agent's behavior as depending on whether the key is set.
+    pub presence_matters: bool,
 }
 
 use crate::generated::classifier_data::CLASSIFIER_ENTRIES;

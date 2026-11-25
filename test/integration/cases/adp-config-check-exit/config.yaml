@@ -24,7 +24,7 @@ env:
 
 procedure:
   - assertion: log_contains
-    pattern: "Unsupported configuration key with non-default value"
+    pattern: "Unsupported configuration key is set to a value other than its default"
     timeout: 60s
   - assertion: log_contains
     pattern: "incompatible configuration detected"
