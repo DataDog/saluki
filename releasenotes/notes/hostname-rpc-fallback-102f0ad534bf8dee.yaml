@@ -1,0 +1,4 @@
+fixes:
+  - |
+    Fall back to the OS hostname when the hostname RPC fails. Reject fallback
+    hostnames from known container UTS namespaces on Linux.
