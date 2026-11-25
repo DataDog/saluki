@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use agent_data_plane_config::SalukiConfiguration;
-use datadog_agent_config::{apply_datadog_env_vars, datadog_renamed_keys, RenamedKey};
+use datadog_agent_config::{apply_datadog_env_vars, datadog_renamed_keys, invalid_boolean_keys, RenamedKey};
 use saluki_config::dynamic::ConfigUpdate;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -47,6 +47,8 @@ pub struct LoadedConfiguration {
     pub yaml_fallback_error: Option<Error>,
     // Former setting names the local sources used, reported by `warn_deprecated_names`.
     deprecated_names: Vec<DeprecatedName>,
+    // Local boolean fallbacks that occur before logging starts.
+    invalid_boolean_keys: Vec<&'static str>,
 }
 
 /// A former setting name that a local source used.
@@ -92,11 +94,13 @@ impl LoadedConfiguration {
             message: format!("read `{}`: {e}", path.display()),
         })?;
         let reading = read_local(&text, path, &env_vars(env), env, datadog_renamed_keys())?;
+        let invalid_boolean_keys = invalid_boolean_keys(&reading.base.to_value()).collect();
         Ok(Self {
             local: reading.local?,
             base: reading.base,
             yaml_fallback_error: reading.yaml_fallback_error,
             deprecated_names: reading.deprecated_names,
+            invalid_boolean_keys,
         })
     }
 
@@ -108,6 +112,18 @@ impl LoadedConfiguration {
             warn!(
                 "`{}` is a deprecated name for `{}`. Use the current name instead.",
                 name.former, name.current
+            );
+        }
+    }
+
+    /// Logs a warning for each local setting that reads an invalid boolean string as `false`.
+    ///
+    /// Call this once logging is initialized.
+    pub fn warn_invalid_booleans(&self) {
+        for key in &self.invalid_boolean_keys {
+            warn!(
+                key = *key,
+                "Invalid boolean string. Reading this setting as false, as the Datadog Agent does. Use true or false."
             );
         }
     }
@@ -406,6 +422,43 @@ mod tests {
         assert!(loaded.yaml_fallback_error.is_none());
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn yaml_invalid_boolean_loads_as_false_and_keeps_the_raw_source() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use tracing_subscriber::{layer::SubscriberExt, Layer};
+
+        struct Warnings(Arc<AtomicUsize>);
+
+        impl<S: tracing::Subscriber> Layer<S> for Warnings {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+                assert_eq!(*event.metadata().level(), tracing::Level::WARN);
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let path = std::env::temp_dir().join(format!("adp_invalid_bool_{}.yaml", std::process::id()));
+        std::fs::write(&path, "api_key: test\nlogs_enabled: \"yes\"\n").unwrap();
+        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::Disabled)
+            .await
+            .expect("invalid boolean strings load");
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(!loaded.local().control.logs_enabled);
+        assert!(loaded.yaml_fallback_error.is_none());
+        assert_eq!(loaded.invalid_boolean_keys, ["logs_enabled"]);
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        tracing::subscriber::with_default(subscriber, || loaded.warn_invalid_booleans());
+        assert_eq!(warnings.load(Ordering::Relaxed), 1);
+        let system = loaded.standalone().await.expect("the configuration passes validation");
+        assert!(!system.config().control.logs_enabled);
+        assert_eq!(system.sources().to_value().get("logs_enabled"), Some(&json!("yes")));
     }
 
     #[tokio::test]
@@ -1591,7 +1644,7 @@ mod tests {
         let cases = [
             "Log_Level: [a]\n",
             "DATA_PLANE: {standalone_mode: maybe}\n",
-            "data_plane.otlp.enabled: maybe\n",
+            "data_plane.otlp.enabled: [true]\n",
             "Dogstatsd_Tag_Cardinality: bogus\n",
             "DogStatsD_Port: abc\nLog_Level: debug\n",
         ];

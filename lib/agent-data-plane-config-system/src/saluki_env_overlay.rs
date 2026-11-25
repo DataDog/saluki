@@ -405,6 +405,14 @@ mod tests {
     }
 
     #[test]
+    fn invalid_saluki_only_boolean_environment_values_are_rejected() {
+        let vars = [("DD_DATA_PLANE_STANDALONE_MODE".to_owned(), "yes".to_owned())];
+        let error = apply_env_vars(&mut json!({}), &vars, true).unwrap_err();
+        assert!(error.contains("DD_DATA_PLANE_STANDALONE_MODE"), "{error}");
+        assert!(error.contains("invalid boolean"), "{error}");
+    }
+
+    #[test]
     fn tracer_descends_through_optional_struct() {
         assert!(has_path(&["ottl_filter_config", "error_mode"]));
         assert!(has_path(&["ottl_filter_config", "traces", "span"]));

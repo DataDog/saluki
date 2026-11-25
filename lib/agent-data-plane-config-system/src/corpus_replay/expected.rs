@@ -534,37 +534,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: AGENT_LOAD_WRITE,
         }),
         known_bug(Entry {
-            origin: "depth-env-bool-words",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "GetBool",
-            key: "allow_arbitrary_tags",
-            adp: Adp::error("invalid value: string \"on\", expected a boolean, a boolean string, or a number"),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
-            origin: "depth-env-bool-words",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "-",
-            key: "<boot>",
-            adp: Adp::error(
-                "failed to build the configuration base: environment variable `DD_ALLOW_ARBITRARY_TAGS` (allow_arbitrary_tags): invalid boolean `on`",
-            ),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
-            origin: "depth-env-bool-words",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "allow_arbitrary_tags",
-            adp: Adp::error(
-                "invalid value: string \"on\", expected a boolean, a boolean string, or a number",
-            ),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
             origin: "depth-env-float",
             tier: Leaf,
             at: "snapshot",
@@ -765,26 +734,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: TRANSLATOR_REJECTS_VALUE,
         }),
         known_bug(Entry {
-            origin: "depth-set-bool-words",
-            tier: Leaf,
-            at: "final",
-            getter: "GetBool",
-            key: "allow_arbitrary_tags",
-            adp: Adp::error("invalid value: string \"on\", expected a boolean, a boolean string, or a number"),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
-            origin: "depth-set-bool-words",
-            tier: Deserialize,
-            at: "update allow_arbitrary_tags #1",
-            getter: "-",
-            key: "allow_arbitrary_tags",
-            adp: Adp::error(
-                "invalid value: string \"on\", expected a boolean, a boolean string, or a number",
-            ),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
             origin: "depth-set-empty-list",
             tier: Leaf,
             at: "final",
@@ -864,15 +813,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-set-empty-string",
             tier: Leaf,
             at: "final",
-            getter: "GetBool",
-            key: "allow_arbitrary_tags",
-            adp: Adp::error("invalid value: string \"\", expected a boolean, a boolean string, or a number"),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
-            origin: "depth-set-empty-string",
-            tier: Leaf,
-            at: "final",
             getter: "GetFloat64",
             key: "apm_config.errors_per_second",
             adp: Adp::error("invalid value: string \"\", expected a number, a numeric string, or a boolean"),
@@ -895,17 +835,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "agent_ipc.grpc_max_message_size",
             adp: Adp::error(
                 "invalid value: string \"\", expected an integer, a numeric string, or a boolean",
-            ),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
-            origin: "depth-set-empty-string",
-            tier: Deserialize,
-            at: "update allow_arbitrary_tags #1",
-            getter: "-",
-            key: "allow_arbitrary_tags",
-            adp: Adp::error(
-                "invalid value: string \"\", expected a boolean, a boolean string, or a number",
             ),
             cause: UNPARSEABLE_SCALAR_STRING,
         }),
@@ -2123,37 +2052,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: UNRESOLVED_AGENT_DEFAULT,
         }),
         known_bug(Entry {
-            origin: "env-bool-unparseable-kept-raw",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "GetBool",
-            key: "dogstatsd_origin_detection",
-            adp: Adp::error("invalid value: string \"yes\", expected a boolean, a boolean string, or a number"),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
-            origin: "env-bool-unparseable-kept-raw",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "-",
-            key: "<boot>",
-            adp: Adp::error(
-                "failed to build the configuration base: environment variable `DD_DOGSTATSD_ORIGIN_DETECTION` (dogstatsd_origin_detection): invalid boolean `yes`",
-            ),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
-            origin: "env-bool-unparseable-kept-raw",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "dogstatsd_origin_detection",
-            adp: Adp::error(
-                "invalid value: string \"yes\", expected a boolean, a boolean string, or a number",
-            ),
-            cause: UNPARSEABLE_SCALAR_STRING,
-        }),
-        known_bug(Entry {
             origin: "env-map-bad-json",
             tier: Leaf,
             at: "snapshot",
@@ -2210,15 +2108,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "apm_config.apm_non_local_traffic",
             adp: Adp::value("false"),
             cause: UNRESOLVED_AGENT_DEFAULT,
-        }),
-        known_bug(Entry {
-            origin: "logs-enabled-yes-yaml",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "logs_enabled",
-            adp: Adp::error("invalid value: string \"yes\", expected a boolean, a boolean string, or a number"),
-            cause: UNPARSEABLE_SCALAR_STRING,
         }),
         intentional(Entry {
             origin: "proxy-env-bare-lowercase",
@@ -2430,7 +2319,7 @@ duplicate or rename",
 
 const UNPARSEABLE_SCALAR_STRING: Cause = Cause {
     name: "unparseable-scalar-string",
-    why: "a string that does not parse as the key's bool or number (on, yes, empty, 2.5); the Agent's getter reads zero, ADP rejects",
+    why: "a string that does not parse as the key's number (empty, 2.5); the Agent's getter reads zero, ADP rejects",
     issue: Some(2755),
 };
 

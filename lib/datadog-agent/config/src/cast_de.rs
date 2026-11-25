@@ -9,19 +9,39 @@
 //! accept every spelling the Agent accepts while keeping the schema's type. [`crate::env_decode`]
 //! uses the same parsers for environment strings.
 //!
+//! Invalid boolean strings read as `false`, with a warning, as the Agent's `GetBool` does.
+//!
 //! Three deliberate divergences from `cast`:
 //!
 //! - A value `cast` cannot convert is a hard error here. `cast.To*` swallows its error and yields the
-//!   zero value, so the Agent silently reads a malformed setting as `false`/`0`/`""`;
-//!   [`crate::env_decode`] already rejects such a value rather than losing it. The exception is an
-//!   integer string with a leading `0` and an `8` or `9` digit (see [`parse_i64`]), which reads as `0`
-//!   as it does in the Agent.
+//!   zero value. Boolean strings and integer strings with invalid octal digits are exceptions
+//!   (see [`parse_i64`]). These read as the zero value, with a warning.
 //! - Surrounding whitespace is trimmed from a numeric string, which Go's parsers reject.
 //! - A float string must be finite. Go accepts `inf` and `nan`, which a JSON number cannot hold.
 
 use std::{collections::HashMap, fmt, marker::PhantomData};
 
 use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Unexpected, Visitor};
+use serde_json::Value;
+
+use crate::{DatadogConfiguration, LeafValue, LEAVES};
+
+/// Returns the modeled boolean settings whose source strings do not parse.
+///
+/// Callers can retain these keys to report startup warnings after logging starts.
+pub fn invalid_boolean_keys(value: &Value) -> impl Iterator<Item = &'static str> + '_ {
+    LEAVES.iter().filter_map(move |leaf| {
+        if !matches!((leaf.get)(DatadogConfiguration::schema_defaults()), LeafValue::Bool(_)) {
+            return None;
+        }
+        let raw = leaf
+            .key
+            .split('.')
+            .try_fold(value, |node, key| node.get(key))?
+            .as_str()?;
+        parse_bool(raw).is_err().then_some(leaf.key)
+    })
+}
 
 /// `cast.ToBoolE` for a string: Go's `strconv.ParseBool` grammar, exactly.
 ///
@@ -479,12 +499,13 @@ pub(crate) fn parse_string_list(raw: &str) -> Vec<String> {
     }
 }
 
-/// Deserializes a `boolean` leaf (`cast.ToBoolE`).
+/// Deserializes a `boolean` leaf as the Agent's `GetBool` does.
+///
+/// An unrecognized string reads as `false`, with a warning.
 ///
 /// # Errors
 ///
-/// Returns an error for a value the Agent cannot cast to a boolean: an unrecognized string or a
-/// compound value.
+/// Returns an error for a compound value.
 pub(crate) fn deserialize_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,
@@ -689,7 +710,12 @@ impl Visitor<'_> for BoolVisitor {
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<bool, E> {
-        parse_bool(value).map_err(|_| E::invalid_value(Unexpected::Str(value), &self))
+        Ok(parse_bool(value).unwrap_or_else(|_| {
+            tracing::warn!(
+                "Invalid boolean string. Reading it as false, as the Datadog Agent does. Use true or false."
+            );
+            false
+        }))
     }
 
     // `cast` maps a nil to the zero value, which for a configuration leaf means an explicit
@@ -969,9 +995,63 @@ mod tests {
     }
 
     #[test]
-    fn bool_rejects_what_go_rejects() {
-        // `strconv.ParseBool` accepts none of these.
-        for rejected in [json!("yes"), json!("on"), json!(""), json!([true]), json!({"a": true})] {
+    fn bool_reads_invalid_strings_as_false_with_a_warning() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use tracing_subscriber::{layer::SubscriberExt, Layer};
+
+        struct Warnings(Arc<AtomicUsize>);
+
+        impl<S: tracing::Subscriber> Layer<S> for Warnings {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+                assert_eq!(*event.metadata().level(), tracing::Level::WARN);
+                event.record(&mut |_field: &tracing::field::Field, value: &dyn fmt::Debug| {
+                    assert!(!format!("{value:?}").contains("secret-api-key"));
+                });
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        tracing::subscriber::with_default(subscriber, || {
+            for (index, raw) in ["yes", "on", "", " true ", "TrUe", "no", "2", "secret-api-key"]
+                .iter()
+                .enumerate()
+            {
+                assert!(parse_bool(raw).is_err(), "{raw:?}");
+                assert_eq!(as_bool(json!(raw)), Ok(false), "{raw:?}");
+                assert_eq!(warnings.load(Ordering::Relaxed), index + 1);
+            }
+            assert_eq!(as_bool(json!("true")), Ok(true));
+            assert_eq!(as_bool(json!("false")), Ok(false));
+            assert_eq!(warnings.load(Ordering::Relaxed), 8);
+        });
+    }
+
+    #[test]
+    fn invalid_boolean_keys_only_reports_malformed_modeled_boolean_strings() {
+        let source = json!({
+            "logs_enabled": "yes",
+            "log_to_console": "True",
+            "data_plane": { "otlp": { "enabled": "" }, "standalone_mode": "yes" },
+            "dogstatsd_logging_enabled": false,
+            "dogstatsd_origin_detection": 1,
+            "site": "yes",
+            "unknown_key": "yes",
+        });
+        assert_eq!(
+            invalid_boolean_keys(&source).collect::<Vec<_>>(),
+            ["data_plane.otlp.enabled", "logs_enabled"]
+        );
+    }
+
+    #[test]
+    fn bool_rejects_compound_values() {
+        for rejected in [json!([true]), json!({"a": true})] {
             assert!(as_bool(rejected.clone()).is_err(), "{rejected}");
         }
     }

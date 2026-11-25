@@ -126,6 +126,7 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
         );
     }
     local_config.warn_deprecated_names();
+    local_config.warn_invalid_booleans();
 
     // Bootstrap-integration probe: proves the Antithesis SDK is linked, cataloging works, and the
     // instrumentation path is wired.

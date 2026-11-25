@@ -1,0 +1,5 @@
+fixes:
+  - |
+    Invalid Datadog boolean strings, such as ``logs_enabled: "yes"``, now produce a warning
+    and read as ``false``, matching the Datadog Agent. They no longer block startup or reject
+    configuration updates.
