@@ -89,11 +89,8 @@ test-integration-windows-amd64:
   # cargo build and a possible cold pull of the multi-GB build image, so it is expensive and it
   # only helps for failures that don't reproduce.
   retry: 2
-  # No explicit timeout previously, so a job that wedged after a failed `docker pull` fell back to
-  # the instance default and held a scarce Windows runner for nearly two hours (job 2056945739).
-  # 45m clears the worst legitimate run -- cold build image pull (~13m) plus cargo build (~8m)
-  # plus the Agent base image pull and the test phase -- with margin to spare.
-  timeout: 45m
+  # Leave time outside the script budgets for the Cargo cache and test artifacts.
+  timeout: 55m
   cache:
     key: windows-amd64-integration-cargo
     paths:
@@ -108,6 +105,9 @@ test-integration-windows-amd64:
       - $PANORAMIC_LOG_DIR/
     when: always
   variables:
+    # A cold run pulls the build image (~13m) and compiles (~8m) before pulling the Agent and running the tests.
+    RUNNER_SCRIPT_TIMEOUT: 45m
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 3m
     PANORAMIC_LOG_DIR: integration-logs/${CI_JOB_ID}
   script:
     - *windows-build-image-pull-script
