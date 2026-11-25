@@ -314,7 +314,7 @@ fn url_traces() -> Vec<Vec<ProbeSpan>> {
     ]
 }
 
-/// The event of a span that has the string attribute `key`.
+/// A span event named `name`, with the attributes `attributes`.
 fn event(name: &str, attributes: Vec<KeyValue>) -> Event {
     Event {
         time_unix_nano: BASE_TIME_NANOS + 1_000_000,

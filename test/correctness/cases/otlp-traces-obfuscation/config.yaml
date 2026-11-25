@@ -90,12 +90,18 @@ procedure:
             # A tracer that sends `sql.query` too: both sides send it obfuscated.
             - {service: probe-obf-sql-query-tag, name: postgresql.query, resource: "SELECT id FROM obf_query_tag WHERE token = ?", meta: {sql.query: "SELECT id FROM obf_query_tag WHERE token = ?"}}
             - {side: baseline, service: probe-obf-sql-query-tag, meta: {db.statement: "SELECT id FROM obf_query_tag WHERE token = ?"}}
-            # The current convention, with `db.system.name`. ADP does not name the span, give it a type or take its resource from the query.
+            # The current convention, with `db.system.name`. ADP does not name the span, give it a type or take its resource from the query. The
+            # entries for the comparison pin the name and the resource that ADP gives today, so that the known difference of #3442 can't hide
+            # a query in the resource.
             - {service: probe-obf-sql-current-simple, meta: {db.system.name: postgresql}}
             - {side: baseline, service: probe-obf-sql-current-simple, name: postgresql.query, resource: "SELECT id FROM obf_current_simple WHERE token = ? AND n = ?", meta: {db.query.text: "SELECT id FROM obf_current_simple WHERE token = ? AND n = ?"}}
             - {service: probe-obf-sql-current-in-list, meta: {db.system.name: postgresql}}
             - {side: baseline, service: probe-obf-sql-current-in-list, name: postgresql.query, resource: "SELECT id FROM obf_current_in_list WHERE id IN ( ? ) AND tag IN ( ? )", meta: {db.query.text: "SELECT id FROM obf_current_in_list WHERE id IN ( ? ) AND tag IN ( ? )"}}
             - {service: probe-obf-sql-mixed-current-system, meta: {db.system.name: postgresql}}
+            - {side: comparison, service: probe-obf-sql-current-simple, name: client.request, resource: otlpprobe.obf.database}
+            - {side: comparison, service: probe-obf-sql-current-in-list, name: client.request, resource: otlpprobe.obf.database}
+            - {side: comparison, service: probe-obf-sql-mixed-current-system, name: client.request, resource: otlpprobe.obf.database}
+            - {side: comparison, service: probe-obf-redis-query-text, name: client.request, resource: otlpprobe.obf.database}
             - {side: baseline, service: probe-obf-sql-mixed-current-system, name: postgresql.query, resource: "SELECT id FROM obf_mixed_current_system WHERE token = ?", meta: {db.statement: "SELECT id FROM obf_mixed_current_system WHERE token = ?"}}
 
             # Cache commands. Both sides keep only the commands of a Redis resource, and obfuscate `redis.raw_command`, `valkey.raw_command`
@@ -104,11 +110,14 @@ procedure:
             - {service: probe-obf-redis-many-commands, name: redis.query, resource: "SET GET DEL ...", meta: {redis.raw_command: "SET obf_a ?\nGET obf_a\nDEL obf_a\nGET obf_b"}}
             - {service: probe-obf-valkey-raw-command, name: valkey.query, resource: SET, meta: {valkey.raw_command: "SET obf_key ?"}}
             - {service: probe-obf-memcached-command, name: memcached.query, meta: {memcached.command: ""}}
-            # TODO(#3451): the per-side `meta` expectations for the `db.statement` and `db.query.text` of these cache probes, and for the
-            # memcached resource, are withheld because both sides keep the raw command.
-            - {service: probe-obf-redis-statement, name: redis.query, resource: SET}
-            - {service: probe-obf-redis-query-text, meta: {db.system.name: redis}}
+            # TODO(#3451): both sides keep the raw command of these probes in `db.statement`, in `db.query.text` and in the memcached
+            # resource, so the entries below pin the raw command that both sides send today. This records the shared leak: the case
+            # does not call it correct. When either side scrubs the command, an entry fails, and it must be replaced with the scrubbed value.
+            - {service: probe-obf-redis-statement, name: redis.query, resource: SET, meta: {db.statement: "SET obf_key canary-7f3a"}}
+            - {service: probe-obf-redis-query-text, meta: {db.system.name: redis, db.query.text: "SET obf_key canary-7f3a"}}
             - {side: baseline, service: probe-obf-redis-query-text, name: redis.query, resource: SET}
+            - {service: probe-obf-redis-many-commands, meta: {db.statement: "SET obf_a canary-7f3a\nGET obf_a\nDEL obf_a\nGET obf_b"}}
+            - {service: probe-obf-memcached-command, resource: "set obf_key 0 0 canary-7f3a", meta: {db.statement: "set obf_key 0 0 canary-7f3a"}}
 
             # JSON bodies, well formed and not. Both sides write `?` for each value, and mark where they stopped reading a body that is not JSON.
             - {service: probe-obf-mongodb-query, name: mongodb.query, meta: {mongodb.query: '{"find":"?","filter":{"token":"?","n":"?"}}'}}
@@ -136,6 +145,8 @@ procedure:
             - {service: probe-obf-card-seventeen, name: Internal, meta: {payment.card: "41111111111111111"}}
             - {service: probe-obf-card-nineteen, name: Internal, meta: {payment.card: "4111111111111111111"}}
             - {service: probe-obf-card-in-text, name: Internal}
+            # TODO: the card in the event of `probe-obf-card-event` is not asserted. `meta` does not reach `span_events`, so a regression
+            # of the scrub of an event attribute passes, on one side or on both. It takes an expectation on `span_events` in panoramic.
             - {service: probe-obf-card-event, name: Internal}
             # A number: the core agent keeps it in `metrics`, and ADP writes `?`.
             - {service: probe-obf-card-integer, name: Internal}
@@ -145,6 +156,7 @@ procedure:
             - {service: probe-obf-card-integer, meta: {payment.valid: "true"}}
             # The core agent skips the keys of an account ID, and ADP skips two of the five.
             - {service: probe-obf-card-exempt-keys, name: Internal, meta: {account_id: "411111111111"}}
+            - {service: probe-obf-card-exempt-keys, meta: {_obf_hidden: "4111111111111111"}}
             - {side: baseline, service: probe-obf-card-exempt-keys, meta: {aws.account.id: "411111111111", aws.target.account.id: "411111111111", cloud.account.id: "411111111111"}}
           # The baseline is the Agent, and the comparison is ADP. One entry for each kind of difference of a span, so
           # that each side's part of a difference goes stale on its own.
