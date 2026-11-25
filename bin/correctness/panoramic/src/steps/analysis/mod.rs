@@ -8,6 +8,7 @@ mod dogstatsd_forwarding;
 mod events;
 mod logs;
 mod metrics;
+mod ratchet;
 mod service_checks;
 mod traces;
 

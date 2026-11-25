@@ -3,14 +3,59 @@
 //! A known difference lets a case pass while a gap is still open, and fails the case once the difference goes away
 //! (a stale entry), so that every fix has to remove its entries.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{DiffKind, FieldDiff};
+/// The kind of a difference between a baseline record and its comparison counterpart.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffKind {
+    /// Both sides have the field, with different values.
+    Value,
 
-/// A known difference, set in the `logs.known_differences` section of a correctness case.
+    /// Only the baseline has the field.
+    Missing,
+
+    /// Only the comparison has the field.
+    Extra,
+
+    /// The field is in a different location on each side. The path uses the baseline's location.
+    Location,
+}
+
+/// A single difference between a baseline record and its comparison counterpart.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FieldDiff {
+    /// Path of the field, such as `envelope.status` for a log or `stats.hits` for a trace statistics group.
+    pub path: String,
+
+    /// The kind of difference.
+    pub kind: DiffKind,
+
+    /// The baseline value, if present.
+    pub baseline: Option<Value>,
+
+    /// The comparison value, if present.
+    pub comparison: Option<Value>,
+}
+
+impl fmt::Display for FieldDiff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let show = |value: &Option<Value>| value.as_ref().map_or_else(|| "<absent>".to_string(), Value::to_string);
+        write!(
+            f,
+            "{}: {:?} (baseline: {}, comparison: {})",
+            self.path,
+            self.kind,
+            show(&self.baseline),
+            show(&self.comparison)
+        )
+    }
+}
+
+/// A known difference, set in the `known_differences` of a `compare` step.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KnownDifference {
@@ -27,10 +72,9 @@ pub struct KnownDifference {
     #[serde(default)]
     pub kinds: Vec<DiffKind>,
 
-    /// Restricts the entry to logs whose baseline semantic view (see `stele::Log::semantic_view`) has, for every
-    /// listed field, one of the listed values. For example, `{fixture_id: [a, b]}` scopes the entry to two fixtures.
-    /// When empty, the entry applies to every log. A non-empty `when` never covers a request header difference, since
-    /// those belong to no log.
+    /// Restricts the entry to records whose view has, for every listed field, one of the listed values. For example,
+    /// `{fixture_id: [a, b]}` scopes a logs entry to two fixtures. When empty, the entry applies to every record. Each
+    /// analysis says what the view of its records holds.
     #[serde(default)]
     pub when: BTreeMap<String, Vec<Value>>,
 
@@ -63,7 +107,7 @@ impl<'a> Ratchet<'a> {
         }
     }
 
-    /// Returns `true` if any entry covers `diff`, found on a log whose baseline semantic view is `view`.
+    /// Returns `true` if any entry covers `diff`, found on a record whose view is `view`.
     ///
     /// Every entry path matching `diff` is marked as used, so overlapping entries aren't reported as stale.
     pub fn allows(&mut self, diff: &FieldDiff, view: &BTreeMap<String, Value>) -> bool {
