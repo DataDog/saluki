@@ -14,7 +14,10 @@ use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
 use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
-use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
+use datadog_agent_commons::{
+    ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration},
+    platform::PlatformSettings,
+};
 use datadog_agent_runtime::{
     env::RemoteAgentEnvironmentProvider,
     facade::{Initialized, RemoteAgent},
@@ -45,9 +48,10 @@ use saluki_components::{
         OriginEnrichmentConfiguration, OtlpConfiguration,
     },
     transforms::{
-        aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
-        ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
-        HistogramConfiguration, HostEnrichmentConfiguration, TraceObfuscationConfiguration,
+        aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
+        AggregateContextSnapshotReceiver, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
+        DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
+        HostEnrichmentConfiguration, TraceObfuscationConfiguration,
     },
 };
 use saluki_core::{
@@ -57,6 +61,13 @@ use saluki_core::{
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
+use saluki_metric_kernels::host_tags::filter_metric_host_tags;
+use saluki_metric_plan::{
+    lowering::{
+        HOST_TAGS_BINDING, MRF_SIGNAL_BINDING, TARGET_AUTOSCALING_FAILOVER, TARGET_CLIENT_TELEMETRY, TARGET_MRF,
+    },
+    RuntimeBindings,
+};
 use stringtheory::MetaString;
 use tracing::{debug, error, info, warn};
 
@@ -82,6 +93,7 @@ use crate::{
         create_control_plane_supervisor, logging::get_logging_translator, AdpLocalConfig, AgentDataPlane,
         DogStatsDAPIWorker,
     },
+    metric_plan::{build_metric_region_configuration, lower_from_saluki_config},
     remote_config::{self, RemoteConfigSubscriptions},
 };
 
@@ -210,9 +222,21 @@ async fn create_topology(
         routing_targets = Some(catalog);
     }
 
+    let (dsd_context_snapshot_handle, mut dsd_context_snapshot_receiver) = if dp.dogstatsd_enabled() {
+        let (handle, receiver) = aggregate_context_snapshot_channel();
+        (Some(handle), Some(receiver))
+    } else {
+        (None, None)
+    };
+
     if dp.metrics_pipeline_required() {
         let routing_targets =
             routing_targets.ok_or_else(|| generic_error!("The metrics pipeline requires the Datadog forwarder."))?;
+        let region_snapshot_receiver = if dp.programmable_metrics_enabled() {
+            dsd_context_snapshot_receiver.take()
+        } else {
+            None
+        };
         add_baseline_metrics_pipeline_to_blueprint(
             &mut blueprint,
             config_system,
@@ -220,6 +244,7 @@ async fn create_topology(
             &shared,
             &routing_targets,
             env_provider,
+            region_snapshot_receiver,
         )
         .await?;
     }
@@ -247,20 +272,37 @@ async fn create_topology(
         .await?;
     }
 
+    let metrics_entry = metrics_entry_component(&dp);
+
     // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
     // OTLP proxy mode must not construct liveness or output paths that it does not otherwise need.
     if !dp.standalone_mode() {
         let add_container_tags = config_system.config().shared.basic_telemetry.add_container_tags;
-        add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags).await?;
+        add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags, metrics_entry).await?;
     }
 
     // Now we move on to our actual data pipelines.
     if dp.checks_enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, &config.domains.checks.ipc_endpoint, env_provider).await?;
+        add_checks_pipeline_to_blueprint(
+            &mut blueprint,
+            &config.domains.checks.ipc_endpoint,
+            env_provider,
+            metrics_entry,
+        )
+        .await?;
     }
 
     let dogstatsd_api = if dp.dogstatsd_enabled() {
-        Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?)
+        Some(
+            add_dsd_pipeline_to_blueprint(
+                &mut blueprint,
+                config_system,
+                env_provider,
+                dsd_context_snapshot_handle.expect("handle created when dogstatsd is enabled"),
+                dsd_context_snapshot_receiver,
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -283,16 +325,26 @@ async fn create_topology(
     Ok((blueprint, dogstatsd_api))
 }
 
-const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
+const NATIVE_METRICS_ENTRY: &str = "metrics_enrich";
+const PROGRAMMABLE_METRICS_REGION: &str = "metrics_region";
+
+const fn metrics_entry_component(dp: &DataPlaneConfiguration<'_>) -> &'static str {
+    if dp.programmable_metrics_enabled() {
+        PROGRAMMABLE_METRICS_REGION
+    } else {
+        NATIVE_METRICS_ENTRY
+    }
+}
 
 async fn add_liveness_source_to_blueprint(
     blueprint: &mut TopologyBlueprint, env_provider: &RemoteAgentEnvironmentProvider, add_container_tags: bool,
+    metrics_destination: &str,
 ) -> Result<(), GenericError> {
     let liveness_config = LivenessConfiguration::from_environment_provider(env_provider, add_container_tags).await?;
 
     blueprint
         .add_source("liveness_in", liveness_config)?
-        .connect_components("liveness_in.metrics", LIVENESS_METRICS_DESTINATION)?
+        .connect_components("liveness_in.metrics", metrics_destination)?
         .connect_components("liveness_in.service_checks", "dd_service_checks_encode")?;
 
     Ok(())
@@ -300,6 +352,7 @@ async fn add_liveness_source_to_blueprint(
 
 async fn add_checks_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, env_provider: &RemoteAgentEnvironmentProvider,
+    metrics_destination: &str,
 ) -> Result<(), GenericError> {
     let grpc_endpoint = ListenAddress::try_from(checks_ipc_endpoint)
         .map_err(|error| generic_error!("Invalid checks IPC endpoint `{checks_ipc_endpoint}`: {error}"))?;
@@ -312,7 +365,7 @@ async fn add_checks_pipeline_to_blueprint(
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
-        .connect_components("checks_ipc_in.metrics", "metrics_enrich")?
+        .connect_components("checks_ipc_in.metrics", metrics_destination)?
         .connect_components("checks_ipc_in.logs", "dd_logs_encode")?
         .connect_components("checks_ipc_in.events", "dd_events_encode")?
         .connect_components("checks_ipc_in.service_checks", "dd_service_checks_encode")?;
@@ -324,14 +377,29 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
     routing_targets: &Arc<RoutingTargetCatalog>, env_provider: &RemoteAgentEnvironmentProvider,
+    context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
 ) -> Result<(), GenericError> {
+    let config = config_system.config();
+    let dp = DataPlaneConfiguration::from_configuration(&config);
+
+    if dp.programmable_metrics_enabled() {
+        info!("Experimental programmable metrics engine enabled: running single fused metric region.");
+        return add_programmable_metrics_pipeline_to_blueprint(
+            blueprint,
+            config_system,
+            remote_agent_client_config,
+            shared,
+            routing_targets,
+            context_snapshot_receiver,
+        )
+        .await;
+    }
+
     // Create the back half of the metrics processing pipeline.
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let mut metrics_enrich_config =
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
-    let config = config_system.config();
-    let dp = DataPlaneConfiguration::from_configuration(&config);
     if !dp.standalone_mode() {
         let client_config = remote_agent_client_config
             .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
@@ -352,6 +420,125 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     add_metrics_output_pipelines_to_blueprint(blueprint, shared, routing_targets, &endpoint_routing)?;
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
+
+    Ok(())
+}
+
+/// Wires the single-region programmable metrics topology frame:
+/// Sources -> `metrics_region` (one fused task) -> Encoders / Forwarders.
+async fn add_programmable_metrics_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
+    routing_targets: &Arc<RoutingTargetCatalog>, context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
+) -> Result<(), GenericError> {
+    let config = config_system.config();
+    let dp = DataPlaneConfiguration::from_configuration(&config);
+
+    let mut bindings = RuntimeBindings::default();
+    let host_tags_expiry = if !dp.standalone_mode() && !shared.tags.expected_tags_duration.is_zero() {
+        let client_config = remote_agent_client_config
+            .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
+        let client = RemoteAgentClient::connect(client_config).await?;
+        let host_tags_reply = client.get_host_tags().await?.into_inner();
+        bindings = bindings.with_host_tags(HOST_TAGS_BINDING, filter_metric_host_tags(host_tags_reply.system));
+        Some(shared.tags.expected_tags_duration)
+    } else {
+        None
+    };
+
+    let (mut region_config, initial_plan) = build_metric_region_configuration(&config, bindings)?;
+    if let Some(duration) = host_tags_expiry {
+        region_config = region_config.with_host_tags_expiry(HOST_TAGS_BINDING, duration);
+    }
+    if let Some(receiver) = context_snapshot_receiver {
+        region_config = region_config.with_context_snapshot_receiver(receiver);
+    }
+
+    let fallback_plan = initial_plan;
+    let live_plans = config_system
+        .live(|cfg| cfg)
+        .map(move |cfg| lower_from_saluki_config(cfg).unwrap_or_else(|_| fallback_plan.clone()));
+    let live_mirroring = config_system
+        .live(|cfg| &cfg.domains.multi_region_failover.metric_mirroring)
+        .map(metric_mirroring);
+
+    let region_config = region_config
+        .with_live_plans(live_plans)
+        .with_live_mirroring(MRF_SIGNAL_BINDING, live_mirroring);
+    blueprint.add_transform(PROGRAMMABLE_METRICS_REGION, region_config)?;
+
+    // Primary and endpoint-routed encoders connect directly to the region's outputs.
+    let endpoint_routing = MetricsEndpointRoutingConfiguration::new(
+        &config.domains.metrics_endpoint_routing.metric_allowlists,
+        &config.domains.metrics_endpoint_routing.metric_prefix_allowlists,
+        &shared.endpoints.primary_endpoint(),
+        &shared.endpoints.additional_endpoints,
+    )?;
+
+    let mut dd_metrics_config = datadog_metrics_configuration(shared);
+    if !endpoint_routing.selected_endpoints().is_empty() {
+        dd_metrics_config = dd_metrics_config.with_routing(
+            Arc::clone(routing_targets),
+            endpoint_routing.unfiltered_targets(routing_targets),
+        );
+    }
+    blueprint
+        .add_encoder("dd_metrics_encode", dd_metrics_config)?
+        .connect_components_in_order([PROGRAMMABLE_METRICS_REGION, "dd_metrics_encode", "dd_out"])?;
+
+    for (index, policy) in endpoint_routing.policy_groups().iter().enumerate() {
+        let region_output = format!("{PROGRAMMABLE_METRICS_REGION}.routing_{index}");
+        let encoder_id = format!("metrics_routing_encode_{index}");
+        let metrics_config = datadog_metrics_configuration(shared)
+            .with_routing(Arc::clone(routing_targets), policy.targets(routing_targets));
+        blueprint
+            .add_encoder(encoder_id.as_str(), metrics_config)?
+            .connect_components_in_order([region_output.as_str(), encoder_id.as_str(), "dd_out"])?;
+    }
+
+    // MRF encoder/forwarder branch (filtering runs inside `metrics_region`).
+    let mrf_cfg = mrf_configuration(&config.domains.multi_region_failover);
+    if let Some((mrf_dd_url, mrf_api_key)) = mrf_cfg.metrics_endpoint_override() {
+        let mrf_metrics_config =
+            datadog_metrics_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
+        let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
+            forwarder_configuration(shared),
+            mrf_dd_url,
+            mrf_api_key,
+            config_system.live(|config| &config.domains.multi_region_failover.api_key),
+            config_system.live(|config| &config.shared.secrets).map(Secrets::in_use),
+        );
+        let region_mrf_output = format!("{PROGRAMMABLE_METRICS_REGION}.{TARGET_MRF}");
+        blueprint
+            .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
+            .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
+            .connect_components_in_order([region_mrf_output.as_str(), "mrf_metrics_encode", "mrf_dd_out"])?;
+    }
+
+    // Autoscaling failover encoder/forwarder branch (filtering runs inside `metrics_region`).
+    let af_cfg = AutoscalingFailoverConfiguration::new(
+        shared.autoscaling_failover.enabled,
+        shared.autoscaling_failover.metrics.clone(),
+    );
+    let ca_cfg = ClusterAgentConfiguration {
+        enabled: shared.cluster_agent.enabled,
+        url: shared.cluster_agent.url.clone(),
+        auth_token: shared.cluster_agent.auth_token.clone(),
+        kubernetes_service_name: shared.cluster_agent.kubernetes_service_name.clone(),
+    };
+    if af_cfg.is_branch_requested() {
+        if let Some((ca_url, ca_token)) = ca_cfg.endpoint_and_token() {
+            let af_metrics_config = datadog_metrics_configuration(shared).with_v2_series_only();
+            let cluster_agent_forwarder_config =
+                ClusterAgentForwarderConfiguration::new(forwarder_configuration(shared), ca_url, ca_token)
+                    .error_context("Failed to configure Cluster Agent forwarder.")?;
+            let region_af_output = format!("{PROGRAMMABLE_METRICS_REGION}.{TARGET_AUTOSCALING_FAILOVER}");
+            blueprint
+                .add_encoder("af_metrics_encode", af_metrics_config)?
+                .add_forwarder("cluster_agent_out", cluster_agent_forwarder_config)?
+                .connect_components_in_order([region_af_output.as_str(), "af_metrics_encode", "cluster_agent_out"])?;
+        }
+    }
 
     Ok(())
 }
@@ -644,7 +831,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .connect_components("apm_onboarding", ["dd_apm_stats", "dd_traces_encode"])?
         // The sampler reports its sampling telemetry as metric events through this dedicated
         // output, delivering the metrics through the metrics pipeline to the backend.
-        .connect_components("trace_sampler.metrics", "metrics_enrich")?
+        .connect_components(
+            "trace_sampler.metrics",
+            metrics_entry_component(&DataPlaneConfiguration::from_configuration(&config)),
+        )?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
         .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
 
@@ -764,7 +954,8 @@ fn dogstatsd_source_configuration(
 
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
-    env_provider: &RemoteAgentEnvironmentProvider,
+    env_provider: &RemoteAgentEnvironmentProvider, dsd_context_snapshot_handle: AggregateContextSnapshotHandle,
+    dsd_context_snapshot_receiver: Option<AggregateContextSnapshotReceiver>,
 ) -> Result<DogStatsDAPIWorker, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -862,17 +1053,6 @@ async fn add_dsd_pipeline_to_blueprint(
         histogram.copy_to_distribution,
         histogram.copy_to_distribution_prefix.clone(),
     );
-    let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
-    let dsd_agg_config = AggregateConfiguration {
-        window_duration_seconds: aggregation.window_duration_seconds,
-        primary_flush_interval: aggregation.flush_interval,
-        context_limit: aggregation.context_limit,
-        flush_open_windows: aggregation.flush_open_windows,
-        counter_expiry_seconds: aggregation.counter_expiry_seconds,
-        hist_config: dsd_hist_config,
-        origin_telemetry_enabled: typed.domains.dogstatsd.telemetry.origin_breakdown,
-        context_snapshot_receiver: dsd_context_snapshot_receiver,
-    };
     let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(aggregation.passthrough_idle_flush_timeout);
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
         config_system
@@ -920,14 +1100,11 @@ async fn add_dsd_pipeline_to_blueprint(
         typed.shared.run_path.clone().unwrap_or_default(),
     );
 
+    let dp = DataPlaneConfiguration::from_configuration(&typed);
+
     blueprint
         // Components.
         .add_source("dsd_in", dsd_config)?
-        .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
-        .add_transform("dsd_enrich", dsd_enrich_config)?
-        .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
-        .add_transform("dsd_agg", dsd_agg_config)?
-        .add_transform("dsd_post_agg_filter", dsd_post_agg_filter_config)?
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
@@ -945,41 +1122,66 @@ async fn add_dsd_pipeline_to_blueprint(
             "dsd_in.metrics",
             "dsd_stats_out",
             EdgeCondition::from_watch(dsd_stats_collection_active),
-        )?
-        // Post-aggregation client telemetry for RAR/COAT.
-        .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
+        )?;
 
-    // Metrics.
-    //
-    // `dsd_no_agg_split` only earns a place in the pipeline when the no-aggregation pipeline is enabled. With it
-    // disabled, every metric is aggregated, so the split would have nothing to route out of the aggregation path and
-    // would sit in the hottest part of the process as a pure forwarder.
-    if aggregation.no_aggregation_pipeline {
+    if dp.programmable_metrics_enabled() {
+        let client_telemetry_out = format!("{PROGRAMMABLE_METRICS_REGION}.{TARGET_CLIENT_TELEMETRY}");
         blueprint
-            .add_transform("dsd_no_agg_split", dsd_no_agg_split_config)?
-            .connect_components_in_order([
+            .connect_components("dsd_in.metrics", PROGRAMMABLE_METRICS_REGION)?
+            .connect_components(client_telemetry_out.as_str(), "dsd_client_telemetry_out")?;
+    } else {
+        let dsd_agg_config = AggregateConfiguration {
+            window_duration_seconds: aggregation.window_duration_seconds,
+            primary_flush_interval: aggregation.flush_interval,
+            context_limit: aggregation.context_limit,
+            flush_open_windows: aggregation.flush_open_windows,
+            counter_expiry_seconds: aggregation.counter_expiry_seconds,
+            hist_config: dsd_hist_config,
+            origin_telemetry_enabled: typed.domains.dogstatsd.telemetry.origin_breakdown,
+            context_snapshot_receiver: dsd_context_snapshot_receiver
+                .expect("snapshot receiver is present in native dogstatsd mode"),
+        };
+        blueprint
+            .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
+            .add_transform("dsd_enrich", dsd_enrich_config)?
+            .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
+            .add_transform("dsd_agg", dsd_agg_config)?
+            .add_transform("dsd_post_agg_filter", dsd_post_agg_filter_config)?
+            // Post-aggregation client telemetry for RAR/COAT.
+            .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
+
+        // Metrics.
+        //
+        // `dsd_no_agg_split` only earns a place in the pipeline when the no-aggregation pipeline is enabled. With it
+        // disabled, every metric is aggregated, so the split would have nothing to route out of the aggregation path
+        // and would sit in the hottest part of the process as a pure forwarder.
+        if aggregation.no_aggregation_pipeline {
+            blueprint
+                .add_transform("dsd_no_agg_split", dsd_no_agg_split_config)?
+                .connect_components_in_order([
+                    "dsd_in.metrics",
+                    "dsd_enrich",
+                    "dsd_prefix_filter",
+                    "dsd_no_agg_split",
+                    "dsd_tag_filterlist",
+                    "dsd_agg",
+                    "dsd_post_agg_filter",
+                    "metrics_enrich",
+                ])?
+                // Timestamped metrics skip tag filtering and aggregation, rejoining the pipeline after the aggregate
+                // transform.
+                .connect_components("dsd_no_agg_split.passthrough", "dsd_post_agg_filter")?;
+        } else {
+            blueprint.connect_components_in_order([
                 "dsd_in.metrics",
                 "dsd_enrich",
                 "dsd_prefix_filter",
-                "dsd_no_agg_split",
                 "dsd_tag_filterlist",
                 "dsd_agg",
                 "dsd_post_agg_filter",
                 "metrics_enrich",
-            ])?
-            // Timestamped metrics skip tag filtering and aggregation, rejoining the pipeline after the aggregate
-            // transform.
-            .connect_components("dsd_no_agg_split.passthrough", "dsd_post_agg_filter")?;
-    } else {
-        blueprint.connect_components_in_order([
-            "dsd_in.metrics",
-            "dsd_enrich",
-            "dsd_prefix_filter",
-            "dsd_tag_filterlist",
-            "dsd_agg",
-            "dsd_post_agg_filter",
-            "metrics_enrich",
-        ])?;
+            ])?;
+        }
     }
 
     // DogStatsD debug log. Metrics are only used while metrics stats logging is enabled, so only send them then. When
@@ -1116,7 +1318,7 @@ async fn add_otlp_pipeline_to_blueprint(
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
-            .connect_components("otlp_in.metrics", "metrics_enrich")?
+            .connect_components("otlp_in.metrics", metrics_entry_component(&dp))?
             .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;
     }

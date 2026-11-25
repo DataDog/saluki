@@ -39,8 +39,8 @@ pub use self::config::HistogramConfiguration;
 const CONTEXT_SNAPSHOT_REQUEST_CHANNEL_CAPACITY: usize = 1;
 
 type AggregateContextSnapshot = Vec<AggregateContextSnapshotEntry>;
-type AggregateContextSnapshotRequest = oneshot::Sender<AggregateContextSnapshot>;
-type AggregateContextSnapshotRequestReceiver = mpsc::Receiver<AggregateContextSnapshotRequest>;
+pub(crate) type AggregateContextSnapshotRequest = oneshot::Sender<AggregateContextSnapshot>;
+pub(crate) type AggregateContextSnapshotRequestReceiver = mpsc::Receiver<AggregateContextSnapshotRequest>;
 
 /// A handle for requesting retained-context snapshots from an aggregate transform.
 ///
@@ -89,7 +89,7 @@ pub fn aggregate_context_snapshot_channel() -> (AggregateContextSnapshotHandle, 
 }
 
 #[inline]
-fn send_context_snapshot_if_open(
+pub(crate) fn send_context_snapshot_if_open(
     response: AggregateContextSnapshotRequest, build_snapshot: impl FnOnce() -> AggregateContextSnapshot,
 ) {
     if response.is_closed() {
@@ -186,7 +186,7 @@ pub struct AggregateContextSnapshotReceiver {
 }
 
 impl AggregateContextSnapshotReceiver {
-    fn take_receiver(&self) -> Result<AggregateContextSnapshotRequestReceiver, GenericError> {
+    pub(crate) fn take_receiver(&self) -> Result<AggregateContextSnapshotRequestReceiver, GenericError> {
         let mut receiver = self
             .receiver
             .lock()

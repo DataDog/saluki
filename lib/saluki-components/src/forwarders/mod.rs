@@ -4,6 +4,11 @@ pub use self::cluster_agent::ClusterAgentForwarderConfiguration;
 
 mod datadog;
 pub use self::datadog::DatadogForwarderConfiguration;
+
+mod delivery_host;
+pub use self::delivery_host::{
+    DeliveryContext, DeliveryHost, PayloadSink, RecipientId, RecipientSpec, ReconcileReport,
+};
 pub use crate::common::datadog::config::{
     ForwarderConfiguration, ForwarderHttpProtocol, OpwMetricsConfiguration, OpwMetricsSettings,
 };

@@ -71,6 +71,7 @@ saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metric-kernels = { workspace = true }
+saluki-metric-plan = { workspace = true }
 saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }

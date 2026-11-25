@@ -7,7 +7,10 @@ use std::collections::hash_map::Entry;
 
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_core::data_model::{
-    event::metric::{context::TagSetMutViewState, Metric, MetricValues},
+    event::metric::{
+        context::{Context, TagSetMutViewState},
+        Metric, MetricValues,
+    },
     tags::Tag,
 };
 use serde::{Deserialize, Serialize};
@@ -350,19 +353,47 @@ pub fn filter_metric_tags(
     }
 }
 
-/// Pure synchronous kernel holding compiled tag filter rules and scratch view state.
+/// Default upper bound on cached original-to-filtered context mappings inside [`TagFilterKernel`].
+pub const DEFAULT_CONTEXT_CACHE_CAPACITY: usize = 100_000;
+
+/// Per-batch cache counters collected by [`TagFilterKernel`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TagFilterCacheStats {
+    /// Number of lookups served from the per-context cache.
+    pub hits: u64,
+
+    /// Number of lookups that missed the per-context cache and evaluated rules.
+    pub misses: u64,
+
+    /// Number of cached entries cleared when the cache hit its capacity bound.
+    pub evictions: u64,
+}
+
+/// Pure synchronous kernel holding compiled tag filter rules, scratch view state, and a bounded per-context cache.
 #[derive(Default)]
 pub struct TagFilterKernel {
     filters: CompiledFilters,
     view_state: TagSetMutViewState,
+    context_cache: FastHashMap<Context, Option<(Context, usize)>>,
+    context_cache_capacity: usize,
+    cache_stats: TagFilterCacheStats,
 }
 
 impl TagFilterKernel {
     /// Creates a new `TagFilterKernel` from whole-tag entries and value allowlist entries.
     pub fn new(entries: &[MetricTagFilterEntry], value_allowlists: &[MetricTagValueAllowlistEntry]) -> Self {
+        let filters = compile_all_filters(entries, value_allowlists);
+        let context_cache_capacity = if filters.is_empty() {
+            0
+        } else {
+            DEFAULT_CONTEXT_CACHE_CAPACITY
+        };
         Self {
-            filters: compile_all_filters(entries, value_allowlists),
+            filters,
             view_state: TagSetMutViewState::default(),
+            context_cache: FastHashMap::default(),
+            context_cache_capacity,
+            cache_stats: TagFilterCacheStats::default(),
         }
     }
 
@@ -371,13 +402,67 @@ impl TagFilterKernel {
         self.filters.is_empty()
     }
 
+    /// Returns the total number of compiled whole-tag and tag-value rules.
+    pub fn rule_count(&self) -> usize {
+        self.filters.rule_count()
+    }
+
+    /// Returns a reference to the compiled filter tables.
+    pub fn filters(&self) -> &CompiledFilters {
+        &self.filters
+    }
+
+    /// Drains and returns accumulated per-context cache statistics since the last call.
+    pub fn take_cache_stats(&mut self) -> TagFilterCacheStats {
+        std::mem::take(&mut self.cache_stats)
+    }
+
     /// Applies the compiled tag filter rules to `metric` if its type is eligible.
     pub fn apply(&mut self, metric: &mut Metric) -> FilterMetricTagsOutcome {
         if !is_tag_filter_eligible(metric) {
             return FilterMetricTagsOutcome::RuleMiss;
         }
 
-        filter_metric_tags(metric, &mut self.view_state, &self.filters)
+        if let Some(cached) = self.context_cache.get(metric.context()) {
+            self.cache_stats.hits += 1;
+            return match cached {
+                None => FilterMetricTagsOutcome::NoChange,
+                Some((filtered_ctx, removed_tags)) => {
+                    *metric.context_mut() = filtered_ctx.clone();
+                    FilterMetricTagsOutcome::Modified {
+                        removed_tags: *removed_tags,
+                    }
+                }
+            };
+        }
+
+        if self.context_cache_capacity > 0 {
+            self.cache_stats.misses += 1;
+        }
+        let original_context = (self.context_cache_capacity > 0).then(|| metric.context().clone());
+        let outcome = filter_metric_tags(metric, &mut self.view_state, &self.filters);
+
+        if let Some(original_context) = original_context {
+            match outcome {
+                FilterMetricTagsOutcome::RuleMiss => {}
+                FilterMetricTagsOutcome::NoChange => {
+                    self.insert_cache_entry(original_context, None);
+                }
+                FilterMetricTagsOutcome::Modified { removed_tags } => {
+                    self.insert_cache_entry(original_context, Some((metric.context().clone(), removed_tags)));
+                }
+            }
+        }
+
+        outcome
+    }
+
+    fn insert_cache_entry(&mut self, original: Context, filtered: Option<(Context, usize)>) {
+        if self.context_cache.len() >= self.context_cache_capacity {
+            self.cache_stats.evictions += self.context_cache.len() as u64;
+            self.context_cache.clear();
+        }
+        self.context_cache.insert(original, filtered);
     }
 }
 
@@ -415,6 +500,17 @@ mod tests {
         assert!(!counter.context().tags().has_tag(Tag::from("drop_me:1")));
         assert!(counter.context().tags().has_tag(Tag::from("status:other")));
         assert!(counter.context().tags().has_tag(Tag::from("env:prod")));
+
+        // Repeat with the same original context to exercise the per-context cache hit path.
+        let mut counter_hit = Metric::counter(
+            Context::from_static_parts("req.count", &["drop_me:1", "status:500", "env:prod"]),
+            2.0,
+        );
+        assert_eq!(
+            kernel.apply(&mut counter_hit),
+            FilterMetricTagsOutcome::Modified { removed_tags: 2 }
+        );
+        assert_eq!(counter_hit.context(), counter.context());
 
         // Gauges are not eligible and remain untouched.
         let mut gauge = Metric::gauge(

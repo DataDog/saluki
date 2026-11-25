@@ -58,6 +58,7 @@ dependencies = [
  "saluki-io",
  "saluki-metadata",
  "saluki-metric-kernels",
+ "saluki-metric-plan",
  "saluki-metrics",
  "saluki-tls",
  "serde",
@@ -5803,6 +5804,7 @@ dependencies = [
  "saluki-io",
  "saluki-metadata",
  "saluki-metric-kernels",
+ "saluki-metric-plan",
  "saluki-metrics",
  "saluki-tls",
  "serde",
@@ -6015,6 +6017,19 @@ dependencies = [
  "smallvec",
  "stringtheory",
  "tracing",
+]
+
+[[package]]
+name = "saluki-metric-plan"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "saluki-core",
+ "saluki-error",
+ "saluki-metric-kernels",
+ "serde",
+ "serde_json",
+ "snafu",
 ]
 
 [[package]]
