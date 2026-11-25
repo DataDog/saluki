@@ -1,5 +1,5 @@
-# This is windows-adp-entrypoint.ps1 plus supervision for panoramic's `agent-adp` participant. No image is built with
-# it: panoramic places it in the container. A change to the other entrypoint is ported to this one by hand.
+# The entrypoint of panoramic's `agent-adp` participant in a Windows container. No image is built with it: panoramic
+# places it in the container.
 #
 # It starts the Agent and ADP, writes each program's output to its log and its exit to an exit record, restarts
 # nothing, and keeps the container up after both programs exit, so the harness can read what they left.

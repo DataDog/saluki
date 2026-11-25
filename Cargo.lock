@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-data-plane"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "agent-data-plane-config",
  "agent-data-plane-config-system",
@@ -34,6 +34,7 @@ dependencies = [
  "datadog-agent-config",
  "datadog-agent-config-docs",
  "datadog-agent-runtime",
+ "datadog-agent-tag-normalization",
  "datadog-protos",
  "derive-where",
  "futures",
@@ -786,7 +787,6 @@ checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
 [[package]]
 name = "byteorder"
 version = "1.5.0"
-source = "git+https://github.com/amy-kwan/byteorder?branch=amyk%2Fupdate-byteorder-aix#073bdbc6809f46eb336af3d4721b6a8b48786dd2"
 
 [[package]]
 name = "bytes"
@@ -1503,6 +1503,15 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "datadog-agent-tag-normalization"
+version = "0.1.0"
+dependencies = [
+ "icu_properties",
+ "proptest",
+ "simdutf8",
 ]
 
 [[package]]
@@ -4589,6 +4598,7 @@ dependencies = [
  "otlp-protos",
  "prost",
  "saluki-error",
+ "tempfile",
 ]
 
 [[package]]
@@ -4648,8 +4658,6 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
- "snafu",
- "socket2",
  "stele",
  "tempfile",
  "tokio",
@@ -4658,7 +4666,6 @@ dependencies = [
  "tracing-subscriber",
  "treediff",
  "vergen-gix",
- "zstd",
 ]
 
 [[package]]
@@ -5887,6 +5894,7 @@ dependencies = [
  "anymap3",
  "async-trait",
  "bitmask-enum",
+ "bytes",
  "bytesize",
  "criterion",
  "crossbeam-queue",

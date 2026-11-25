@@ -8,12 +8,15 @@ use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCod
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::{Bytes, Incoming};
 use prost::Message as _;
+use saluki_components::sources::{
+    CaptureTriggerBody, CaptureTriggerResponseBody, ReplaySessionResponseBody, CAPTURE_TRIGGER_ROUTE,
+    REPLAY_SESSION_ROUTE,
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{
     client::http::{HttpClient, HttpClientBuilder},
     ListenAddress,
 };
-use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROUTE};
@@ -41,24 +44,6 @@ pub(super) async fn get_api_client_or_exit(local_config: &LoadedConfiguration) -
             std::process::exit(1);
         }
     }
-}
-
-#[derive(Serialize)]
-struct DogStatsDCaptureBody<'a> {
-    duration: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<&'a str>,
-    compressed: bool,
-}
-
-#[derive(Deserialize)]
-struct DogStatsDCaptureResponseBody {
-    path: String,
-}
-
-#[derive(Deserialize)]
-struct DogStatsDReplaySessionResponseBody {
-    session_id: String,
 }
 
 impl DataPlaneAPIClient {
@@ -251,10 +236,10 @@ impl DataPlaneAPIClient {
     pub async fn dogstatsd_capture(
         &mut self, duration: &str, path: Option<&str>, compressed: bool,
     ) -> Result<String, GenericError> {
-        let uri = self.build_uri("/dogstatsd/capture/trigger", None);
-        let body = serde_json::to_string(&DogStatsDCaptureBody {
-            duration,
-            path,
+        let uri = self.build_uri(CAPTURE_TRIGGER_ROUTE, None);
+        let body = serde_json::to_string(&CaptureTriggerBody {
+            duration: duration.to_string(),
+            path: path.map(str::to_string),
             compressed,
         })
         .error_context("Failed to serialize DogStatsD capture request.")?;
@@ -268,7 +253,7 @@ impl DataPlaneAPIClient {
             .and_then(process_response_body)
             .await
             .and_then(body_when_capture_success)?;
-        let response = serde_json::from_str::<DogStatsDCaptureResponseBody>(&response_body)
+        let response = serde_json::from_str::<CaptureTriggerResponseBody>(&response_body)
             .error_context("Failed to deserialize DogStatsD capture response.")?;
 
         Ok(response.path)
@@ -283,7 +268,7 @@ impl DataPlaneAPIClient {
     pub async fn dogstatsd_replay_start_session(
         &mut self, state: Option<&datadog_protos::agent::TaggerState>,
     ) -> Result<String, GenericError> {
-        let uri = self.build_uri("/dogstatsd/replay/session", None);
+        let uri = self.build_uri(REPLAY_SESSION_ROUTE, None);
         let body = state.map_or_else(Bytes::new, |state| Bytes::from(state.encode_to_vec()));
         let req = Request::post(uri)
             .header(CONTENT_TYPE, "application/x-protobuf")
@@ -295,7 +280,7 @@ impl DataPlaneAPIClient {
             .and_then(process_response_body)
             .await
             .and_then(body_when_replay_session_success)?;
-        let response = serde_json::from_str::<DogStatsDReplaySessionResponseBody>(&response_body)
+        let response = serde_json::from_str::<ReplaySessionResponseBody>(&response_body)
             .error_context("Failed to deserialize DogStatsD replay session response.")?;
 
         Ok(response.session_id)
@@ -307,7 +292,7 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or if ADP rejects the session release, an error is returned.
     pub async fn dogstatsd_replay_finish_session(&mut self, session_id: &str) -> Result<(), GenericError> {
-        let uri = self.build_uri(&format!("/dogstatsd/replay/session/{session_id}"), None);
+        let uri = self.build_uri(&format!("{REPLAY_SESSION_ROUTE}/{session_id}"), None);
         let req = Request::delete(uri)
             .body(Full::new(Bytes::new()))
             .expect("valid request");

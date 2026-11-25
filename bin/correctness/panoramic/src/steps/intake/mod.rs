@@ -1,4 +1,4 @@
-//! Telemetry received by a `datadog-intake` server, its normalization, and the criteria a metric is matched against.
+//! Telemetry received by a `datadog-intake` server and the steps that assert on it.
 
 mod collected;
 pub use self::collected::CollectedData;
@@ -10,3 +10,6 @@ pub use self::criteria::{MetricCriteria, TagMatch};
 pub(crate) mod fixtures;
 
 pub mod metrics;
+
+mod sender;
+pub(crate) use self::sender::IntakeFromFactory;

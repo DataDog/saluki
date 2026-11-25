@@ -2,7 +2,7 @@
 //!
 //! This module contains helpers used by both the OTLP source (translator) and the Datadog trace encoder.
 
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
@@ -574,15 +574,15 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
 ///
 /// Checks, in order: the literal `host` attribute, `datadog.host.name`, ECS Fargate (which has no
 /// hostname), the cloud provider's hostname, the Kubernetes node name, `host.id`, and `host.name`.
-fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
     // A literal `host` of any type stops resolution, rendered as `Value.AsString` in `pdata` does. Only
     // the JSON layout of arrays and maps is approximate.
     if let Some(hostname) = first_attribute(attributes, ATTRIBUTE_HOST) {
-        return Some(otlp_value_as_string(hostname).into_owned());
+        return Some(otlp_value_as_string(hostname));
     }
 
     if let Some(hostname) = first_attribute_str(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
-        return Some(hostname.to_string());
+        return Some(Cow::Borrowed(hostname));
     }
 
     if first_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
@@ -590,87 +590,29 @@ fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) ->
     }
 
     match first_attribute_str(attributes, CLOUD_PROVIDER) {
-        Some("aws") => return ec2_hostname(attributes).map(str::to_owned),
-        Some("gcp") => return gcp_hostname(attributes),
-        Some("azure") => return azure_hostname(attributes).map(str::to_owned),
+        Some("aws") => return ec2_hostname(attributes).map(Cow::Borrowed),
+        Some("gcp") => return gcp_hostname(attributes).map(Cow::Owned),
+        Some("azure") => return azure_hostname(attributes).map(Cow::Borrowed),
         _ => {}
     }
 
     kubernetes_hostname(attributes)
-        .or_else(|| first_attribute_str(attributes, HOST_ID).map(str::to_owned))
-        .or_else(|| first_attribute_str(attributes, HOST_NAME).map(str::to_owned))
+        .map(Cow::Owned)
+        .or_else(|| first_attribute_str(attributes, HOST_ID).map(Cow::Borrowed))
+        .or_else(|| first_attribute_str(attributes, HOST_NAME).map(Cow::Borrowed))
 }
 
 /// Resolves a valid hostname from resource attributes.
 ///
 /// The hostname can be empty, for example when `datadog.host.name` isn't a string.
-pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
     let hostname = unsanitized_hostname_from_attributes(attributes)?;
-    (!INVALID_HOSTNAMES.contains(&hostname.as_str())).then_some(hostname)
-}
-
-/// Resolves the source metadata from OTLP metric resource attributes.
-///
-/// Keeps resolution scoped to the metrics pipeline
-pub fn resource_to_metric_source(
-    resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
-) -> Option<Source> {
-    let attributes = &resource.attributes;
-
-    //If the metric comes from an AWS ECS Fargate resource and a task_arn is present, we omit the hostname
-    if get_string_attribute(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
-        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
-            return Some(Source {
-                kind: SourceKind::AwsEcsFargate,
-                identifier: task_arn.to_string(),
-            });
-        }
-    }
-
-    hostname_from_attributes(attributes).map(|identifier| Source {
-        kind: SourceKind::Hostname,
-        identifier,
-    })
-}
-
-/// Resolves the source metadata from OTLP resource attributes.
-///
-/// This determines whether the telemetry came from a hostname or serverless environment.
-pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource) -> Option<Source> {
-    let attributes = &resource.attributes;
-
-    // AWS ECS Fargate
-    if get_string_attribute(attributes, CLOUD_PROVIDER) == Some("aws")
-        && get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM)
-            == Some("aws_ecs")
-        && get_string_attribute(
-            attributes,
-            opentelemetry_semantic_conventions::resource::AWS_ECS_LAUNCHTYPE,
-        ) == Some("fargate")
-    {
-        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
-            return Some(Source {
-                kind: SourceKind::AwsEcsFargate,
-                identifier: task_arn.to_string(),
-            });
-        }
-    }
-
-    // Hostname from attributes
-    if let Some(host_name) = get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::HOST_NAME) {
-        return Some(Source {
-            kind: SourceKind::Hostname,
-            identifier: host_name.to_string(),
-        });
-    }
-
-    None
+    (!INVALID_HOSTNAMES.contains(&hostname.as_ref())).then_some(hostname)
 }
 
 /// Resolves the source metadata from a typed attributes map.
 ///
-/// This is equivalent to `resource_to_source`, but works on the unified trace attribute map
-/// instead of the OTLP protobuf resource type.
+/// The trace encoder only resolves AWS ECS Fargate tasks and `host.name` hosts.
 pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>) -> Option<Source> {
     let get = |key: &str| -> Option<&str> {
         attributes
@@ -705,10 +647,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
 
 #[cfg(test)]
 mod tests {
-    use otlp_protos::opentelemetry::proto::{
-        common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue},
-        resource::v1::Resource,
-    };
+    use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue};
     use stringtheory::interning::GenericMapInterner;
 
     use super::*;
@@ -721,13 +660,6 @@ mod tests {
                 value: Some(Value::StringValue(value.to_string())),
             }),
         }
-    }
-
-    fn metric_source(attributes: Vec<KeyValue>) -> Option<Source> {
-        resource_to_metric_source(&Resource {
-            attributes,
-            ..Default::default()
-        })
     }
 
     #[test]
@@ -1130,19 +1062,6 @@ mod tests {
     }
 
     #[test]
-    fn fargate_resource_is_not_a_hostname_source() {
-        let source = metric_source(vec![
-            string_attribute(AWS_ECS_LAUNCHTYPE, "fargate"),
-            string_attribute(AWS_ECS_TASK_ARN, "task-arn"),
-            string_attribute(HOST_NAME, "host-name"),
-        ])
-        .expect("Fargate source should resolve");
-
-        assert_eq!(source.kind, SourceKind::AwsEcsFargate);
-        assert_eq!(source.identifier, "task-arn");
-    }
-
-    #[test]
     fn aks_and_ec2_cluster_name_helpers_extract_cluster_names() {
         let azure_attributes = vec![
             string_attribute(CLOUD_PROVIDER, "azure"),
@@ -1166,35 +1085,6 @@ mod tests {
             ];
             assert_eq!(kubernetes_cluster_name(&attributes), None);
         }
-    }
-
-    #[test]
-    fn recognized_cloud_providers_do_not_fall_through_to_kubernetes_or_generic_hosts() {
-        assert!(metric_source(vec![
-            string_attribute(CLOUD_PROVIDER, "azure"),
-            string_attribute(K8S_NODE_NAME, "node-name"),
-        ])
-        .is_none());
-    }
-
-    #[test]
-    fn metric_source_resolution_does_not_change_the_shared_logs_resolver() {
-        let resource = Resource {
-            attributes: vec![
-                string_attribute(CLOUD_PROVIDER, "azure"),
-                string_attribute(HOST_ID, "vm-id"),
-                string_attribute(HOST_NAME, "host-name"),
-            ],
-            ..Default::default()
-        };
-
-        let logs_source = resource_to_source(&resource).expect("logs source should resolve");
-        assert_eq!(logs_source.kind, SourceKind::Hostname);
-        assert_eq!(logs_source.identifier, "host-name");
-
-        let metric_source = resource_to_metric_source(&resource).expect("metric source should resolve");
-        assert_eq!(metric_source.kind, SourceKind::Hostname);
-        assert_eq!(metric_source.identifier, "vm-id");
     }
 
     fn attribute_value(key: &str, value: Value) -> KeyValue {
@@ -1359,6 +1249,11 @@ mod tests {
                 "Azure falls back to host.name",
                 vec![s(CLOUD_PROVIDER, "azure"), s(HOST_NAME, "name")],
                 host("name"),
+            ),
+            (
+                "Azure without host.id or host.name doesn't fall back",
+                vec![s(CLOUD_PROVIDER, "azure"), s(K8S_NODE_NAME, "node")],
+                None,
             ),
             (
                 "Kubernetes node and cluster",

@@ -33,6 +33,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_APM_ADDITIONAL_ENDPOINTS"],
+        path: &["apm_config", "additional_endpoints"],
+        decode: EnvDecode::JsonValue,
+    },
+    EnvKey {
         env_vars: &["DD_APM_CONFIG_ANALYZED_RATE_BY_SERVICE"],
         path: &["apm_config", "analyzed_rate_by_service"],
         decode: EnvDecode::JsonValue,
@@ -41,6 +46,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_APM_ANALYZED_SPANS"],
         path: &["apm_config", "analyzed_spans"],
         decode: EnvDecode::TracesSpan,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_DD_URL"],
+        path: &["apm_config", "apm_dd_url"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_APM_NON_LOCAL_TRAFFIC"],
@@ -55,6 +65,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_APM_CONNECTION_LIMIT", "DD_CONNECTION_LIMIT"],
         path: &["apm_config", "connection_limit"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_DECODER_TIMEOUT"],
+        path: &["apm_config", "decoder_timeout"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_DECODERS"],
+        path: &["apm_config", "decoders"],
         decode: EnvDecode::Integer,
     },
     EnvKey {
@@ -318,6 +338,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_TRACES_SEND_TO_MAIN_ENDPOINT"],
+        path: &["apm_config", "traces_send_to_main_endpoint"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_AUTH_TOKEN_FILE_PATH"],
         path: &["auth_token_file_path"],
         decode: EnvDecode::RawString,
@@ -430,6 +455,17 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
             "otlp",
             "proxy",
             "agent_receiver_grpc_endpoint",
+        ],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_AGENT_RECEIVER_HTTP_ENDPOINT"],
+        path: &[
+            "data_plane",
+            "experimental",
+            "otlp",
+            "proxy",
+            "agent_receiver_http_endpoint",
         ],
         decode: EnvDecode::RawString,
     },
@@ -997,9 +1033,24 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OBSERVABILITY_PIPELINES_WORKER_TRACES_ENABLED"],
+        path: &["observability_pipelines_worker", "traces", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_OBSERVABILITY_PIPELINES_WORKER_TRACES_URL"],
+        path: &["observability_pipelines_worker", "traces", "url"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_ORIGIN_DETECTION_UNIFIED"],
         path: &["origin_detection_unified"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_DEBUG_VERBOSITY"],
+        path: &["otlp_config", "debug", "verbosity"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_LOGS_ENABLED"],
@@ -1480,6 +1531,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_VECTOR_METRICS_USE_V3_API_SERIES"],
         path: &["vector", "metrics", "use_v3_api", "series"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_VECTOR_TRACES_ENABLED"],
+        path: &["vector", "traces", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_VECTOR_TRACES_URL"],
+        path: &["vector", "traces", "url"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_VSOCK_ADDR"],

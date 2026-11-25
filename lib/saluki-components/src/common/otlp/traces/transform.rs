@@ -2637,7 +2637,7 @@ fn grpc_status_code_name_from_str(s: &str) -> &'static str {
     grpc_code_to_canonical_name(code)
 }
 
-pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
+pub(crate) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }

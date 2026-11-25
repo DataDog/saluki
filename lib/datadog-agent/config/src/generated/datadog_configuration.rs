@@ -799,12 +799,20 @@ impl Default for AgentIpc {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfig {
     #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
+    pub additional_endpoints: HashMap<String, Vec<String>>,
+
+    #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_number_map")]
     pub analyzed_rate_by_service: HashMap<String, f64>,
 
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_map_or_json_string")]
     pub analyzed_spans: ::serde_json::Map<String, ::serde_json::Value>,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub apm_dd_url: String,
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
@@ -817,6 +825,14 @@ pub struct ApmConfig {
     #[serde(default = "defaults::default_u64::<i64, 2000>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub connection_limit: i64,
+
+    #[serde(default = "defaults::default_u64::<i64, 1000>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub decoder_timeout: i64,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub decoders: i64,
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
@@ -921,16 +937,24 @@ pub struct ApmConfig {
 
     #[serde(default)]
     pub telemetry: ApmConfigTelemetry,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub traces_send_to_main_endpoint: bool,
 }
 
 impl Default for ApmConfig {
     fn default() -> Self {
         Self {
+            additional_endpoints: Default::default(),
             analyzed_rate_by_service: Default::default(),
             analyzed_spans: Default::default(),
+            apm_dd_url: Default::default(),
             apm_non_local_traffic: Default::default(),
             compute_stats_by_span_kind: defaults::default_bool::<true>(),
             connection_limit: defaults::default_u64::<i64, 2000>(),
+            decoder_timeout: defaults::default_u64::<i64, 1000>(),
+            decoders: Default::default(),
             enable_rare_sampler: Default::default(),
             env: Default::default(),
             error_tracking_standalone: Default::default(),
@@ -957,6 +981,7 @@ impl Default for ApmConfig {
             sql_obfuscation_mode: Default::default(),
             target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
             telemetry: Default::default(),
+            traces_send_to_main_endpoint: defaults::default_bool::<true>(),
         }
     }
 }
@@ -1505,6 +1530,12 @@ pub struct DataPlaneExperimentalOtlpProxy {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub agent_receiver_grpc_endpoint: String,
 
+    #[serde(
+        default = "defaults::datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub agent_receiver_http_endpoint: String,
+
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub logs: bool,
@@ -1522,6 +1553,7 @@ impl Default for DataPlaneExperimentalOtlpProxy {
     fn default() -> Self {
         Self {
             agent_receiver_grpc_endpoint: defaults::datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(),
+            agent_receiver_http_endpoint: defaults::datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint(),
             logs: Default::default(),
             metrics: Default::default(),
             traces: Default::default(),
@@ -1652,12 +1684,16 @@ impl Default for MultiRegionFailover {
 pub struct ObservabilityPipelinesWorker {
     #[serde(default)]
     pub metrics: ObservabilityPipelinesWorkerMetrics,
+
+    #[serde(default)]
+    pub traces: ObservabilityPipelinesWorkerTraces,
 }
 
 impl Default for ObservabilityPipelinesWorker {
     fn default() -> Self {
         Self {
             metrics: Default::default(),
+            traces: Default::default(),
         }
     }
 }
@@ -1700,7 +1736,30 @@ impl Default for ObservabilityPipelinesWorkerMetricsUseV3Api {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ObservabilityPipelinesWorkerTraces {
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub url: String,
+}
+
+impl Default for ObservabilityPipelinesWorkerTraces {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+            url: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfig {
+    #[serde(default)]
+    pub debug: OtlpConfigDebug,
+
     #[serde(default)]
     pub logs: OtlpConfigLogs,
 
@@ -1717,10 +1776,26 @@ pub struct OtlpConfig {
 impl Default for OtlpConfig {
     fn default() -> Self {
         Self {
+            debug: Default::default(),
             logs: Default::default(),
             metrics: Default::default(),
             receiver: Default::default(),
             traces: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigDebug {
+    #[serde(default = "defaults::datadog_configuration_otlp_config_debug_verbosity")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub verbosity: String,
+}
+
+impl Default for OtlpConfigDebug {
+    fn default() -> Self {
+        Self {
+            verbosity: defaults::datadog_configuration_otlp_config_debug_verbosity(),
         }
     }
 }
@@ -2388,12 +2463,16 @@ impl Default for UseV3ApiSeries {
 pub struct Vector {
     #[serde(default)]
     pub metrics: VectorMetrics,
+
+    #[serde(default)]
+    pub traces: VectorTraces,
 }
 
 impl Default for Vector {
     fn default() -> Self {
         Self {
             metrics: Default::default(),
+            traces: Default::default(),
         }
     }
 }
@@ -2432,6 +2511,26 @@ pub struct VectorMetricsUseV3Api {
 impl Default for VectorMetricsUseV3Api {
     fn default() -> Self {
         Self { series: Default::default() }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct VectorTraces {
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub url: String,
+}
+
+impl Default for VectorTraces {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+            url: Default::default(),
+        }
     }
 }
 
@@ -2599,6 +2698,12 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint() -> String {
         "127.0.0.1:4319".to_string()
+    }
+    pub(super) fn datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_http_endpoint() -> String {
+        "127.0.0.1:4320".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_debug_verbosity() -> String {
+        "basic".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_metrics_tag_cardinality() -> String {
         "low".to_string()

@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    OTLP metrics and logs now get the serverless identity tags that the Datadog Agent adds, such as
+    ``subscription_id`` and ``resource_group`` for Azure App Service, ``function_arn`` and ``function_name`` for AWS
+    Lambda, ``job_name`` for Cloud Run jobs, and ``project_id``, ``location``, and ``instance`` for Cloud Run and
+    Cloud Functions.
