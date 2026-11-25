@@ -1901,6 +1901,7 @@ mod tests {
     #[tokio::test]
     async fn build_fails_for_a_proxied_signal_without_a_destination_for_its_protocol() {
         let upstream = FakeUpstream::tcp(http_ok).await;
+        crate::common::datadog::test_util::init_tls();
         let proxy = OtlpProxy::new(
             &OtlpProxyDestinations {
                 grpc: None,

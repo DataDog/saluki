@@ -656,7 +656,12 @@ mod tests {
     }
 
     /// Returns source settings carrying the configuration defaults.
+    ///
+    /// It installs the TLS crypto provider first, as application bootstrap does, because a source that proxies a signal
+    /// builds HTTP clients. Without the provider, a FIPS build falls back to one whose cipher suites aren't all
+    /// FIPS-approved, and the HTTP clients refuse to build.
     fn source_configuration() -> OtlpConfiguration {
+        crate::common::datadog::test_util::init_tls();
         OtlpConfiguration {
             default_hostname: MetaString::default(),
             receiver: receiver(),
