@@ -167,6 +167,11 @@ build-agent-config-corpus: ## Regenerates the Agent config corpus (needs Docker)
 	@echo "[*] Regenerating the Agent config corpus..."
 	@lib/datadog-agent/config-recorder/regenerate.sh
 
+.PHONY: build-otlp-as-string-vectors
+build-otlp-as-string-vectors: ## Regenerates the OTLP `AsString` test vectors with pdata (needs Docker)
+	@echo "[*] Regenerating the OTLP AsString test vectors..."
+	@lib/saluki-components/src/common/otlp/testdata/pdata-as-string/regenerate.sh
+
 .PHONY: build-adp-image-base
 build-adp-image-base:
 	@echo "[*] Building ADP image... (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"

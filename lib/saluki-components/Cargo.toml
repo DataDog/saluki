@@ -61,6 +61,8 @@ rmp-serde = { workspace = true }
 
 # TLS dependencies used by the OTLP receiver to configure server-side TLS.
 rustls = { workspace = true }
+
+ryu = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }

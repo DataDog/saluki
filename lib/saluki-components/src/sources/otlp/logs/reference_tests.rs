@@ -108,7 +108,9 @@ fn translate_records(resource: &Resource, scope: &InstrumentationScope, records:
         ..Default::default()
     };
     let resolver = OtlpOriginTagResolver::new(std::sync::Arc::new(NoopWorkloadProvider));
-    ResourceLogsIter::new(resource_logs, &resolver).collect()
+    ResourceLogsIter::new(resource_logs, &resolver)
+        .collect::<Result<_, _>>()
+        .expect("every record should transform")
 }
 
 fn tags_of(log: &Log) -> BTreeSet<String> {
@@ -912,13 +914,8 @@ fn translator() {
     let mut cases = translator_cases();
     cases.extend(derive_status_cases());
     cases.extend(status_attribute_override_cases());
+    cases.extend(array_attributes_cases());
     check(cases);
-}
-
-#[test]
-#[ignore = "target for `gap/array-attributes`"]
-fn target_array_attributes() {
-    check(array_attributes_cases());
 }
 
 // `TestLogsExporter` uses the records of `comp/otelcol/otlp/testutil`.

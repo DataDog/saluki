@@ -1,15 +1,20 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
+use otlp_common::any_value::Value as OtlpValue;
 use otlp_common::any_value::Value::StringValue as OtlpStringValue;
-use otlp_common::any_value::Value::{ArrayValue, BoolValue, BytesValue, DoubleValue, IntValue, KvlistValue};
+use otlp_common::any_value::Value::{ArrayValue, BoolValue, DoubleValue, IntValue, KvlistValue};
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use saluki_common::time::{Timestamp, TimestampFormat};
 use saluki_core::data_model::{event::log::Log, tags::TagSet};
+use saluki_error::{generic_error, GenericError};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
 use tracing::error;
+
+use crate::common::otlp::value::otlp_value_as_string;
 
 pub const DDTAGS_ATTR: &str = "ddtags";
 pub const STATUS_KEYS: &[&str] = &["status", "severity", "level", "syslog.severity"];
@@ -51,37 +56,6 @@ pub fn status_from_severity_number(severity_number: i32) -> &'static str {
         17..=20 => "error",
         21..=24 => "fatal",
         _ => "error",
-    }
-}
-
-pub fn any_value_to_message_string(av: &otlp_common::AnyValue) -> String {
-    match av.value.as_ref() {
-        Some(OtlpStringValue(s)) => s.clone(),
-        _ => serde_json::to_string(&any_value_to_json(av)).unwrap_or_else(|_| String::new()),
-    }
-}
-
-pub fn any_value_to_json(av: &otlp_common::AnyValue) -> JsonValue {
-    match av.value.as_ref() {
-        Some(BoolValue(b)) => JsonValue::Bool(*b),
-        Some(IntValue(i)) => JsonValue::from(*i),
-        Some(DoubleValue(d)) => JsonValue::from(*d),
-        Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-        Some(BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
-            Ok(s) => JsonValue::String(s),
-            Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
-        },
-        Some(ArrayValue(arr)) => JsonValue::Array(arr.values.iter().map(any_value_to_json).collect::<Vec<_>>()),
-        Some(KvlistValue(kvl)) => {
-            let mut obj = serde_json::Map::new();
-            for kv in &kvl.values {
-                if let Some(val) = kv.value.as_ref() {
-                    obj.insert(kv.key.clone(), any_value_to_json(val));
-                }
-            }
-            JsonValue::Object(obj)
-        }
-        None => JsonValue::Null,
     }
 }
 
@@ -128,44 +102,127 @@ pub fn decode_hex_exact_to_bytes(s: &str, expected_len_bytes: usize) -> Option<V
     Some(out)
 }
 
-// Flatten an AnyValue map into dotted keys, up to a maximum depth.
-// For leaf values, coerce primitives to native JSON types, otherwise stringify.
-pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usize) -> Vec<(String, JsonValue)> {
-    const MAX_DEPTH: usize = 10;
+/// The depth at which [`flatten_attribute`] renders a map as a string instead of flattening it.
+const FLATTEN_STRING_DEPTH: usize = 10;
 
-    fn to_leaf_json(av: &otlp_common::AnyValue) -> JsonValue {
-        match av.value.as_ref() {
-            Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-            Some(IntValue(i)) => JsonValue::from(*i),
-            Some(BoolValue(b)) => JsonValue::Bool(*b),
-            Some(DoubleValue(d)) => JsonValue::from(*d),
-            Some(BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
-                Ok(s) => JsonValue::String(s),
-                Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
-            },
-            _ => JsonValue::String(serde_json::to_string(&any_value_to_json(av)).unwrap_or_else(|_| String::new())),
-        }
+/// Where [`flatten_attribute`] writes the properties of a record attribute.
+trait PropertySink {
+    /// Sets a property, overwriting an earlier one with the same key.
+    fn set(&mut self, key: String, value: JsonValue);
+}
+
+impl PropertySink for HashMap<MetaString, JsonValue> {
+    fn set(&mut self, key: String, value: JsonValue) {
+        self.insert(key.into(), value);
     }
+}
 
-    if depth < MAX_DEPTH {
-        if let Some(KvlistValue(kvl)) = av.value.as_ref() {
-            let mut out = Vec::new();
-            for kv in &kvl.values {
-                if let Some(v) = kv.value.as_ref() {
-                    let new_key = format!("{}.{}", base_key, kv.key);
-                    let nested = flatten_attribute(&new_key, v, depth + 1);
-                    if nested.is_empty() {
-                        out.push((new_key, to_leaf_json(v)));
-                    } else {
-                        out.extend(nested);
-                    }
-                }
+impl PropertySink for serde_json::Map<String, JsonValue> {
+    fn set(&mut self, key: String, value: JsonValue) {
+        self.insert(key, value);
+    }
+}
+
+/// Flattens a record attribute into `out` as `flattenAttribute` in the Agent does, and returns whether any value is a
+/// placeholder for a non-finite double.
+///
+/// - A map spreads its entries into dotted keys. Under an empty key, the entries keep their own keys.
+/// - An array stays an array at any depth. Each element is flattened under an empty key one level deeper. An element
+///   whose result has an empty key becomes that value, and any other element becomes an object of its results.
+/// - Strings, integers, Booleans, and doubles keep their types. Bytes, empty values, and maps at depth 10 become
+///   strings, as `pcommon.Value.AsString` renders them. The depth check is an equality check, so maps that arrays
+///   nest past depth 10 still flatten.
+///
+/// JSON can't hold a NaN or an infinite double, and the Agent fails to marshal a log that holds one. A non-finite
+/// double becomes a `null` placeholder, so the caller can drop the log if the placeholder is still there once every
+/// property is set. No other value becomes `null`.
+fn flatten_attribute<S: PropertySink>(key: Cow<'_, str>, value: Option<&OtlpValue>, depth: usize, out: &mut S) -> bool {
+    match value {
+        Some(KvlistValue(map)) if depth != FLATTEN_STRING_DEPTH => {
+            let mut non_finite = false;
+            for kv in &map.values {
+                let nested_key = if key.is_empty() {
+                    Cow::Borrowed(kv.key.as_str())
+                } else {
+                    Cow::Owned(format!("{}.{}", key, kv.key))
+                };
+                non_finite |= flatten_attribute(nested_key, key_value_value(kv), depth + 1, out);
             }
-            return out;
+            non_finite
+        }
+        _ => {
+            let (leaf, non_finite) = flattened_value(value, depth);
+            out.set(key.into_owned(), leaf);
+            non_finite
         }
     }
+}
 
-    vec![(base_key.to_string(), to_leaf_json(av))]
+/// Converts a value that [`flatten_attribute`] doesn't spread into dotted keys, and returns whether it holds a
+/// placeholder for a non-finite double.
+fn flattened_value(value: Option<&OtlpValue>, depth: usize) -> (JsonValue, bool) {
+    match value {
+        Some(ArrayValue(array)) => {
+            let mut non_finite = false;
+            let mut elements = Vec::with_capacity(array.values.len());
+            for element in &array.values {
+                let element = match element.value.as_ref() {
+                    // Only a map element that spreads has keys to look at. Every other element is a single value.
+                    Some(map @ KvlistValue(_)) if depth + 1 != FLATTEN_STRING_DEPTH => {
+                        let mut flattened = serde_json::Map::new();
+                        non_finite |= flatten_attribute(Cow::Borrowed(""), Some(map), depth + 1, &mut flattened);
+                        match flattened.remove("") {
+                            Some(value) => value,
+                            None => JsonValue::Object(flattened),
+                        }
+                    }
+                    other => {
+                        let (element, element_non_finite) = flattened_value(other, depth + 1);
+                        non_finite |= element_non_finite;
+                        element
+                    }
+                };
+                elements.push(element);
+            }
+            (JsonValue::Array(elements), non_finite)
+        }
+        Some(OtlpStringValue(s)) => (JsonValue::String(s.clone()), false),
+        Some(IntValue(i)) => (JsonValue::from(*i), false),
+        Some(BoolValue(b)) => (JsonValue::Bool(*b), false),
+        Some(DoubleValue(d)) => match serde_json::Number::from_f64(*d) {
+            Some(number) => (JsonValue::Number(number), false),
+            None => (JsonValue::Null, true),
+        },
+        other => (JsonValue::String(otlp_value_as_string(other).into_owned()), false),
+    }
+}
+
+/// Returns whether a property holds the placeholder that [`flatten_attribute`] writes for a non-finite double.
+fn holds_non_finite_placeholder(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Null => true,
+        JsonValue::Array(values) => values.iter().any(holds_non_finite_placeholder),
+        JsonValue::Object(map) => map.values().any(holds_non_finite_placeholder),
+        _ => false,
+    }
+}
+
+/// Converts a rendered value into a `MetaString`, without copying an owned value.
+pub(super) fn meta_string(value: Cow<'_, str>) -> MetaString {
+    match value {
+        Cow::Borrowed(value) => MetaString::from(value),
+        Cow::Owned(value) => MetaString::from(value),
+    }
+}
+
+/// Returns the value of an attribute, which is absent when the attribute or its value isn't set.
+fn key_value_value(kv: &otlp_common::KeyValue) -> Option<&OtlpValue> {
+    kv.value.as_ref().and_then(|av| av.value.as_ref())
+}
+
+/// Renders an attribute's value as `pcommon.Value.AsString` does.
+fn as_string(kv: &otlp_common::KeyValue) -> Cow<'_, str> {
+    otlp_value_as_string(key_value_value(kv))
 }
 
 /// Returns whether `key` is one of the `reserved` keys, ignoring ASCII case.
@@ -174,18 +231,6 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
 /// as `TRACEİD` is reserved under Go's matching. We choose to ignore that edge case.
 fn is_reserved(key: &str, reserved: &[&str]) -> bool {
     reserved.iter().any(|reserved| reserved.eq_ignore_ascii_case(key))
-}
-
-/// Returns an attribute's string value, or an empty string for any other value.
-///
-/// Converting other values to strings, as `pcommon.Value.AsString` does, is still missing. Until then, a non-string
-/// message, status, or `ddtags` attribute counts as empty, and so does a non-string duplicate that comes after a string
-/// one.
-fn string_value_or_empty(kv: &otlp_common::KeyValue) -> &str {
-    match kv.value.as_ref().and_then(|av| av.value.as_ref()) {
-        Some(OtlpStringValue(s)) => s,
-        _ => "",
-    }
 }
 
 /// Maps a deprecated `otel.library.*` attribute to its canonical `otel.scope.*` key, unless the attribute's own
@@ -197,8 +242,10 @@ fn insert_scope_alias(
     if collection.iter().any(|other| other.key == canonical) {
         return;
     }
-    let value = kv.value.as_ref().map(any_value_to_message_string).unwrap_or_default();
-    map.insert(MetaString::from_static(canonical), JsonValue::String(value));
+    map.insert(
+        MetaString::from_static(canonical),
+        JsonValue::String(as_string(kv).into_owned()),
+    );
 }
 
 // Helper to insert safely avoid overwriting fields that are already set
@@ -210,87 +257,90 @@ fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonV
     }
 }
 
+/// Transforms an OTLP log record, with its resource and scope, into a log.
+///
+/// Every attribute value that the Agent renders with `pcommon.Value.AsString` is rendered the same way: the message,
+/// status, `ddtags`, and trace and span ID attributes, the `otel.library.*` aliases, every resource and scope attribute,
+/// and the body. Other record attributes keep their types, as [`flatten_attribute`] describes.
+///
+/// # Errors
+///
+/// If a record attribute holds a NaN or an infinite double that no later property overwrites, an error is returned,
+/// and the log should be dropped. The Agent drops such a log when it fails to marshal it.
 pub fn transform_log_record(
     lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
     record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet,
-) -> Log {
+) -> Result<Log, GenericError> {
     // Build additional properties map with resource, scope and record attributes
     let mut additional_properties = HashMap::new();
+    let mut non_finite = false;
 
     // Single-pass over record attributes: handle special keys and flatten others. When a reserved key repeats, the
     // last message, status, and `ddtags` win, and the first trace and span IDs that decode win.
-    let mut status_from_attrs: Option<&str> = None;
-    let mut msg_from_attrs: Option<&str> = None;
-    let mut ddtags_from_attrs: Option<&str> = None;
+    let mut status_from_attrs: Option<Cow<'_, str>> = None;
+    let mut msg_from_attrs: Option<Cow<'_, str>> = None;
+    let mut ddtags_from_attrs: Option<Cow<'_, str>> = None;
     for kv in &lr.attributes {
         // Reserved keys match in any case, but every other key keeps its original spelling.
         match kv.key.as_str() {
             // Message keys
-            k if is_reserved(k, MESSAGE_KEYS) => msg_from_attrs = Some(string_value_or_empty(kv)),
+            k if is_reserved(k, MESSAGE_KEYS) => msg_from_attrs = Some(as_string(kv)),
             // Status/severity text from attributes
-            k if is_reserved(k, STATUS_KEYS) => status_from_attrs = Some(string_value_or_empty(kv)),
+            k if is_reserved(k, STATUS_KEYS) => status_from_attrs = Some(as_string(kv)),
             // Trace correlation from attributes
             k if is_reserved(k, TRACE_ID_ATTR_KEYS) => {
-                if let Some(av) = kv.value.as_ref() {
-                    if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
-                        if !additional_properties.contains_key("dd.trace_id") {
-                            if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
-                                let dd = u64_from_last_8(&bytes);
-                                additional_properties.insert(
-                                    MetaString::from_static("dd.trace_id"),
-                                    JsonValue::String(dd.to_string()),
-                                );
-                                additional_properties.insert(
-                                    MetaString::from_static("otel.trace_id"),
-                                    JsonValue::String(trace_hex.clone()),
-                                );
-                            }
-                        }
+                if !additional_properties.contains_key("dd.trace_id") {
+                    let trace_hex = as_string(kv);
+                    if let Some(bytes) = decode_hex_exact_to_bytes(&trace_hex, 16) {
+                        let dd = u64_from_last_8(&bytes);
+                        additional_properties.insert(
+                            MetaString::from_static("dd.trace_id"),
+                            JsonValue::String(dd.to_string()),
+                        );
+                        additional_properties.insert(
+                            MetaString::from_static("otel.trace_id"),
+                            JsonValue::String(trace_hex.into_owned()),
+                        );
                     }
                 }
             }
             // Span correlation from attributes
             k if is_reserved(k, SPAN_ID_ATTR_KEYS) => {
-                if let Some(av) = kv.value.as_ref() {
-                    if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
-                        if !additional_properties.contains_key("dd.span_id") {
-                            if let Some(bytes) = decode_hex_exact_to_bytes(span_hex, 8) {
-                                let dd = u64_from_first_8(&bytes);
-                                additional_properties
-                                    .insert(MetaString::from_static("dd.span_id"), JsonValue::String(dd.to_string()));
-                                additional_properties.insert(
-                                    MetaString::from_static("otel.span_id"),
-                                    JsonValue::String(span_hex.clone()),
-                                );
-                            }
-                        }
+                if !additional_properties.contains_key("dd.span_id") {
+                    let span_hex = as_string(kv);
+                    if let Some(bytes) = decode_hex_exact_to_bytes(&span_hex, 8) {
+                        let dd = u64_from_first_8(&bytes);
+                        additional_properties
+                            .insert(MetaString::from_static("dd.span_id"), JsonValue::String(dd.to_string()));
+                        additional_properties.insert(
+                            MetaString::from_static("otel.span_id"),
+                            JsonValue::String(span_hex.into_owned()),
+                        );
                     }
                 }
             }
             // ddtags aggregation
-            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => ddtags_from_attrs = Some(string_value_or_empty(kv)),
+            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => ddtags_from_attrs = Some(as_string(kv)),
             k if k.eq_ignore_ascii_case(OTEL_LIBRARY_NAME) => {
                 insert_scope_alias(&mut additional_properties, &lr.attributes, OTEL_SCOPE_NAME, kv)
             }
             k if k.eq_ignore_ascii_case(OTEL_LIBRARY_VERSION) => {
                 insert_scope_alias(&mut additional_properties, &lr.attributes, OTEL_SCOPE_VERSION, kv)
             }
-            // Default: flatten map and insert safely
+            // Default: flatten maps, keep arrays, and insert every value.
             _ => {
-                if let Some(av) = kv.value.as_ref() {
-                    let flattened: Vec<(String, JsonValue)> = flatten_attribute(&kv.key, av, 1);
-                    for (key, val) in flattened {
-                        if !val.is_null() {
-                            additional_properties.insert(key.into(), val);
-                        }
-                    }
-                }
+                non_finite |= flatten_attribute(
+                    Cow::Borrowed(kv.key.as_str()),
+                    key_value_value(kv),
+                    1,
+                    &mut additional_properties,
+                );
             }
         }
     }
 
     // The resource tags are already in `tags`, so this only adds the last `ddtags` attribute.
-    if let Some(ddtags) = ddtags_from_attrs {
+    if let Some(ddtags) = ddtags_from_attrs.as_deref() {
         for raw in ddtags.split(',') {
             let t = raw.trim();
             if !t.is_empty() {
@@ -312,30 +362,18 @@ pub fn transform_log_record(
             }
             _ => {}
         }
-        if let Some(av) = kv.value.as_ref() {
-            let val: JsonValue = match av.value.as_ref() {
-                Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-                _ => any_value_to_json(av),
-            };
-            if !val.is_null() {
-                safe_insert(&mut additional_properties, &kv.key, val);
-            }
-        }
+        safe_insert(
+            &mut additional_properties,
+            &kv.key,
+            JsonValue::String(as_string(kv).into_owned()),
+        );
     }
 
     // Scope attributes overwrite both, under their own keys: their aliases aren't mapped, and `hostname` and `service`
     // aren't prefixed. The scope's name and version then fill in only what's still missing.
     if let Some(scope) = scope {
         for kv in &scope.attributes {
-            if let Some(av) = kv.value.as_ref() {
-                let val = match av.value.as_ref() {
-                    Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-                    _ => any_value_to_json(av),
-                };
-                if !val.is_null() {
-                    additional_properties.insert(kv.key.as_str().into(), val);
-                }
-            }
+            additional_properties.insert(kv.key.as_str().into(), JsonValue::String(as_string(kv).into_owned()));
         }
         for (key, value) in [(OTEL_SCOPE_NAME, &scope.name), (OTEL_SCOPE_VERSION, &scope.version)] {
             if !value.is_empty() {
@@ -364,7 +402,11 @@ pub fn transform_log_record(
     }
 
     // Derive status once using attribute-provided status, severity text and number
-    let status = derive_status(status_from_attrs, lr.severity_text.as_str(), lr.severity_number);
+    let status = derive_status(
+        status_from_attrs.as_deref(),
+        lr.severity_text.as_str(),
+        lr.severity_number,
+    );
     // The Agent sends the derived status in place of any resource or scope attribute named `status`. The encoder
     // writes additional properties over the status, so the attribute must not be among them.
     additional_properties.remove("status");
@@ -414,23 +456,33 @@ pub fn transform_log_record(
 
     // Message: prefer attributes, else body. An empty message attribute also falls back to the body.
     let message = match msg_from_attrs {
-        Some(m) if !m.is_empty() => MetaString::from(m),
-        _ => lr
-            .body
-            .as_ref()
-            .map(any_value_to_message_string)
-            .map(MetaString::from)
-            .unwrap_or_default(),
+        Some(m) if !m.is_empty() => meta_string(m),
+        _ => meta_string(otlp_value_as_string(
+            lr.body.as_ref().and_then(|body| body.value.as_ref()),
+        )),
     };
 
+    // A non-finite double is still a placeholder only if no later property overwrote it.
+    if non_finite {
+        if let Some((key, _)) = additional_properties
+            .iter()
+            .find(|(_, value)| holds_non_finite_placeholder(value))
+        {
+            return Err(generic_error!(
+                "Log attribute '{}' holds a NaN or infinite double, which JSON can't represent.",
+                key
+            ));
+        }
+    }
+
     // Build Log
-    Log::new(message)
+    Ok(Log::new(message)
         .with_status(status)
         .with_source(DEFAULT_SOURCE.clone())
         .with_hostname(record_host)
         .with_service(record_service)
         .with_tags(tags)
-        .with_additional_properties(additional_properties)
+        .with_additional_properties(additional_properties))
 }
 
 #[cfg(test)]
@@ -439,7 +491,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use saluki_core::data_model::tags::TagSet;
-    use serde_json::json;
+    use serde_json::{json, Value as JsonValue};
 
     use super::*;
 
@@ -462,6 +514,254 @@ mod tests {
             ..Default::default()
         };
         transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+            .expect("the record should transform")
+    }
+
+    fn value(value: Value) -> AnyValue {
+        AnyValue { value: Some(value) }
+    }
+
+    fn empty() -> AnyValue {
+        AnyValue { value: None }
+    }
+
+    fn map(entries: Vec<(&str, AnyValue)>) -> AnyValue {
+        value(Value::KvlistValue(KeyValueList {
+            values: entries.into_iter().map(|(key, value)| key_value(key, value)).collect(),
+        }))
+    }
+
+    fn array(values: Vec<AnyValue>) -> AnyValue {
+        value(Value::ArrayValue(otlp_common::ArrayValue { values }))
+    }
+
+    /// Nests `leaf` in `depth` maps, keyed `m1` to `m<depth>` from the outside in.
+    fn nested_maps(depth: usize, leaf: AnyValue) -> AnyValue {
+        (1..=depth)
+            .rev()
+            .fold(leaf, |inner, level| map(vec![(&format!("m{}", level), inner)]))
+    }
+
+    /// Nests `leaf` in `depth` arrays of one map each, keyed `level1` to `level<depth>` from the outside in.
+    fn nested_through_arrays(depth: usize, leaf: AnyValue) -> AnyValue {
+        (1..=depth).rev().fold(leaf, |inner, level| {
+            array(vec![map(vec![(&format!("level{}", level), inner)])])
+        })
+    }
+
+    /// Returns the log's message, status, and additional properties as one JSON object, as the Agent's
+    /// `HTTPLogItem` holds them without its `ddtags`.
+    fn item_json(log: &Log) -> JsonValue {
+        let mut item = serde_json::Map::new();
+        item.insert("message".to_string(), json!(log.message()));
+        item.insert("status".to_string(), json!(log.status()));
+        for (key, value) in log.additional_properties() {
+            item.insert(key.to_string(), value.clone());
+        }
+        JsonValue::Object(item)
+    }
+
+    #[test]
+    fn values_coerce_as_the_reference() {
+        // Each target is what the Agent's `transform` returns for the record, marshaled by `HTTPLogItem.MarshalJSON`
+        // without its `ddtags`, at the Agent version that `_version.txt` pins.
+        struct Case {
+            name: &'static str,
+            record: Vec<KeyValue>,
+            body: Option<AnyValue>,
+            resource: Vec<KeyValue>,
+            scope: Vec<KeyValue>,
+            target: &'static str,
+        }
+        let case = |name, record| Case {
+            name,
+            record,
+            body: None,
+            resource: vec![],
+            scope: vec![],
+            target: "",
+        };
+        let body = |name, body| Case {
+            body: Some(body),
+            ..case(name, vec![])
+        };
+
+        let cases = [
+            Case {
+                target: r#"{"array":[1,"","aGk=",[true],{},"collapsed",{"a.b":2}],"bytes":"/wBh","bytes_empty":"","empty":"","map.inner_bytes":"aGk=","map.inner_value_empty":"","message":"","spread":"x","status":""}"#,
+                ..case(
+                    "record values keep their types, and other values become strings",
+                    vec![
+                        key_value("empty", empty()),
+                        key_value("bytes_empty", value(Value::BytesValue(vec![]))),
+                        key_value("bytes", value(Value::BytesValue(vec![0xff, 0x00, b'a']))),
+                        key_value("map_empty", map(vec![])),
+                        key_value(
+                            "map",
+                            map(vec![
+                                ("inner_empty", map(vec![])),
+                                ("inner_value_empty", empty()),
+                                ("inner_bytes", value(Value::BytesValue(b"hi".to_vec()))),
+                            ]),
+                        ),
+                        key_value(
+                            "array",
+                            array(vec![
+                                value(Value::IntValue(1)),
+                                empty(),
+                                value(Value::BytesValue(b"hi".to_vec())),
+                                array(vec![value(Value::BoolValue(true))]),
+                                map(vec![]),
+                                map(vec![("", string("collapsed"))]),
+                                map(vec![("a", map(vec![("b", value(Value::IntValue(2)))]))]),
+                            ]),
+                        ),
+                        key_value("", map(vec![("spread", string("x"))])),
+                    ],
+                )
+            },
+            Case {
+                target: r#"{"attr_depth_4":[{"level1":[{"level2":[{"level3":[{"level4":"leaf"}]}]}]}],"attr_depth_5":[{"level1":[{"level2":[{"level3":[{"level4":["{\"level5\":\"leaf\"}"]}]}]}]}],"attr_depth_6":[{"level1":[{"level2":[{"level3":[{"level4":["{\"level5\":[{\"level6\":\"leaf\"}]}"]}]}]}]}],"message":"","status":""}"#,
+                ..case(
+                    "a map that arrays nest at depth 10 becomes a string",
+                    (4..=6)
+                        .map(|depth| {
+                            key_value(
+                                &format!("attr_depth_{}", depth),
+                                nested_through_arrays(depth, string("leaf")),
+                            )
+                        })
+                        .collect(),
+                )
+            },
+            Case {
+                target: r#"{"m.m1.m2.m3.m4.m5.m6.m7.m8.m9":"{\"m10\":1}","message":"","n.m1.m2.m3.m4.m5.m6.m7.m8.m9":1,"status":""}"#,
+                ..case(
+                    "a map at depth 10 becomes a string",
+                    vec![
+                        key_value("m", nested_maps(10, value(Value::IntValue(1)))),
+                        key_value("n", nested_maps(9, value(Value::IntValue(1)))),
+                    ],
+                )
+            },
+            Case {
+                target: r#"{"message":"12","otel.scope.name":"1.5","status":"true"}"#,
+                ..case(
+                    "reserved attributes become strings",
+                    vec![
+                        key_value("message", value(Value::IntValue(12))),
+                        key_value("level", value(Value::BoolValue(true))),
+                        key_value("ddtags", value(Value::IntValue(5))),
+                        key_value("otel.library.name", value(Value::DoubleValue(1.5))),
+                    ],
+                )
+            },
+            Case {
+                target: r#"{"message":"{\"k\":\"v\"}","status":""}"#,
+                ..case(
+                    "a map message becomes JSON",
+                    vec![key_value("msg", map(vec![("k", string("v"))]))],
+                )
+            },
+            Case {
+                body: Some(value(Value::DoubleValue(1e21))),
+                target: r#"{"message":"1e+21","status":""}"#,
+                ..case(
+                    "an empty message falls back to the body",
+                    vec![key_value("msg", empty())],
+                )
+            },
+            Case {
+                target: r#"{"message":"-3","status":""}"#,
+                ..body("an integer body", value(Value::IntValue(-3)))
+            },
+            Case {
+                target: r#"{"message":"Ym9keQ==","status":""}"#,
+                ..body("a bytes body", value(Value::BytesValue(b"body".to_vec())))
+            },
+            Case {
+                target: r#"{"message":"NaN","status":""}"#,
+                ..body("a NaN body", value(Value::DoubleValue(f64::NAN)))
+            },
+            Case {
+                target: r#"{"message":"[\"<&>\"]","status":""}"#,
+                ..body("an array body", array(vec![string("<&>")]))
+            },
+            Case {
+                resource: vec![
+                    key_value("res_empty", empty()),
+                    key_value("res_inf", value(Value::DoubleValue(f64::NEG_INFINITY))),
+                    key_value("res_bytes", value(Value::BytesValue(b"hi".to_vec()))),
+                    key_value("service", value(Value::IntValue(3))),
+                ],
+                scope: vec![
+                    key_value("scope_bool", value(Value::BoolValue(false))),
+                    key_value("scope_empty", empty()),
+                    key_value("scope_array", array(vec![value(Value::IntValue(2))])),
+                ],
+                target: r#"{"message":"","otel.service":"3","res_bytes":"aGk=","res_empty":"","res_inf":"-Infinity","scope_array":"[2]","scope_bool":"false","scope_empty":"","status":""}"#,
+                ..case("resource and scope attributes become strings", vec![])
+            },
+            Case {
+                resource: vec![key_value("d", string("resource"))],
+                target: r#"{"d":"resource","message":"","status":""}"#,
+                ..case(
+                    "a NaN record attribute that a resource attribute overwrites",
+                    vec![key_value("d", value(Value::DoubleValue(f64::NAN)))],
+                )
+            },
+        ];
+
+        for case in cases {
+            let lr = LogRecord {
+                attributes: case.record,
+                body: case.body,
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: case.resource,
+                ..Default::default()
+            };
+            let scope = otlp_common::InstrumentationScope {
+                attributes: case.scope,
+                ..Default::default()
+            };
+            let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+                .unwrap_or_else(|e| panic!("{}: {}", case.name, e));
+
+            let target: JsonValue = serde_json::from_str(case.target).expect("the target should be JSON");
+            assert_eq!(item_json(&log), target, "{}", case.name);
+        }
+    }
+
+    #[test]
+    fn non_finite_record_attributes_drop_the_log() {
+        // The Agent fails to marshal each of these logs, and drops it.
+        let cases = [
+            ("a NaN attribute", value(Value::DoubleValue(f64::NAN))),
+            (
+                "an infinity in an array",
+                array(vec![value(Value::DoubleValue(f64::INFINITY))]),
+            ),
+            ("a NaN in a map", map(vec![("d", value(Value::DoubleValue(f64::NAN)))])),
+            (
+                "a NaN leaf at depth 10",
+                nested_maps(9, value(Value::DoubleValue(f64::NAN))),
+            ),
+            (
+                "a negative infinity in a map in an array",
+                array(vec![map(vec![("d", value(Value::DoubleValue(f64::NEG_INFINITY)))])]),
+            ),
+        ];
+
+        for (name, attribute) in cases {
+            let lr = LogRecord {
+                attributes: vec![key_value("x", attribute)],
+                ..Default::default()
+            };
+            let result = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+            assert!(result.is_err(), "{}: {:?}", name, result.map(|log| item_json(&log)));
+        }
     }
 
     #[test]
@@ -683,7 +983,8 @@ mod tests {
             };
             let mut tags = TagSet::default();
             tags.insert_tag("res:tag");
-            let log = transform_log_record(lr, &Resource::default(), None, None, None, tags);
+            let log = transform_log_record(lr, &Resource::default(), None, None, None, tags)
+                .expect("the record should transform");
 
             assert_eq!(log.message(), case.message, "{}: message", case.name);
             assert_eq!(log.status(), case.status, "{}: status", case.name);
@@ -713,7 +1014,8 @@ mod tests {
                 time_unix_nano,
                 ..Default::default()
             };
-            let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+            let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+            .expect("the record should transform");
             let formatted = log.additional_properties()["@timestamp"]
                 .as_str()
                 .expect("@timestamp should be a string")
@@ -804,7 +1106,8 @@ mod tests {
                 observed_time_unix_nano,
                 ..Default::default()
             };
-            let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+            let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+                .expect("the record should transform");
 
             let props = log.additional_properties();
             let context = format!("timestamp {}, observed {}", time_unix_nano, observed_time_unix_nano);
@@ -858,7 +1161,8 @@ mod tests {
                 attributes: attributes(scope_attr),
                 ..Default::default()
             };
-            let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default());
+            let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+                .expect("the record should transform");
 
             assert_eq!(
                 log.additional_properties().get("otel.event_name"),
@@ -1025,7 +1329,8 @@ mod tests {
                 attributes: attributes(case.scope_attributes),
                 ..Default::default()
             };
-            let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default());
+            let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+                .expect("the record should transform");
 
             let actual = log
                 .additional_properties()

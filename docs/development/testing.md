@@ -43,6 +43,15 @@ Unit tests that create pods are ignored too. Run them with `make test-kind`, whi
 `PATH` and a single-node kind cluster named `saluki-correctness`, or the one `KIND_CLUSTER_NAME` names, and builds the
 courier the tests place on its node. CI doesn't run them, so run them by hand when you change the pod backend.
 
+### Tests against Go vectors
+
+Some unit tests compare Rust code byte for byte with the Go code that the Datadog Agent uses, through vectors that a
+small Go program generates and that are checked in. `otlp_value_as_string` is checked against `pcommon.Value.AsString`
+this way, with the version of the `pdata` module that the Integration version of the Agent requires (see
+[Datadog Agent version](./agent-version.md)). After you change the generator in
+`lib/saluki-components/src/common/otlp/testdata/pdata-as-string/`, or when an Agent update changes the `pdata` version,
+run `make build-otlp-as-string-vectors`, which needs Docker, and commit the vectors with the change.
+
 ### Architecture tests
 
 The `architecture-tests` crate in `test/architecture/` protects architectural invariants as part of the unit-test

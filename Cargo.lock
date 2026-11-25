@@ -5803,6 +5803,7 @@ dependencies = [
  "rmp",
  "rmp-serde",
  "rustls",
+ "ryu",
  "saluki-antithesis",
  "saluki-api",
  "saluki-common",

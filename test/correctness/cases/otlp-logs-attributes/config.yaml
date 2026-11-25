@@ -49,29 +49,3 @@ procedure:
       # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
       identity_fields: ["fixture_id"]
       min_count: 108
-      # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
-      # an entry in the change that fixes its gap.
-      known_differences:
-        - gap: gap/as-string-coercion
-          paths: ["content.attr_empty"]
-          kinds: [value]
-          reason: ADP renders an empty value as "null" instead of "".
-        - gap: gap/array-attributes
-          paths:
-            - "content.attr_array"
-            - "content.attr_array_of_maps"
-            - "content.attr_empty_array"
-            - "content.attr_depth_9.level1"
-            - "content.attr_depth_11.level1"
-          kinds: [value]
-          reason: ADP stringifies arrays instead of keeping them as JSON arrays.
-        - gap: gap/bytes-encoding
-          paths: ["content.attr_bytes_utf8", "content.attr_bytes_binary"]
-          kinds: [value]
-          reason: ADP renders bytes as UTF-8 text or "<n bytes>" instead of base64.
-        - gap: gap/non-string-message
-          paths: ["content.message"]
-          kinds: [value]
-          when:
-            fixture_id: [message-int, message-map]
-          reason: ADP only honors string `message`/`log` attributes, and uses the body instead.

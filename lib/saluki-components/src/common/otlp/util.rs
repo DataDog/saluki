@@ -482,7 +482,7 @@ const INVALID_HOSTNAMES: [&str; 6] = [
 /// Returns the value of the first attribute named `key`, like `Map.Get` in `pdata`.
 ///
 /// The inner `Option` is `None` for an attribute that is present but has an empty value.
-pub(super) fn first_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
+pub(crate) fn first_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
     attributes
         .iter()
         .find(|kv| kv.key == key)
@@ -574,8 +574,7 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
 /// Checks, in order: the literal `host` attribute, `datadog.host.name`, ECS Fargate (which has no
 /// hostname), the cloud provider's hostname, the Kubernetes node name, `host.id`, and `host.name`.
 fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
-    // A literal `host` of any type stops resolution, rendered as `Value.AsString` in `pdata` does. Only
-    // the JSON layout of arrays and maps is approximate.
+    // A literal `host` of any type stops resolution, rendered as `Value.AsString` in `pdata` does.
     if let Some(hostname) = first_attribute(attributes, ATTRIBUTE_HOST) {
         return Some(otlp_value_as_string(hostname));
     }
