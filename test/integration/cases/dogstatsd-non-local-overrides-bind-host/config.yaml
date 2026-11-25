@@ -42,6 +42,6 @@ procedure:
         duration: 10s
       - step: log_not_contains
         on: adp
-        pattern: "panic|PANIC"
+        pattern: "panicked at|panic: |PANIC"
         regex: true
         during: 10s

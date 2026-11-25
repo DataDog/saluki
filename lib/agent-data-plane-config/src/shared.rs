@@ -255,6 +255,12 @@ pub struct TracesIntake {
     ///
     /// This is the inverse of the setting, so that the default sends to the primary endpoint.
     pub skip_main_endpoint: bool,
+
+    /// How long the traces forwarder keeps a connection before resetting it (`apm_config.connection_reset_interval`).
+    ///
+    /// [`Duration::ZERO`], the default, never resets a connection. A negative value is read as zero, with a warning.
+    /// As in the trace-agent, this replaces `forwarder_connection_reset_interval` for traces and APM stats.
+    pub connection_reset_interval: Duration,
 }
 
 /// An alternate traces intake (Observability Pipelines Worker or Vector) that replaces the Datadog intake when

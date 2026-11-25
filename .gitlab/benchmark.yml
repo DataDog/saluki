@@ -1,11 +1,31 @@
-.setup-smp-env: &setup-smp-env
+# The git checkout for every SMP job. The jobs need only the files at the pipeline commit, so a
+# depth of one is sufficient. To find the baseline commit or the nightly commits,
+# ci/tooling/compute-smp-sha.sh fetches the history that it needs into a separate repository.
+# That history fetch takes some seconds. A full checkout (`GIT_DEPTH: "0"`) takes about 50
+# seconds on the image job runners.
+#
+# We also disable the runner's git cache. When the cache is not on the runner, the runner first
+# clones the full repository into it, which takes about 30 seconds. When the cache is on the
+# runner, the checkout from the cache takes about a minute on the image job runners. A shallow
+# checkout without the cache takes some seconds.
+.smp-checkout:
+  variables:
+    GIT_DEPTH: "1"
+    DISABLE_GIT_CACHE: "true"
+
+# The settings that every SMP job needs, to get the SMP CLI and to configure AWS credentials.
+.setup-smp-cli-env: &setup-smp-cli-env
   - export AWS_NAMED_PROFILE=single-machine-performance
   - export SMP_VERSION=0.29.1
+  - export RUST_LOG=info,aws_config::profile::credentials=error
+
+# The settings for the jobs that build images, or that talk to the SMP API.
+.setup-smp-env: &setup-smp-env
+  - *setup-smp-cli-env
   # The Cargo profile for the SMP baseline and comparison images. We use the profile we ship, so that SMP and the
   # binary size analysis measure the production binary. The correctness tests build with `release` and cover debug
   # assertions.
   - export SMP_BUILD_PROFILE=optimized-release
-  - export RUST_LOG=info,aws_config::profile::credentials=error
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
@@ -80,7 +100,7 @@
     SMP_BUILD_BASE_IMAGE: "${PUBLIC_BASE_IMAGE}"
 
 build-adp-baseline-image:
-  extends: .smp-adp-image-build
+  extends: [.smp-adp-image-build, .smp-checkout]
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
@@ -158,7 +178,7 @@ build-adp-baseline-image:
       dotenv: smp-vars.env
 
 build-adp-comparison-image:
-  extends: .smp-adp-image-build
+  extends: [.smp-adp-image-build, .smp-checkout]
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
@@ -229,6 +249,7 @@ build-adp-comparison-image:
       dotenv: smp-vars.env
 
 run-benchmarks-adp:
+  extends: .smp-checkout
   stage: benchmark
   # PR gate: run only the quality-gates suite (the experiments with bounds). Runs on PRs
   # (development branches); never on MQ branches. The full suite runs nightly / on-demand below.
@@ -266,10 +287,14 @@ run-benchmarks-adp:
       --target-config-dir ./test/smp/regression/adp/quality-gates/
       --submission-metadata submission_metadata
     # Wait for job to complete.
+    #
+    # We poll every 20 seconds. On average, the job sees that the SMP job is complete half of a
+    # poll interval after it completes, so a short interval keeps that delay to about 10 seconds.
+    # Each poll is one small status request.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job status
       --wait
-      --wait-delay-seconds 60
+      --wait-delay-seconds 20
       --submission-metadata submission_metadata
     # Pull the analysis report and output it to stdout.
     #
@@ -286,6 +311,7 @@ run-benchmarks-adp:
       --submission-metadata submission_metadata
 
 report-benchmarks-adp:
+  extends: .smp-checkout
   stage: benchmark
   # Build a condensed report from run-benchmarks-adp's report.v1.json and post it
   # to the linked PR. Runs whether or not `run-benchmarks-adp` succeeded so a
@@ -306,8 +332,10 @@ report-benchmarks-adp:
     paths:
       - outputs/condensed-report.md
     when: always
+  # This job only renders the report and posts it, so it needs only the SMP CLI. It does not
+  # build images or call the SMP API.
   before_script:
-    - *setup-smp-env
+    - *setup-smp-cli-env
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
     - mkdir -p outputs
@@ -321,6 +349,7 @@ report-benchmarks-adp:
     - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
 
 run-benchmarks-adp-full:
+  extends: .smp-checkout
   stage: benchmark
   # The full SMP suite (superset of all experiments). Runs automatically on the nightly schedule
   # for long-term trend analysis, and on-demand as a manual job on a PR. This is NOT a PR gate:
@@ -364,11 +393,11 @@ run-benchmarks-adp-full:
       --comparison-sha ${COMPARISON_ADP_SHA}
       --target-config-dir ./test/smp/regression/adp/full/
       --submission-metadata submission_metadata
-    # Wait for job to complete.
+    # Wait for job to complete. For the poll interval, see run-benchmarks-adp.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job status
       --wait
-      --wait-delay-seconds 60
+      --wait-delay-seconds 20
       --submission-metadata submission_metadata
     # Pull the analysis report, then build and deliver the condensed report. We intentionally do
     # NOT run `job result` here: the full suite is for trend analysis, not gating.
@@ -392,6 +421,7 @@ run-benchmarks-adp-full:
       fi
 
 binary-size-analysis:
+  extends: .smp-checkout
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Don't run binary size analysis unless it's a PR, basically.

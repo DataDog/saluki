@@ -82,6 +82,6 @@ procedure:
       - {step: port_listening, on: adp, endpoint: dogstatsd_tcp, timeout: 10s}
       - step: log_not_contains
         on: adp
-        pattern: "Unsupported configuration key|panic|PANIC"
+        pattern: "Unsupported configuration key|panicked at|panic: |PANIC"
         regex: true
         during: 10s
