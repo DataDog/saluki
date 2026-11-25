@@ -365,6 +365,10 @@ fn error_traces() -> Vec<Vec<ProbeSpan>> {
         vec![probe("otlpprobe.conv.error.http_status")
             .with_status(StatusCode::Error, "")
             .with_attribute("http.response.status_code", int(503))],
+        // The Agent derives the message from a status code in `meta` only, and a string code is kept there.
+        vec![probe("otlpprobe.conv.error.http_status_string")
+            .with_status(StatusCode::Error, "")
+            .with_attribute("http.response.status_code", string("503"))],
         vec![probe("otlpprobe.conv.error.exception_event")
             .with_status(StatusCode::Error, "")
             .with_event(event(
@@ -539,6 +543,21 @@ fn resource_traces() -> Vec<Vec<ProbeSpan>> {
     ]
 }
 
+/// The trace with an `INTERNAL` root and a child of each other span kind.
+///
+/// A root is top level whatever its kind, so only the children show how the kind sets the top-level and the measured
+/// marks.
+fn kind_traces() -> Vec<Vec<ProbeSpan>> {
+    let child = |name, kind| probe(name, kind).child_of(1);
+    vec![vec![
+        probe("otlpprobe.conv.kind.root", SpanKind::Internal),
+        child("otlpprobe.conv.kind.server_child", SpanKind::Server),
+        child("otlpprobe.conv.kind.client_child", SpanKind::Client),
+        child("otlpprobe.conv.kind.producer_child", SpanKind::Producer),
+        child("otlpprobe.conv.kind.consumer_child", SpanKind::Consumer),
+    ]]
+}
+
 /// The traces whose spans have trace IDs that share their low half.
 ///
 /// A trace groups spans by the low half of their ID. The two spans of the first and second traces have the same low
@@ -628,7 +647,7 @@ fn resources() -> Vec<ProbeResource> {
 /// its own.
 ///
 /// A span is named `otlpprobe.conv.<family>.<variant>`. Every span is the root of its trace, except those of
-/// `high_traces` and the zero span ID probe, which have a child.
+/// `kind_traces` and `high_traces` and the zero span ID probe, which have a child.
 pub fn conversion_fixture() -> Vec<u8> {
     let traces: Vec<Vec<ProbeSpan>> = [
         naming_traces(),
@@ -639,6 +658,7 @@ pub fn conversion_fixture() -> Vec<u8> {
         event_and_link_traces(),
         datadog_attribute_traces(),
         resource_traces(),
+        kind_traces(),
         high_traces(),
         zero_traces(),
     ]
@@ -708,7 +728,7 @@ mod tests {
     #[test]
     fn every_span_has_a_distinct_name_of_the_conversion_family() {
         let spans = spans();
-        assert_eq!(spans.len(), 85);
+        assert_eq!(spans.len(), 91);
 
         let names: HashSet<&str> = spans.iter().map(|(_, span)| span.name.as_str()).collect();
         assert_eq!(names.len(), spans.len(), "a span name is not unique");
@@ -752,6 +772,25 @@ mod tests {
         let control = span_named("otlpprobe.conv.zero.control");
         assert_ne!(halves(&control).1, 0);
         assert_ne!(control.span_id, vec![0; 8]);
+    }
+
+    #[test]
+    fn the_kind_trace_has_an_internal_root_and_a_child_of_each_other_kind() {
+        let root = span_named("otlpprobe.conv.kind.root");
+        assert_eq!(root.kind, SpanKind::Internal as i32);
+        assert!(root.parent_span_id.is_empty());
+
+        for (variant, kind) in [
+            ("server", SpanKind::Server),
+            ("client", SpanKind::Client),
+            ("producer", SpanKind::Producer),
+            ("consumer", SpanKind::Consumer),
+        ] {
+            let child = span_named(&format!("otlpprobe.conv.kind.{variant}_child"));
+            assert_eq!(child.kind, kind as i32, "{variant}");
+            assert_eq!(child.trace_id, root.trace_id, "{variant}");
+            assert_eq!(child.parent_span_id, root.span_id, "{variant}");
+        }
     }
 
     #[test]

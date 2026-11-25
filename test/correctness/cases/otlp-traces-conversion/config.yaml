@@ -46,10 +46,10 @@ procedure:
         baseline: intake-agent
         otlp_direct_analysis_mode: true
         traces:
-          # The fixture holds 85 spans. The Agent drops four of them, and ADP drops four more. At least 77 spans in 76
+          # The fixture holds 91 spans. The Agent drops four of them, and ADP drops four more. At least 83 spans in 77
           # traces reach each side.
-          min_traces: 76
-          min_spans: 77
+          min_traces: 77
+          min_spans: 83
           # The spans that both sides send with the same service, name and resource. A span whose service, name or
           # resource differs between the sides is in `known_differences`.
           spans:
@@ -67,12 +67,14 @@ procedure:
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.attributes}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.exception_event}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.http_status}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.http_status_string}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.message}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.no_message}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.ok_with_message}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.partial_attributes}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.unset_with_message}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.event.attributes}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.kind.root}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.link.attributes}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.naming.kind_internal}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.naming.kind_unspecified}
@@ -83,11 +85,14 @@ procedure:
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.typed.kvlist}
             - {service: probe-conv, name: Internal, resource: otlpprobe.conv.typed.numbers}
             - {service: probe-conv, name: Internal, resource: process}
+            - {service: probe-conv, name: Consumer, resource: otlpprobe.conv.kind.consumer_child}
+            - {service: probe-conv, name: Producer, resource: otlpprobe.conv.kind.producer_child}
             - {service: probe-conv, name: Producer, resource: otlpprobe.conv.naming.kind_producer}
             - {service: probe-conv, name: amqp.client.request, resource: otlpprobe.conv.naming.protocol_client}
             - {service: probe-conv, name: amqp.server.request, resource: otlpprobe.conv.naming.protocol_server}
             - {service: probe-conv, name: aws.conv_function.invoke, resource: otlpprobe.conv.naming.faas_client}
             - {service: probe-conv, name: aws.s3.request, resource: GetObject S3}
+            - {service: probe-conv, name: client.request, resource: otlpprobe.conv.kind.client_child}
             - {service: probe-conv, name: client.request, resource: otlpprobe.conv.naming.kind_client}
             - {service: probe-conv, name: conv.http.operation, resource: GET /conv/override-http}
             - {service: probe-conv, name: conv.operation, resource: conv resource}
@@ -112,6 +117,7 @@ procedure:
             - {service: probe-conv, name: postgresql.query, resource: SELECT id FROM conv_legacy}
             - {service: probe-conv, name: postgresql.query, resource: SELECT id FROM conv_statement}
             - {service: probe-conv, name: pubsub.invoke, resource: otlpprobe.conv.naming.faas_server}
+            - {service: probe-conv, name: server.request, resource: otlpprobe.conv.kind.server_child}
             - {service: probe-conv, name: server.request, resource: otlpprobe.conv.naming.kind_server}
             - {service: probe-conv-dd-env, name: Internal, resource: otlpprobe.conv.resource.datadog_env_version}
             - {service: probe-conv-dd-host, name: Internal, resource: otlpprobe.conv.resource.datadog_host_name}
@@ -195,7 +201,7 @@ procedure:
               issue: 3433
               paths: [span.meta.http.status_code]
               kinds: [missing]
-              when: {service: [probe-conv], resource: [GET /conv/status/string, GET /conv/status/legacy_string]}
+              when: {service: [probe-conv], resource: [GET /conv/status/string, GET /conv/status/legacy_string, otlpprobe.conv.error.http_status_string]}
               reason: The Agent sends a string HTTP status code in `meta` next to the number. ADP sends the number only.
             - gap: gap/otlp-status-tags
               issue: 3444
@@ -208,7 +214,7 @@ procedure:
               paths: [span.meta.error.msg]
               kinds: [extra]
               when: {service: [probe-conv], resource: [otlpprobe.conv.error.http_status]}
-              reason: ADP derives the error message of an error with no message from its HTTP status code. The Agent does not.
+              reason: ADP derives the error message of an error with no message from a numeric HTTP status code too. The Agent reads the code from `meta` only, and a number goes to `metrics`.
             - gap: gap/otlp-status-tags
               issue: 3444
               paths: [span.meta.error.msg, span.meta.error.stack, span.meta.error.type]
