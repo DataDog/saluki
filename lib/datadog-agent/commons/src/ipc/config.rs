@@ -12,10 +12,6 @@ use tracing::warn;
 
 use crate::platform::PlatformSettings;
 
-/// The vsock context identifier that `vsock_addr: local` selects.
-#[cfg(target_os = "linux")]
-const VSOCK_CID_LOCAL: u32 = 3;
-
 /// Datadog Agent IPC bearer-token and exact shared-certificate mTLS configuration.
 #[derive(Clone, Debug)]
 pub struct IpcAuthConfiguration {
@@ -119,7 +115,7 @@ impl RemoteAgentClientConfiguration {
             "" => None,
             "host" => Some(2),
             "hypervisor" => Some(0),
-            "local" => Some(VSOCK_CID_LOCAL),
+            "local" => Some(3),
             other => {
                 return Err(generic_error!(
                     "invalid vsock address '{}'; expected one of: host, hypervisor, local",
@@ -155,14 +151,15 @@ impl RemoteAgentClientConfiguration {
             .expect("a URI built from `localhost` or an IP address and a u16 port is valid")
     }
 
-    /// Returns `true` if the Core Agent runs on the same host as this process.
+    /// Returns `true` if the Core Agent is known to run on the same host as this process.
     ///
-    /// The Core Agent runs elsewhere when `vsock_addr` selects the `host` or `hypervisor` peer. Anything the local
-    /// operating system reports, such as its hostname, then describes a different machine.
+    /// Returns `false` for every vsock peer, including `local`: the context identifier alone doesn't prove that the
+    /// peer shares this host. Anything the local operating system reports, such as its hostname, can then describe a
+    /// different machine.
     pub fn core_agent_is_local(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
-            matches!(self.vsock_cid, None | Some(VSOCK_CID_LOCAL))
+            self.vsock_cid.is_none()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -426,21 +423,13 @@ mod tests {
     }
 
     #[test]
-    fn core_agent_is_local_unless_vsock_selects_a_remote_peer() {
-        let local_values: &[&str] = if cfg!(target_os = "linux") {
-            &["", "local"]
-        } else {
-            &["", "local", "host"]
-        };
-        for value in local_values {
-            let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
-            let config =
-                RemoteAgentClientConfiguration::from_parts("localhost", 5001, auth, 4 * 1024 * 1024, value).unwrap();
-            assert!(config.core_agent_is_local(), "input: {value:?}");
-        }
+    fn core_agent_is_local_only_without_a_vsock_peer() {
+        let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
+        let config = RemoteAgentClientConfiguration::from_parts("localhost", 5001, auth, 4 * 1024 * 1024, "").unwrap();
+        assert!(config.core_agent_is_local());
 
         #[cfg(target_os = "linux")]
-        for value in ["host", "hypervisor"] {
+        for value in ["host", "hypervisor", "local"] {
             let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
             let config =
                 RemoteAgentClientConfiguration::from_parts("localhost", 5001, auth, 4 * 1024 * 1024, value).unwrap();

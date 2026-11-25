@@ -13,8 +13,8 @@ use crate::env::root_provider_id;
 /// Datadog Agent-based host provider.
 ///
 /// This provider is based on the internal gRPC API exposed by the Datadog Agent which exposes a way to get the hostname
-/// as detected by the Datadog Agent. If the RPC fails, this provider uses the OS hostname for that call when the Core
-/// Agent runs on the same host. It caches only a hostname that the RPC returned, so a later call tries the RPC again.
+/// as detected by the Datadog Agent. If the RPC fails, this provider uses the OS hostname when the Core Agent is known to
+/// run on the same host. Both results are cached, so every caller gets the same hostname.
 #[derive(Clone)]
 pub struct RemoteAgentHostProvider {
     client: RemoteAgentClient,
@@ -54,36 +54,38 @@ impl RemoteAgentHostProvider {
     }
 }
 
-/// Returns the hostname that the RPC reports, and caches it.
+/// Returns the cached hostname, or the hostname that the RPC reports.
 ///
-/// When the RPC fails and `fallback` is `Some`, returns the hostname that `fallback` reads without caching it, so the
-/// next call tries the RPC again.
+/// When the RPC fails and `fallback` is `Some`, uses the hostname that `fallback` reads. A failed lookup isn't cached.
 async fn resolve_hostname<F>(
     cached_hostname: &OnceCell<String>, rpc: impl Future<Output = Result<String, GenericError>>, fallback: Option<F>,
 ) -> Result<String, GenericError>
 where
     F: FnOnce() -> Result<String, GenericError> + Send + 'static,
 {
-    let rpc_error = match cached_hostname.get_or_try_init(|| rpc).await {
-        Ok(hostname) => return Ok(hostname.clone()),
-        Err(error) => error,
-    };
-    let Some(fallback) = fallback else {
-        return Err(rpc_error);
-    };
+    cached_hostname
+        .get_or_try_init(|| async move {
+            let rpc_error = match rpc.await {
+                Ok(hostname) => return Ok(hostname),
+                Err(error) => error,
+            };
+            let Some(fallback) = fallback else {
+                return Err(rpc_error);
+            };
 
-    match tokio::task::spawn_blocking(fallback).await {
-        Ok(Ok(hostname)) => {
-            warn!(error = %rpc_error, %hostname, "Hostname RPC failed. Using the OS hostname, which can differ from the hostname of the Agent.");
-            Ok(hostname)
-        }
-        Ok(Err(fallback_error)) => {
-            Err(rpc_error).with_error_context(|| format!("The OS hostname fallback failed too: {fallback_error}"))
-        }
-        Err(join_error) => {
-            Err(rpc_error).with_error_context(|| format!("The OS hostname fallback did not finish: {join_error}"))
-        }
-    }
+            match tokio::task::spawn_blocking(fallback).await {
+                Ok(Ok(hostname)) => {
+                    warn!(error = %rpc_error, %hostname, "Hostname RPC failed. Using the OS hostname, which can differ from the hostname of the Agent.");
+                    Ok(hostname)
+                }
+                Ok(Err(fallback_error)) => Err(rpc_error)
+                    .with_error_context(|| format!("The OS hostname fallback failed too: {fallback_error}")),
+                Err(join_error) => Err(rpc_error)
+                    .with_error_context(|| format!("The OS hostname fallback did not finish: {join_error}")),
+            }
+        })
+        .await
+        .cloned()
 }
 
 /// Reads the OS hostname.
@@ -177,8 +179,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fallback_hostname_is_not_cached_so_a_recovered_rpc_replaces_it() {
-        // A restarting Agent must not leave ADP on the OS hostname once the RPC works again (#2416).
+    async fn fallback_hostname_is_cached_like_an_rpc_result() {
+        // Every pipeline must report the same hostname, as the Datadog Agent does after it resolves it once (#2416).
         let cache = OnceCell::new();
         let hostname = resolve_hostname(
             &cache,
@@ -188,13 +190,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(hostname, "os-host");
-        assert!(cache.get().is_none());
 
-        let hostname = resolve_hostname(&cache, async { Ok("rpc-host".to_owned()) }, os_fallback("os-host"))
-            .await
-            .unwrap();
-        assert_eq!(hostname, "rpc-host");
-        assert_eq!(cache.get().map(String::as_str), Some("rpc-host"));
+        let cached = resolve_hostname(
+            &cache,
+            async { Ok("rpc-host".to_owned()) },
+            Some(|| panic!("a cached fallback must not read the OS hostname again")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cached, "os-host");
     }
 
     #[tokio::test]
@@ -211,6 +215,11 @@ mod tests {
         assert!(message.contains("OS hostname unavailable"), "message: {message}");
         assert!(message.contains("RPC unavailable"), "message: {message}");
         assert!(cache.get().is_none());
+
+        let hostname = resolve_hostname(&cache, async { Ok("recovered-host".to_owned()) }, no_fallback())
+            .await
+            .unwrap();
+        assert_eq!(hostname, "recovered-host");
     }
 
     #[tokio::test]
