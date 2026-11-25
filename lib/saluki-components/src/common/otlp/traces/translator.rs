@@ -9,7 +9,9 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{
+    AttributeValue, AttributeValueExt, Span as DdSpan, Trace, TraceIngestInfo,
+};
 use saluki_core::data_model::event::Event;
 use saluki_core::data_model::origin::OriginTagCardinality;
 use stringtheory::interning::GenericMapInterner;

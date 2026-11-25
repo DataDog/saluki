@@ -277,7 +277,12 @@ leb128fmt,https://github.com/bluk/leb128fmt,MIT OR Apache-2.0,Bryant Luk <code@b
 libc,https://github.com/rust-lang/libc,MIT OR Apache-2.0,The libc Authors
 libdd-capabilities,https://github.com/DataDog/libdatadog/tree/main/libdd-capabilities,Apache-2.0,The libdd-capabilities Authors
 libdd-common,https://github.com/DataDog/libdatadog/tree/main/datadog-common,Apache-2.0,The libdd-common Authors
+libdd-env,https://github.com/DataDog/libdatadog/tree/main/libdd-env,Apache-2.0,The libdd-env Authors
+libdd-host-identity,https://github.com/DataDog/libdatadog/tree/main/libdd-host-identity,Apache-2.0,The libdd-host-identity Authors
+libdd-networking,https://github.com/DataDog/libdatadog/tree/main/libdd-networking,Apache-2.0,The libdd-networking Authors
+libdd-regex,https://github.com/DataDog/libdatadog/tree/main/libdd-regex,Apache-2.0,The libdd-regex Authors
 libdd-tinybytes,https://github.com/DataDog/libdatadog/tree/main/libdd-tinybytes,Apache-2.0,The libdd-tinybytes Authors
+libdd-trace-model,https://github.com/DataDog/libdatadog/tree/main/libdd-trace-model,Apache-2.0,Datadog Inc. <info@datadoghq.com>
 libdd-trace-normalization,https://github.com/DataDog/libdatadog/tree/main/libdd-trace-normalization,Apache-2.0,David Lee <david.lee@datadoghq.com>
 libdd-trace-obfuscation,https://github.com/DataDog/libdatadog/tree/main/libdd-trace-obfuscation,Apache-2.0,Datadog Inc. <info@datadoghq.com>
 libdd-trace-protobuf,https://github.com/DataDog/libdatadog/tree/main/libdd-trace-protobuf,Apache-2.0,The libdd-trace-protobuf Authors
@@ -314,7 +319,6 @@ multimap,https://github.com/havarnov/multimap,MIT OR Apache-2.0,Håvar Nøvik <h
 ndarray,https://github.com/rust-ndarray/ndarray,MIT OR Apache-2.0,"Ulrik Sverdrup ""bluss"", Jim Turner"
 nested,https://github.com/tafia/nested,MIT,Johann Tuffe <tafia973@gmail.com>
 nix,https://github.com/nix-rust/nix,MIT,The nix Authors
-nix,https://github.com/nix-rust/nix,MIT,The nix-rust Project Developers
 nohash-hasher,https://github.com/paritytech/nohash-hasher,Apache-2.0 OR MIT,Parity Technologies <admin@parity.io>
 noisy_float,https://github.com/SergiusIW/noisy_float-rs,Apache-2.0,Matthew Michelotti <matthew@matthewmichelotti.com>
 nom,https://github.com/Geal/nom,MIT,contact@geoffroycouprie.com

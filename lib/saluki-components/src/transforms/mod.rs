@@ -36,10 +36,5 @@ pub use self::apm_stats::ApmStatsTransformConfiguration;
 
 mod trace_obfuscation;
 pub use self::trace_obfuscation::TraceObfuscationConfiguration;
-pub use crate::common::datadog::obfuscation::{
-    CreditCardObfuscationConfig, EsObfuscationConfig, HttpObfuscationConfig, MemcachedObfuscationConfig,
-    MongoObfuscationConfig, ObfuscationConfig, OpenSearchObfuscationConfig, RedisObfuscationConfig,
-    SqlObfuscationConfig, ValkeyObfuscationConfig,
-};
 mod trace_tag_replacer;
 pub use self::trace_tag_replacer::{ReplaceRule, TraceTagReplacerConfiguration};

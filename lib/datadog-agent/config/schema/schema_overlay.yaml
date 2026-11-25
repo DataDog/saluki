@@ -292,6 +292,13 @@ inventory:
       - `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
         does.
       - `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
+      - `sqllexer` selects the `sqllexer` SQL obfuscator when `apm_config.sql_obfuscation_mode` isn't set.
+      - `quantize_sql_tables` and `replace_sql_digits` replace digits in SQL table names and
+        identifiers.
+      - `keep_sql_alias` keeps SQL aliases instead of removing them.
+      - `dollar_quoted_func` treats `$func$` dollar-quoted strings specially in PostgreSQL queries.
+      - `table_names` is ignored with a warning: ADP can't collect SQL table names, so it doesn't set
+        the `sql.tables` tag.
 
       Every other value is ignored, without a warning: the flag inventory is not stable across agent
       versions, so unrecognized entries are inert rather than errors.
@@ -575,10 +582,9 @@ inventory:
     pipelines: [traces]
     description: "SQL obfuscator mode"
     documentation: |-
-      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
-      `/info` response. The trace-agent behind the relay applies it to traces received through the
-      relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
-      invalid value logs a warning and falls back to the default obfuscator.
+      ADP uses this mode for SQL obfuscation. `obfuscate_only` may differ from the Agent: comments are
+      dropped and spacing around parentheses can change. An invalid value logs a warning and falls
+      back to the default obfuscator.
 
   apm_config.stats_writer.connection_limit:
     support: none

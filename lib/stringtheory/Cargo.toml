@@ -11,9 +11,12 @@ workspace = true
 [features]
 default = []
 loom = ["dep:loom"]
+# Lets `MetaString` be the string type of the shared trace model traits.
+trace-model = ["dep:libdd-trace-model"]
 
 [dependencies]
 foldhash = { workspace = true }
+libdd-trace-model = { workspace = true, optional = true }
 loom = { workspace = true, optional = true }
 protobuf = { workspace = true }
 saluki-antithesis = { workspace = true }

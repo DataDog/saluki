@@ -257,7 +257,9 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         yaml_path: "apm_config.obfuscation.sql.dbms",
         description: "SQL obfuscation DBMS dialect",
         default: "",
-        documentation: None,
+        documentation: Some(
+            "SQL dialect to use when a span has neither `db.type` nor `db.system`. Per-span hints take precedence.",
+        ),
     },
     SalukiKey {
         yaml_path: "apm_config.obfuscation.sql.dollar_quoted_func",
@@ -281,7 +283,11 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         yaml_path: "apm_config.obfuscation.sql.table_names",
         description: "Collect table names during obfuscation",
         default: "",
-        documentation: None,
+        documentation: Some(
+            "ADP ignores this key, and the `table_names` entry of `apm_config.features`, and logs a warning when \
+             either is set. The SQL obfuscator can't collect table names yet, so ADP doesn't set the `sql.tables` \
+             tag.",
+        ),
     },
     SalukiKey {
         yaml_path: "flush_timeout_secs",

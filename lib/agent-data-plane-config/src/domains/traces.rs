@@ -38,6 +38,24 @@ pub enum ApmFeature {
     /// converting them to the v1 representation.
     DisableConvertTraces,
 
+    /// Selects the `sqllexer` SQL obfuscator when no SQL obfuscation mode is configured.
+    Sqllexer,
+
+    /// Collects the table names of SQL queries into the `sql.tables` tag.
+    TableNames,
+
+    /// Replaces digits in SQL table names and identifiers. Same effect as `ReplaceSqlDigits`.
+    QuantizeSqlTables,
+
+    /// Replaces digits in SQL table names and identifiers. Same effect as `QuantizeSqlTables`.
+    ReplaceSqlDigits,
+
+    /// Keeps SQL aliases instead of removing them.
+    KeepSqlAlias,
+
+    /// Treats `$func$` dollar-quoted strings specially in PostgreSQL queries.
+    DollarQuotedFunc,
+
     /// An unrecognized feature ID, carried verbatim.
     Other(String),
 }
@@ -52,6 +70,12 @@ impl ApmFeature {
             ApmFeature::DisableOtelScopeConvention => "disable_otel_scope_convention",
             ApmFeature::TooManyRequests => "429",
             ApmFeature::DisableConvertTraces => "disable-convert-traces",
+            ApmFeature::Sqllexer => "sqllexer",
+            ApmFeature::TableNames => "table_names",
+            ApmFeature::QuantizeSqlTables => "quantize_sql_tables",
+            ApmFeature::ReplaceSqlDigits => "replace_sql_digits",
+            ApmFeature::KeepSqlAlias => "keep_sql_alias",
+            ApmFeature::DollarQuotedFunc => "dollar_quoted_func",
             ApmFeature::Other(feature) => feature,
         }
     }
@@ -66,6 +90,12 @@ impl From<&str> for ApmFeature {
             "disable_otel_scope_convention" => ApmFeature::DisableOtelScopeConvention,
             "429" => ApmFeature::TooManyRequests,
             "disable-convert-traces" => ApmFeature::DisableConvertTraces,
+            "sqllexer" => ApmFeature::Sqllexer,
+            "table_names" => ApmFeature::TableNames,
+            "quantize_sql_tables" => ApmFeature::QuantizeSqlTables,
+            "replace_sql_digits" => ApmFeature::ReplaceSqlDigits,
+            "keep_sql_alias" => ApmFeature::KeepSqlAlias,
+            "dollar_quoted_func" => ApmFeature::DollarQuotedFunc,
             other => ApmFeature::Other(other.to_owned()),
         }
     }
@@ -391,6 +421,9 @@ pub enum SqlObfuscationMode {
     #[default]
     Default,
 
+    /// The legacy obfuscator after an invalid mode, regardless of the `sqllexer` feature.
+    Legacy,
+
     /// Obfuscate the query with the `sqllexer` obfuscator (`obfuscate_only`).
     ObfuscateOnly,
 
@@ -406,7 +439,7 @@ impl SqlObfuscationMode {
     /// Returns the mode's configuration value: empty for the default obfuscator.
     pub fn as_str(&self) -> &'static str {
         match self {
-            SqlObfuscationMode::Default => "",
+            SqlObfuscationMode::Default | SqlObfuscationMode::Legacy => "",
             SqlObfuscationMode::ObfuscateOnly => "obfuscate_only",
             SqlObfuscationMode::NormalizeOnly => "normalize_only",
             SqlObfuscationMode::ObfuscateAndNormalize => "obfuscate_and_normalize",
@@ -582,6 +615,12 @@ mod tests {
             ("disable_otel_scope_convention", ApmFeature::DisableOtelScopeConvention),
             ("429", ApmFeature::TooManyRequests),
             ("disable-convert-traces", ApmFeature::DisableConvertTraces),
+            ("sqllexer", ApmFeature::Sqllexer),
+            ("table_names", ApmFeature::TableNames),
+            ("quantize_sql_tables", ApmFeature::QuantizeSqlTables),
+            ("replace_sql_digits", ApmFeature::ReplaceSqlDigits),
+            ("keep_sql_alias", ApmFeature::KeepSqlAlias),
+            ("dollar_quoted_func", ApmFeature::DollarQuotedFunc),
         ] {
             assert_eq!(ApmFeature::from(id), feature, "{id}");
         }
@@ -613,7 +652,13 @@ mod tests {
             ApmFeature::DisableOtelScopeConvention,
             ApmFeature::TooManyRequests,
             ApmFeature::DisableConvertTraces,
-            ApmFeature::Other("table_names".to_owned()),
+            ApmFeature::Sqllexer,
+            ApmFeature::TableNames,
+            ApmFeature::QuantizeSqlTables,
+            ApmFeature::ReplaceSqlDigits,
+            ApmFeature::KeepSqlAlias,
+            ApmFeature::DollarQuotedFunc,
+            ApmFeature::Other("error_rare_sample_tracer_drop".to_owned()),
         ] {
             assert_eq!(ApmFeature::from(feature.as_str()), feature);
         }

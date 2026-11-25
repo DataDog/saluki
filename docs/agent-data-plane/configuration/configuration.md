@@ -740,6 +740,13 @@ ADP recognizes these values:
 - `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
   does.
 - `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
+- `sqllexer` selects the `sqllexer` SQL obfuscator when `apm_config.sql_obfuscation_mode` isn't set.
+- `quantize_sql_tables` and `replace_sql_digits` replace digits in SQL table names and
+  identifiers.
+- `keep_sql_alias` keeps SQL aliases instead of removing them.
+- `dollar_quoted_func` treats `$func$` dollar-quoted strings specially in PostgreSQL queries.
+- `table_names` is ignored with a warning: ADP can't collect SQL table names, so it doesn't set
+  the `sql.tables` tag.
 
 Every other value is ignored, without a warning: the flag inventory is not stable across agent
 versions, so unrecognized entries are inert rather than errors.
@@ -812,10 +819,9 @@ behind the relay applies it to the requests ADP forwards to it.
 
 ### `apm_config.sql_obfuscation_mode`
 
-ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
-`/info` response. The trace-agent behind the relay applies it to traces received through the
-relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
-invalid value logs a warning and falls back to the default obfuscator.
+ADP uses this mode for SQL obfuscation. `obfuscate_only` may differ from the Agent: comments are
+dropped and spacing around parentheses can change. An invalid value logs a warning and falls
+back to the default obfuscator.
 
 ### `apm_config.telemetry.enabled`
 
@@ -1348,6 +1354,14 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 ### `dogstatsd_string_interner_size_bytes`
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
+### `apm_config.obfuscation.sql.dbms`
+
+SQL dialect to use when a span has neither `db.type` nor `db.system`. Per-span hints take precedence.
+
+### `apm_config.obfuscation.sql.table_names`
+
+ADP ignores this key, and the `table_names` entry of `apm_config.features`, and logs a warning when either is set. The SQL obfuscator can't collect table names yet, so ADP doesn't set the `sql.tables` tag.
 
 ### `dogstatsd_mapper_string_interner_size`
 

@@ -5,17 +5,22 @@ use agent_data_plane_config::{
     shared::SharedConfiguration,
 };
 use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
+use libdd_trace_obfuscation::{
+    json::JsonObfuscator,
+    obfuscation_config::{
+        CreditCardConfig, HttpConfig, JsonObfuscatorConfig, MemcachedConfig, ObfuscationConfig, RedisConfig, SqlConfig,
+        SqlObfuscationMode,
+    },
+};
 use saluki_components::{
     config::AgentEnv,
     encoders::DatadogTraceConfiguration,
     transforms::{
-        ApmStatsTransformConfiguration, CreditCardObfuscationConfig, EsObfuscationConfig, HttpObfuscationConfig,
-        MemcachedObfuscationConfig, MongoObfuscationConfig, ObfuscationConfig, OpenSearchObfuscationConfig,
-        RedisObfuscationConfig, ReplaceRule, SqlObfuscationConfig, TraceSamplerConfiguration,
-        TraceTagReplacerConfiguration, ValkeyObfuscationConfig,
+        ApmStatsTransformConfiguration, ReplaceRule, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
     },
 };
 use stringtheory::MetaString;
+use tracing::warn;
 
 use crate::components::ottl::ErrorMode;
 
@@ -100,52 +105,89 @@ pub(crate) fn trace_tag_replacer_configuration(traces: &traces::Domain) -> Trace
     TraceTagReplacerConfiguration::new(rules, traces.obfuscation.remove_stack_traces)
 }
 
-/// Builds the obfuscator settings.
-pub(crate) fn obfuscation_configuration(obfuscation: &traces::Obfuscation) -> ObfuscationConfig {
+/// Builds the obfuscation configuration from the resolved trace settings.
+///
+/// The SQL options come from the `apm_config.obfuscation.sql` settings and from the beta feature flags in
+/// `apm_config.features`. When no SQL obfuscation mode is configured, the `sqllexer` feature selects `obfuscate_only`.
+///
+/// Tag replacement rules are left out: the tag replacer transform owns them.
+pub(crate) fn obfuscation_configuration(traces: &traces::Domain) -> ObfuscationConfig {
+    let obfuscation = &traces.obfuscation;
+    let has_feature = |feature: traces::ApmFeature| traces.features.contains(&feature);
+
+    let sql = SqlConfig {
+        replace_digits: obfuscation.sql.replace_digits
+            || has_feature(traces::ApmFeature::QuantizeSqlTables)
+            || has_feature(traces::ApmFeature::ReplaceSqlDigits),
+        keep_sql_alias: obfuscation.sql.keep_sql_alias || has_feature(traces::ApmFeature::KeepSqlAlias),
+        dollar_quoted_func: obfuscation.sql.dollar_quoted_func || has_feature(traces::ApmFeature::DollarQuotedFunc),
+        obfuscation_mode: sql_obfuscation_mode(
+            obfuscation.sql_obfuscation_mode,
+            has_feature(traces::ApmFeature::Sqllexer),
+        ),
+        ..SqlConfig::default()
+    };
+
+    if obfuscation.sql.table_names {
+        warn!(
+            config_key = "apm_config.obfuscation.sql.table_names",
+            "Ignoring the setting: SQL table names are not collected, so the `sql.tables` tag is not set."
+        );
+    }
+    if has_feature(traces::ApmFeature::TableNames) {
+        warn!(
+            config_key = "apm_config.features",
+            "Ignoring the `table_names` feature: SQL table names are not collected, so the `sql.tables` tag is not set."
+        );
+    }
+
+    let json = |query: &traces::JsonQueryObfuscation| {
+        JsonObfuscator::new(JsonObfuscatorConfig {
+            enabled: query.enabled,
+            keep_keys: query.keep_values.iter().cloned().collect(),
+            transform_keys: query.obfuscate_sql_values.iter().cloned().collect(),
+        })
+    };
+
     ObfuscationConfig {
-        credit_cards: CreditCardObfuscationConfig {
-            enabled: obfuscation.credit_cards.enabled,
-            luhn: obfuscation.credit_cards.luhn,
-            keep_values: obfuscation.credit_cards.keep_values.clone(),
-        },
-        http: HttpObfuscationConfig {
+        tag_replace_rules: Vec::new(),
+        http: HttpConfig {
             remove_query_string: obfuscation.http.remove_query_string,
-            remove_paths_with_digits: obfuscation.http.remove_paths_with_digits,
+            remove_path_digits: obfuscation.http.remove_paths_with_digits,
         },
-        memcached: MemcachedObfuscationConfig {
+        memcached: MemcachedConfig {
             enabled: obfuscation.memcached.enabled,
             keep_command: obfuscation.memcached.keep_command,
         },
-        redis: RedisObfuscationConfig {
+        redis: RedisConfig {
             enabled: obfuscation.redis.enabled,
             remove_all_args: obfuscation.redis.remove_all_args,
         },
-        valkey: ValkeyObfuscationConfig {
+        valkey: RedisConfig {
             enabled: obfuscation.valkey.enabled,
             remove_all_args: obfuscation.valkey.remove_all_args,
         },
-        sql: SqlObfuscationConfig {
-            dbms: obfuscation.sql.dbms.clone(),
-            table_names: obfuscation.sql.table_names,
-            replace_digits: obfuscation.sql.replace_digits,
-            keep_sql_alias: obfuscation.sql.keep_sql_alias,
-            dollar_quoted_func: obfuscation.sql.dollar_quoted_func,
+        credit_cards: CreditCardConfig {
+            enabled: obfuscation.credit_cards.enabled,
+            luhn: obfuscation.credit_cards.luhn,
+            keep_values: obfuscation.credit_cards.keep_values.iter().cloned().collect(),
         },
-        mongodb: MongoObfuscationConfig {
-            enabled: obfuscation.mongodb.enabled,
-            keep_values: obfuscation.mongodb.keep_values.clone(),
-            obfuscate_sql_values: obfuscation.mongodb.obfuscate_sql_values.clone(),
-        },
-        elasticsearch: EsObfuscationConfig {
-            enabled: obfuscation.elasticsearch.enabled,
-            keep_values: obfuscation.elasticsearch.keep_values.clone(),
-            obfuscate_sql_values: obfuscation.elasticsearch.obfuscate_sql_values.clone(),
-        },
-        opensearch: OpenSearchObfuscationConfig {
-            enabled: obfuscation.opensearch.enabled,
-            keep_values: obfuscation.opensearch.keep_values.clone(),
-            obfuscate_sql_values: obfuscation.opensearch.obfuscate_sql_values.clone(),
-        },
+        sql,
+        elasticsearch: json(&obfuscation.elasticsearch),
+        opensearch: json(&obfuscation.opensearch),
+        mongodb: json(&obfuscation.mongodb),
+    }
+}
+
+/// Selects the SQL obfuscation mode: the configured one, else `obfuscate_only` when the `sqllexer` feature is on.
+fn sql_obfuscation_mode(configured: traces::SqlObfuscationMode, sqllexer: bool) -> SqlObfuscationMode {
+    #[allow(deprecated)]
+    match configured {
+        traces::SqlObfuscationMode::ObfuscateOnly => SqlObfuscationMode::ObfuscateOnly,
+        traces::SqlObfuscationMode::NormalizeOnly => SqlObfuscationMode::NormalizeOnly,
+        traces::SqlObfuscationMode::ObfuscateAndNormalize => SqlObfuscationMode::ObfuscateAndNormalize,
+        traces::SqlObfuscationMode::Default if sqllexer => SqlObfuscationMode::ObfuscateOnly,
+        traces::SqlObfuscationMode::Default | traces::SqlObfuscationMode::Legacy => SqlObfuscationMode::Unspecified,
     }
 }
 
@@ -289,9 +331,9 @@ mod tests {
 
     #[test]
     fn only_the_full_trace_id_feature_enables_full_trace_id_sampling() {
-        // Unrecognized flags are carried, not rejected, and enable nothing.
+        // Other flags are carried, not rejected, and enable nothing here.
         let traces = traces::Domain {
-            features: vec![traces::ApmFeature::Other("table_names".to_owned())],
+            features: vec![traces::ApmFeature::TableNames],
             ..Default::default()
         };
         let config = trace_sampler_configuration(
@@ -316,13 +358,24 @@ mod tests {
         assert!(config.workload_provider.is_none());
     }
 
-    #[test]
-    fn obfuscation_configuration_comes_from_resolved_configuration() {
-        let json_query = |name: &str| traces::JsonQueryObfuscation {
+    fn json_query(name: &str) -> traces::JsonQueryObfuscation {
+        traces::JsonQueryObfuscation {
             enabled: true,
             keep_values: vec![format!("{name}.keep")],
             obfuscate_sql_values: vec![format!("{name}.sql")],
-        };
+        }
+    }
+
+    fn domain_with(obfuscation: traces::Obfuscation, features: &[traces::ApmFeature]) -> traces::Domain {
+        traces::Domain {
+            obfuscation,
+            features: features.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn obfuscation_configuration_comes_from_resolved_configuration() {
         let obfuscation = traces::Obfuscation {
             credit_cards: traces::CreditCardObfuscation {
                 enabled: true,
@@ -350,21 +403,21 @@ mod tests {
                 remove_all_args: true,
             },
             sql: traces::SqlObfuscation {
-                dbms: "postgresql".to_string(),
+                dbms: String::new(),
                 dollar_quoted_func: true,
                 keep_sql_alias: false,
                 replace_digits: true,
                 table_names: false,
             },
-            // The obfuscator doesn't implement these; they are only reported to tracers.
+            sql_obfuscation_mode: traces::SqlObfuscationMode::NormalizeOnly,
             ..Default::default()
         };
-        let config = obfuscation_configuration(&obfuscation);
+        let config = obfuscation_configuration(&domain_with(obfuscation, &[]));
 
         assert!(config.credit_cards.enabled);
-        assert_eq!(vec!["card.keep".to_string()], config.credit_cards.keep_values);
+        assert!(config.credit_cards.keep_values.contains("card.keep"));
         assert!(!config.credit_cards.luhn);
-        assert!(config.http.remove_paths_with_digits);
+        assert!(config.http.remove_path_digits);
         assert!(!config.http.remove_query_string);
         assert!(!config.memcached.enabled);
         assert!(config.memcached.keep_command);
@@ -372,35 +425,83 @@ mod tests {
         assert!(!config.redis.remove_all_args);
         assert!(!config.valkey.enabled);
         assert!(config.valkey.remove_all_args);
-        assert_eq!("postgresql", config.sql.dbms);
         assert!(config.sql.dollar_quoted_func);
         assert!(!config.sql.keep_sql_alias);
         assert!(config.sql.replace_digits);
-        assert!(!config.sql.table_names);
-        for (name, enabled, keep_values, obfuscate_sql_values) in [
-            (
-                "mongodb",
-                config.mongodb.enabled,
-                &config.mongodb.keep_values,
-                &config.mongodb.obfuscate_sql_values,
-            ),
-            (
-                "elasticsearch",
-                config.elasticsearch.enabled,
-                &config.elasticsearch.keep_values,
-                &config.elasticsearch.obfuscate_sql_values,
-            ),
-            (
-                "opensearch",
-                config.opensearch.enabled,
-                &config.opensearch.keep_values,
-                &config.opensearch.obfuscate_sql_values,
-            ),
+        assert_eq!(SqlObfuscationMode::NormalizeOnly, config.sql.obfuscation_mode);
+        assert!(
+            config.tag_replace_rules.is_empty(),
+            "the tag replacer transform owns the rules"
+        );
+        for (name, json) in [
+            ("mongodb", &config.mongodb),
+            ("elasticsearch", &config.elasticsearch),
+            ("opensearch", &config.opensearch),
         ] {
-            assert!(enabled, "{name}");
-            assert_eq!(&vec![format!("{name}.keep")], keep_values, "{name}");
-            assert_eq!(&vec![format!("{name}.sql")], obfuscate_sql_values, "{name}");
+            assert!(json.config().enabled, "{name}");
+            assert!(json.config().keep_keys.contains(&format!("{name}.keep")), "{name}");
+            assert!(json.config().transform_keys.contains(&format!("{name}.sql")), "{name}");
         }
+    }
+
+    // The SQL options can come from feature flags as well as from the obfuscation settings.
+    #[test]
+    fn sql_options_follow_the_feature_flags() {
+        let config = obfuscation_configuration(&domain_with(
+            traces::Obfuscation::default(),
+            &[
+                traces::ApmFeature::QuantizeSqlTables,
+                traces::ApmFeature::KeepSqlAlias,
+                traces::ApmFeature::DollarQuotedFunc,
+            ],
+        ));
+        assert!(config.sql.replace_digits);
+        assert!(config.sql.keep_sql_alias);
+        assert!(config.sql.dollar_quoted_func);
+
+        let config = obfuscation_configuration(&domain_with(
+            traces::Obfuscation::default(),
+            &[traces::ApmFeature::ReplaceSqlDigits],
+        ));
+        assert!(config.sql.replace_digits, "either flag turns on digit replacement");
+        assert!(!config.sql.keep_sql_alias);
+
+        let config = obfuscation_configuration(&domain_with(traces::Obfuscation::default(), &[]));
+        assert!(!config.sql.replace_digits);
+        assert!(!config.sql.keep_sql_alias);
+        assert!(!config.sql.dollar_quoted_func);
+    }
+
+    #[test]
+    fn sql_obfuscation_mode_prefers_the_configured_mode_over_the_sqllexer_feature() {
+        let mode = |configured, sqllexer| {
+            let obfuscation = traces::Obfuscation {
+                sql_obfuscation_mode: configured,
+                ..Default::default()
+            };
+            let features: &[traces::ApmFeature] = if sqllexer { &[traces::ApmFeature::Sqllexer] } else { &[] };
+            obfuscation_configuration(&domain_with(obfuscation, features))
+                .sql
+                .obfuscation_mode
+        };
+
+        assert_eq!(
+            SqlObfuscationMode::ObfuscateOnly,
+            mode(traces::SqlObfuscationMode::Default, true)
+        );
+        assert_eq!(
+            SqlObfuscationMode::ObfuscateAndNormalize,
+            mode(traces::SqlObfuscationMode::ObfuscateAndNormalize, true)
+        );
+        assert_eq!(
+            SqlObfuscationMode::NormalizeOnly,
+            mode(traces::SqlObfuscationMode::NormalizeOnly, false)
+        );
+        #[allow(deprecated)]
+        let unspecified = SqlObfuscationMode::Unspecified;
+        assert_eq!(unspecified, mode(traces::SqlObfuscationMode::Default, false));
+        assert_eq!(unspecified, mode(traces::SqlObfuscationMode::Legacy, true));
+        assert_eq!(unspecified, mode(traces::SqlObfuscationMode::Legacy, false));
     }
 
     #[test]
