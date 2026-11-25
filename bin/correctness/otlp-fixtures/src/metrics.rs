@@ -374,25 +374,32 @@ pub fn histogram_fixture() -> Vec<u8> {
     )])
 }
 
-/// One summary point with two quantiles.
+/// Two cumulative points of a summary with two quantiles, ten seconds apart.
+///
+/// Summary counts and sums are cumulative, so the first point only sets the start value, and the second gives the delta
+/// that both sides send.
 pub fn summary_fixture() -> Vec<u8> {
+    let summary_point = |time_unix_nano, count, sum| SummaryDataPoint {
+        time_unix_nano,
+        count,
+        sum,
+        quantile_values: vec![
+            ValueAtQuantile {
+                quantile: 0.5,
+                value: 12.5,
+            },
+            ValueAtQuantile {
+                quantile: 0.99,
+                value: 25.0,
+            },
+        ],
+        ..Default::default()
+    };
     let summary = Summary {
-        data_points: vec![SummaryDataPoint {
-            time_unix_nano: NOV_2023_NANOS,
-            count: 10,
-            sum: 100.0,
-            quantile_values: vec![
-                ValueAtQuantile {
-                    quantile: 0.5,
-                    value: 12.5,
-                },
-                ValueAtQuantile {
-                    quantile: 0.99,
-                    value: 25.0,
-                },
-            ],
-            ..Default::default()
-        }],
+        data_points: vec![
+            summary_point(NOV_2023_NANOS, 10, 100.0),
+            summary_point(NOV_2023_NANOS + 10 * ONE_SECOND_NANOS, 25, 260.0),
+        ],
     };
     request(vec![resource_metrics(
         None,
