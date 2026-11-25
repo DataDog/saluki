@@ -1,0 +1,9 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "{{ self.connections.otlp.url }}/opentelemetry.proto.collector.trace.v1.TraceService/Export"
+volume: 1
+corpus:
+  size: 1
+  payload:
+    # ExportTraceServiceRequest with one trace of three spans, built by bin/correctness/otlp-fixtures.
+    # Regenerate it with `make generate-correctness-fixtures` rather than editing it here.
+    static_base64: "CvcBCjAKLgoMc2VydmljZS5uYW1lEh4KHG90bHAtcm91dGluZy1taXhlZC1ncnBjLWdycGMSwgESOAoQAAAAAAAAAAAAAAAAAAAAARIIAAAAAQAAAAEqBnNwYW4tMTACOQAAKjb+nJcXQUBLdjb+nJcXEkIKEAAAAAAAAAAAAAAAAAAAAAESCAAAAAEAAAACIggAAAABAAAAASoGc3Bhbi0yMAE5gJbCNv6clxdBwOEON/6clxcSQgoQAAAAAAAAAAAAAAAAAAAAARIIAAAAAQAAAAMiCAAAAAEAAAABKgZzcGFuLTMwATkALVs3/pyXF0FAeKc3/pyXFw=="

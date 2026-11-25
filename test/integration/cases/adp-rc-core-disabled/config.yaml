@@ -44,6 +44,6 @@ procedure:
       - {step: process_stable_for, on: adp, process: adp, duration: 10s}
       - step: log_not_contains
         on: adp
-        pattern: "adp.remote_config_polls_total.*outcome:(ok|rpc_error|invalid_response)|Failed to poll the Agent|panic|PANIC"
+        pattern: "adp.remote_config_polls_total.*outcome:(ok|rpc_error|invalid_response)|Failed to poll the Agent|panicked at|panic: |PANIC"
         regex: true
         during: 10s

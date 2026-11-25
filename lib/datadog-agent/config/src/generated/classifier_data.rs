@@ -41,6 +41,42 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("true"),
     },
     ClassifierEntry {
+        yaml_path: "apm_config.max_sender_retries",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("4"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.stats_writer.connection_limit",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("0"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.stats_writer.queue_size",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("0"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.sync_flushing",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("false"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.trace_writer.connection_limit",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("0"),
+    },
+    ClassifierEntry {
+        yaml_path: "apm_config.trace_writer.queue_size",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+        default: DefaultValue::Json("0"),
+    },
+    ClassifierEntry {
         yaml_path: "config_id",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,

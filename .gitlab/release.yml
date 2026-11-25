@@ -30,6 +30,7 @@ check-release-agent-version:
     - unit-tests-miri-linux-amd64
     - unit-tests-linux-arm64
     - unit-tests-miri-linux-arm64
+    - unit-tests-fips-linux-amd64
     - check-deny
     - check-licenses
     - test-integration

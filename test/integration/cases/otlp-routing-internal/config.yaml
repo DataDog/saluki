@@ -1,0 +1,144 @@
+description: >-
+  With ADP handling every OTLP signal on both protocols, each signal sent over gRPC and over HTTP reaches the intake
+  from ADP. The Agent starts no OTLP ingest of its own, so the two processes do not compete for a listener address.
+timeout: 5m
+subject_os: [linux]
+
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-routing-internal"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read these. The endpoints are the harness's, not the default ones.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake.api}
+  intake: {type: datadog-intake}
+  send-metrics-grpc:
+    image: saluki-images/correctness-tools:latest
+    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-metrics-grpc.yaml, template: true}
+    connect: {otlp: adp.otlp_grpc}
+  send-traces-grpc:
+    image: saluki-images/correctness-tools:latest
+    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-traces-grpc.yaml, template: true}
+    connect: {otlp: adp.otlp_grpc}
+  send-logs-grpc:
+    image: saluki-images/correctness-tools:latest
+    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-logs-grpc.yaml, template: true}
+    connect: {otlp: adp.otlp_grpc}
+  send-metrics-http:
+    image: saluki-images/correctness-tools:latest
+    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-metrics-http.yaml, template: true}
+    connect: {otlp: adp.otlp_http}
+  send-traces-http:
+    image: saluki-images/correctness-tools:latest
+    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-traces-http.yaml, template: true}
+    connect: {otlp: adp.otlp_http}
+  send-logs-http:
+    image: saluki-images/correctness-tools:latest
+    command: [/usr/local/bin/millstone, /etc/millstone/sender.yaml, --completion-file, /tmp/sent]
+    files:
+      /etc/millstone/sender.yaml: {from: millstone-logs-http.yaml, template: true}
+    connect: {otlp: adp.otlp_http}
+
+procedure:
+  # ADP listens on the endpoints that env sets. Each sender starts only once its endpoint accepts connections.
+  - parallel:
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp.endpoints.otlp_grpc.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp.endpoints.otlp_http.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: "Not starting the OTLP ingest pipeline because the data plane handles OTLP ingest"
+        timeout: 60s
+  - parallel:
+      - {step: log_contains, on: send-metrics-grpc, pattern: "Millstone finished sending", timeout: 2m}
+      - {step: log_contains, on: send-traces-grpc, pattern: "Millstone finished sending", timeout: 2m}
+      - {step: log_contains, on: send-logs-grpc, pattern: "Millstone finished sending", timeout: 2m}
+      - {step: log_contains, on: send-metrics-http, pattern: "Millstone finished sending", timeout: 2m}
+      - {step: log_contains, on: send-traces-http, pattern: "Millstone finished sending", timeout: 2m}
+      - {step: log_contains, on: send-logs-http, pattern: "Millstone finished sending", timeout: 2m}
+  - parallel:
+      - step: intake_from
+        on: intake
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.internal.grpc."}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: spans
+        select: {service: otlp-routing-internal-grpc}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: trace_stats
+        select: {service: otlp-routing-internal-grpc}
+        sender: adp
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: logs
+        select: {service: otlp-routing-internal-grpc}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.internal.http."}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: spans
+        select: {service: otlp-routing-internal-http}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: trace_stats
+        select: {service: otlp-routing-internal-http}
+        sender: adp
+        timeout: 2m
+      - step: intake_from
+        on: intake
+        telemetry: logs
+        select: {service: otlp-routing-internal-http}
+        sender: adp
+        count: 3
+        timeout: 2m
+  - parallel:
+      - {step: process_stable_for, on: adp, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "(?i)address already in use", regex: true, during: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}

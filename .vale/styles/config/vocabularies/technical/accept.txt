@@ -110,7 +110,7 @@ superset
 subset
 readiness
 liveness
-backtrace
+backtrace(s?)
 cardinalit(y|ies)
 containerd
 runtime(s?)
@@ -313,3 +313,4 @@ unprefixed
 [Nn]ightl(y|ies)
 RC(s?)
 DMG(s?)
+CMake
