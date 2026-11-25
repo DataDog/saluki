@@ -4610,8 +4610,8 @@ mod tests {
     }
 
     /// `ignore_missing_datadog_fields` reads only the `datadog.*` attributes: no field falls back to the semantic
-    /// conventions. The core agent has no such setting, since its `IgnoreMissingDatadogFields` is deprecated and
-    /// unused, so this pins the behavior that ADP takes from the Datadog exporter of the OpenTelemetry Collector.
+    /// conventions. The Core Agent has no such setting, because its `IgnoreMissingDatadogFields` is deprecated and
+    /// unused. This test pins the behavior that ADP takes from the Datadog exporter of the OpenTelemetry Collector.
     #[test]
     fn otel_span_to_dd_span_ignore_missing_datadog_fields_skips_semantic_convention_fallbacks() {
         let span = OtlpSpan {
@@ -4645,13 +4645,14 @@ mod tests {
         assert_eq!(meta_str(&dd_span, "version"), Some("1.2.3"));
         assert!(dd_span.attributes.contains_key(HTTP_STATUS_CODE_KEY));
 
-        // Without them, none of those fields is set.
+        // Without them, none of those fields is set. The empty name becomes `unnamed_operation`.
         let ignoring = SpanConversion {
             ignore_missing_fields: true,
             ..conversion()
         };
         let dd_span = convert_v2(&span, &resource, None, &ignoring);
         assert_eq!(dd_span.service(), "");
+        assert_eq!(dd_span.name(), "unnamed_operation");
         assert_eq!(dd_span.resource(), "");
         assert_eq!(dd_span.span_type(), "");
         assert_eq!(meta_str(&dd_span, "error.msg"), None);
