@@ -1,4 +1,6 @@
 fixes:
   - |
-    Fall back to the OS hostname when the hostname RPC fails. Reject fallback
-    hostnames from known container UTS namespaces on Linux.
+    Use the OS hostname, with a warning, when the hostname request to the Datadog Agent fails.
+    The next request tries the Datadog Agent again.
+    ADP doesn't use the OS hostname on Linux outside the initial UTS namespace,
+    or when ``vsock_addr`` selects a Datadog Agent on another host.
