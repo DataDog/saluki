@@ -565,7 +565,7 @@ mod tests {
         ];
         let flushed = add_and_flush(&mut concentrator, &spans, now);
 
-        // A span older than the oldest open bucket goes into that bucket, as before.
+        // A span older than the oldest open bucket goes into that bucket.
         assert_eq!(
             flushed,
             vec![
