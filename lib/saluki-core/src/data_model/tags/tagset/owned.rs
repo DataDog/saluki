@@ -310,8 +310,10 @@ impl TagSet {
             return self.base;
         }
 
-        // Materialize: collect effective tags into a new SharedTagSet.
-        let effective: Vec<Tag> = self.into_iter().collect();
+        // Materialize: collect effective tags into a new SharedTagSet. Size the vector exactly, since our iterator has
+        // no size hint and the frozen tags are long-lived.
+        let mut effective = Vec::with_capacity(self.len());
+        effective.extend(self);
         SharedTagSet::from_tags(effective)
     }
 

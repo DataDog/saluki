@@ -1,7 +1,7 @@
 seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
 # Datadog tracing libraries default to the trace-agent's Unix socket, which ADP's APM proxy owns on the comparison
 # side. `http_path` makes millstone speak HTTP over it, as tracers do.
-target: "unix:///$GROUP-airlock/apm.socket"
+target: "{{ self.connections.comparison_target.url }}"
 http_path: "/v0.4/traces"
 # The trace-agent starts listening before its tagger has connected to the Core Agent, and sends payloads that arrive
 # before then without container tags. Wait a few seconds once the target is ready (on the comparison side, once ADP no

@@ -58,7 +58,7 @@ unit-tests-windows-amd64:
       -e WINDOWS_CI_CARGO_HOME="c:\mnt\.ci-cache\cargo"
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
-      -e CARGO_NEXTEST_VERSION="0.9.99"
+      -e CARGO_NEXTEST_VERSION="0.9.152"
       -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
       -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
       ${WINBUILDIMAGE}
@@ -96,7 +96,10 @@ test-integration-windows-amd64:
   script:
     - *windows-build-image-pull-script
     - |
-      $WindowsAdpBaseImage = "registry.datadoghq.com/agent:7.85.4-ltsc2022"
+      $AgentVersion = Get-Content -Raw .datadog-agent-version.json | ConvertFrom-Json
+      $WindowsAdpBaseImage = $AgentVersion.integration.windows.image
+      if (-not $WindowsAdpBaseImage) { throw ".datadog-agent-version.json has no integration.windows.image" }
+      Write-Host "Agent $($AgentVersion.integration.version): $WindowsAdpBaseImage"
       if ($env:AGENT_NIGHTLY -eq "true") { # for nightly run, use latest Agent
         if ($env:NIGHTLY_WINDOWS_AGENT_IMAGE) {
           $WindowsAdpBaseImage = $env:NIGHTLY_WINDOWS_AGENT_IMAGE

@@ -11,7 +11,7 @@
 
 ARG BUILD_IMAGE=ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
 ARG APP_IMAGE=ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
-# Project-pinned converged Datadog Agent image (Make-built from `.datadog-agent-version`).
+# Project-pinned converged Datadog Agent image (Make-built from `.datadog-agent-version.json`).
 # Do not pin an upstream Agent tag here.
 ARG DD_AGENT_IMAGE=saluki-images/datadog-agent:testing-release
 
@@ -122,11 +122,19 @@ ENTRYPOINT ["/usr/local/bin/antithesis-intake"]
 # can symbolize the off-the-shelf Core Agent without touching the agent image.
 # ---------------------------------------------------------------------------
 FROM build-base AS agent-symbols
-# Version bumped by .github/workflows/update-agent-version.yml alongside .datadog-agent-version.
-ARG DD_AGENT_VERSION=7.85.4
+# The debug package in `.datadog-agent-version.json` for this build's architecture. Make passes both through
+# docker-compose.yaml.
+ARG AGENT_DEBUG_DEB_URL=
+ARG AGENT_DEBUG_DEB_SHA256=
 ARG TARGETARCH=amd64
-RUN curl -fsSL -o /tmp/agent-dbg.deb \
-        "https://s3.amazonaws.com/apt.datadoghq.com/pool/d/da/datadog-agent-dbg_${DD_AGENT_VERSION}-1_${TARGETARCH}.deb" && \
+RUN [ -n "${AGENT_DEBUG_DEB_URL}" ] && [ -n "${AGENT_DEBUG_DEB_SHA256}" ] || \
+        { echo "AGENT_DEBUG_DEB_URL and AGENT_DEBUG_DEB_SHA256 must be set; build with make" >&2; exit 1; } && \
+    case "${AGENT_DEBUG_DEB_URL}" in \
+        *"_${TARGETARCH}.deb") ;; \
+        *) echo "${AGENT_DEBUG_DEB_URL} is not the ${TARGETARCH} debug package" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /tmp/agent-dbg.deb "${AGENT_DEBUG_DEB_URL}" && \
+    echo "${AGENT_DEBUG_DEB_SHA256}  /tmp/agent-dbg.deb" | sha256sum --check --strict && \
     dpkg-deb --raw-extract /tmp/agent-dbg.deb /tmp/dbg && \
     mkdir -p /agent-symbols && \
     dbg="$(find /tmp/dbg -type f -name agent.dbg -path '*bin/agent/*')" && \

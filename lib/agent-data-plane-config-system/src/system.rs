@@ -1122,6 +1122,81 @@ mod tests {
     }
 
     #[test]
+    fn otlp_receiver_endpoints_come_from_the_schema_keys() {
+        let endpoints = |sources: Value| {
+            let config =
+                translate_strict(&SourceTree::all_explicit(sources)).expect("OTLP receiver endpoints should translate");
+            (
+                config.domains.otlp.receiver.grpc.endpoint,
+                config.domains.otlp.receiver.http.endpoint,
+            )
+        };
+        let protocols = |grpc: &str, http: &str| {
+            json!({ "otlp_config": { "receiver": { "protocols": {
+                "grpc": { "endpoint": grpc },
+                "http": { "endpoint": http },
+            } } } })
+        };
+
+        // The schema defaults apply when nothing sets an endpoint.
+        let (grpc, http) = endpoints(json!({}));
+        assert_eq!((grpc.as_str(), http.as_str()), ("localhost:4317", "localhost:4318"));
+
+        let (grpc, http) = endpoints(protocols("0.0.0.0:5317", "0.0.0.0:5318"));
+        assert_eq!((grpc.as_str(), http.as_str()), ("0.0.0.0:5317", "0.0.0.0:5318"));
+
+        // An empty endpoint stays empty, which disables its protocol.
+        let (grpc, http) = endpoints(protocols("", "0.0.0.0:5318"));
+        assert_eq!((grpc.as_str(), http.as_str()), ("", "0.0.0.0:5318"));
+    }
+
+    #[test]
+    fn an_empty_otlp_endpoint_from_the_agent_stream_disables_its_protocol_only_when_explicit() {
+        const GRPC: &str = "otlp_config.receiver.protocols.grpc.endpoint";
+        const HTTP: &str = "otlp_config.receiver.protocols.http.endpoint";
+
+        let endpoints = |local: Value, stream: Vec<ConfigSetting>| {
+            let base = SourceTree::all_explicit(local);
+            let evaluation = evaluate(&base, &SourceTree::empty(), &ConfigUpdate::snapshot(stream));
+            let config = evaluation
+                .stages
+                .into_authoritative()
+                .expect("the OTLP receiver endpoints should be accepted");
+            (
+                config.domains.otlp.receiver.grpc.endpoint,
+                config.domains.otlp.receiver.http.endpoint,
+            )
+        };
+        let local = json!({
+            "api_key": TEST_API_KEY,
+            "otlp_config": { "receiver": { "protocols": {
+                "grpc": { "endpoint": "0.0.0.0:5317" },
+                "http": { "endpoint": "0.0.0.0:5318" },
+            } } },
+        });
+
+        // An empty endpoint the Agent configured stays empty, which disables its protocol, whatever the
+        // local value is.
+        let (grpc, http) = endpoints(local.clone(), vec![ConfigSetting::explicit(GRPC, json!(""))]);
+        assert_eq!((grpc.as_str(), http.as_str()), ("", "0.0.0.0:5318"));
+
+        // A value the Agent merely defaulted carries no intent, so the local value wins. This holds for an
+        // empty default too.
+        let (grpc, http) = endpoints(
+            local,
+            vec![
+                ConfigSetting::new(GRPC, json!("localhost:4317"), StreamProvenance::Default),
+                ConfigSetting::new(HTTP, json!(""), StreamProvenance::Default),
+            ],
+        );
+        assert_eq!((grpc.as_str(), http.as_str()), ("0.0.0.0:5317", "0.0.0.0:5318"));
+
+        // Without an endpoint in either source, the schema defaults apply.
+        let (grpc, http) = endpoints(json!({ "api_key": TEST_API_KEY }), Vec::new());
+        assert_eq!((grpc.as_str(), http.as_str()), ("localhost:4317", "localhost:4318"));
+    }
+
+    #[test]
     fn invalid_metric_tag_value_allowlist_is_rejected_before_publication() {
         let sources = SourceTree::all_explicit(json!({
             "metric_tag_value_allowlist": [

@@ -1,5 +1,6 @@
 #!/opt/datadog-agent/embedded/bin/python3
 
+import os
 import socket
 import subprocess
 import threading
@@ -9,10 +10,10 @@ from pathlib import Path
 
 AGENT = Path("/opt/datadog-agent/bin/agent/agent")
 REMOTE_STATS = [str(AGENT), "remote", "dogstatsd", "stats"]
-DOGSTATSD_ADDRESS = ("127.0.0.1", 48125)
+DOGSTATSD_ADDRESS = ("127.0.0.1", int(os.environ["DOGSTATSD_PORT"]))
 RESULT = Path("/tmp/dogstatsd-remote-commands-integration-result")
 
-# The sum of these budgets must stay below the case's `target_exec` timeout.
+# The sum of these budgets must stay below the case's `exec` timeout.
 READY_TIMEOUT_SECS = 60
 READY_ATTEMPT_TIMEOUT_SECS = 10
 COMMAND_TIMEOUT_SECS = 30

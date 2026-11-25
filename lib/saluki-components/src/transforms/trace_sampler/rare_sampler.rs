@@ -247,17 +247,17 @@ impl RareSampler {
 fn is_top_level_or_measured(span: &Span) -> bool {
     span.attributes
         .get(KEY_TOP_LEVEL)
-        .and_then(AttributeValue::as_num)
+        .and_then(AttributeValue::as_f64)
         .is_some_and(|v| v == 1.0)
         || span
             .attributes
             .get(KEY_TRACER_TOP_LEVEL)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
             .is_some_and(|v| v == 1.0)
         || span
             .attributes
             .get(KEY_MEASURED)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
             .is_some_and(|v| v == 1.0)
 }
 
@@ -266,7 +266,9 @@ mod tests {
     use std::time::Duration;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
+    use saluki_core::data_model::event::trace::{
+        AttributeValue, AttributeValueExt, Span as DdSpan, Trace, TraceIngestInfo,
+    };
     use stringtheory::MetaString;
 
     use super::super::telemetry::SamplerCounters;

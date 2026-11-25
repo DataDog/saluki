@@ -1,0 +1,53 @@
+description: >-
+  Legacy origin detection with the cardinality opt-out disabled. By default (dogstatsd_origin_optout_enabled=true),
+  metrics that explicitly request cardinality=none via |card:none or dd.internal.card:none are exempted from enrichment
+  entirely. With opt-out disabled those metrics are enriched at the configured default cardinality instead. This variant
+  verifies both agents agree on that boundary.
+timeout: 12m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    # Origin detection is under test, so each Agent runs in the node's PID namespace, with the host view and the
+    # container runtime's socket it resolves a sender's container from.
+    realization: {enclosure: kubernetes-pod, options: {host_pid: true, cri_socket: true}}
+    with: {host_view: true}
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: "correctness-test"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+      DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED: "false"
+    files:
+      datadog.yaml: {from: ../dsd-origin-detection-matrix/datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    realization: {enclosure: kubernetes-pod, options: {host_pid: true, cri_socket: true}}
+    with: {host_view: true}
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: "correctness-test"
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+      DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED: "false"
+    files:
+      datadog.yaml: {from: ../dsd-origin-detection-matrix/datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: ../dsd-origin-detection-matrix/millstone.yaml, template: true}
+    connect: {comparison_target: adp.dogstatsd_uds, baseline_target: agent.dogstatsd_uds}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they aggregated. Waiting slightly longer than an aggregation bucket, with the load running,
+  # lets the Agent and ADP resolve the senders while they flush.
+  - {step: process_stable_for, on: load, duration: 32s}
+  - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}

@@ -60,11 +60,6 @@ variables:
   SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
   SPDX_LICENSES_IMAGE: "registry.ddbuild.io/images/spdx-license-list-data:3.28.0"
 
-  # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
-  # publicly publish.
-  PUBLIC_DSD_VERSION: "7.85.4"
-  PUBLIC_DD_AGENT_VERSION: "7.85.4-full"
-
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.
   ADP_INTERNAL_BASE_IMAGE: "${GBI_BASE_IMAGE}"
@@ -156,6 +151,12 @@ default:
     # Keep the larger loopback file on the container's root-backed filesystem instead of a potentially
     # tmpfs-backed /tmp.
     DOCKER_LOOPBACK_PATH: "/var"
+
+# Configure `buildcache` to use our shared cache bucket.
+.buildcache-variables:
+  variables:
+    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
+    BUILDCACHE_S3_REGION: "us-east-1"
 
 .build-arm64-variables:
   variables:

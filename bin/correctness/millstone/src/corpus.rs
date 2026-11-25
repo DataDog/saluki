@@ -126,6 +126,12 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
                 DATADOG_TRACES_MAX_PAYLOAD_BYTES,
             )?
         }
+        // The Agent sends this protobuf payload to intake, while millstone sends to the Agent as a tracer would.
+        Payload::DatadogTraces(lading_payload::trace_agent::Config::AgentPayload(_)) => {
+            return Err(generic_error!(
+                "The `agent_payload` Datadog Traces payload is not supported: millstone only sends tracer payloads."
+            ))
+        }
     }
 
     let total_size = payloads.iter().map(|p| p.len() as u64).sum();

@@ -401,8 +401,11 @@ templates:
         DD_DATA_PLANE_OTLP_ENABLED: "true"
         DD_OTLP_CONFIG: "{}"
 
-        # TODO(#2177): Return OTLP generator targets from the temporary ADP-only `6317`/`6318`
-        # defaults to the canonical schema-provided `4317`/`4318` endpoints.
+        # TODO(#2177): Remove these two keys and move the lading targets to `4317`/`4318` once every SMP
+        # baseline build listens on the `otlp_config` receiver endpoints. A baseline from an older `main`
+        # listens on its `6317`/`6318` defaults and ignores these keys. This build listens where they point.
+        DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "localhost:6317"
+        DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "localhost:6318"
 
   # Base template for OTLP traces experiments at 5 MiB/s with a realistic service topology
   otlp_traces_5mb_base:
@@ -654,7 +657,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when idle."
         bounds:
           series: total_rss_bytes
-          upper_bound: "40.0 MiB"
+          upper_bound: "36.0 MiB"
 
     lading:
       generator: []
@@ -668,7 +671,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when handling 'low' DSD traffic."
         bounds:
           series: total_rss_bytes
-          upper_bound: "60.0 MiB"
+          upper_bound: "55.0 MiB"
 
     lading:
       generator:
@@ -691,7 +694,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when handling 'medium' DSD traffic."
         bounds:
           series: total_rss_bytes
-          upper_bound: "100.0 MiB"
+          upper_bound: "92.0 MiB"
 
     lading:
       generator:
