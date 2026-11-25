@@ -16,7 +16,7 @@ use saluki_env::{
     host::providers::{BoxedHostProvider, FixedHostProvider},
     EnvironmentProvider,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use tracing::warn;
 
 use crate::facade::AuthoritativeConfiguration;
@@ -45,8 +45,10 @@ pub(crate) fn root_provider_id() -> SubsystemIdentifier {
 pub struct HostSettings {
     /// Hostname to report, if one is configured explicitly.
     ///
-    /// Required in standalone mode, where it's reported as-is. In connected mode, the hostname comes from the Datadog
-    /// Agent, which applies its own `hostname` setting, so this is unused.
+    /// Used only in standalone mode, where it's reported as-is. When it's absent or empty, the provider reports an
+    /// empty hostname and data is sent without a host, as the Datadog Agent does in sidecar deployments such as ECS
+    /// Fargate. In connected mode, the hostname comes from the Datadog Agent, which applies its own `hostname` setting,
+    /// so this is unused.
     pub hostname: Option<String>,
 }
 
@@ -131,13 +133,12 @@ impl RemoteAgentEnvironmentProvider {
     /// drives the provider's background work, if it has any.
     ///
     /// In connected mode, the host, workload, and autodiscovery providers each open their own connection to the Datadog
-    /// Agent, and the supervisor drives them. In standalone mode, the provider reports the configured hostname, everything
-    /// else is a no-op, and no supervisor is returned.
+    /// Agent, and the supervisor drives them. In standalone mode, the provider reports the configured hostname (empty
+    /// if none is configured), everything else is a no-op, and no supervisor is returned.
     ///
     /// # Errors
     ///
-    /// If any of the underlying providers can't be created, or no hostname is configured in standalone mode, an error is
-    /// returned.
+    /// If any of the underlying providers can't be created, an error is returned.
     pub async fn from_authoritative<C>(
         config: &C, component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Option<Supervisor>), GenericError>
@@ -145,7 +146,7 @@ impl RemoteAgentEnvironmentProvider {
         C: AuthoritativeConfiguration,
     {
         if config.is_standalone() {
-            let env = Self::standalone(&config.host(), health_registry)?;
+            let env = Self::standalone(&config.host(), health_registry);
             Ok((env, None))
         } else {
             let client_config = config.client_configuration()?;
@@ -155,25 +156,23 @@ impl RemoteAgentEnvironmentProvider {
         }
     }
 
-    fn standalone(settings: &HostSettings, health_registry: &HealthRegistry) -> Result<Self, GenericError> {
+    fn standalone(settings: &HostSettings, health_registry: &HealthRegistry) -> Self {
         warn!("Running in standalone mode. Origin detection/enrichment and other features dependent upon the Datadog Agent will not be available.");
 
-        let hostname = match &settings.hostname {
-            Some(hostname) if !hostname.is_empty() => hostname.clone(),
-            _ => {
-                return Err(generic_error!(
-                    "A non-empty hostname must be configured (`hostname`) when running in standalone mode."
-                ))
-            }
-        };
+        // An absent hostname and an empty one both mean "hostless". This matches the Datadog Agent in sidecar
+        // deployments, such as ECS Fargate, where the Agent resolves an empty hostname and sends data with no host. See
+        // `fromFargate` and `IsSidecar` in the Agent:
+        // https://github.com/DataDog/datadog-agent/blob/ecdf6b97d143dc18a922bebdec24f69058942fb4/pkg/util/hostname/common.go#L75-L82
+        // https://github.com/DataDog/datadog-agent/blob/ecdf6b97d143dc18a922bebdec24f69058942fb4/pkg/util/fargate/detection.go#L15-L29
+        let hostname = settings.hostname.clone().unwrap_or_default();
 
-        Ok(Self {
+        Self {
             client_config: None,
             host_provider: BoxedHostProvider::from_provider(FixedHostProvider::new(hostname)),
             workload_provider: None,
             autodiscovery_provider: None,
             health_registry: health_registry.clone(),
-        })
+        }
     }
 
     async fn connected(
@@ -239,5 +238,36 @@ impl EnvironmentProvider for RemoteAgentEnvironmentProvider {
 
     fn autodiscovery(&self) -> &Self::AutodiscoveryProvider {
         &self.autodiscovery_provider
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_env::HostProvider as _;
+
+    use super::*;
+
+    async fn standalone_hostname(hostname: Option<&str>) -> String {
+        let settings = HostSettings {
+            hostname: hostname.map(String::from),
+        };
+        let env = RemoteAgentEnvironmentProvider::standalone(&settings, &HealthRegistry::new());
+        assert!(env.client_configuration().is_none());
+        env.host().get_hostname().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn standalone_reports_the_configured_hostname() {
+        assert_eq!(standalone_hostname(Some("standalone-host")).await, "standalone-host");
+    }
+
+    #[tokio::test]
+    async fn standalone_without_a_hostname_is_hostless() {
+        assert_eq!(standalone_hostname(None).await, "");
+    }
+
+    #[tokio::test]
+    async fn standalone_with_an_empty_hostname_is_hostless() {
+        assert_eq!(standalone_hostname(Some("")).await, "");
     }
 }
