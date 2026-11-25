@@ -4,17 +4,20 @@
 //! channels and reusable per-step scratch buffers. Supports 0, 1, or N stateful [`AggregateCore`] operators natively
 //! anywhere in the DAG.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
-use saluki_core::data_model::event::metric::Metric;
+use saluki_core::data_model::event::metric::{Metric, MetricValues};
 use saluki_error::GenericError;
 use saluki_metric_kernels::{
-    aggregate::{AggregateContextSnapshotEntry, AggregateCore},
+    aggregate::{AggregateContextSnapshotEntry, AggregateContextStats, AggregateCore},
     filterlist::{PostAggregateFilterKernel, PrefixFilterKernel},
     host_tags::HostTagsKernel,
     mapper::MapperKernel,
     routing_filter::MetricAllowlistKernel,
-    tag_filter::TagFilterKernel,
+    tag_filter::{FilterMetricTagsOutcome, TagFilterKernel},
     timestamp_split::split_for_no_aggregation,
 };
 
@@ -22,6 +25,7 @@ use crate::{
     interpreter::RuntimeBindings,
     ir::{NodeId, Op, RouteFilterKind, DEFAULT_OUT_PORT, SPLIT_AGGREGATE_PORT, SPLIT_PASSTHROUGH_PORT},
     optimize::{optimize_plan, OptimizationReport},
+    telemetry::OperatorTelemetry,
     validate::ValidatedPlan,
 };
 
@@ -39,23 +43,36 @@ enum CompiledOp {
     PrefixFilter {
         kernel: PrefixFilterKernel,
         next: Option<StepIdx>,
+        dropped_points: u64,
     },
     TimestampSplit {
         agg_next: Option<StepIdx>,
         passthrough_next: Option<StepIdx>,
+        passthrough_metrics: u64,
+        passthrough_flushes: u64,
     },
     TagFilter {
         kernel: TagFilterKernel,
         next: Option<StepIdx>,
+        tags_filtered: u64,
     },
     Aggregate {
         core: AggregateCore<()>,
         flush_open_windows: bool,
         next: Option<StepIdx>,
+        events_received: u64,
+        flushes: u64,
+        flushed_series: u64,
+        flushed_sketches: u64,
+        last_flush_series: Option<u64>,
+        last_flush_sketches: Option<u64>,
+        last_flush_duration_ns: Option<u64>,
+        context_stats: Option<AggregateContextStats>,
     },
     PostAggregateFilter {
         kernel: PostAggregateFilterKernel,
         next: Option<StepIdx>,
+        filtered_metrics: u64,
     },
     EnrichHostTags {
         binding: String,
@@ -152,6 +169,7 @@ impl FusedMetricEngine {
                     CompiledOp::PrefixFilter {
                         kernel,
                         next: default_next,
+                        dropped_points: 0,
                     }
                 }
                 Op::TimestampSplit => {
@@ -164,6 +182,8 @@ impl FusedMetricEngine {
                     CompiledOp::TimestampSplit {
                         agg_next,
                         passthrough_next,
+                        passthrough_metrics: 0,
+                        passthrough_flushes: 0,
                     }
                 }
                 Op::TagFilter {
@@ -172,6 +192,7 @@ impl FusedMetricEngine {
                 } => CompiledOp::TagFilter {
                     kernel: TagFilterKernel::new(entries, value_allowlists),
                     next: default_next,
+                    tags_filtered: 0,
                 },
                 Op::Aggregate {
                     window_duration_secs,
@@ -186,6 +207,14 @@ impl FusedMetricEngine {
                         core: AggregateCore::new(*window_duration_secs, *context_limit, expiry, histogram.clone()),
                         flush_open_windows: *flush_open_windows,
                         next: default_next,
+                        events_received: 0,
+                        flushes: 0,
+                        flushed_series: 0,
+                        flushed_sketches: 0,
+                        last_flush_series: None,
+                        last_flush_sketches: None,
+                        last_flush_duration_ns: None,
+                        context_stats: None,
                     }
                 }
                 Op::PostAggregateFilter {
@@ -195,6 +224,7 @@ impl FusedMetricEngine {
                 } => CompiledOp::PostAggregateFilter {
                     kernel: PostAggregateFilterKernel::new(filter, histogram_aggregates, histogram_percentiles),
                     next: default_next,
+                    filtered_metrics: 0,
                 },
                 Op::EnrichHostTags { binding } => {
                     let host_tags = bindings.host_tags.get(binding).cloned();
@@ -432,6 +462,119 @@ impl FusedMetricEngine {
             &mut |target_idx, metric| emit(&target_names[target_idx], metric),
         );
     }
+
+    /// Drains accumulated per-operator telemetry deltas since the last call.
+    ///
+    /// When `include_gauges` is `true`, rule counts and active-context snapshots are included even for operators with
+    /// zero counter deltas since the last drain (useful on startup and after live reloads).
+    pub fn take_telemetry(&mut self, include_gauges: bool) -> Vec<(NodeId, OperatorTelemetry)> {
+        let mut out = Vec::new();
+        for (idx, step) in self.steps.iter_mut().enumerate() {
+            let node_id = &self.step_ids[idx];
+            match step {
+                CompiledOp::PrefixFilter {
+                    kernel, dropped_points, ..
+                } => {
+                    let dropped = std::mem::take(dropped_points);
+                    if dropped > 0 || include_gauges {
+                        out.push((
+                            node_id.clone(),
+                            OperatorTelemetry::PrefixFilter {
+                                dropped_points: dropped,
+                                rule_count: kernel.matcher().len(),
+                            },
+                        ));
+                    }
+                }
+                CompiledOp::TimestampSplit {
+                    passthrough_metrics,
+                    passthrough_flushes,
+                    ..
+                } => {
+                    let metrics = std::mem::take(passthrough_metrics);
+                    let flushes = std::mem::take(passthrough_flushes);
+                    if metrics > 0 || flushes > 0 {
+                        out.push((
+                            node_id.clone(),
+                            OperatorTelemetry::TimestampSplit {
+                                passthrough_metrics: metrics,
+                                passthrough_flushes: flushes,
+                            },
+                        ));
+                    }
+                }
+                CompiledOp::TagFilter {
+                    kernel, tags_filtered, ..
+                } => {
+                    let filtered = std::mem::take(tags_filtered);
+                    let cache = kernel.take_cache_stats();
+                    if filtered > 0 || cache.hits > 0 || cache.misses > 0 || cache.evictions > 0 || include_gauges {
+                        out.push((
+                            node_id.clone(),
+                            OperatorTelemetry::TagFilter {
+                                tags_filtered: filtered,
+                                cache_hits: cache.hits,
+                                cache_misses: cache.misses,
+                                cache_evictions: cache.evictions,
+                                rule_count: kernel.rule_count(),
+                            },
+                        ));
+                    }
+                }
+                CompiledOp::Aggregate {
+                    core,
+                    events_received,
+                    flushes,
+                    flushed_series,
+                    flushed_sketches,
+                    last_flush_series,
+                    last_flush_sketches,
+                    last_flush_duration_ns,
+                    context_stats,
+                    ..
+                } => {
+                    let received = std::mem::take(events_received);
+                    let flush_count = std::mem::take(flushes);
+                    let series = std::mem::take(flushed_series);
+                    let sketches = std::mem::take(flushed_sketches);
+                    let last_series = last_flush_series.take();
+                    let last_sketches = last_flush_sketches.take();
+                    let last_dur = last_flush_duration_ns.take();
+                    let stats = context_stats
+                        .take()
+                        .or_else(|| include_gauges.then(|| core.context_stats()));
+                    if received > 0 || flush_count > 0 || stats.is_some() {
+                        out.push((
+                            node_id.clone(),
+                            OperatorTelemetry::Aggregate {
+                                events_received: received,
+                                flushes: flush_count,
+                                flushed_series: series,
+                                flushed_sketches: sketches,
+                                last_flush_series: last_series,
+                                last_flush_sketches: last_sketches,
+                                last_flush_duration_ns: last_dur,
+                                context_stats: stats,
+                            },
+                        ));
+                    }
+                }
+                CompiledOp::PostAggregateFilter { filtered_metrics, .. } => {
+                    let filtered = std::mem::take(filtered_metrics);
+                    if filtered > 0 {
+                        out.push((
+                            node_id.clone(),
+                            OperatorTelemetry::PostAggregateFilter {
+                                filtered_metrics: filtered,
+                            },
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
 }
 
 const FLUSH_CHUNK_SIZE: usize = 1024;
@@ -475,14 +618,30 @@ fn flush_steps(
             core,
             flush_open_windows,
             next,
+            flushes,
+            flushed_series,
+            flushed_sketches,
+            last_flush_series,
+            last_flush_sketches,
+            last_flush_duration_ns,
+            context_stats,
+            ..
         } = &mut head[idx]
         {
             if !core.is_empty() {
                 let flush_open = shutdown && *flush_open_windows;
+                let started = Instant::now();
+                let mut batch_series: u64 = 0;
+                let mut batch_sketches: u64 = 0;
                 if let Some(next_idx) = *next {
                     let base = idx + 1;
                     let rel_next = next_idx - base;
                     core.flush_into(current_time_secs, flush_open, |metric| {
+                        if matches!(metric.values(), MetricValues::Distribution(_)) {
+                            batch_sketches += 1;
+                        } else {
+                            batch_series += 1;
+                        }
                         tail_inboxes[rel_next].push(metric);
                         if tail_inboxes[rel_next].len() >= FLUSH_CHUNK_SIZE {
                             run_steps_from_offset(tail, tail_inboxes, scratch, base, next_idx, current_time_secs, emit);
@@ -492,8 +651,22 @@ fn flush_steps(
                         run_steps_from_offset(tail, tail_inboxes, scratch, base, next_idx, current_time_secs, emit);
                     }
                 } else {
-                    core.flush_into(current_time_secs, flush_open, |_| {});
+                    core.flush_into(current_time_secs, flush_open, |metric| {
+                        if matches!(metric.values(), MetricValues::Distribution(_)) {
+                            batch_sketches += 1;
+                        } else {
+                            batch_series += 1;
+                        }
+                    });
                 }
+                let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                *flushes += 1;
+                *flushed_series += batch_series;
+                *flushed_sketches += batch_sketches;
+                *last_flush_series = Some(batch_series);
+                *last_flush_sketches = Some(batch_sketches);
+                *last_flush_duration_ns = Some(elapsed_ns);
+                *context_stats = Some(core.context_stats());
             }
         }
     }
@@ -551,8 +724,14 @@ fn execute_step(
                 move_batch(&mut inboxes[next_idx - base_idx], batch);
             }
         }
-        CompiledOp::PrefixFilter { kernel, next } => {
+        CompiledOp::PrefixFilter {
+            kernel,
+            next,
+            dropped_points,
+        } => {
+            let before = batch.len();
             batch.retain_mut(|metric| kernel.apply(metric));
+            *dropped_points += (before - batch.len()) as u64;
             if let Some(next_idx) = *next {
                 move_batch(&mut inboxes[next_idx - base_idx], batch);
             }
@@ -560,38 +739,61 @@ fn execute_step(
         CompiledOp::TimestampSplit {
             agg_next,
             passthrough_next,
+            passthrough_metrics,
+            passthrough_flushes,
         } => {
             if !batch.iter().any(|metric| metric.values().any_timestamped()) {
                 if let Some(next_idx) = *agg_next {
                     move_batch(&mut inboxes[next_idx - base_idx], batch);
                 }
             } else {
+                let mut sent_passthrough = 0u64;
                 for metric in batch.drain(..) {
                     let outcome = split_for_no_aggregation(metric);
                     if let (Some(m), Some(next_idx)) = (outcome.aggregate, *agg_next) {
                         inboxes[next_idx - base_idx].push(m);
                     }
                     if let (Some(m), Some(next_idx)) = (outcome.passthrough, *passthrough_next) {
+                        sent_passthrough += 1;
                         inboxes[next_idx - base_idx].push(m);
                     }
                 }
+                if sent_passthrough > 0 {
+                    *passthrough_metrics += sent_passthrough;
+                    *passthrough_flushes += 1;
+                }
             }
         }
-        CompiledOp::TagFilter { kernel, next } => {
+        CompiledOp::TagFilter {
+            kernel,
+            next,
+            tags_filtered,
+        } => {
             for metric in batch.iter_mut() {
-                kernel.apply(metric);
+                if let FilterMetricTagsOutcome::Modified { removed_tags } = kernel.apply(metric) {
+                    *tags_filtered += removed_tags as u64;
+                }
             }
             if let Some(next_idx) = *next {
                 move_batch(&mut inboxes[next_idx - base_idx], batch);
             }
         }
-        CompiledOp::Aggregate { core, .. } => {
+        CompiledOp::Aggregate {
+            core, events_received, ..
+        } => {
+            *events_received += batch.len() as u64;
             for metric in batch.drain(..) {
                 let _ = core.insert(timestamp_secs, metric);
             }
         }
-        CompiledOp::PostAggregateFilter { kernel, next } => {
+        CompiledOp::PostAggregateFilter {
+            kernel,
+            next,
+            filtered_metrics,
+        } => {
+            let before = batch.len();
             batch.retain(|metric| kernel.should_keep(metric));
+            *filtered_metrics += (before - batch.len()) as u64;
             if let Some(next_idx) = *next {
                 move_batch(&mut inboxes[next_idx - base_idx], batch);
             }

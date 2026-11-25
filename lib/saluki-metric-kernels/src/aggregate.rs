@@ -52,6 +52,30 @@ impl From<&MetricValues> for AggregateMetricType {
     }
 }
 
+/// Ordered metric-type label values corresponding to indices in [`AggregateContextStats`].
+pub const AGGREGATE_METRIC_TYPE_LABELS: [&str; 6] = ["counter", "gauge", "rate", "set", "histogram", "distribution"];
+
+/// Snapshot of active context counts and estimated context byte sizes grouped by metric type.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AggregateContextStats {
+    /// Active retained context count indexed by [`AGGREGATE_METRIC_TYPE_LABELS`].
+    pub by_type: [usize; 6],
+
+    /// Estimated retained context byte size indexed by [`AGGREGATE_METRIC_TYPE_LABELS`].
+    pub bytes_by_type: [usize; 6],
+}
+
+fn metric_values_type_index(values: &MetricValues) -> usize {
+    match values {
+        MetricValues::Counter(_) => 0,
+        MetricValues::Gauge(_) => 1,
+        MetricValues::Rate(_, _) => 2,
+        MetricValues::Set(_) => 3,
+        MetricValues::Histogram(_) => 4,
+        MetricValues::Distribution(_) => 5,
+    }
+}
+
 /// A retained metric context and its small aggregation metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AggregateContextSnapshotEntry {
@@ -221,6 +245,17 @@ impl<M> AggregateCore<M> {
     /// Returns `true` if `context` is currently retained.
     pub fn contains_context(&self, context: &Context) -> bool {
         self.contexts.contains_key(context)
+    }
+
+    /// Returns a snapshot of active context counts and estimated byte sizes grouped by metric type.
+    pub fn context_stats(&self) -> AggregateContextStats {
+        let mut stats = AggregateContextStats::default();
+        for (context, aggregated) in &self.contexts {
+            let idx = metric_values_type_index(&aggregated.values);
+            stats.by_type[idx] += 1;
+            stats.bytes_by_type[idx] += context.size_of();
+        }
+        stats
     }
 
     /// Returns a snapshot of all currently retained contexts and their metric types.

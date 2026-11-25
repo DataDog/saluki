@@ -22,6 +22,7 @@ use crate::{
     engine::FusedMetricEngine,
     interpreter::RuntimeBindings,
     ir::{NodeId, Op},
+    telemetry::{OperatorTelemetry, RegionTelemetryDelta},
     validate::ValidatedPlan,
 };
 
@@ -182,6 +183,7 @@ pub struct GenerationManager {
     epoch: u64,
     next_gen_id: GenerationId,
     max_admitted_ts: u64,
+    pending_telemetry: RegionTelemetryDelta,
 }
 
 impl GenerationManager {
@@ -200,6 +202,7 @@ impl GenerationManager {
             epoch: 1,
             next_gen_id: GenerationId(2),
             max_admitted_ts: 0,
+            pending_telemetry: RegionTelemetryDelta::default(),
         })
     }
 
@@ -251,6 +254,49 @@ impl GenerationManager {
                 .is_some_and(|c| c.next.engine.stateful_count() > 0)
     }
 
+    /// Drains accumulated per-operator telemetry and live-reload update counts since the last drain.
+    ///
+    /// When `include_gauges` is `true`, rule counts (including `0` for pruned no-op filter nodes) and active-context
+    /// snapshots are included so RAR/status gauges initialize and reset cleanly.
+    pub fn take_telemetry(&mut self, include_gauges: bool) -> RegionTelemetryDelta {
+        let mut delta = std::mem::take(&mut self.pending_telemetry);
+        let mut active_ops = self.active.engine.take_telemetry(include_gauges);
+        if include_gauges {
+            let present: BTreeSet<NodeId> = active_ops.iter().map(|(id, _)| id.clone()).collect();
+            for node in &self.active.plan.plan().nodes {
+                if present.contains(&node.id) {
+                    continue;
+                }
+                match &node.op {
+                    Op::PrefixFilter { .. } => {
+                        active_ops.push((
+                            node.id.clone(),
+                            OperatorTelemetry::PrefixFilter {
+                                dropped_points: 0,
+                                rule_count: 0,
+                            },
+                        ));
+                    }
+                    Op::TagFilter { .. } => {
+                        active_ops.push((
+                            node.id.clone(),
+                            OperatorTelemetry::TagFilter {
+                                tags_filtered: 0,
+                                cache_hits: 0,
+                                cache_misses: 0,
+                                cache_evictions: 0,
+                                rule_count: 0,
+                            },
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        delta.operators.extend(active_ops);
+        delta
+    }
+
     /// Updates runtime bindings on both the active generation and any staged cut generation.
     pub fn set_bindings(&mut self, bindings: RuntimeBindings) {
         self.bindings = bindings.clone();
@@ -274,6 +320,11 @@ impl GenerationManager {
         self.next_gen_id = self.next_gen_id.next();
 
         if !diff.requires_cut() {
+            record_filter_reconfig_updates(&self.active.plan, &new_plan, &mut self.pending_telemetry);
+            self.pending_telemetry
+                .operators
+                .extend(self.active.engine.take_telemetry(false));
+
             let transferred = self.active.engine.take_stateful_cores(&diff.unchanged_stateful);
             let reused_stateful_nodes = new_engine.restore_stateful_cores(transferred);
 
@@ -382,6 +433,11 @@ impl GenerationManager {
             self.active.engine.flush_named(cut_timestamp_secs, shutdown, emit);
         }
 
+        record_filter_reconfig_updates(&self.active.plan, &pending.next.plan, &mut self.pending_telemetry);
+        self.pending_telemetry
+            .operators
+            .extend(self.active.engine.take_telemetry(false));
+
         // Transfer any remaining state (such as idle counter keep-alive entries) from unchanged stateful nodes.
         let diff = diff_plans(&self.active.plan, &pending.next.plan);
         if !diff.unchanged_stateful.is_empty() {
@@ -391,6 +447,23 @@ impl GenerationManager {
 
         self.active = pending.next;
         self.epoch = self.epoch.saturating_add(1);
+    }
+}
+
+fn record_filter_reconfig_updates(old: &ValidatedPlan, new: &ValidatedPlan, delta: &mut RegionTelemetryDelta) {
+    let old_ops: BTreeMap<&NodeId, &Op> = old.plan().nodes.iter().map(|n| (&n.id, &n.op)).collect();
+    for node in &new.plan().nodes {
+        let Some(prev) = old_ops.get(&node.id) else {
+            continue;
+        };
+        if *prev == &node.op {
+            continue;
+        }
+        match &node.op {
+            Op::PrefixFilter { .. } => delta.filterlist_updates.push((node.id.clone(), 1)),
+            Op::TagFilter { .. } => delta.tag_filterlist_updates.push((node.id.clone(), 1)),
+            _ => {}
+        }
     }
 }
 

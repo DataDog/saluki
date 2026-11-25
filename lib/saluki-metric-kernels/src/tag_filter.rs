@@ -356,6 +356,19 @@ pub fn filter_metric_tags(
 /// Default upper bound on cached original-to-filtered context mappings inside [`TagFilterKernel`].
 pub const DEFAULT_CONTEXT_CACHE_CAPACITY: usize = 100_000;
 
+/// Per-batch cache counters collected by [`TagFilterKernel`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TagFilterCacheStats {
+    /// Number of lookups served from the per-context cache.
+    pub hits: u64,
+
+    /// Number of lookups that missed the per-context cache and evaluated rules.
+    pub misses: u64,
+
+    /// Number of cached entries cleared when the cache hit its capacity bound.
+    pub evictions: u64,
+}
+
 /// Pure synchronous kernel holding compiled tag filter rules, scratch view state, and a bounded per-context cache.
 #[derive(Default)]
 pub struct TagFilterKernel {
@@ -363,6 +376,7 @@ pub struct TagFilterKernel {
     view_state: TagSetMutViewState,
     context_cache: FastHashMap<Context, Option<(Context, usize)>>,
     context_cache_capacity: usize,
+    cache_stats: TagFilterCacheStats,
 }
 
 impl TagFilterKernel {
@@ -379,12 +393,28 @@ impl TagFilterKernel {
             view_state: TagSetMutViewState::default(),
             context_cache: FastHashMap::default(),
             context_cache_capacity,
+            cache_stats: TagFilterCacheStats::default(),
         }
     }
 
     /// Returns `true` when no rules are configured.
     pub fn is_noop(&self) -> bool {
         self.filters.is_empty()
+    }
+
+    /// Returns the total number of compiled whole-tag and tag-value rules.
+    pub fn rule_count(&self) -> usize {
+        self.filters.rule_count()
+    }
+
+    /// Returns a reference to the compiled filter tables.
+    pub fn filters(&self) -> &CompiledFilters {
+        &self.filters
+    }
+
+    /// Drains and returns accumulated per-context cache statistics since the last call.
+    pub fn take_cache_stats(&mut self) -> TagFilterCacheStats {
+        std::mem::take(&mut self.cache_stats)
     }
 
     /// Applies the compiled tag filter rules to `metric` if its type is eligible.
@@ -394,6 +424,7 @@ impl TagFilterKernel {
         }
 
         if let Some(cached) = self.context_cache.get(metric.context()) {
+            self.cache_stats.hits += 1;
             return match cached {
                 None => FilterMetricTagsOutcome::NoChange,
                 Some((filtered_ctx, removed_tags)) => {
@@ -405,6 +436,9 @@ impl TagFilterKernel {
             };
         }
 
+        if self.context_cache_capacity > 0 {
+            self.cache_stats.misses += 1;
+        }
         let original_context = (self.context_cache_capacity > 0).then(|| metric.context().clone());
         let outcome = filter_metric_tags(metric, &mut self.view_state, &self.filters);
 
@@ -425,6 +459,7 @@ impl TagFilterKernel {
 
     fn insert_cache_entry(&mut self, original: Context, filtered: Option<(Context, usize)>) {
         if self.context_cache.len() >= self.context_cache_capacity {
+            self.cache_stats.evictions += self.context_cache.len() as u64;
             self.context_cache.clear();
         }
         self.context_cache.insert(original, filtered);

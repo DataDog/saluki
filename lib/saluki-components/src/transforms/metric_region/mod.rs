@@ -4,6 +4,8 @@
 //! operators. Supports 0, 1, or N stateful aggregate operators natively, atomic stateless generation reloads with
 //! live state transfer, exact bucket-boundary cuts for stateful changes, and live runtime-binding updates.
 
+mod telemetry;
+
 use std::{collections::BTreeMap, future::pending, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -36,6 +38,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, trace, warn};
 
+use self::telemetry::RegionTelemetryEmitter;
 use crate::transforms::aggregate::{
     send_context_snapshot_if_open, AggregateContextSnapshotReceiver, AggregateContextSnapshotRequest,
     AggregateContextSnapshotRequestReceiver,
@@ -366,6 +369,10 @@ impl Transform for MetricRegion {
             .map(|(binding, duration)| (binding, Instant::now() + duration));
         let mut final_flush = false;
         let mut emitted: BTreeMap<String, Vec<Metric>> = BTreeMap::new();
+        let mut telemetry = RegionTelemetryEmitter::default();
+
+        // Publish initial operator rule-count and active-context gauges before marking ready.
+        telemetry.publish(self.generations.take_telemetry(true));
 
         health.mark_ready();
         debug!(
@@ -385,6 +392,7 @@ impl Transform for MetricRegion {
                         self.generations.flush(now, final_flush, |target, metric| {
                             push_emitted(&mut emitted, target, metric);
                         });
+                        telemetry.publish(self.generations.take_telemetry(false));
                         if let Err(e) = self.dispatch_emitted(&mut emitted, context.dispatcher()).await {
                             error!(error = %e, "Failed to dispatch flushed metrics from region.");
                         }
@@ -412,6 +420,7 @@ impl Transform for MetricRegion {
                 maybe_plan = next_live_plan(&mut self.live_plans), if !final_flush => {
                     if let Some(candidate) = maybe_plan {
                         self.handle_plan_update(candidate, get_unix_timestamp());
+                        telemetry.publish(self.generations.take_telemetry(true));
                         if flush_timer.is_none() && self.generations.has_stateful_operators() {
                             flush_timer = Some(interval_at(
                                 tokio::time::Instant::now() + self.flush_interval,
@@ -432,6 +441,7 @@ impl Transform for MetricRegion {
                         trace!(events_len = events.len(), "Metric region received events.");
                         let now = get_unix_timestamp();
                         self.ingest_buffer(events, now, &mut emitted);
+                        telemetry.publish(self.generations.take_telemetry(false));
                         if let Err(e) = self.dispatch_emitted(&mut emitted, context.dispatcher()).await {
                             error!(error = %e, "Failed to dispatch metrics from region.");
                         }
@@ -841,5 +851,88 @@ mod tests {
             .find(|m| m.context().name() == "after.expiry")
             .expect("after.expiry emitted");
         assert!(!after.context().tags().has_tag(Tag::from("host_tag:v1")));
+    }
+
+    #[test]
+    fn region_telemetry_captures_rar_compatible_filter_tag_and_aggregate_deltas() {
+        use saluki_metric_kernels::{
+            filterlist::MetricNameFilter,
+            tag_filter::{FilterAction, MetricTagFilterEntry},
+        };
+        use saluki_metric_plan::OperatorTelemetry;
+
+        let config = NativePipelineConfig {
+            dogstatsd_enabled: true,
+            aggregate_flush_open_windows: true,
+            metric_filter: MetricNameFilter {
+                values: vec!["blocked.metric".to_string()],
+                match_prefix: false,
+                prefix_rules: vec![],
+            },
+            tag_filter_entries: vec![MetricTagFilterEntry {
+                metric_name: "kept.metric".to_string(),
+                action: FilterAction::Exclude,
+                tags: vec!["drop_me".to_string()],
+            }],
+            ..NativePipelineConfig::default()
+        };
+        let validated = validate_plan(&lower_native_pipeline(&config)).unwrap();
+        let mut mgr = GenerationManager::new(validated, RuntimeBindings::default()).unwrap();
+
+        let init = mgr.take_telemetry(true);
+        assert!(init.operators.iter().any(|(id, op)| id.as_str() == "dsd_prefix_filter"
+            && matches!(op, OperatorTelemetry::PrefixFilter { rule_count: 1, .. })));
+        assert!(init.operators.iter().any(|(id, op)| id.as_str() == "dsd_tag_filterlist"
+            && matches!(op, OperatorTelemetry::TagFilter { rule_count: 1, .. })));
+
+        let batch = vec![
+            Metric::counter("blocked.metric", 1.0),
+            Metric::counter(
+                Context::from_static_parts("kept.metric", &["drop_me:1", "env:prod"]),
+                1.0,
+            ),
+            Metric::counter(
+                Context::from_static_parts("kept.metric", &["drop_me:1", "env:prod"]),
+                2.0,
+            ),
+        ];
+        mgr.ingest(STREAM_DOGSTATSD, 1_700_000_005, batch, |_, _| {}).unwrap();
+        let ingest_delta = mgr.take_telemetry(false);
+        assert!(ingest_delta.operators.iter().any(|(id, op)| {
+            id.as_str() == "dsd_prefix_filter"
+                && matches!(op, OperatorTelemetry::PrefixFilter { dropped_points: 1, .. })
+        }));
+        assert!(ingest_delta.operators.iter().any(|(id, op)| {
+            id.as_str() == "dsd_tag_filterlist"
+                && matches!(
+                    op,
+                    OperatorTelemetry::TagFilter {
+                        tags_filtered: 2,
+                        cache_hits: 1,
+                        cache_misses: 1,
+                        ..
+                    }
+                )
+        }));
+        assert!(ingest_delta.operators.iter().any(|(id, op)| {
+            id.as_str() == "dsd_agg" && matches!(op, OperatorTelemetry::Aggregate { events_received: 2, .. })
+        }));
+
+        mgr.flush(1_700_000_020, true, |_, _| {});
+        let flush_delta = mgr.take_telemetry(false);
+        assert!(flush_delta.operators.iter().any(|(id, op)| {
+            id.as_str() == "dsd_agg"
+                && matches!(
+                    op,
+                    OperatorTelemetry::Aggregate {
+                        flushes: 1,
+                        flushed_series: 1,
+                        last_flush_series: Some(1),
+                        last_flush_duration_ns: Some(_),
+                        context_stats: Some(_),
+                        ..
+                    }
+                )
+        }));
     }
 }
