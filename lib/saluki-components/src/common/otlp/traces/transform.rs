@@ -5040,6 +5040,207 @@ mod tests {
         assert_eq!(dd_span.span_type(), span_type);
     }
 
+    /// Converts `span` on each receive path, and names the path in an assertion about the result.
+    fn convert_on_both_paths(span: &OtlpSpan) -> [(&'static str, DdSpan); 2] {
+        let resource = Resource::default();
+        [
+            ("v2", convert_v2(span, &resource, None, &conversion())),
+            ("v1", convert_v1(span, &resource, None, &conversion())),
+        ]
+    }
+
+    /// TNORM-008. A negative duration, and a duration that overflows `start + duration`, become zero, and a duration that
+    /// ends exactly at `math.MaxInt64` stays. The start is not touched. Mirrors `FixDuration`
+    /// (`pkg/trace/traceutil/normalize/duration.go`).
+    #[test]
+    fn duration_boundaries_match_the_reference_on_both_receive_paths() {
+        let start = YEAR_2000_NANOSEC_TS + 1_000_000_000;
+        let signed_max = i64::MAX as u64;
+        let cases = [
+            ("ends 1 ns before it starts", start - 1, 0),
+            ("ends at zero", 0, 0),
+            ("ends when it starts", start, 0),
+            ("ends 5 ms after it starts", start + 5_000_000, 5_000_000),
+            ("ends at the signed maximum", signed_max, signed_max - start),
+            ("ends 1 ns past the signed maximum", signed_max + 1, 0),
+            ("ends at the unsigned maximum", u64::MAX, 0),
+        ];
+
+        for (label, end, expected) in cases {
+            let span = OtlpSpan {
+                name: "span-name".to_string(),
+                start_time_unix_nano: start,
+                end_time_unix_nano: end,
+                ..Default::default()
+            };
+            for (path, dd_span) in convert_on_both_paths(&span) {
+                assert_eq!(dd_span.duration(), expected, "{label} ({path}): the duration");
+                assert_eq!(dd_span.start(), start, "{label} ({path}): the start stays");
+            }
+        }
+    }
+
+    /// TNORM-009. A start before the year-2000 floor becomes the receive time minus the duration, clamped to the receive
+    /// time, and a start on the floor stays. The duration is fixed first, so it survives. Mirrors `FixStartTime`
+    /// (`pkg/trace/traceutil/normalize/duration.go`).
+    #[test]
+    fn start_time_boundaries_match_the_reference_on_both_receive_paths() {
+        let duration = 5_000_000;
+        // The span, the duration it keeps, and the number of nanoseconds that its start is before the receive time, if
+        // the start is replaced.
+        let cases = [
+            (
+                "1 ns before the floor",
+                YEAR_2000_NANOSEC_TS - 1,
+                duration,
+                Some(duration),
+            ),
+            ("on the floor", YEAR_2000_NANOSEC_TS, duration, None),
+            ("at zero, with an end", 0, duration, Some(duration)),
+            ("at zero, with no end", 0, 0, Some(0)),
+            // The duration is longer than the time since the epoch, so the start clamps to the receive time.
+            ("at 1 ns, ending at the signed maximum", 1, i64::MAX as u64 - 1, Some(0)),
+        ];
+
+        for (label, start, expected_duration, replaced_before_now) in cases {
+            let span = OtlpSpan {
+                name: "span-name".to_string(),
+                start_time_unix_nano: start,
+                end_time_unix_nano: start + expected_duration,
+                ..Default::default()
+            };
+            for (path, dd_span) in convert_on_both_paths(&span) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64;
+                assert_eq!(dd_span.duration(), expected_duration, "{label} ({path}): the duration");
+                match replaced_before_now {
+                    None => assert_eq!(dd_span.start(), start, "{label} ({path}): the start stays"),
+                    Some(before_now) => assert!(
+                        dd_span.start().abs_diff(now - before_now) < 5_000_000_000,
+                        "{label} ({path}): start {}, now {now}",
+                        dd_span.start()
+                    ),
+                }
+            }
+        }
+    }
+
+    /// TNORM-011. A `span.type` of 100 bytes stays, a longer one is cut to 100 bytes, and the cut never splits a
+    /// character. Mirrors `validateAndFixType` (`pkg/trace/agent/normalizer.go`).
+    #[test]
+    fn span_type_boundaries_match_the_reference_on_both_receive_paths() {
+        let cases = [
+            ("at the limit", "t".repeat(MAX_TYPE_LEN), "t".repeat(MAX_TYPE_LEN)),
+            ("1 byte over", "t".repeat(MAX_TYPE_LEN + 1), "t".repeat(MAX_TYPE_LEN)),
+            (
+                "a character that ends at the limit",
+                format!("{}é", "t".repeat(MAX_TYPE_LEN - 2)),
+                format!("{}é", "t".repeat(MAX_TYPE_LEN - 2)),
+            ),
+            (
+                "a character that straddles the limit",
+                format!("{}é", "t".repeat(MAX_TYPE_LEN - 1)),
+                "t".repeat(MAX_TYPE_LEN - 1),
+            ),
+        ];
+
+        for (label, span_type, expected) in cases {
+            let span = OtlpSpan {
+                name: "span-name".to_string(),
+                attributes: vec![kv_str(SPAN_TYPE_KEY, &span_type)],
+                ..Default::default()
+            };
+            for (path, dd_span) in convert_on_both_paths(&span) {
+                assert_eq!(dd_span.span_type(), expected, "{label} ({path})");
+            }
+        }
+    }
+
+    /// TNORM-024. An attribute key of 200 bytes and a string value of 25000 bytes stay. One byte more is cut to the
+    /// limit, and an ellipsis follows the cut. A number keeps its value and loses part of a long key. A structured key
+    /// is exempt. Mirrors `Truncate` (`pkg/trace/agent/truncator.go`).
+    #[test]
+    fn attribute_truncation_boundaries_match_the_reference_on_both_receive_paths() {
+        let key_at_limit = "k".repeat(MAX_META_KEY_LEN);
+        let key_over = "o".repeat(MAX_META_KEY_LEN + 1);
+        let key_straddling = format!("{}é", "s".repeat(MAX_META_KEY_LEN - 1));
+        let number_key_over = "n".repeat(MAX_META_KEY_LEN + 50);
+        let structured_key_over = format!("_dd.{}.json", "j".repeat(MAX_META_KEY_LEN));
+        let value_at_limit = "v".repeat(MAX_META_VAL_LEN);
+        let value_over = "w".repeat(MAX_META_VAL_LEN + 1);
+        let value_straddling = format!("{}é", "x".repeat(MAX_META_VAL_LEN - 1));
+        let structured_value = "y".repeat(MAX_META_VAL_LEN + 1);
+
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            attributes: vec![
+                kv_str(&key_at_limit, "at the limit"),
+                kv_str(&key_over, "over"),
+                kv_str(&key_straddling, "straddling"),
+                kv_int(&number_key_over, 7),
+                kv_str(&structured_key_over, "structured"),
+                kv_str("value.at_limit", &value_at_limit),
+                kv_str("value.over", &value_over),
+                kv_str("value.straddling", &value_straddling),
+                kv_str("_dd.appsec.json", &structured_value),
+            ],
+            ..Default::default()
+        };
+
+        let get = |dd_span: &DdSpan, key: &str| dd_span.attributes.get(key).cloned();
+        for (path, dd_span) in convert_on_both_paths(&span) {
+            assert_eq!(
+                get(&dd_span, &key_at_limit),
+                Some(string("at the limit")),
+                "{path}: key at limit"
+            );
+            assert_eq!(
+                get(&dd_span, &format!("{}...", "o".repeat(MAX_META_KEY_LEN))),
+                Some(string("over")),
+                "{path}: key over"
+            );
+            assert_eq!(get(&dd_span, &key_over), None, "{path}: key over, whole");
+            assert_eq!(
+                get(&dd_span, &format!("{}...", "s".repeat(MAX_META_KEY_LEN - 1))),
+                Some(string("straddling")),
+                "{path}: key straddling"
+            );
+            assert_eq!(
+                get(&dd_span, &format!("{}...", "n".repeat(MAX_META_KEY_LEN))),
+                Some(AttributeValue::Int(7)),
+                "{path}: number key"
+            );
+            assert_eq!(
+                get(&dd_span, &structured_key_over),
+                Some(string("structured")),
+                "{path}: structured key"
+            );
+
+            assert_eq!(
+                get(&dd_span, "value.at_limit"),
+                Some(string(&value_at_limit)),
+                "{path}: value at limit"
+            );
+            assert_eq!(
+                get(&dd_span, "value.over"),
+                Some(string(&format!("{}...", "w".repeat(MAX_META_VAL_LEN)))),
+                "{path}: value over"
+            );
+            assert_eq!(
+                get(&dd_span, "value.straddling"),
+                Some(string(&format!("{}...", "x".repeat(MAX_META_VAL_LEN - 1)))),
+                "{path}: value straddling"
+            );
+            assert_eq!(
+                get(&dd_span, "_dd.appsec.json"),
+                Some(string(&structured_value)),
+                "{path}: structured value"
+            );
+        }
+    }
+
     // ===============================================================================================
     // V1 naming and the V1 receive path.
     //
