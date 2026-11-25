@@ -5786,6 +5786,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "bytesize",
+ "criterion",
  "datadog-agent-apm",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",

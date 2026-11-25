@@ -104,6 +104,7 @@ zstd = { workspace = true }
 [dev-dependencies]
 async-compression = { workspace = true, features = ["gzip", "tokio"] }
 axum = { workspace = true, features = ["http2"] }
+criterion = { workspace = true }
 datadog-agent-apm = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
@@ -122,6 +123,10 @@ dhat = { workspace = true }
 
 # Run the allocation test without the libtest harness, so that the lazy initializations of the harness don't count as
 # allocations of the code under test. See issue #625.
+[[bench]]
+name = "dd_trace_normalizer"
+harness = false
+
 [[test]]
 name = "dd_trace_normalizer_allocations"
 path = "tests/dd_trace_normalizer_allocations.rs"
