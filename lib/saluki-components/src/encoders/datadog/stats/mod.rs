@@ -567,6 +567,10 @@ mod tests {
                 "the request holds {} bytes after its first StatsPayload",
                 remaining.len()
             );
+            assert!(
+                decoded.splitPayload(),
+                "every payload of a split flush is marked as split"
+            );
             for client in decoded.stats() {
                 for bucket in client.stats() {
                     resources.extend(bucket.stats().iter().map(|group| group.resource().to_string()));
