@@ -9,11 +9,17 @@
   stage: test
   tags: ["docker-in-docker:amd64"]
   retry: 2
-  timeout: 10m
+  timeout: 15m
   image: "${SALUKI_BUILD_CI_IMAGE}"
+  id_tokens:
+    DD_STS_OIDC_TOKEN:
+      aud: dd-sts
   artifacts:
     expire_in: 1 week
-    paths: [panoramic-logs/]
+    reports:
+      junit: $PANORAMIC_LOG_DIR/panoramic.xml
+    paths:
+      - $PANORAMIC_LOG_DIR/
     when: always
   # Pull panoramic binary built once in the parent pipeline.
   needs:
@@ -21,25 +27,34 @@
       job: build-panoramic-binary
       artifacts: true
   variables:
+    RUNNER_SCRIPT_TIMEOUT: 10m
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 2m
     KUBERNETES_CPU_REQUEST: "24"
     KUBERNETES_MEMORY_REQUEST: "24Gi"
     KUBERNETES_MEMORY_LIMIT: "48Gi"
     DD_LOG_LEVEL: "panoramic=debug,info"
-    PANORAMIC_LOG_DIR: "panoramic-logs"
+    PANORAMIC_LOG_DIR: panoramic-logs/${CI_JOB_ID}
+    BUNDLED_IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}
     # The parent pipeline's images. Cases name their images by reference and
     # take the replacements with --set. Comparison cases name the Agent image on
     # both sides, so one entry replaces the baseline and the comparison.
-    PANORAMIC_SET: "saluki-images/datadog-agent:testing-release=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID},saluki-images/correctness-tools:latest=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"
+    PANORAMIC_SET: "saluki-images/datadog-agent:testing-release=${BUNDLED_IMAGE},saluki-images/correctness-tools:latest=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"
+  before_script:
+    - unset DD_STS_OIDC_TOKEN DD_API_KEY
   script:
     # Log which Agent the bundled image was built on.
-    - BUNDLED_IMAGE="${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"
     - docker pull --quiet "${BUNDLED_IMAGE}"
     - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' "${BUNDLED_IMAGE}"
     - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui
+  after_script:
+    - bash ci/tooling/report-panoramic-results.sh convert correctness "$CORRECTNESS_TEST_CASE"
+    - AGENT_NIGHTLY="$PARENT_AGENT_NIGHTLY" bash ci/tooling/report-panoramic-results.sh upload
 
 # Common to every kind-based correctness-test job. Extends .test-correctness-definition
 # with a longer timeout. Cluster creation, image loading, and teardown are managed by
 # panoramic itself, driven by the cases' plans (see kind.rs).
 .test-correctness-kind-definition:
   extends: .test-correctness-definition
-  timeout: 20m
+  timeout: 25m
+  variables:
+    RUNNER_SCRIPT_TIMEOUT: 20m

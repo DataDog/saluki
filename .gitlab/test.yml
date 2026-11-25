@@ -163,6 +163,7 @@ check-correctness-fixtures:
   extends: .linux-arm64-test-job
   stage: test
   script:
+    - python3 -m unittest -v ci/tooling/test_panoramic_junit.py
     - make generate-correctness-fixtures
     - git diff --exit-code || (echo "Correctness case fixtures not up-to-date. Run 'make generate-correctness-fixtures' locally and commit."; exit 1)
 

@@ -79,6 +79,9 @@ unit-tests-windows-amd64:
 test-integration-windows-amd64:
   extends: .windows-amd64-test-job
   stage: e2e
+  id_tokens:
+    DD_STS_OIDC_TOKEN:
+      aud: dd-sts
   needs: []
   # Matches the retry policy on the linux/darwin integration jobs (see `test-integration` and
   # `.test-integration-macos-base` in .gitlab/e2e.yml). This is a last-resort net stacked under
@@ -86,11 +89,8 @@ test-integration-windows-amd64:
   # cargo build and a possible cold pull of the multi-GB build image, so it is expensive and it
   # only helps for failures that don't reproduce.
   retry: 2
-  # No explicit timeout previously, so a job that wedged after a failed `docker pull` fell back to
-  # the instance default and held a scarce Windows runner for nearly two hours (job 2056945739).
-  # 45m clears the worst legitimate run -- cold build image pull (~13m) plus cargo build (~8m)
-  # plus the Agent base image pull and the test phase -- with margin to spare.
-  timeout: 45m
+  # Leave time outside the script budgets for the Cargo cache and test artifacts.
+  timeout: 55m
   cache:
     key: windows-amd64-integration-cargo
     paths:
@@ -99,11 +99,16 @@ test-integration-windows-amd64:
       - .ci-cache/rustup/
   artifacts:
     expire_in: 1 week
+    reports:
+      junit: $PANORAMIC_LOG_DIR/panoramic.xml
     paths:
-      - integration-logs/
+      - $PANORAMIC_LOG_DIR/
     when: always
   variables:
-    PANORAMIC_LOG_DIR: integration-logs
+    # A cold run pulls the build image (~13m) and compiles (~8m) before pulling the Agent and running the tests.
+    RUNNER_SCRIPT_TIMEOUT: 45m
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 3m
+    PANORAMIC_LOG_DIR: integration-logs/${CI_JOB_ID}
   script:
     - *windows-build-image-pull-script
     - |
@@ -143,11 +148,33 @@ test-integration-windows-amd64:
       -e WINDOWS_ADP_BASE_IMAGE="$WindowsAdpBaseImage"
       -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
       -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
-      -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"
+      -e PANORAMIC_LOG_DIR="c:\mnt\$env:PANORAMIC_LOG_DIR"
       -e BUILD_PROFILE
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
+  after_script:
+    # Convert after the script ends, so an attempt that timed out still has a report. The converter runs in the build
+    # image, which has Python. Skip it when the image is missing, so the conversion never starts a cold pull.
+    - |
+      $ErrorActionPreference = "Continue"
+      docker image inspect ${WINBUILDIMAGE} *> $null
+      if ($LASTEXITCODE -eq 0) {
+        docker run --rm -v "$(Get-Location):c:\mnt" -w c:\mnt -e CI_JOB_STATUS -e PANORAMIC_LOG_DIR ${WINBUILDIMAGE} `
+          powershell.exe -NoProfile -NonInteractive -Command `
+          'python ci\tooling\panoramic_junit.py $env:PANORAMIC_LOG_DIR integration --wait 60'
+        # GitLab ends after_script when an entry fails, which would skip the upload.
+        if ($LASTEXITCODE -ne 0) { Write-Host "WARNING: Panoramic JUnit conversion failed (exit $LASTEXITCODE)." }
+      } else {
+        Write-Host "WARNING: build image ${WINBUILDIMAGE} is not present; no Panoramic JUnit report."
+      }
+    - |
+      if (-not $env:CI_COMMIT_TAG) {
+        $Channel = if ($env:AGENT_NIGHTLY -eq "true") { "nightly" } else { "pinned" }
+        if ($env:DD_TAGS) { $env:DD_TAGS += "," }
+        $env:DD_TAGS += "os.platform:windows,os.architecture:x64,test.configuration.agent_channel:$Channel"
+        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ci\tooling\windows-upload-test-results.ps1 -JUnitPath "$env:PANORAMIC_LOG_DIR/panoramic.xml"
+      }
 
 # Builds the Windows release zip (agent-data-plane.{exe,pdb} + LICENSE/NOTICE/LICENSE-3rdparty.csv +
 # LICENSES/THIRD-PARTY-*) inside the cached LTSC2022 build image and exposes it as a job

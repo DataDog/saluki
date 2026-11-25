@@ -99,6 +99,8 @@ run-correctness-tests:
     # CI_PIPELINE_ID so the child's `needs:[pipeline: ..., job: ...]` can
     # reference the parent pipeline (in the child, $CI_PIPELINE_ID is its own).
     PARENT_PIPELINE_ID: $CI_PIPELINE_ID
+    # The bundled image uses the parent's Agent selection. Schedule variables don't pass to the child by default.
+    PARENT_AGENT_NIGHTLY: $AGENT_NIGHTLY
   trigger:
     include:
       # this is the file we generated in the previous step
@@ -115,26 +117,41 @@ test-integration:
     - build-correctness-tools-image
     - build-panoramic-binary
   retry: 2
-  timeout: 15m
+  timeout: 20m
   image: "${SALUKI_BUILD_CI_IMAGE}"
+  id_tokens:
+    DD_STS_OIDC_TOKEN:
+      aud: dd-sts
   artifacts:
     expire_in: 1 week
+    reports:
+      junit: $PANORAMIC_LOG_DIR/panoramic.xml
     paths:
-      - integration-logs/
+      - $PANORAMIC_LOG_DIR/
     when: always
   variables:
-    PANORAMIC_LOG_DIR: integration-logs
+    # Bound reporting separately so GitLab still has time to collect the XML and raw logs.
+    RUNNER_SCRIPT_TIMEOUT: 15m
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 2m
+    PANORAMIC_LOG_DIR: integration-logs/${CI_JOB_ID}
+    BUNDLED_IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
+  before_script:
+    # The upload runs in a separate shell. Keep its credentials out of the test processes.
+    - unset DD_STS_OIDC_TOKEN DD_API_KEY
   script:
     # Copy the images we built to the local Docker instance, under the tags the Makefile builds locally, so we can
     # share the integration test configurations between CI and local test runs. The correctness-tools image runs the
     # intake participant.
-    - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
-    - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
-    - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID} saluki-images/datadog-agent:testing-devel
+    - docker pull "$BUNDLED_IMAGE"
+    - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' "$BUNDLED_IMAGE"
+    - docker tag "$BUNDLED_IMAGE" saluki-images/datadog-agent:testing-devel
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest
     # Run the panoramic binary and the courier that build-panoramic-binary published, from the repository root.
     - target/release/panoramic run -d $(pwd)/test/integration/cases
+  after_script:
+    - bash ci/tooling/report-panoramic-results.sh convert integration
+    - bash ci/tooling/report-panoramic-results.sh upload
 
 # Runs the integration cases that declare macOS directly on a bare-metal macOS runner. No
 # Docker, no virtualization: panoramic spawns ADP (and the Core Agent for converged cases) as
@@ -146,15 +163,23 @@ test-integration:
   stage: e2e
   needs: []
   retry: 2
-  timeout: 30m
+  timeout: 38m
+  id_tokens:
+    DD_STS_OIDC_TOKEN:
+      aud: dd-sts
   artifacts:
     expire_in: 1 week
+    reports:
+      junit: $PANORAMIC_LOG_DIR/panoramic.xml
     paths:
-      - integration-logs/
+      - $PANORAMIC_LOG_DIR/
     when: always
   variables:
-    PANORAMIC_LOG_DIR: integration-logs
+    RUNNER_SCRIPT_TIMEOUT: 30m
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 5m
+    PANORAMIC_LOG_DIR: integration-logs/${CI_JOB_ID}
   before_script:
+    - unset DD_STS_OIDC_TOKEN DD_API_KEY
     # Defensive: clean up any leftover Agent/ADP processes from prior runs on this shared
     # runner. All test-Agent ports are shifted out of the canonical range (see `DEFAULT_ENV` in
     # bin/correctness/panoramic/src/participants/datadog_agent.rs), so we don't need to touch a system
@@ -175,19 +200,22 @@ test-integration:
   script:
     - make test-integration-macos-ci
   after_script:
+    # Write the JUnit report first. It needs no network, and a stale mount can stall the diagnostics below.
+    - bash ci/tooling/report-panoramic-results.sh convert integration
     # Collect host-level diagnostics into the artifact so we have something to debug from
     # when something fails outside panoramic's per-test log capture (bootstrap-Agent failures,
     # system state, stranded processes from this run). Runs whether the test step passed or
     # failed.
-    - mkdir -p integration-logs/host-diag
-    - sw_vers > integration-logs/host-diag/sw_vers.txt 2>&1 || true
-    - uname -a > integration-logs/host-diag/uname.txt 2>&1 || true
-    - mount > integration-logs/host-diag/mount.txt 2>&1 || true
-    - df -h > integration-logs/host-diag/df.txt 2>&1 || true
-    - ps -axo pid,ppid,user,command > integration-logs/host-diag/ps.txt 2>&1 || true
-    - cp /tmp/saluki-agent-bootstrap.log integration-logs/host-diag/saluki-agent-bootstrap.log 2>/dev/null || true
-    - ls -la /tmp/saluki-dda/datadog-agent/etc/ > integration-logs/host-diag/sandbox-etc.txt 2>&1 || true
+    - mkdir -p "$PANORAMIC_LOG_DIR/host-diag"
+    - sw_vers > "$PANORAMIC_LOG_DIR/host-diag/sw_vers.txt" 2>&1 || true
+    - uname -a > "$PANORAMIC_LOG_DIR/host-diag/uname.txt" 2>&1 || true
+    - mount > "$PANORAMIC_LOG_DIR/host-diag/mount.txt" 2>&1 || true
+    - df -h > "$PANORAMIC_LOG_DIR/host-diag/df.txt" 2>&1 || true
+    - ps -axo pid,ppid,user,command > "$PANORAMIC_LOG_DIR/host-diag/ps.txt" 2>&1 || true
+    - cp /tmp/saluki-agent-bootstrap.log "$PANORAMIC_LOG_DIR/host-diag/saluki-agent-bootstrap.log" 2>/dev/null || true
+    - ls -la /tmp/saluki-dda/datadog-agent/etc/ > "$PANORAMIC_LOG_DIR/host-diag/sandbox-etc.txt" 2>&1 || true
     - bash ci/tooling/cleanup-macos-dda-mounts.sh || true
+    - bash ci/tooling/report-panoramic-results.sh upload
 
 test-integration-macos-arm64:
   extends:
