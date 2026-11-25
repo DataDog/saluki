@@ -142,10 +142,13 @@ pub(crate) enum FileSource {
     Case { from: PathBuf, template: bool },
     /// Bytes a participant type supplies, with a label for the printed plan.
     Bytes { label: &'static str, bytes: &'static [u8] },
-    /// Text a participant type supplies, with a label for the printed plan.
-    // TODO: remove the dead_code allowance once a participant type builds a file from the case's text.
-    #[allow(dead_code)]
-    Text { label: &'static str, text: String },
+    /// Text a participant type supplies, such as a file it builds from one of the case's, with a label for the
+    /// printed plan. A template's references are resolved like those of a case's template.
+    Text {
+        label: &'static str,
+        text: String,
+        template: bool,
+    },
 }
 
 /// The contents of a placed file.
@@ -227,13 +230,15 @@ fn parse_mode(mode: Value) -> Result<u32, String> {
         .ok_or_else(|| format!("mode \"{}\" must be an octal string such as \"0755\"", text))
 }
 
-/// Where a participant listens.
+/// Where a participant listens: a protocol and the field that addresses it, such as `{protocol: tcp, port: 5432}`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "Value")]
 pub(crate) struct EndpointSpec {
     pub(crate) protocol: Protocol,
+    #[serde(flatten)]
     pub(crate) address: Address,
     /// The listener serves TLS. Only on `http`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) tls: bool,
 }
 
@@ -271,6 +276,17 @@ impl Protocol {
             Self::NamedPipe => "named_pipe",
         }
     }
+
+    /// The field that addresses an endpoint of this protocol, with an example endpoint.
+    fn address_field(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Tcp | Self::Udp | Self::Http | Self::Grpc => ("port", "{protocol: tcp, port: 8080}"),
+            Self::UnixDatagram | Self::UnixStream => {
+                ("path", "{protocol: unix_stream, path: \"{{ self.dir }}/a.sock\"}")
+            }
+            Self::NamedPipe => ("name", "{protocol: named_pipe, name: my-pipe}"),
+        }
+    }
 }
 
 /// The part of an endpoint the harness owns.
@@ -279,6 +295,7 @@ impl Protocol {
 pub(crate) enum Address {
     Port(u16),
     Path(Template),
+    #[serde(rename = "name")]
     Pipe(String),
 }
 
@@ -287,28 +304,57 @@ impl TryFrom<Value> for EndpointSpec {
 
     fn try_from(value: Value) -> Result<Self, String> {
         let Value::Object(mut entry) = value else {
-            return Err("an endpoint is a map of one protocol to its address, such as {http: 8080}".to_string());
+            return Err("an endpoint is a map such as {protocol: tcp, port: 8080}".to_string());
         };
+        let protocol = match entry.remove("protocol") {
+            Some(Value::String(protocol)) => Protocol::ALL
+                .into_iter()
+                .find(|candidate| candidate.as_str() == protocol)
+                .ok_or_else(|| {
+                    let protocols: Vec<_> = Protocol::ALL.iter().map(|protocol| protocol.as_str()).collect();
+                    format!(
+                        "unknown endpoint protocol '{}': expected one of {}",
+                        protocol,
+                        protocols.join(", ")
+                    )
+                })?,
+            Some(other) => return Err(format!("an endpoint's protocol must be a string, not {}", other)),
+            None => return Err("an endpoint names its protocol, such as {protocol: tcp, port: 8080}".to_string()),
+        };
+        let (field, example) = protocol.address_field();
+        let address = entry.remove(field);
         let tls = match entry.remove("tls") {
             None => false,
             Some(Value::Bool(tls)) => tls,
             Some(other) => return Err(format!("tls must be true or false, not {}", other)),
         };
-        let mut protocols = entry.into_iter();
-        let (Some((protocol, address)), None) = (protocols.next(), protocols.next()) else {
-            return Err("an endpoint has exactly one protocol, such as {http: 8080}".to_string());
-        };
-        let protocol = Protocol::ALL
-            .into_iter()
-            .find(|candidate| candidate.as_str() == protocol)
-            .ok_or_else(|| {
-                let protocols: Vec<_> = Protocol::ALL.iter().map(|protocol| protocol.as_str()).collect();
+        if let Some(key) = entry.keys().next() {
+            return Err(if ["port", "path", "name"].contains(&key.as_str()) {
                 format!(
-                    "unknown endpoint protocol '{}': expected one of {}",
-                    protocol,
-                    protocols.join(", ")
+                    "a {} endpoint takes a {}, not a {}, such as {}",
+                    protocol.as_str(),
+                    field,
+                    key,
+                    example
                 )
-            })?;
+            } else {
+                format!(
+                    "unknown endpoint field '{}': an endpoint takes protocol, port, path, name and tls",
+                    key
+                )
+            });
+        }
+        let Some(address) = address else {
+            return Err(format!(
+                "a {} endpoint needs a {}, such as {}",
+                protocol.as_str(),
+                field,
+                example
+            ));
+        };
+        if tls && protocol != Protocol::Http {
+            return Err(format!("tls applies to http endpoints, not {}", protocol.as_str()));
+        }
         let address = match protocol {
             Protocol::Tcp | Protocol::Udp | Protocol::Http | Protocol::Grpc => match decode::<u16>(address)? {
                 0 => return Err("an endpoint's port must not be 0".to_string()),
@@ -317,9 +363,6 @@ impl TryFrom<Value> for EndpointSpec {
             Protocol::UnixDatagram | Protocol::UnixStream => Address::Path(decode(address)?),
             Protocol::NamedPipe => Address::Pipe(decode(address)?),
         };
-        if tls && protocol != Protocol::Http {
-            return Err(format!("tls applies to http endpoints, not {}", protocol.as_str()));
-        }
         Ok(Self { protocol, address, tls })
     }
 }
@@ -581,8 +624,7 @@ pub(crate) enum Keep {
 #[derive(Clone, Debug)]
 pub(crate) struct Consumed {
     pub(crate) accepts: &'static [Protocol],
-    // TODO: check required connections with the first participant type that requires one.
-    #[allow(dead_code)]
+    /// Whether a case must make the connection.
     pub(crate) required: bool,
     /// Environment added when the case makes the connection, as template text.
     pub(crate) env: &'static [(&'static str, &'static str)],
@@ -662,5 +704,32 @@ mod tests {
         // A new command does not inherit the arguments of the one it replaces.
         below.lay(spec("{command: [z]}"));
         assert!(below.args.is_none());
+    }
+
+    #[test]
+    fn endpoints_name_their_address_by_the_part_a_reference_reads() {
+        let endpoint = |yaml: &str| serde_saphyr::from_str::<EndpointSpec>(yaml).map_err(|error| error.to_string());
+        let secure = endpoint("{protocol: http, port: 8443, tls: true}").unwrap();
+        assert!(matches!(secure.address, Address::Port(8443)) && secure.tls);
+        let pipe = endpoint("{protocol: named_pipe, name: my-pipe}").unwrap();
+        assert!(matches!(pipe.address, Address::Pipe(ref name) if name == "my-pipe"));
+
+        for (yaml, error) in [
+            (
+                "{protocol: tcp, path: /a.sock}",
+                "a tcp endpoint takes a port, not a path",
+            ),
+            ("{protocol: unix_stream}", "a unix_stream endpoint needs a path"),
+            ("{protocol: udp, port: 8125, host: a}", "unknown endpoint field 'host'"),
+            ("{protocol: tcp, port: 0}", "port must not be 0"),
+            (
+                "{protocol: tcp, port: 8080, tls: true}",
+                "tls applies to http endpoints, not tcp",
+            ),
+            ("{tcp: 8080}", "an endpoint names its protocol"),
+        ] {
+            let message = endpoint(yaml).unwrap_err();
+            assert!(message.contains(error), "{}: {}", yaml, message);
+        }
     }
 }

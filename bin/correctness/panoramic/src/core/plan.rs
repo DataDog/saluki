@@ -14,7 +14,8 @@
 //! name, the environment each declared connection delivers, and each endpoint's address and readiness evidence. Then,
 //! across participants: each connection gets its route and its address as the consumer reaches it, every reference is
 //! checked against its place and filled in where planning knows its value, and the create and start orders are
-//! computed as levels, with what each consumer waits for. Last, each step of the procedure is built.
+//! computed as levels, with what each consumer waits for. Last, each step of the procedure is built, and what it uses
+//! and what its references name are checked.
 //!
 //! The plan owns everything the lifecycle acts on: the contents of every file and the operations steps call. After
 //! planning, nothing reads the loaded case or calls a participant type, except an operation a step calls.
@@ -22,8 +23,10 @@
 //! Errors are collected, not returned at the first. Their order is not a contract.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use serde::Serialize;
+use serde_json::Value;
 
 use super::case::{is_name, CaseError, CaseInfo, LoadedCase, LoadedParticipant, Source, NAME_RULE};
 use super::participant::{Enclosure, Os, Realization, SpecContext};
@@ -31,11 +34,11 @@ use super::reference::Later;
 use super::registry::Registry;
 use super::spec::{
     is_file_name, CollectFile, CommandSpec, Consumed, Contents, Evidence, ExitChannel, FileSource, HostMount,
-    OutputChannel, ParticipantSpec, ProcessSpec, Program, DEFAULT_PROCESS,
+    OutputChannel, ParticipantSpec, ProcessSpec, DEFAULT_PROCESS,
 };
-use super::step::{Operation, ProcedureNode, Step, StepFields, StepPurpose};
+use super::step::{EndpointOperation, Need, Operation, ProcedureNode, Step, StepFields, StepPurpose, Uses};
 use super::template::Template;
-use super::wiring::{Gate, PlannedConnection, PlannedEndpoint, TypeWiring};
+use super::wiring::{Gate, PlannedConnection, PlannedEndpoint, Reach, TypeWiring, UnwiredUses};
 use super::{order, reference, wiring};
 
 /// Environment keys with this prefix are the harness's own.
@@ -89,12 +92,21 @@ pub(crate) struct PlannedParticipant {
 pub(crate) enum Launch {
     /// An image, with the command and arguments that replace its own when set.
     Image {
-        image: String,
+        image: Replaceable,
         command: Option<Vec<Template>>,
         args: Option<Vec<Template>>,
     },
     /// Host programs, in start order.
-    Programs(Vec<Program>),
+    Programs(Vec<PlannedProgram>),
+}
+
+/// A host program of the plan. A run may replace its path, as it may an image.
+#[derive(Debug, Serialize)]
+pub(crate) struct PlannedProgram {
+    pub(crate) name: String,
+    pub(crate) path: Replaceable,
+    pub(crate) args: Vec<Template>,
+    pub(crate) env: BTreeMap<String, Template>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,25 +122,88 @@ pub(crate) struct PlannedFile {
     pub(crate) contents: Contents,
 }
 
+/// A reference to an image or a host program as written, and the reference the run uses in its place when it replaces
+/// it.
+///
+/// Serializes as the reference as written, or, when the run replaces it, as `{"written": ..., "replaced": ...}`.
+#[derive(Clone, Debug)]
+pub(crate) struct Replaceable {
+    pub(crate) written: String,
+    pub(crate) replaced: Option<String>,
+}
+
+impl Replaceable {
+    /// `written`, with the replacement `set` holds for it, if any.
+    fn new(written: String, set: &BTreeMap<String, String>) -> Self {
+        let replaced = set.get(&written).cloned();
+        Self { written, replaced }
+    }
+
+    /// The reference the run uses.
+    pub(crate) fn used(&self) -> &str {
+        self.replaced.as_deref().unwrap_or(&self.written)
+    }
+}
+
+impl fmt::Display for Replaceable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.replaced {
+            Some(replaced) => write!(f, "{} -> {}", self.written, replaced),
+            None => f.write_str(&self.written),
+        }
+    }
+}
+
+impl Serialize for Replaceable {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        struct Replaced<'a> {
+            written: &'a str,
+            replaced: &'a str,
+        }
+
+        match &self.replaced {
+            Some(replaced) => Replaced {
+                written: &self.written,
+                replaced,
+            }
+            .serialize(serializer),
+            None => serializer.serialize_str(&self.written),
+        }
+    }
+}
+
 /// A step built for this plan.
 #[derive(Debug, Serialize)]
 pub(crate) struct PlannedStep {
     pub(crate) name: String,
     pub(crate) fields: StepFields,
+    /// Everything the case step uses.
+    pub(crate) needs: Vec<Need>,
+    /// How the runner reaches each endpoint the step uses, itself or through an operation, keyed by
+    /// `<participant>.<endpoint>`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) reach: BTreeMap<String, Reach>,
     #[serde(skip)]
     pub(crate) step: Box<dyn Step>,
 }
 
-/// Plans `case` for every OS in its `subject_os`.
+/// Plans `case` for every OS in its `subject_os`. `set` holds the run's replacements: each image written as a key runs
+/// the image it maps to.
 ///
 /// # Errors
 ///
 /// Returns every problem found, on every OS.
-pub(crate) fn plan_all(case: &LoadedCase, registry: &Registry) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
+pub(crate) fn plan_all(
+    case: &LoadedCase, registry: &Registry, set: &BTreeMap<String, String>,
+) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
     let mut plans = BTreeMap::new();
     let mut errors = Vec::new();
     for &os in &case.subject_os {
-        match plan(case, os, registry) {
+        match plan(case, os, registry, set) {
             Ok(plan) => {
                 plans.insert(os, plan);
             }
@@ -142,12 +217,14 @@ pub(crate) fn plan_all(case: &LoadedCase, registry: &Registry) -> Result<BTreeMa
     }
 }
 
-/// Plans `case` for one subject OS.
+/// Plans `case` for one subject OS, with the run's replacements `set`.
 ///
 /// # Errors
 ///
 /// Returns every problem found.
-pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<CasePlan, Vec<CaseError>> {
+pub(crate) fn plan(
+    case: &LoadedCase, os: Os, registry: &Registry, set: &BTreeMap<String, String>,
+) -> Result<CasePlan, Vec<CaseError>> {
     let mut problems = Problems {
         case,
         os,
@@ -178,6 +255,7 @@ pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<Cas
             participant,
             realization,
             case,
+            set,
             at: &mut at,
         };
         if let Some((planned, known)) = planner.plan(registry, &connected) {
@@ -188,8 +266,10 @@ pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<Cas
 
     // Each phase across participants reads what the phase before it planned, so it runs only if that phase found no
     // problem. Otherwise it would report what is missing as a mistake of its own.
-    if problems.errors.is_empty() {
-        wiring::plan_connections(case, &mut participants, &consumes, &mut problems);
+    let planned_cleanly = problems.errors.is_empty();
+    let mut unwired = UnwiredUses::new();
+    if planned_cleanly {
+        unwired = wiring::plan_connections(case, &mut participants, &consumes, &mut problems);
     }
     let mut create_edges = BTreeSet::new();
     if problems.errors.is_empty() {
@@ -214,7 +294,9 @@ pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<Cas
     let start_order = order("start", &start_edges);
     let gates = wiring::gates(&participants);
 
-    let procedure = build_procedure(case, registry, &mut problems);
+    let checked = planned_cleanly.then_some(&participants);
+    let procedure = build_procedure(case, registry, checked, &mut unwired, &mut problems);
+    wiring::report_unwired(&participants, unwired, &mut problems);
     if !problems.errors.is_empty() {
         return Err(problems.errors);
     }
@@ -266,9 +348,14 @@ fn lay_out(case: &LoadedCase, os: Os, problems: &mut Problems<'_>) -> BTreeMap<S
         .collect()
 }
 
+/// Builds each step of the procedure. Once the participants have planned without a problem, it also checks what each
+/// step needs and the references in its template fields against `participants`, and adds each endpoint a step uses
+/// and its participant does not wire to `unwired`.
 fn build_procedure(
-    case: &LoadedCase, registry: &Registry, problems: &mut Problems<'_>,
+    case: &LoadedCase, registry: &Registry, participants: Option<&BTreeMap<String, PlannedParticipant>>,
+    unwired: &mut UnwiredUses, problems: &mut Problems<'_>,
 ) -> Vec<ProcedureNode<PlannedStep>> {
+    let values = participants.map(reference::Values::of_plan);
     let mut procedure = Vec::new();
     for (index, node) in case.procedure.iter().enumerate() {
         let parallel = matches!(node, ProcedureNode::Parallel(_));
@@ -290,14 +377,52 @@ fn build_procedure(
                 );
                 continue;
             }
-            match factory.build(&entry.fields) {
-                Ok(step) => steps.push(PlannedStep {
-                    name: entry.step.clone(),
-                    fields: entry.fields.clone(),
-                    step,
-                }),
-                Err(message) => problems.push(Some(at), format!("{}: {}", entry.step, message)),
+            let template_fields = factory.template_fields();
+            for (field, value) in &entry.fields.0 {
+                let holds_reference = strings(value).iter().any(|text| text.contains("{{"));
+                if holds_reference && !template_fields.contains(&field.as_str()) {
+                    problems.push(
+                        Some(at.clone()),
+                        format!(
+                            "{}: '{}' holds no references, so it cannot contain '{{{{'",
+                            entry.step, field
+                        ),
+                    );
+                }
             }
+            let step = match factory.build(&entry.fields) {
+                Ok(step) => step,
+                Err(message) => {
+                    problems.push(Some(at), format!("{}: {}", entry.step, message));
+                    continue;
+                }
+            };
+            let mut reach = BTreeMap::new();
+            if let (Some(participants), Some(values)) = (participants, &values) {
+                let mut found = check_needs(step.as_ref(), &at, participants, unwired, &mut reach);
+                for field in template_fields {
+                    for text in entry.fields.0.get(*field).map(strings).unwrap_or_default() {
+                        match Template::parse(text) {
+                            Ok(template) => found.extend(
+                                reference::check_step_template(values, &template)
+                                    .into_iter()
+                                    .map(|message| format!("{}: {}", field, message)),
+                            ),
+                            Err(message) => found.push(format!("{}: {}", field, message)),
+                        }
+                    }
+                }
+                for message in found {
+                    problems.push(Some(at.clone()), format!("{}: {}", entry.step, message));
+                }
+            }
+            steps.push(PlannedStep {
+                name: entry.step.clone(),
+                fields: entry.fields.clone(),
+                needs: step.needs(),
+                reach,
+                step,
+            });
         }
         procedure.push(match node {
             ProcedureNode::Step(_) => match steps.pop() {
@@ -308,6 +433,106 @@ fn build_procedure(
         });
     }
     procedure
+}
+
+/// Checks that everything `step` needs exists in `participants`, with what each operation it calls uses, records how
+/// the runner reaches each endpoint in `reach`, and adds each endpoint it uses that its participant does not wire to
+/// `unwired`, as used by the step at `at`.
+///
+/// Returns the problems found.
+fn check_needs(
+    step: &dyn Step, at: &str, participants: &BTreeMap<String, PlannedParticipant>, unwired: &mut UnwiredUses,
+    reach: &mut BTreeMap<String, Reach>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for need in step.needs() {
+        let name = match &need {
+            Need::Participant(name)
+            | Need::Process(name, _)
+            | Need::Command(name, _)
+            | Need::Operation(name, _)
+            | Need::Endpoint(name, _, _) => name,
+        };
+        let Some(participant) = participants.get(name) else {
+            problems.push(format!("names participant '{}', which the case does not have", name));
+            continue;
+        };
+        let mut endpoint = |endpoint: &str, operation, used_by: String| {
+            let Some(planned) = participant.endpoints.get(endpoint) else {
+                return Some(format!("participant '{}' has no endpoint '{}'", name, endpoint));
+            };
+            if planned.unwired.is_some() {
+                unwired
+                    .entry((name.clone(), endpoint.to_string()))
+                    .or_default()
+                    .push(used_by);
+            }
+            match wiring::reach(
+                operation,
+                planned.protocol,
+                planned.tls,
+                participant.realization.enclosure,
+            ) {
+                Ok(route) => {
+                    reach.insert(format!("{}.{}", name, endpoint), route);
+                    None
+                }
+                Err(why) => Some(format!("endpoint '{}' of participant '{}': {}", endpoint, name, why)),
+            }
+        };
+        match &need {
+            Need::Participant(_) => {}
+            Need::Process(_, process) => {
+                if !participant.processes.iter().any(|spec| spec.name() == process) {
+                    let processes: Vec<&str> = participant.processes.iter().map(ProcessSpec::name).collect();
+                    problems.push(format!(
+                        "participant '{}' has no process '{}': it has {}",
+                        name,
+                        process,
+                        super::case::join(&processes)
+                    ));
+                }
+            }
+            Need::Command(_, command) => {
+                if !participant.commands.contains_key(command) {
+                    problems.push(format!("participant '{}' has no command '{}'", name, command));
+                }
+            }
+            Need::Operation(_, operation) => match participant.operations.get(operation.as_str()) {
+                None => problems.push(format!("participant '{}' offers no operation '{}'", name, operation)),
+                Some(offered) => {
+                    for uses in offered.uses() {
+                        let problem = match *uses {
+                            Uses::Command(command) => (!participant.commands.contains_key(command))
+                                .then(|| format!("participant '{}' has no command '{}'", name, command)),
+                            Uses::Request(used) => endpoint(
+                                used,
+                                EndpointOperation::Request,
+                                format!("{} ({}, operation '{}')", at, step.name(), operation),
+                            ),
+                        };
+                        problems.extend(problem.map(|problem| {
+                            format!("operation '{}' of participant '{}': {}", operation, name, problem)
+                        }));
+                    }
+                }
+            },
+            Need::Endpoint(_, used, operation) => {
+                problems.extend(endpoint(used, *operation, format!("{} ({})", at, step.name())));
+            }
+        }
+    }
+    problems
+}
+
+/// Every string in `value`, however deep.
+fn strings(value: &Value) -> Vec<&str> {
+    match value {
+        Value::String(text) => vec![text.as_str()],
+        Value::Array(values) => values.iter().flat_map(strings).collect(),
+        Value::Object(values) => values.values().flat_map(strings).collect(),
+        Value::Null | Value::Bool(_) | Value::Number(_) => Vec::new(),
+    }
 }
 
 /// Collects the problems of one case on one subject OS.
@@ -351,6 +576,8 @@ struct Planner<'c, 'p, 'a> {
     participant: &'c LoadedParticipant,
     realization: Realization,
     case: &'c LoadedCase,
+    /// The run's replacements.
+    set: &'c BTreeMap<String, String>,
     at: &'c mut At<'p, 'a>,
 }
 
@@ -622,6 +849,16 @@ impl Planner<'_, '_, '_> {
         } = spec;
 
         let connect = &self.participant.placement.connect;
+        for (name, _) in consumes
+            .iter()
+            .filter(|(name, consumed)| consumed.required && !connect.contains_key(**name))
+        {
+            self.at.push(format!(
+                "participant type '{}' requires connection '{}', and the case does not make it",
+                type_name.unwrap_or_default(),
+                name
+            ));
+        }
         for consumed in connect.keys().filter_map(|name| consumes.get(name.as_str())) {
             for (key, value) in consumed.env {
                 match Template::parse(*value) {
@@ -650,7 +887,11 @@ impl Planner<'_, '_, '_> {
                     .push(format!("a {} needs an 'image', and nothing sets one", enclosure));
                 return None;
             };
-            Launch::Image { image, command, args }
+            Launch::Image {
+                image: Replaceable::new(image, self.set),
+                command,
+                args,
+            }
         } else {
             for (field, set) in [
                 ("image", image.is_some()),
@@ -670,7 +911,17 @@ impl Planner<'_, '_, '_> {
                     .push(format!("a {} needs 'programs', and nothing sets any", enclosure));
                 return None;
             }
-            Launch::Programs(programs)
+            Launch::Programs(
+                programs
+                    .into_iter()
+                    .map(|program| PlannedProgram {
+                        name: program.name,
+                        path: Replaceable::new(program.path, self.set),
+                        args: program.args,
+                        env: program.env,
+                    })
+                    .collect(),
+            )
         };
 
         let program_names: Vec<&str> = match &launch {
@@ -737,6 +988,7 @@ impl Planner<'_, '_, '_> {
         }
         let files = self.place_files(files, &names, type_name);
         let processes = self.processes(processes, &program_names, &launch);
+        self.check_programs(&launch, &files, &commands);
         let mut by_name = BTreeMap::new();
         for &operation in operations {
             if by_name.insert(operation.name(), operation).is_some() {
@@ -836,7 +1088,14 @@ impl Planner<'_, '_, '_> {
                     (from.display().to_string(), self.case.sources.placed(&from, template))
                 }
                 FileSource::Bytes { label, bytes } => (labelled(label), Ok(Source::File(Contents::of(bytes.to_vec())))),
-                FileSource::Text { label, text } => (labelled(label), Ok(Source::File(Contents::Text(text)))),
+                FileSource::Text { label, text, template } => {
+                    let contents = if template {
+                        Template::parse(&text).map(Contents::Template)
+                    } else {
+                        Ok(Contents::Text(text))
+                    };
+                    (labelled(label), contents.map(Source::File))
+                }
             };
             let targets = match (contents, is_dir) {
                 (Ok(Source::File(contents)), false) => vec![(destination.clone(), source, contents)],
@@ -940,7 +1199,30 @@ impl Planner<'_, '_, '_> {
                 self.at.push(format!("two processes are named '{}'", process.name()));
             }
         }
-        if self.realization.enclosure.runs_an_image() {
+        if !self.realization.enclosure.runs_an_image() {
+            for process in &processes {
+                let observed =
+                    *process.exit() == ExitChannel::Container && *process.output() == OutputChannel::Container;
+                if !observed || !program_names.contains(&process.name()) {
+                    self.at.push(format!(
+                        "on host processes, process '{}' is a program's, observed through its pipes and its exit: \
+                         name one of the programs {} and set exit and output to container",
+                        process.name(),
+                        super::case::join(program_names)
+                    ));
+                }
+            }
+            // A program nobody reads from blocks once its pipes fill.
+            for program in program_names {
+                if !seen.contains(program) {
+                    self.at.push(format!(
+                        "on host processes, program '{}' has no process: its output is read through one, and unread \
+                         output can block the program",
+                        program
+                    ));
+                }
+            }
+        } else {
             let through: Vec<&str> = processes
                 .iter()
                 .filter(|process| {
@@ -957,6 +1239,47 @@ impl Planner<'_, '_, '_> {
             }
         }
         processes
+    }
+
+    /// Checks that a command names a program only on host processes, and one the participant has, and that a program
+    /// at `./x` is a file the participant places with an execute bit.
+    fn check_programs(&mut self, launch: &Launch, files: &[PlannedFile], commands: &BTreeMap<String, CommandSpec>) {
+        let programs: &[PlannedProgram] = match launch {
+            Launch::Programs(programs) => programs,
+            Launch::Image { .. } => &[],
+        };
+        for (name, command) in commands {
+            let Some(program) = &command.program else {
+                continue;
+            };
+            if matches!(launch, Launch::Image { .. }) {
+                self.at.push(format!(
+                    "command '{}' runs program '{}', and only host processes have programs; this participant is a {}",
+                    name, program, self.realization.enclosure
+                ));
+            } else if !programs.iter().any(|candidate| candidate.name == *program) {
+                self.at.push(format!(
+                    "command '{}' runs program '{}', which the participant does not have",
+                    name, program
+                ));
+            }
+        }
+        for program in programs {
+            let path = &program.path.written;
+            if !path.starts_with("./") {
+                continue;
+            }
+            let problem = match files.iter().find(|file| file.destination == *path) {
+                None => "which the participant does not place; place it with mode \"0755\"",
+                // A Windows file has no mode.
+                Some(file) if file.mode.is_some_and(|mode| mode & 0o111 == 0) => {
+                    "which is not executable: give it mode \"0755\""
+                }
+                Some(_) => continue,
+            };
+            self.at
+                .push(format!("program '{}' runs '{}', {}", program.name, path, problem));
+        }
     }
 
     /// Normalizes a destination for the realization, or says why it is not one.
@@ -1081,7 +1404,7 @@ procedure: []
         let registry = Registry::default();
 
         let case = case::load(&dir, &registry).unwrap();
-        let plan = plan(&case, Os::Linux, &registry).unwrap();
+        let plan = plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap();
         drop((case, registry, suite));
 
         let files: Vec<(&str, &Contents)> = plan.participants["app"]

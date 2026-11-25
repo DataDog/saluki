@@ -1,43 +1,65 @@
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use http::{
-    uri::{Authority, Scheme},
+    uri::{Authority, PathAndQuery, Scheme},
     HeaderName, HeaderValue, Request, Uri,
 };
 
-use super::endpoints::ResolvedEndpoint;
+use super::endpoints::{endpoint_base_path, ResolvedEndpoint};
 
 static ALLOW_ARBITRARY_TAG_VALUE_HEADER: HeaderName = HeaderName::from_static("allow-arbitrary-tag-value");
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
+static DD_CURRENT_TIMESTAMP_HEADER: HeaderName = HeaderName::from_static("dd-current-timestamp");
+
+// The logs intake paths. The logs encoder only sends to `/api/v2/logs`; `/v1/input` is the legacy logs intake path,
+// with no API key in the path, kept for parity with the Agent's HTTP logs destination.
+const LOGS_PATHS: [&str; 2] = ["/api/v2/logs", "/v1/input"];
 
 /// Builds a middleware function that will update the request's URI to use the resolved endpoint's URI, and add the API
 /// key as a header.
 ///
-/// The request's URI must already container a relative path component. Any existing scheme, host, and port components
-/// will be overridden by the resolved endpoint's URI.
-pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
+/// The request's URI must already contain a relative path component. The resolved endpoint's URI replaces any
+/// existing scheme, host, and port components. If the endpoint has a base path, such as `https://proxy.example.com/prefix`,
+/// the request's path is appended to it, which gives `/prefix/api/v2/series`. A request that goes to a derived logs or
+/// traces intake host doesn't get the base path.
+pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B>) -> Request<B> + Clone {
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
+    let base_path = endpoint_base_path(endpoint.endpoint()).to_string();
     move |mut request| {
         let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
 
-        let authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
-            endpoint
-                .logs_authority()
-                .cloned()
-                .unwrap_or_else(|| new_uri_authority.clone())
+        // Select the authority from the request path alone. A derived intake authority is used only for official
+        // Datadog endpoints.
+        let intake_authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
+            endpoint.logs_authority()
         } else if path_and_query.as_str().starts_with("/api/v0.2/traces")
             || path_and_query.as_str().starts_with("/api/v0.2/stats")
         {
-            endpoint
-                .traces_authority()
-                .cloned()
-                .unwrap_or_else(|| new_uri_authority.clone())
+            endpoint.traces_authority()
         } else {
-            new_uri_authority.clone()
+            None
         };
-        // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
+
+        // Prepend the base path only when the request goes to the endpoint's own authority. The base path belongs to
+        // the configured endpoint, not to a derived intake host.
+        let (authority, path_and_query) = match intake_authority {
+            Some(intake_authority) => (intake_authority.clone(), path_and_query),
+            None if base_path.is_empty() => (new_uri_authority.clone(), path_and_query),
+            None => (
+                new_uri_authority.clone(),
+                PathAndQuery::try_from(format!("{}{}", base_path, path_and_query.as_str()))
+                    .expect("should not fail to construct new path and query"),
+            ),
+        };
+
+        // Build an updated URI from the endpoint's scheme and the selected authority, plus the path and query.
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
             .authority(authority)
@@ -103,11 +125,46 @@ pub fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
     }
 }
 
+/// A source of the current time, in milliseconds since the Unix epoch.
+pub(crate) type UnixMillisClock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// Returns a clock that reads the system time.
+pub(crate) fn system_clock() -> UnixMillisClock {
+    Arc::new(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or_default()
+    })
+}
+
+/// Builds a middleware function that stamps logs requests with the time they're sent.
+///
+/// Adds the `dd-current-timestamp` header, read from `clock`, to requests for the logs intake paths (`/api/v2/logs`
+/// and `/v1/input`). The path must be the route before endpoint mapping, which can add a base path. Any existing value
+/// is replaced, so a retried request carries the time of its latest attempt rather than its first.
+pub(crate) fn with_logs_current_timestamp<B>(clock: UnixMillisClock) -> impl Fn(Request<B>) -> Request<B> + Clone {
+    move |mut request| {
+        if LOGS_PATHS.contains(&request.uri().path()) {
+            request
+                .headers_mut()
+                .insert(DD_CURRENT_TIMESTAMP_HEADER.clone(), HeaderValue::from(clock()));
+        }
+
+        request
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use http::Request;
 
-    use super::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info};
+    use super::{
+        for_resolved_endpoint, with_allow_arbitrary_tags, with_logs_current_timestamp, with_version_info,
+        UnixMillisClock,
+    };
     use crate::common::datadog::endpoints::ResolvedEndpoint;
 
     #[test]
@@ -116,7 +173,7 @@ mod tests {
         // the request's scheme/host/port are replaced with the endpoint's and the API key is attached.
         let endpoint = ResolvedEndpoint::from_raw_endpoint("http://proxy.example.com:8080", "secret-api-key")
             .expect("endpoint should resolve");
-        let mut middleware = for_resolved_endpoint(endpoint);
+        let middleware = for_resolved_endpoint(endpoint);
 
         let request = Request::builder()
             .uri("/api/v2/series")
@@ -139,7 +196,7 @@ mod tests {
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
             .expect("endpoint should resolve");
         let default_authority = endpoint.endpoint().authority().to_string();
-        let mut middleware = for_resolved_endpoint(endpoint);
+        let middleware = for_resolved_endpoint(endpoint);
 
         let cases = [
             ("/api/v2/logs", "agent-http-intake.logs.datadoghq.com"),
@@ -168,7 +225,7 @@ mod tests {
         // the endpoint's own authority instead of a derived intake host.
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://custom.example.com", "fake-api-key")
             .expect("endpoint should resolve");
-        let mut middleware = for_resolved_endpoint(endpoint);
+        let middleware = for_resolved_endpoint(endpoint);
 
         for path in ["/api/v2/logs", "/api/v0.2/traces"] {
             let request = Request::builder().uri(path).body(()).expect("request should build");
@@ -179,6 +236,96 @@ mod tests {
                 Some("custom.example.com"),
                 "{path}"
             );
+        }
+    }
+
+    #[test]
+    fn for_resolved_endpoint_prepends_endpoint_base_path() {
+        // An endpoint with a base path keeps that path, and the request path is appended to it. A trailing slash on the
+        // base path gives a single `/`.
+        for raw_endpoint in ["https://proxy.example.com/prefix", "https://proxy.example.com/prefix/"] {
+            let endpoint =
+                ResolvedEndpoint::from_raw_endpoint(raw_endpoint, "fake-api-key").expect("endpoint should resolve");
+            let middleware = for_resolved_endpoint(endpoint);
+
+            for path in ["/api/v2/series", "/api/v2/logs", "/api/v0.2/traces"] {
+                let request = Request::builder().uri(path).body(()).expect("request should build");
+                let request = middleware(request);
+
+                assert_eq!(
+                    request.uri().to_string(),
+                    format!("https://proxy.example.com/prefix{path}"),
+                    "{raw_endpoint} {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn for_resolved_endpoint_without_base_path_keeps_request_path() {
+        // An endpoint with no path, or only `/`, uses the request path unchanged, with no `//`.
+        for raw_endpoint in ["https://proxy.example.com", "https://proxy.example.com/"] {
+            let endpoint =
+                ResolvedEndpoint::from_raw_endpoint(raw_endpoint, "fake-api-key").expect("endpoint should resolve");
+            let middleware = for_resolved_endpoint(endpoint);
+
+            let request = Request::builder()
+                .uri("/api/v2/series")
+                .body(())
+                .expect("request should build");
+            let request = middleware(request);
+
+            assert_eq!(
+                request.uri().to_string(),
+                "https://proxy.example.com/api/v2/series",
+                "{raw_endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn for_resolved_endpoint_with_base_path_keeps_request_query() {
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://proxy.example.com/prefix", "fake-api-key")
+            .expect("endpoint should resolve");
+        let middleware = for_resolved_endpoint(endpoint);
+
+        let request = Request::builder()
+            .uri("/api/v1/check_run?foo=bar")
+            .body(())
+            .expect("request should build");
+        let request = middleware(request);
+
+        assert_eq!(request.uri().path(), "/prefix/api/v1/check_run");
+        assert_eq!(request.uri().query(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn for_resolved_endpoint_with_base_path_routes_to_intake_authorities_without_base_path() {
+        // The authority is selected from the request path, so a base path on an official Datadog endpoint doesn't
+        // prevent routing to the logs and traces intake hosts. The base path belongs to the configured endpoint, so it
+        // isn't added to the path on a derived intake host. Other requests keep the base path.
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com/prefix", "fake-api-key")
+            .expect("endpoint should resolve");
+        let endpoint_authority = endpoint.endpoint().authority().to_string();
+        let middleware = for_resolved_endpoint(endpoint);
+
+        let default_authority = endpoint_authority.as_str();
+        let cases = [
+            ("/api/v2/logs", "agent-http-intake.logs.datadoghq.com", "/api/v2/logs"),
+            ("/api/v0.2/traces", "trace.agent.datadoghq.com", "/api/v0.2/traces"),
+            ("/api/v2/series", default_authority, "/prefix/api/v2/series"),
+        ];
+
+        for (path, expected_authority, expected_path) in cases {
+            let request = Request::builder().uri(path).body(()).expect("request should build");
+            let request = middleware(request);
+
+            assert_eq!(
+                request.uri().authority().map(|authority| authority.as_str()),
+                Some(expected_authority),
+                "{path}"
+            );
+            assert_eq!(request.uri().path(), expected_path, "{path}");
         }
     }
 
@@ -242,5 +389,46 @@ mod tests {
         let request = middleware(request);
 
         assert!(request.headers().get("allow-arbitrary-tag-value").is_none());
+    }
+
+    fn fixed_clock(now_ms: u64) -> UnixMillisClock {
+        Arc::new(move || now_ms)
+    }
+
+    fn current_timestamp(request: &Request<()>) -> Option<&str> {
+        request
+            .headers()
+            .get("dd-current-timestamp")
+            .map(|value| value.to_str().expect("header should be ASCII"))
+    }
+
+    #[test]
+    fn logs_current_timestamp_is_set_on_logs_paths_only() {
+        let middleware = with_logs_current_timestamp(fixed_clock(1_700_000_000_123));
+
+        for path in ["/api/v2/logs", "/v1/input"] {
+            let request = middleware(Request::builder().uri(path).body(()).expect("request should build"));
+            assert_eq!(current_timestamp(&request), Some("1700000000123"), "{path}");
+        }
+
+        for path in ["/api/v2/series", "/api/v0.2/traces", "/api/v2/logsx"] {
+            let request = middleware(Request::builder().uri(path).body(()).expect("request should build"));
+            assert_eq!(current_timestamp(&request), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn logs_current_timestamp_replaces_an_existing_value() {
+        let middleware = with_logs_current_timestamp(fixed_clock(1_700_000_000_123));
+        let request = Request::builder()
+            .uri("http://intake.example.com/api/v2/logs")
+            .header("dd-current-timestamp", "1")
+            .body(())
+            .expect("request should build");
+
+        let request = middleware(request);
+
+        assert_eq!(request.headers().get_all("dd-current-timestamp").iter().count(), 1);
+        assert_eq!(current_timestamp(&request), Some("1700000000123"));
     }
 }

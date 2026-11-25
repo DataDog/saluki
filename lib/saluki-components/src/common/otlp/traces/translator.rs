@@ -20,11 +20,13 @@ use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::resolve_source_from_attributes;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
-    otel_span_to_dd_span, otel_span_to_dd_span_v1, otlp_value_to_string, SpanConversion, SpanNaming,
+    otel_span_to_dd_span, otel_span_to_dd_span_v1, SpanConversion, SpanNaming,
 };
 use crate::common::otlp::util::{
-    get_string_attribute, set_resource_attributes, write_infra_tag_attributes, SourceKind,
+    get_string_attribute, is_datadog_container_tag_attribute, resolve_otlp_trace_container_tags,
+    set_resource_attributes, write_infra_tag_attributes, SourceKind,
 };
+use crate::common::otlp::value::otlp_value_to_string;
 use crate::common::otlp::Metrics;
 
 const DATADOG_HOSTNAME_ATTR: &str = "datadog.host.name";
@@ -74,6 +76,8 @@ struct OtlpResourceMeta {
     tracer_version: MetaString,
     /// All resource attributes as a typed map (for `Trace::attributes`).
     attributes: Arc<FastHashMap<MetaString, AttributeValue>>,
+    /// Container tags resolved from the resource attributes and the enriched tags, as `key:value` tags.
+    container_tags: Option<Arc<Vec<MetaString>>>,
     /// Enriched tags that span conversion must see as resource attributes, so they reach every span's meta.
     span_attributes: Vec<otlp_common::KeyValue>,
 }
@@ -153,6 +157,11 @@ fn extract_resource_meta(
         span_attributes = write_infra_tag_attributes(infra_tags, promotion, interner, &mut attr_map);
     }
 
+    // Container tags need the order and the arrays of the sender's attributes, which `attr_map` has lost.
+    let container_tags = Some(resolve_otlp_trace_container_tags(attributes, &attr_map))
+        .filter(|tags| !tags.is_empty())
+        .map(Arc::new);
+
     OtlpResourceMeta {
         env,
         hostname,
@@ -161,6 +170,7 @@ fn extract_resource_meta(
         language_name,
         tracer_version,
         attributes: Arc::new(attr_map),
+        container_tags,
         span_attributes,
     }
 }
@@ -383,6 +393,15 @@ impl OtlpTracesTranslator {
             string_builder,
         );
 
+        // Datadog-convention container tag keys, such as `kube_namespace`, are consumed as container tags before span
+        // conversion, so they never reach span meta. `resource_meta` already holds them for the trace's container
+        // tags, so only the resource that span conversion sees drops them. The V1 receive path doesn't consume them.
+        if !receive_v1 {
+            resource
+                .attributes
+                .retain(|attribute| !is_datadog_container_tag_attribute(attribute));
+        }
+
         // Span conversion maps resource attributes onto every span, so it must see the enriched custom tags too.
         set_resource_attributes(
             &mut resource.attributes,
@@ -393,10 +412,15 @@ impl OtlpTracesTranslator {
         let trace_count_hint = resource_spans.scope_spans.len();
         traces_by_id.reserve(trace_count_hint);
 
+        // The sender's SDK identity, from before enrichment could replace those attributes with its own tags.
+        let spans_received = metrics
+            .spans_received()
+            .for_client(&resource_meta.language_name, &resource_meta.tracer_version);
+
         for scope_spans in resource_spans.scope_spans {
             let scope = scope_spans.scope;
             let scope_ref = scope.as_ref();
-            metrics.spans_received().increment(scope_spans.spans.len() as u64);
+            spans_received.increment(scope_spans.spans.len() as u64);
             for span in scope_spans.spans {
                 let trace_id = convert_trace_id(&span.trace_id);
                 let trace_id_high = convert_trace_id_high(&span.trace_id);
@@ -473,7 +497,7 @@ impl OtlpTracesTranslator {
                 if let Some(priority) = dd_span
                     .attributes
                     .get(SAMPLING_PRIORITY_METRIC_KEY)
-                    .and_then(AttributeValue::as_num)
+                    .and_then(AttributeValue::as_f64)
                 {
                     entry.priority = Some(priority as i32);
                 }
@@ -562,6 +586,7 @@ impl Iterator for OtlpTraceEventsIter {
             trace.payload.language_name = self.resource_meta.language_name.clone();
             trace.payload.tracer_version = self.resource_meta.tracer_version.clone();
             trace.payload.receiver = Some(Arc::clone(&self.receiver));
+            trace.payload.container_tags = self.resource_meta.container_tags.clone();
             trace.attributes = Arc::clone(&self.resource_meta.attributes);
 
             return Some(Event::Trace(trace));
@@ -618,7 +643,7 @@ pub(crate) fn translate_custom_status_code(translator: &mut OtlpTracesTranslator
     traces[0].spans()[0]
         .attributes
         .get("http.status_code")
-        .and_then(AttributeValue::as_num)
+        .and_then(AttributeValue::as_f64)
 }
 
 /// Returns a registry document that maps `http.status_code` from `custom.status_code`.
@@ -639,6 +664,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
     use saluki_core::components::ComponentContext;
+    use saluki_core::data_model::event::trace::AttributeValueExt;
     use saluki_core::data_model::tags::TagSet;
     use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
     use saluki_metrics::test::TestRecorder;
@@ -868,7 +894,7 @@ mod tests {
             traces[0].spans()[0]
                 .attributes
                 .get("http.status_code")
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
         };
 
         assert_eq!(
@@ -1160,29 +1186,277 @@ mod tests {
         assert_eq!(payload.tracer_version.as_ref(), "1.0");
     }
 
-    #[test]
-    fn translate_spans_maps_no_image_tag_from_container_image_tags() {
-        let image_tags = KeyValue {
-            key: "container.image.tags".to_string(),
+    fn array_kv(key: &str, values: Vec<Value>) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
             value: Some(AnyValue {
                 value: Some(Value::ArrayValue(ArrayValue {
-                    values: vec![AnyValue {
-                        value: Some(Value::StringValue("v1".to_string())),
-                    }],
+                    values: values
+                        .into_iter()
+                        .map(|value| AnyValue { value: Some(value) })
+                        .collect(),
                 })),
             }),
-        };
+        }
+    }
+
+    fn string_array_kv(key: &str, values: &[&str]) -> KeyValue {
+        array_kv(
+            key,
+            values
+                .iter()
+                .map(|value| Value::StringValue((*value).to_string()))
+                .collect(),
+        )
+    }
+
+    /// Returns the container tags of the only trace translated from a resource with `attributes`, sorted.
+    fn container_tags(attributes: Vec<KeyValue>) -> Vec<String> {
+        let rs = build_resource_spans(attributes, vec![span([1u8; 16], [1u8; 8], vec![])]);
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        let mut tags: Vec<String> = traces[0]
+            .payload
+            .resolved_container_tags()
+            .iter()
+            .map(|tag| tag.as_ref().to_string())
+            .collect();
+        tags.sort();
+        tags
+    }
+
+    #[test]
+    fn translate_spans_maps_container_image_tags_to_the_image_tag_container_tag() {
+        let tags = container_tags(vec![
+            string_array_kv("container.image.tags", &["v1", "latest"]),
+            string_kv("container.name", "web"),
+        ]);
+        assert_eq!(tags, vec!["container_name:web", "image_tag:v1"]);
+    }
+
+    #[test]
+    fn translate_spans_resolves_the_image_tag_like_the_reference() {
+        let image_tags = |values: &[&str]| string_array_kv("container.image.tags", values);
+        let custom = || string_kv("datadog.container.tag.image_tag", "custom");
+        let pre_mapped = || string_kv("image_tag", "pre-mapped");
+        let old = || string_kv("container.image.tag", "old");
+
+        // (resource attributes in order, expected `image_tag` value)
+        let cases: Vec<(&str, Vec<KeyValue>, Option<&str>)> = vec![
+            (
+                "first of several elements",
+                vec![image_tags(&["v1", "latest"])],
+                Some("v1"),
+            ),
+            (
+                "scalar string",
+                vec![string_kv("container.image.tags", "v1")],
+                Some("v1"),
+            ),
+            ("empty array", vec![image_tags(&[])], None),
+            ("empty scalar", vec![string_kv("container.image.tags", "")], None),
+            (
+                "empty first element is not skipped",
+                vec![image_tags(&["", "latest"])],
+                None,
+            ),
+            (
+                "non-string first element is not skipped",
+                vec![array_kv(
+                    "container.image.tags",
+                    vec![Value::IntValue(1), Value::StringValue("latest".to_string())],
+                )],
+                None,
+            ),
+            (
+                "older tag first wins over later tags",
+                vec![old(), image_tags(&["new"])],
+                Some("old"),
+            ),
+            (
+                "tags first wins over later older tag",
+                vec![image_tags(&["new"]), old()],
+                Some("new"),
+            ),
+            (
+                "tags beat custom, custom first",
+                vec![custom(), image_tags(&["v1"])],
+                Some("v1"),
+            ),
+            (
+                "tags beat custom, tags first",
+                vec![image_tags(&["v1"]), custom()],
+                Some("v1"),
+            ),
+            (
+                "tags beat pre-mapped, pre-mapped first",
+                vec![pre_mapped(), image_tags(&["v1"])],
+                Some("v1"),
+            ),
+            (
+                "tags beat pre-mapped, tags first",
+                vec![image_tags(&["v1"]), pre_mapped()],
+                Some("v1"),
+            ),
+            ("custom beats pre-mapped", vec![pre_mapped(), custom()], Some("custom")),
+            (
+                "invalid tags leave the pre-mapped tag",
+                vec![image_tags(&[""]), pre_mapped()],
+                Some("pre-mapped"),
+            ),
+            (
+                "invalid tags leave the custom tag",
+                vec![image_tags(&[]), custom()],
+                Some("custom"),
+            ),
+            (
+                "invalid tags leave a later older tag",
+                vec![image_tags(&[""]), old()],
+                Some("old"),
+            ),
+        ];
+
+        for (name, attributes, expected) in cases {
+            let image_tag = container_tags(attributes)
+                .into_iter()
+                .find_map(|tag| tag.strip_prefix("image_tag:").map(str::to_string));
+            assert_eq!(image_tag.as_deref(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn translate_spans_keeps_container_image_tags_on_spans_and_in_trace_attributes() {
         let rs = build_resource_spans(
-            vec![image_tags, string_kv("container.name", "web")],
+            vec![string_array_kv("container.image.tags", &["v1", "latest"])],
             vec![span([1u8; 16], [1u8; 8], vec![])],
         );
 
         let traces = translate(rs);
         assert_eq!(traces.len(), 1);
-        let mut tags = TagSet::default();
-        extract_container_tags_from_attributes_map(&traces[0].attributes, &mut tags);
-        let tags: Vec<_> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
-        assert_eq!(tags, vec!["container_name:web"]);
+
+        // Selecting the first element for the container tag doesn't rewrite the attribute itself.
+        let span_value = span_attr(&traces[0], "container.image.tags").expect("the span keeps the attribute");
+        assert!(
+            span_value.contains("v1") && span_value.contains("latest"),
+            "got {span_value}"
+        );
+        let trace_value = attr(&traces[0], "container.image.tags").expect("the trace keeps the attribute");
+        assert!(
+            trace_value.contains("v1") && trace_value.contains("latest"),
+            "got {trace_value}"
+        );
+    }
+
+    #[test]
+    fn translate_spans_keeps_the_enriched_value_of_an_overwritten_convention_tag() {
+        // A workload tag can take the name of a semantic-convention key, replacing the sender's value in the typed
+        // attributes. The resolved container tags must keep the enriched value, so they can't disagree with
+        // `Trace::attributes`.
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("abc123")),
+            &["cloud.region:enriched"],
+        );
+        let rs = build_resource_spans(
+            vec![
+                string_kv("container.id", "abc123"),
+                string_kv("cloud.region", "sender-r"),
+            ],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider, ContainerTagPromotion::Off, true, rs);
+        assert_eq!(traces.len(), 1);
+
+        assert_eq!(attr(&traces[0], "cloud.region").as_deref(), Some("enriched"));
+        let tags: Vec<&str> = traces[0]
+            .payload
+            .resolved_container_tags()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect();
+        assert!(tags.contains(&"region:enriched"), "got {tags:?}");
+        assert!(
+            !tags.iter().any(|tag| tag.starts_with("region:sender-r")),
+            "got {tags:?}"
+        );
+    }
+
+    #[test]
+    fn translate_spans_keeps_an_enriched_image_tag_at_its_attribute_position() {
+        // Enrichment replaces the value of `container.image.tag`, not its place among the sender's attributes, so
+        // the first valid image tag still wins in attribute order.
+        let enrich_image_tag = || {
+            TestWorkloadProvider::with_entity(
+                EntityId::Container(MetaString::from("abc123")),
+                &["container.image.tag:enriched"],
+            )
+        };
+        let image_tag_of = |attributes: Vec<KeyValue>| {
+            let rs = build_resource_spans(attributes, vec![span([1u8; 16], [1u8; 8], vec![])]);
+            let traces = translate_with_enrichment(enrich_image_tag(), ContainerTagPromotion::Off, true, rs);
+            assert_eq!(traces.len(), 1);
+            traces[0]
+                .payload
+                .resolved_container_tags()
+                .iter()
+                .find_map(|tag| tag.as_ref().strip_prefix("image_tag:").map(str::to_string))
+        };
+        let container = || string_kv("container.id", "abc123");
+
+        // The enriched tag took the place of the sender's, which came before the array.
+        assert_eq!(
+            image_tag_of(vec![
+                container(),
+                string_kv("container.image.tag", "sender"),
+                string_array_kv("container.image.tags", &["later"]),
+            ])
+            .as_deref(),
+            Some("enriched")
+        );
+        // The array came first, so it still wins.
+        assert_eq!(
+            image_tag_of(vec![
+                container(),
+                string_array_kv("container.image.tags", &["first"]),
+                string_kv("container.image.tag", "sender"),
+            ])
+            .as_deref(),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn translate_spans_keeps_an_enriched_replacement_of_the_image_tags_array() {
+        // With promotion Off or Duplicate, a workload tag named `container.image.tags` replaces the sender's
+        // array in the typed attributes and on spans. The replacement is a scalar string, so it must win over the
+        // sender's first element and agree with `Trace::attributes`.
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("abc123")),
+            &["container.image.tags:enriched"],
+        );
+        let rs = build_resource_spans(
+            vec![
+                string_kv("container.id", "abc123"),
+                string_array_kv("container.image.tags", &["sender", "latest"]),
+            ],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider, ContainerTagPromotion::Off, true, rs);
+        assert_eq!(traces.len(), 1);
+        // The typed attributes hold the replacement, not the stringified array.
+        assert_eq!(attr(&traces[0], "container.image.tags").as_deref(), Some("enriched"));
+        let tags: Vec<&str> = traces[0]
+            .payload
+            .resolved_container_tags()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect();
+        assert!(tags.contains(&"image_tag:enriched"), "got {tags:?}");
+        assert!(
+            !tags.iter().any(|tag| tag.starts_with("image_tag:sender")),
+            "got {tags:?}"
+        );
     }
 
     #[test]
@@ -1240,6 +1514,96 @@ mod tests {
         // convention key is consumed as a container tag and must not be duplicated onto spans.
         assert_eq!(span_attr(&traces[0], "team").as_deref(), Some("checkout"));
         assert_eq!(span_attr(&traces[0], "kube_namespace"), None);
+
+        // The enriched convention tag is a container tag, and the plain custom tag is not.
+        let tags: Vec<&str> = traces[0]
+            .payload
+            .resolved_container_tags()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect();
+        assert!(tags.contains(&"kube_namespace:payments"), "got {tags:?}");
+        assert!(!tags.iter().any(|tag| tag.starts_with("team:")), "got {tags:?}");
+    }
+
+    /// Resource attributes holding the same container identity under Datadog and OTel convention keys.
+    fn container_convention_resource_attributes() -> Vec<KeyValue> {
+        vec![
+            string_kv("kube_namespace", "payments"),
+            string_kv("pod_name", "web-1"),
+            string_kv("container_id", "abc123"),
+            string_kv("container.id", "abc123"),
+            string_kv("k8s.namespace.name", "payments"),
+        ]
+    }
+
+    fn translate_with_settings(settings: OtlpTracesSettings, resource_spans: ResourceSpans) -> Vec<Trace> {
+        let mut translator = OtlpTracesTranslator::new(
+            settings,
+            MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .filter_map(Event::try_into_trace)
+            .collect()
+    }
+
+    #[test]
+    fn translate_spans_consumes_datadog_convention_container_keys_before_span_conversion() {
+        let mut resource_attributes = container_convention_resource_attributes();
+        // Generic-looking names are Datadog-convention keys too, so a string value is consumed like any other.
+        resource_attributes.push(string_kv("region", "us-east-1"));
+        resource_attributes.push(string_kv("zone", "us-east-1a"));
+        // Only non-empty string values are consumed as container tags.
+        resource_attributes.push(int_kv("cloud_provider", 7));
+        resource_attributes.push(string_kv("kube_node", ""));
+        let rs = build_resource_spans(resource_attributes, vec![span([1u8; 16], [1u8; 8], vec![])]);
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+
+        // Datadog convention keys stay out of span meta, while OTel convention keys still reach it.
+        assert_eq!(span_attr(&traces[0], "kube_namespace"), None);
+        assert_eq!(span_attr(&traces[0], "pod_name"), None);
+        assert_eq!(span_attr(&traces[0], "container_id"), None);
+        assert_eq!(span_attr(&traces[0], "container.id").as_deref(), Some("abc123"));
+        assert_eq!(span_attr(&traces[0], "k8s.namespace.name").as_deref(), Some("payments"));
+        assert_eq!(span_attr(&traces[0], "region"), None);
+        assert_eq!(span_attr(&traces[0], "zone"), None);
+        assert_eq!(span_attr(&traces[0], "cloud_provider").as_deref(), Some("7"));
+        assert_eq!(span_attr(&traces[0], "kube_node").as_deref(), Some(""));
+
+        // The trace's own attributes keep them, so the encoder still emits them as container tags.
+        assert_eq!(attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));
+        assert_eq!(attr(&traces[0], "pod_name").as_deref(), Some("web-1"));
+        assert_eq!(attr(&traces[0], "container_id").as_deref(), Some("abc123"));
+        let mut tags = TagSet::default();
+        extract_container_tags_from_attributes_map(&traces[0].attributes, &mut tags);
+        let tags: Vec<_> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        assert!(tags.contains(&"kube_namespace:payments".to_string()), "got {tags:?}");
+        assert!(tags.contains(&"pod_name:web-1".to_string()), "got {tags:?}");
+    }
+
+    #[test]
+    fn translate_spans_leaves_container_keys_on_spans_on_the_v1_receive_path() {
+        let rs = build_resource_spans(
+            container_convention_resource_attributes(),
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_settings(
+            OtlpTracesSettings {
+                disable_receive_resource_spans_v2: true,
+                ..translator_config()
+            },
+            rs,
+        );
+        assert_eq!(traces.len(), 1);
+        assert_eq!(span_attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));
+        assert_eq!(span_attr(&traces[0], "pod_name").as_deref(), Some("web-1"));
+        assert_eq!(span_attr(&traces[0], "container_id").as_deref(), Some("abc123"));
     }
 
     #[test]
@@ -1265,6 +1629,13 @@ mod tests {
         );
 
         // The unprefixed form reaches span meta; the prefixed copy is consumed as a container tag.
+        let tags: Vec<&str> = traces[0]
+            .payload
+            .resolved_container_tags()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect();
+        assert!(tags.contains(&"team:checkout"), "got {tags:?}");
         assert_eq!(span_attr(&traces[0], "team").as_deref(), Some("checkout"));
         assert_eq!(span_attr(&traces[0], "datadog.container.tag.team"), None);
     }
@@ -1381,6 +1752,143 @@ mod tests {
             ("message_type", "otlp_spans"),
         ];
         assert_eq!(recorder.counter(("component_events_dropped_total", span_tags)), Some(3));
+    }
+
+    /// Translates a batch of two spans from a resource with the given attributes and returns the span counts recorded
+    /// for the given client tags.
+    fn spans_received_for(
+        resource_attrs: Vec<KeyValue>, client_tags: &'static [(&'static str, &'static str)],
+    ) -> Option<u64> {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let mut translator = OtlpTracesTranslator::new(
+            OtlpTracesSettings {
+                string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                ..traces_settings()
+            },
+            5000,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let trace = [0xAAu8; 16];
+        let rs = build_resource_spans(
+            resource_attrs,
+            vec![span(trace, [1u8; 8], vec![]), span(trace, [2u8; 8], vec![])],
+        );
+        let _ = translator.translate_spans(rs, &metrics).count();
+
+        recorder.counter(("component_events_received_total", client_tags))
+    }
+
+    /// The span counter carries the sending client's language and `otlp-`-prefixed SDK version.
+    /// https://github.com/DataDog/saluki/issues/2391
+    #[test]
+    fn translate_spans_tags_received_spans_with_the_client_language_and_version() {
+        let received = spans_received_for(
+            vec![
+                string_kv("telemetry.sdk.language", "Go"),
+                string_kv("telemetry.sdk.version", "1.2.3"),
+            ],
+            &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("message_type", "otlp_spans"),
+                ("lang", "go"),
+                ("tracer_version", "otlp-1.2.3"),
+                ("endpoint_version", "opentelemetry_grpc_v1"),
+            ],
+        );
+        assert_eq!(received, Some(2));
+    }
+
+    /// Infrastructure enrichment can write a tag under the same key as an SDK attribute, replacing the sender's value
+    /// on the resource. The counter must still name the sender.
+    #[test]
+    fn translate_spans_tags_received_spans_with_the_sender_sdk_when_enrichment_uses_the_same_keys() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("abc123")),
+            &["telemetry.sdk.language:enriched", "telemetry.sdk.version:9.9.9"],
+        );
+        let mut translator = OtlpTracesTranslator::new(
+            OtlpTracesSettings {
+                infra_attributes_enabled: true,
+                container_tag_promotion: ContainerTagPromotion::Off,
+                ..translator_config()
+            },
+            MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(provider)),
+        );
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let trace = [0xBBu8; 16];
+        let rs = build_resource_spans(
+            vec![
+                string_kv("container.id", "abc123"),
+                string_kv("telemetry.sdk.language", "go"),
+                string_kv("telemetry.sdk.version", "1.2.3"),
+            ],
+            vec![span(trace, [1u8; 8], vec![]), span(trace, [2u8; 8], vec![])],
+        );
+        let _ = translator.translate_spans(rs, &metrics).count();
+
+        let sender: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("message_type", "otlp_spans"),
+            ("lang", "go"),
+            ("tracer_version", "otlp-1.2.3"),
+            ("endpoint_version", "opentelemetry_grpc_v1"),
+        ];
+        let enriched: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("message_type", "otlp_spans"),
+            ("lang", "enriched"),
+            ("tracer_version", "otlp-9.9.9"),
+            ("endpoint_version", "opentelemetry_grpc_v1"),
+        ];
+        assert_eq!(recorder.counter(("component_events_received_total", sender)), Some(2));
+        assert_eq!(recorder.counter(("component_events_received_total", enriched)), None);
+    }
+
+    /// Without `telemetry.sdk.language` the `lang` tag is left off.
+    #[test]
+    fn translate_spans_omits_lang_without_an_sdk_language() {
+        let received = spans_received_for(
+            vec![string_kv("telemetry.sdk.version", "1.2.3")],
+            &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("message_type", "otlp_spans"),
+                ("tracer_version", "otlp-1.2.3"),
+                ("endpoint_version", "opentelemetry_grpc_v1"),
+            ],
+        );
+        assert_eq!(received, Some(2));
+    }
+
+    /// Without `telemetry.sdk.version` the tracer version is still emitted, as a bare `otlp-`.
+    #[test]
+    fn translate_spans_keeps_the_otlp_tracer_version_prefix_without_an_sdk_version() {
+        let received = spans_received_for(
+            vec![string_kv("telemetry.sdk.language", "go")],
+            &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("message_type", "otlp_spans"),
+                ("lang", "go"),
+                ("tracer_version", "otlp-"),
+                ("endpoint_version", "opentelemetry_grpc_v1"),
+            ],
+        );
+        assert_eq!(received, Some(2));
     }
 
     /// A zero-ID span in one trace must not affect a well-formed trace in the same batch.

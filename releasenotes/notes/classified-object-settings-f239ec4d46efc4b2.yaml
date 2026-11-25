@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    The startup compatibility check now logs a warning when ``use_v3_api.distributions.endpoints`` is set while the
+    DogStatsD pipeline is active. Agent Data Plane doesn't support this setting, but an object-valued setting that it
+    doesn't model wasn't recognized, so the check missed it.

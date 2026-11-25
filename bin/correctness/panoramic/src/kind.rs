@@ -7,11 +7,10 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::events::TestEvent;
-use crate::utils::strip_ansi_codes;
 
 pub const DEFAULT_CLUSTER_NAME: &str = "saluki-correctness";
 
-/// Manages the lifecycle of a kind cluster used for kind-runtime correctness tests.
+/// Manages the lifecycle of a kind cluster used by the pod backend.
 ///
 /// On construction, ensures a cluster is running (creating one if needed) and loads
 /// all required images into it. On teardown, optionally deletes the cluster.
@@ -74,6 +73,7 @@ async fn check_kind_installed() -> Result<(), GenericError> {
 
 async fn cluster_exists(name: &str) -> Result<bool, GenericError> {
     let output = Command::new("kind")
+        .kill_on_drop(true)
         .args(["get", "clusters"])
         .output()
         .await
@@ -84,6 +84,7 @@ async fn cluster_exists(name: &str) -> Result<bool, GenericError> {
 
 async fn create_cluster(name: &str) -> Result<(), GenericError> {
     let output = Command::new("kind")
+        .kill_on_drop(true)
         .args(["create", "cluster", "--name", name, "--wait", "120s"])
         .output()
         .await
@@ -112,6 +113,7 @@ async fn create_cluster(name: &str) -> Result<(), GenericError> {
 
 async fn delete_cluster(name: &str) -> Result<(), GenericError> {
     let status = Command::new("kind")
+        .kill_on_drop(true)
         .args(["delete", "cluster", "--name", name])
         .status()
         .await
@@ -124,6 +126,7 @@ async fn delete_cluster(name: &str) -> Result<(), GenericError> {
 
 async fn load_image(cluster_name: &str, image: &str) -> Result<(), GenericError> {
     let output = Command::new("kind")
+        .kill_on_drop(true)
         .args(["load", "docker-image", image, "--name", cluster_name])
         .output()
         .await
@@ -144,6 +147,7 @@ async fn load_image(cluster_name: &str, image: &str) -> Result<(), GenericError>
 /// Returns true if the image is already present in the local Docker daemon.
 async fn image_present_locally(image: &str) -> Result<bool, GenericError> {
     let status = Command::new("docker")
+        .kill_on_drop(true)
         .args(["image", "inspect", "--format", "{{.Id}}", image])
         .output()
         .await
@@ -153,6 +157,7 @@ async fn image_present_locally(image: &str) -> Result<bool, GenericError> {
 
 async fn pull_image(image: &str) -> Result<(), GenericError> {
     let status = Command::new("docker")
+        .kill_on_drop(true)
         .args(["pull", image])
         .status()
         .await
@@ -203,4 +208,23 @@ async fn load_images(
     }
 
     Ok(())
+}
+
+/// Removes ANSI escape sequences (`ESC[...letter`) from a byte slice.
+fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == 0x1b && input.get(i + 1) == Some(&b'[') {
+            i += 2;
+            while i < input.len() && !input[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            i += 1;
+        } else {
+            out.push(input[i]);
+            i += 1;
+        }
+    }
+    out
 }

@@ -34,9 +34,14 @@ enum Operation {
     /// Checks that something accepts a connection at the address.
     Probe { address: Address },
 
-    /// Writes standard input to the address as given: one connection, or one datagram.
+    /// Writes the payload to the address as given: one connection, or one datagram. The payload is standard input,
+    /// or the bytes of `--payload-hex`.
     Send {
         address: Address,
+
+        /// The payload as hex digits, in either case. Standard input is not read when this is given.
+        #[arg(long = "payload-hex", value_parser = parse_hex)]
+        payload_hex: Option<HexPayload>,
 
         /// Standard input, read before the runtime starts.
         #[arg(skip)]
@@ -59,9 +64,17 @@ enum Operation {
 fn main() -> ExitCode {
     let mut cli = Cli::parse();
     // Read the payload first, so the operation on the runtime does no blocking I/O.
-    if let Operation::Send { payload, .. } = &mut cli.operation {
-        if let Err(source) = io::stdin().read_to_end(payload) {
-            return failure(Error::Input { source });
+    if let Operation::Send {
+        payload, payload_hex, ..
+    } = &mut cli.operation
+    {
+        match payload_hex.take() {
+            Some(HexPayload(bytes)) => *payload = bytes,
+            None => {
+                if let Err(source) = io::stdin().read_to_end(payload) {
+                    return failure(Error::Input { source });
+                }
+            }
         }
     }
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -95,7 +108,7 @@ impl Cli {
         let limit = self.deadline;
         match self.operation {
             Operation::Probe { address } => panoramic_courier::probe(&address, limit).await,
-            Operation::Send { address, payload } => panoramic_courier::send(&address, &payload, limit).await,
+            Operation::Send { address, payload, .. } => panoramic_courier::send(&address, &payload, limit).await,
             Operation::Http { address, path } => {
                 let response = panoramic_courier::http_get(&address, &path, limit).await?;
                 let mut stdout = tokio::io::stdout();
@@ -110,6 +123,23 @@ impl Cli {
             Operation::Follow { path } => panoramic_courier::follow(&path, limit, &mut tokio::io::stdout()).await,
         }
     }
+}
+
+/// A payload given as hex digits. A newtype, so that clap reads it as one value and not as a repeated flag.
+#[derive(Clone, Debug, PartialEq)]
+struct HexPayload(Vec<u8>);
+
+fn parse_hex(s: &str) -> Result<HexPayload, String> {
+    if !s.len().is_multiple_of(2) {
+        return Err(format!("'{s}' has an odd number of hex digits"));
+    }
+    let digit = |(position, c): (usize, char)| {
+        c.to_digit(16)
+            .ok_or_else(|| format!("'{c}' at position {position} is not a hex digit"))
+    };
+    let digits = s.chars().enumerate().map(digit).collect::<Result<Vec<_>, _>>()?;
+    let bytes = digits.chunks(2).map(|pair| (pair[0] * 16 + pair[1]) as u8).collect();
+    Ok(HexPayload(bytes))
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -133,6 +163,15 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_hex_decodes_pairs_and_rejects_a_bad_digit() {
+        assert_eq!(parse_hex("6162"), Ok(HexPayload(b"ab".to_vec())));
+        assert_eq!(parse_hex("4A"), Ok(HexPayload(vec![0x4a])));
+        assert!(parse_hex("6").is_err());
+        let error = parse_hex("61zz").unwrap_err();
+        assert!(error.contains("position 2"), "{error}");
+    }
 
     #[test]
     fn rejects_bad_deadlines() {

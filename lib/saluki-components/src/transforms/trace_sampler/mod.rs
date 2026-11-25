@@ -13,6 +13,7 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use datadog_agent_apm::sampling::{RemoteSampling, SamplerSettings, TraceSamplingSubscription};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::trace::AttributeValueExt as _;
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
@@ -350,7 +351,7 @@ impl TraceSampler {
             if let Some(p) = root
                 .attributes
                 .get(SAMPLING_PRIORITY_METRIC_KEY)
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
             {
                 return Some(p as i32);
             }
@@ -359,7 +360,7 @@ impl TraceSampler {
         spans.iter().find_map(|span| {
             span.attributes
                 .get(SAMPLING_PRIORITY_METRIC_KEY)
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
                 .map(|p| p as i32)
         })
     }
@@ -1118,7 +1119,7 @@ mod tests {
                 .unwrap()
                 .attributes
                 .get(crate::common::datadog::TOP_LEVEL_KEY)
-                .and_then(AttributeValue::as_num)
+                .and_then(AttributeValue::as_f64)
         };
         assert_eq!(top_level(1), Some(1.0), "root spans are marked");
         assert_eq!(
@@ -1159,7 +1160,7 @@ mod tests {
             .unwrap()
             .attributes
             .get(crate::common::datadog::TOP_LEVEL_KEY)
-            .and_then(AttributeValue::as_num)
+            .and_then(AttributeValue::as_f64)
     }
 
     #[test]

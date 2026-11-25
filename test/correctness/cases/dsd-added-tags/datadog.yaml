@@ -7,12 +7,9 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
-# Point ourselves at the datadog-intake service.
-dd_url: "http://datadog-intake:2049"
-
 # Turn off UDP and listen on a UDS socket instead.
 dogstatsd_port: 0
-dogstatsd_socket: /airlock/metrics.sock
+dogstatsd_socket: "{{ self.endpoints.dogstatsd_uds.path }}"
 
 dogstatsd_origin_detection: false
 
@@ -48,7 +45,7 @@ dogstatsd_tags:
 # `dogstatsd_tags`, which the DSD source applies per-packet regardless of duration.
 expected_tags_duration: 1000m
 
-# Uncomment once `.datadog-agent-version` is 7.86.0 or later (https://github.com/DataDog/saluki/issues/3119). The core
-# agent adds an `infra_mode:basic` host tag, and neither DSD nor ADP should copy it onto metrics. Before 7.86.0, the
-# core agent's DSD still copies it, so this case would fail on the pinned version.
+# Uncomment once the Agent in `.datadog-agent-version.json` is 7.86.0 or later
+# (https://github.com/DataDog/saluki/issues/3119). The core agent adds an `infra_mode:basic` host tag, and neither DSD
+# nor ADP should copy it onto metrics. Before 7.86.0, the core agent's DSD still copies it, so this case would fail.
 # infrastructure_mode: basic

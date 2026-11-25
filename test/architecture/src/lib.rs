@@ -174,28 +174,27 @@ mod tests {
         assert_panoramic_module_names_none_of("steps", &BTreeSet::from(["participants".to_string()]));
     }
 
-    /// The core, participant type and step modules name no legacy module, so deleting the legacy runners leaves them
-    /// intact.
-    // TODO: remove this rule with the legacy runners.
+    /// The core, participant type and step modules name none of the binary's modules: the CLI, scheduling and
+    /// reports depend on them, and not the reverse.
     #[test]
-    fn panoramic_core_participants_and_steps_name_no_legacy_module() {
+    fn panoramic_core_participants_and_steps_name_no_binary_module() {
         let isolated = ["core", "participants", "steps"];
         let (src, modules) = panoramic();
-        let mut legacy: BTreeSet<String> = modules
+        let mut binary: BTreeSet<String> = modules
             .into_iter()
             .filter(|module| !isolated.contains(&module.as_str()))
             .collect();
-        // The crate root's imports from legacy modules are visible to every module below it as `crate::<name>`.
+        // The crate root's imports from binary modules are visible to every module below it as `crate::<name>`.
         let main = syn::parse_file(&std::fs::read_to_string(src.join("main.rs")).unwrap()).unwrap();
         let mut imported = BTreeSet::new();
         for item in &main.items {
             if let syn::Item::Use(item) = item {
-                bindings_from(&item.tree, &legacy, &mut Vec::new(), &mut imported);
+                bindings_from(&item.tree, &binary, &mut Vec::new(), &mut imported);
             }
         }
-        legacy.extend(imported);
+        binary.extend(imported);
         for module in isolated {
-            assert_panoramic_module_names_none_of(module, &legacy);
+            assert_panoramic_module_names_none_of(module, &binary);
         }
     }
 
