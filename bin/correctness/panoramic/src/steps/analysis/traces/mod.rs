@@ -14,6 +14,7 @@ use tracing::{error, info};
 use treediff::value::Key;
 
 use super::expectations::{ExpectedSpan, HeldTraces, TracesExpectations};
+use super::join_failures;
 use super::ratchet::{DiffKind, FieldDiff, KnownDifference, Ratchet};
 use crate::steps::analysis::TracesAnalysisOptions;
 use crate::steps::intake::CollectedData;
@@ -75,7 +76,8 @@ const STATS_PREFIX: &str = "stats.";
 /// Options for traces analysis, set in the `traces` section of a `compare` step.
 ///
 /// The expectations (`min_traces`, `min_spans`, `spans` and `min_stats_groups`) say what each side must hold. The
-/// step checks them before it compares the sides, and a known difference never excuses an unmet expectation.
+/// step checks them first, and still compares the sides when one is unmet. A known difference never excuses an unmet
+/// expectation.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesOptions {
@@ -269,27 +271,36 @@ impl TracesAnalyzer {
     ///
     /// If analysis fails, an error will be returned with specific details and the full list of mismatches.
     pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
+        // Each side must hold what the case expects: two sides that hold no spans and no stats are equal. An unmet
+        // expectation does not stop the comparison, so the failure reports both, with the expectations first.
+        let unmet = self
+            .options
+            .expectations
+            .check(
+                &HeldTraces {
+                    spans: &self.baseline_spans,
+                    traces: self.baseline_total_traces,
+                    stats_groups: self.baseline_trace_stats.len(),
+                },
+                &HeldTraces {
+                    spans: &self.comparison_spans,
+                    traces: self.comparison_total_traces,
+                    stats_groups: self.comparison_trace_stats.len(),
+                },
+            )
+            .err();
+        let compared = self.compare().err();
+        join_failures([unmet, compared])
+    }
+
+    /// Compares the spans, the stats and the SSI metadata of both sides.
+    fn compare(self) -> Result<(), (GenericError, Vec<String>)> {
         let mut error_count = 0;
         let mut diff_recorder = DifferenceRecorder::new(self.ignored_fields);
         let mut span_samples: Vec<String> = Vec::new();
         let mut stats_samples: Vec<String> = Vec::new();
         let mut all_span_details: Vec<String> = Vec::new();
         let mut all_stats_details: Vec<String> = Vec::new();
-
-        // Each side must hold what the case expects before we compare the sides: two sides that hold no spans and no
-        // stats are equal.
-        self.options.expectations.check(
-            &HeldTraces {
-                spans: &self.baseline_spans,
-                traces: self.baseline_total_traces,
-                stats_groups: self.baseline_trace_stats.len(),
-            },
-            &HeldTraces {
-                spans: &self.comparison_spans,
-                traces: self.comparison_total_traces,
-                stats_groups: self.comparison_trace_stats.len(),
-            },
-        )?;
 
         // We should have an identical number of traces and spans.
         if self.baseline_total_traces != self.comparison_total_traces {

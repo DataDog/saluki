@@ -517,7 +517,9 @@ cluster, with one node.
 `compare` checks that the two intakes match. Two intakes that hold nothing, or the same unrelated records, match too.
 A case for metrics or traces says what each intake must hold, in the `metrics` or `traces` section of the step, as a
 case for logs does in `logs`. The step checks the baseline and the comparison one at a time, before it compares them.
-A failure names the side and the expectation that it leaves unmet. A `metrics` section must set at least one field.
+A failure names the side and the expectation that it leaves unmet. An unmet expectation does not stop the step from
+comparing the sides: the failure lists the unmet expectations first, and then the differences. A `metrics` section must
+set at least one field.
 
 For metrics, `metrics` takes these fields:
 

@@ -468,9 +468,65 @@ mod tests {
                 .await;
         }
 
+        // The expectations fail two sides that hold only internal telemetry, and the comparison finds them equal.
+        let report = compare(EXPECTING_FIXTURE, &withheld, &withheld).await;
+        assert!(
+            report
+                .message
+                .starts_with("Expectations are unmet: 3 on the baseline and 3 on the comparison.\n"),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("Mismatch"), "{}", report.message);
+
         // Without expectations, two sides that hold only internal telemetry are equal.
         let report = compare(FIELDS, &withheld, &withheld).await;
         assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn an_unmet_metrics_expectation_still_reports_the_differences_between_the_sides() {
+        let baseline = with_internal(&fixture());
+
+        // The comparison lacks a series that the baseline holds.
+        let missing = with_internal(&fixture()[..1]);
+        let report = compare(EXPECTING_FIXTURE, &missing, &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.starts_with(
+                "Expectations are unmet: 0 on the baseline and 2 on the comparison.\n\
+                 Mismatch in metrics pairs between baseline and comparison.\n"
+            ),
+            "{}",
+            report.message
+        );
+        assert!(report.message.contains("`series[1]`"), "{}", report.message);
+        assert!(
+            report.message.contains("  - fixture.latency[env:test] (type: gauge)"),
+            "{}",
+            report.message
+        );
+
+        // The comparison holds a series with the wrong value.
+        let wrong = with_internal(&[
+            metric_json("fixture.requests", &["env:test"], &[count(5.0)]),
+            metric_json("fixture.latency", &["env:test"], &[gauge(4.0)]),
+        ]);
+        let report = compare(EXPECTING_FIXTURE, &wrong, &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.starts_with(
+                "Expectations are unmet: 0 on the baseline and 1 on the comparison.\n\
+                 1 metrics from baseline and comparison did not match."
+            ),
+            "{}",
+            report.message
+        );
+        assert!(
+            report.message.contains("fixture.latency[env:test]"),
+            "{}",
+            report.message
+        );
     }
 
     #[tokio::test]
@@ -740,6 +796,32 @@ mod tests {
             report.message
         );
         assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn an_unmet_traces_expectation_still_reports_the_differences_between_the_sides() {
+        let mut spans = fixture_spans(true);
+        spans[1] = span_json("db", "db.query", "SELECT 2", 1, 11, true);
+        let comparison = tracing(spans, &fixture_groups());
+
+        let report = compare(EXPECTING_TRACES, &comparison, &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.starts_with(
+                "Expectations are unmet: 0 on the baseline and 1 on the comparison.\n\
+                 1 mismatched span(s)/stats group(s) between baseline and comparison."
+            ),
+            "{}",
+            report.message
+        );
+        assert!(report.message.contains("`spans[1]`"), "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains(r#"resource: baseline="SELECT 1" comparison="SELECT 2""#),
+            "{}",
+            report.message
+        );
     }
 
     #[tokio::test]

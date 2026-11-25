@@ -1,4 +1,4 @@
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 
 pub use self::expectations::{MetricsExpectations, TracesExpectations};
@@ -52,8 +52,8 @@ pub struct TracesAnalysisOptions {
     /// entry that matches nothing fails the analysis.
     pub known_differences: Vec<KnownDifference>,
 
-    /// What each side must hold, checked before the sides are compared. A known difference never excuses an unmet
-    /// expectation.
+    /// What each side must hold, checked before the sides are compared. An unmet expectation fails the analysis, and the
+    /// sides are still compared. A known difference never excuses an unmet expectation.
     pub expectations: TracesExpectations,
 }
 
@@ -159,5 +159,25 @@ impl AnalysisRunner {
             self.comparison_data.dogstatsd_forwarded_packets(),
             self.require_dogstatsd_forwarded_packets,
         )
+    }
+}
+
+/// Joins the failures of an analysis into one, with each message on its own line and the details of each in order.
+///
+/// An analysis that finds more than one failure, such as an unmet expectation and a difference between the sides,
+/// reports them all.
+fn join_failures(
+    failures: impl IntoIterator<Item = Option<(GenericError, Vec<String>)>>,
+) -> Result<(), (GenericError, Vec<String>)> {
+    let mut messages = Vec::new();
+    let mut details = Vec::new();
+    for (error, more) in failures.into_iter().flatten() {
+        messages.push(error.to_string());
+        details.extend(more);
+    }
+    if messages.is_empty() {
+        Ok(())
+    } else {
+        Err((generic_error!("{}", messages.join("\n")), details))
     }
 }
