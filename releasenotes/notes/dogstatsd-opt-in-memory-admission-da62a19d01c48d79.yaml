@@ -1,0 +1,5 @@
+fixes:
+  - |
+    Apply DogStatsD memory admission only when ``memory_mode`` is ``permissive`` or ``strict``. Admission then uses
+    the lower of ``memory_limit`` and the Linux cgroup v2 memory limit. Under the default ``disabled`` mode, ADP no
+    longer refuses DogStatsD lines or reclaims idle contexts, even in a memory-limited container.

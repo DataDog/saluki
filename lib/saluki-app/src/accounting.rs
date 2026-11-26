@@ -8,7 +8,7 @@ use saluki_api::{DynamicRoute, EndpointType};
 use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStats, ResourceStatsSnapshot};
 use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
 use saluki_core::accounting::{
-    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
+    ByteBudget, CgroupMemory, ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
 };
 use saluki_core::{
     diagnostic::DiagnosticsEmitter,
@@ -23,7 +23,7 @@ use tracing::{error, info, warn};
 /// Bounds validation and global memory limiter behavior.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MemoryMode {
-    /// Bounds validation is skipped, and no memory limiting is applied.
+    /// Bounds verification, cooperative backpressure, and byte-budget admission are disabled.
     #[default]
     Disabled,
 
@@ -72,6 +72,11 @@ pub struct MemoryBoundsConfiguration {
 /// When no memory limit is configured and `DOCKER_DD_AGENT` is set to a non-empty value, the limit is read from the
 /// process cgroup instead.
 ///
+/// When memory bounding is configured ([`MemoryMode::Permissive`] or [`MemoryMode::Strict`]), DogStatsD byte-budget
+/// admission uses the configured limit or the cgroup v2 limit, whichever is lower, independently of the bounds
+/// verification and backpressure settings. Under [`MemoryMode::Disabled`], no byte budget is attached, even inside a
+/// cgroup with a finite memory limit.
+///
 /// See [`MemoryMode`] for details on the behavior of each mode.
 ///
 /// # Errors
@@ -90,7 +95,7 @@ pub fn initialize_memory_bounds(
 
     let limiter_grant = match configuration.memory_mode {
         MemoryMode::Disabled => {
-            info!("Memory limiting disabled.");
+            info!("Memory bounds verification and cooperative backpressure disabled.");
             None
         }
         mode @ (MemoryMode::Permissive | MemoryMode::Strict) => match configured_grant {
@@ -111,7 +116,42 @@ pub fn initialize_memory_bounds(
         _ => MemoryLimiter::noop(),
     };
 
-    Ok(limiter)
+    // Admission remains active even when the independently configured cooperative backoff is disabled, but only when
+    // memory bounding is configured: the default mode stays unbounded even inside a memory-limited cgroup.
+    let cgroup = match configuration.memory_mode {
+        MemoryMode::Disabled => None,
+        MemoryMode::Permissive | MemoryMode::Strict => CgroupMemory::detect(),
+    };
+    let budget_limit = byte_budget_limit(
+        configuration.memory_mode,
+        memory_limit.map(|limit| limit.as_u64() as usize),
+        cgroup.as_ref().map(CgroupMemory::limit),
+    );
+    let budget = match (budget_limit, cgroup) {
+        (None, _) => None,
+        (Some(limit), Some(cgroup)) => ByteBudget::for_memory_limit(limit, move || cgroup.current())
+            .ok_or_else(|| generic_error!("Cgroup memory usage cannot be monitored for byte-budget admission."))?
+            .into(),
+        (Some(limit), None) => ByteBudget::for_process_memory_limit(limit)
+            .ok_or_else(|| generic_error!("Process memory usage cannot be monitored for byte-budget admission."))?
+            .into(),
+    };
+
+    Ok(limiter.with_byte_budget(budget))
+}
+
+/// Returns the byte-budget admission limit, or `None` when no budget should be attached.
+///
+/// A budget is attached only when memory bounding is configured, using the lower of the configured limit and the
+/// finite cgroup limit when both exist.
+fn byte_budget_limit(mode: MemoryMode, configured: Option<usize>, cgroup: Option<usize>) -> Option<usize> {
+    match mode {
+        MemoryMode::Disabled => None,
+        MemoryMode::Permissive | MemoryMode::Strict => match (configured, cgroup) {
+            (Some(configured), Some(cgroup)) => Some(configured.min(cgroup)),
+            (configured, cgroup) => configured.or(cgroup),
+        },
+    }
 }
 
 fn verify_bounds_for_mode(
@@ -433,11 +473,34 @@ mod tests {
     fn disabled_memory_mode_skips_bounds_verification() {
         let registry = registry_with_firm_bound(64 * 1024 * 1024);
 
-        initialize_memory_bounds(
+        let limiter = initialize_memory_bounds(
             config_with_limit(ByteSize::b(1024), MemoryMode::Disabled),
             registry.root(),
         )
         .expect("disabled mode should not verify bounds");
+        assert!(
+            limiter.byte_budget().is_none(),
+            "disabled mode leaves admission unbounded even with an explicit limit"
+        );
+    }
+
+    #[test]
+    fn byte_budget_attaches_only_when_memory_bounding_is_configured() {
+        const GIB: usize = 1024 * 1024 * 1024;
+
+        // The default unbounded mode never attaches a budget, even inside a finite cgroup.
+        for (configured, cgroup) in [(None, Some(GIB)), (Some(GIB / 2), Some(GIB)), (Some(GIB), None)] {
+            assert_eq!(byte_budget_limit(MemoryMode::Disabled, configured, cgroup), None);
+        }
+
+        // Configured bounding uses the lower of the configured and finite cgroup limits.
+        for mode in [MemoryMode::Permissive, MemoryMode::Strict] {
+            assert_eq!(byte_budget_limit(mode, None, Some(GIB)), Some(GIB));
+            assert_eq!(byte_budget_limit(mode, Some(GIB / 2), None), Some(GIB / 2));
+            assert_eq!(byte_budget_limit(mode, Some(GIB / 2), Some(GIB)), Some(GIB / 2));
+            assert_eq!(byte_budget_limit(mode, Some(2 * GIB), Some(GIB)), Some(GIB));
+            assert_eq!(byte_budget_limit(mode, None, None), None);
+        }
     }
 
     #[test]
@@ -459,11 +522,15 @@ mod tests {
     fn permissive_memory_mode_tolerates_bounds_exceeding_the_limit() {
         let registry = registry_with_firm_bound(64 * 1024 * 1024);
 
-        initialize_memory_bounds(
+        let limiter = initialize_memory_bounds(
             config_with_limit(ByteSize::b(1024), MemoryMode::Permissive),
             registry.root(),
         )
         .expect("bounds larger than the limit should be non-fatal in permissive mode");
+        assert!(
+            limiter.byte_budget().is_some(),
+            "configured bounding attaches admission without backoff"
+        );
     }
 
     #[test]

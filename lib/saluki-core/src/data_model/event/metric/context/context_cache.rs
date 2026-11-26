@@ -105,7 +105,7 @@ use std::{
     num::NonZeroUsize,
     sync::{
         atomic::{AtomicU32, Ordering::Relaxed},
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
     },
     time::{Duration, Instant},
 };
@@ -200,6 +200,7 @@ impl ContextCache {
             shards,
             start: Instant::now(),
             telemetry,
+            telemetry_update: Mutex::new(()),
             telemetry_enabled,
         });
 
@@ -286,6 +287,28 @@ impl ContextCache {
         }
         Some((context, existing))
     }
+
+    /// Removes every resident context whose only strong reference is the cache, and returns the number removed.
+    ///
+    /// The memory admission hook calls this method to free idle contexts under memory pressure. It also removes every
+    /// dead weak entry and shrinks each shard. Contexts that another owner holds stay resident.
+    pub(super) fn evict_idle_for_budget(&self) -> usize {
+        let state = &self.state;
+        let _telemetry = state.telemetry_update.lock().unwrap();
+        let mut evicted = 0;
+        let mut remaining = 0;
+        for shard in &state.shards {
+            let mut shard = shard.0.write().unwrap();
+            evicted += shard.evict_idle_for_budget();
+            remaining += shard.slots.len();
+        }
+        if state.telemetry_enabled {
+            state.telemetry.current_items().set(remaining as f64);
+            state.telemetry.current_weight().set(remaining as f64);
+            state.telemetry.items_evicted_total().increment(evicted as u64);
+        }
+        evicted
+    }
 }
 
 /// The state that all clones of a [`ContextCache`] and its background tasks share.
@@ -298,6 +321,12 @@ struct State {
 
     /// The cache metrics.
     telemetry: Telemetry,
+
+    /// Serializes updates of the item gauges.
+    ///
+    /// The telemetry task and `ContextCache::evict_idle_for_budget` both count resident items and set the gauges.
+    /// Without this lock, a stale count from one of them can overwrite a newer count from the other.
+    telemetry_update: Mutex<()>,
 
     /// Whether the cache reports telemetry.
     telemetry_enabled: bool,
@@ -345,6 +374,7 @@ impl State {
                 _ = sleep(SWEEP_INTERVAL) => {}
             }
 
+            let _update = self.telemetry_update.lock().unwrap();
             let items: usize = self
                 .shards
                 .iter()
@@ -589,6 +619,35 @@ impl Shard {
         let expired = cutoff.map_or(0, |cutoff| self.expire(cutoff));
         // Check at least a quarter of the live slots during each sweep.
         let reaped = self.reap_live(self.live.len().div_ceil(4).max(LIVE_SWEEP_MINIMUM));
+        self.trim();
+        (expired, reaped)
+    }
+
+    /// Removes every resident context whose only strong reference is the cache, and returns the number removed.
+    ///
+    /// This method also reaps every dead weak entry and shrinks the shard.
+    fn evict_idle_for_budget(&mut self) -> usize {
+        let before = self.slots.len();
+        let mut i = 0;
+        while let Some(slot) = self.slots.get(i) {
+            // The write lock stops new strong references from this cache, so a count of 1 cannot rise.
+            if slot.context.inner.strong_count() == 1 {
+                self.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        self.reap_live(self.live.len());
+        self.trim();
+        before - self.slots.len()
+    }
+
+    /// Shrinks each vector and the index when it uses a quarter or less of its capacity.
+    ///
+    /// The new capacity is twice the current length. The gap between the ¼ trigger and the 2× target is hysteresis:
+    /// a shard must lose half of its new capacity again before the next shrink. Thus, a shard that changes size a
+    /// little does not reallocate on each sweep.
+    fn trim(&mut self) {
         if self.slots.len() <= self.slots.capacity() / 4 {
             self.slots.shrink_to(self.slots.len() * 2);
         }
@@ -600,7 +659,6 @@ impl Shard {
                 index_hash(slot_key(&self.slots, &self.live, i))
             });
         }
-        (expired, reaped)
     }
 
     /// Removes each resident slot whose last access epoch is older than `cutoff`, and returns the number removed.
@@ -727,6 +785,38 @@ mod tests {
         assert_eq!(shard.index.capacity(), 0);
         assert!(!insert(&mut shard, "new", 2));
         assert!(get(&shard, "new").is_some());
+    }
+
+    #[test]
+    fn pressure_evicts_idle_and_dead_weak_slots_but_preserves_live_identity() {
+        let mut resolver = ContextResolverBuilder::for_tests()
+            .with_cached_contexts_limit(64)
+            .build();
+        let held = resolver.resolve("held", ["env:prod"], None).unwrap();
+        let idle = resolver.resolve("idle", ["env:prod"], None).unwrap();
+        let idle_weak = idle.inner.downgrade();
+        drop(idle);
+        for i in 0..10 {
+            resolver.resolve(format!("idle.{i}"), ["env:prod"], None).unwrap();
+        }
+        assert_eq!(resolver.evict_idle_for_budget(), 11);
+        assert!(idle_weak.upgrade().is_none());
+        assert!(held.ptr_eq(&resolver.resolve("held", ["env:prod"], None).unwrap()));
+        assert_eq!(resolver.evict_idle_for_budget(), 0);
+        drop(held);
+        assert_eq!(resolver.evict_idle_for_budget(), 1);
+
+        let mut resolver = ContextResolverBuilder::for_tests()
+            .with_cached_contexts_limit(1)
+            .build();
+        let held = resolver.resolve("weak", ["env:prod"], None).unwrap();
+        resolver.resolve("resident", ["env:prod"], None).unwrap();
+        drop(held);
+        assert_eq!(resolver.evict_idle_for_budget(), 1);
+        let cache = resolver.context_cache.as_ref().unwrap();
+        let shard = cache.state.shards[0].0.read().unwrap();
+        assert!(shard.live.is_empty());
+        assert!(shard.index.is_empty());
     }
 
     #[test]

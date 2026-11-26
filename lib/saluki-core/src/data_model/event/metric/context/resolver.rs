@@ -566,6 +566,13 @@ impl ContextResolver {
         Some(Context { inner })
     }
 
+    /// Evicts all cached contexts that have no other strong owners.
+    pub fn evict_idle_for_budget(&self) -> usize {
+        self.context_cache
+            .as_ref()
+            .map_or(0, ContextCache::evict_idle_for_budget)
+    }
+
     /// Resolves the given context.
     ///
     /// If the context hasn't yet been resolved, the name and tags are interned and a new context is created and

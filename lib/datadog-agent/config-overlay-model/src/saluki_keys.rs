@@ -353,7 +353,11 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              no memory limiting; `permissive` logs a warning when the bounds do not fit within the \
              limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, \
              the global memory limiter is active only when a limit is in effect (configured or \
-             detected from cgroups) and `enable_global_limiter` is `true`.",
+             detected from cgroups) and `enable_global_limiter` is `true`. DogStatsD memory \
+             admission also applies only under `permissive` and `strict`, using the lower of \
+             `memory_limit` and the Linux cgroup v2 memory limit, even when \
+             `enable_global_limiter` is `false`. Under `disabled`, admission stays off, even in a \
+             memory-limited container.",
         ),
     },
 ];
