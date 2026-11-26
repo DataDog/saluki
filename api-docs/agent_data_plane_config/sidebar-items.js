@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["control","defaults","domains","provenance","shared"],"struct":["Error","SalukiConfiguration"],"type":["BoxError"]};
+window.SIDEBAR_ITEMS = {"mod":["agent_decode","control","defaults","domains","provenance","shared"],"struct":["Error","SalukiConfiguration"],"type":["BoxError"]};

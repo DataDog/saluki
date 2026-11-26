@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Decoder"],"fn":["field","list","map","string","string_list","unexpected"],"struct":["DecodeError"]};
