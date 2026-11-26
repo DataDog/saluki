@@ -106,8 +106,8 @@ pub fn parse_dogstatsd_metric<'a>(
         return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
     }
 
-    // Parse the name, raw values, and metric type before the optional fields. Some extensions apply only to
-    // particular types. A leading `|` separates the first extension from the type.
+    // Optional fields follow the metric type. Some extensions apply only to particular types. A leading `|`
+    // separates the first extension from the type.
     let mut maybe_sample_rate = None;
     let mut maybe_tags = None;
     let mut maybe_local_data = None;

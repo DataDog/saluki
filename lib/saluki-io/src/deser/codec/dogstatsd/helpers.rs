@@ -277,6 +277,7 @@ pub fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>>
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
     use saluki_core::data_model::origin::OriginTagCardinality;
 
     use super::{cardinality, simple_metric_float, to_valid_utf8, CARDINALITY_PREFIX};
@@ -305,6 +306,15 @@ mod tests {
             "999999999999999.9",
         ] {
             assert_eq!(simple_metric_float(raw.as_bytes()), None, "{raw}");
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn property_test_simple_metric_float_matches_standard_parse(raw in r"[+-]?[0-9]{1,18}(\.[0-9]{1,3})?") {
+            if let Some(bits) = simple_metric_float(raw.as_bytes()).map(f64::to_bits) {
+                prop_assert_eq!(Some(bits), raw.parse::<f64>().ok().map(f64::to_bits));
+            }
         }
     }
 
