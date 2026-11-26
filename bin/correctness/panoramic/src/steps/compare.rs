@@ -839,6 +839,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_side_that_holds_more_traces_or_spans_than_the_limits_fails_and_names_the_side() {
+        // The fixture holds 2 traces and 3 spans, and the limits allow exactly that.
+        let fixture_with_spans = |extra: &[Value]| {
+            let mut spans = fixture_spans(true);
+            spans.extend_from_slice(extra);
+            tracing(spans, &fixture_groups())
+        };
+        let fields = "{telemetry: traces, comparison: app, baseline: peer, \
+            traces: {max_traces: 2, max_spans: 3, min_stats_groups: 2}}";
+
+        let report = compare(fields, &fixture_traces(), &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // A span of a third trace goes over both limits, and a span of a known trace goes over the span limit only.
+        let third_trace = fixture_with_spans(&[span_json("api", "web.request", "GET /y", 3, 30, true)]);
+        let fourth_span = fixture_with_spans(&[span_json("api", "web.request", "GET /y", 2, 30, true)]);
+        for (label, side, expected, omitted) in [
+            (
+                "a third trace",
+                &third_trace,
+                &[
+                    "The comparison holds 3 traces, but `max_traces` is 2.",
+                    "The comparison holds 4 spans, but `max_spans` is 3.",
+                ][..],
+                None,
+            ),
+            (
+                "a fourth span",
+                &fourth_span,
+                &["The comparison holds 4 spans, but `max_spans` is 3."][..],
+                Some("`max_traces`"),
+            ),
+        ] {
+            let report = compare(fields, side, &fixture_traces()).await;
+            assert_eq!(report.status, StepStatus::Failed, "{}: {}", label, report.message);
+            for expected in expected {
+                assert!(report.message.contains(expected), "{}: {}", label, report.message);
+            }
+            if let Some(omitted) = omitted {
+                assert!(!report.message.contains(omitted), "{}: {}", label, report.message);
+            }
+            assert!(
+                !report.message.contains("The baseline holds"),
+                "{}: {}",
+                label,
+                report.message
+            );
+        }
+
+        // Both sides can be over a limit: the equality of the sides does not excuse it.
+        let report = compare(fields, &third_trace, &third_trace).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        for side in ["comparison", "baseline"] {
+            let expected = format!("The {} holds 3 traces, but `max_traces` is 2.", side);
+            assert!(report.message.contains(&expected), "{}: {}", side, report.message);
+        }
+    }
+
+    #[tokio::test]
     async fn unrelated_spans_that_meet_the_counts_fail_the_named_check() {
         let unrelated = tracing(
             vec![
@@ -1625,6 +1684,28 @@ mod tests {
             (
                 "{telemetry: traces, comparison: app, baseline: peer, traces: {min_traces: 0}}",
                 "invalid value: integer `0`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, traces: {max_spans: 0}}",
+                "invalid value: integer `0`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, traces: {max_traces: 4}}",
+                "'traces' sets expectations or turns off 'require_ssi', so it must set 'min_stats_groups'",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, traces: {max_spans: 4}}",
+                "'traces' sets expectations or turns off 'require_ssi', so it must set 'min_stats_groups'",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, min_traces: 5, max_traces: 4}}",
+                "'traces.max_traces' is 4, below 'traces.min_traces', which is 5",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, otlp_direct_analysis_mode: true, \
+                 traces: {min_spans: 9, max_spans: 8}}",
+                "'traces.max_spans' is 8, below 'traces.min_spans', which is 9",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, additional_span_ignore_fields: [start, trace_id]}",

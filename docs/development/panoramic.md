@@ -533,6 +533,9 @@ For logs, `logs.min_count` sets the minimum number of records per intake. If you
 For traces, set expectations under `traces`:
 
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
+- `max_traces` and `max_spans`: the most traces and spans that each side holds. Use them when a sampler drops part of
+  the fixture. If both sides keep every trace, the sides still match, but each side fails its limit. A limit can't be
+  below the minimum of the same name.
 - `spans`: select spans by `service` and optionally by `name` (the operation name) or `resource`. Each entry needs
   at least one of `name`, `resource` or `meta`. See [Check span tags at each intake](#check-span-tags-at-each-intake).
 - `absent`: spans that neither intake may hold. See [Check that both sides drop a span](#check-that-both-sides-drop-a-span).

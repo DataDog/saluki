@@ -95,8 +95,14 @@ pub struct TracesExpectations {
     /// Fewest traces that each side holds.
     pub min_traces: Option<NonZeroUsize>,
 
+    /// Most traces that each side holds.
+    pub max_traces: Option<NonZeroUsize>,
+
     /// Fewest spans that each side holds.
     pub min_spans: Option<NonZeroUsize>,
+
+    /// Most spans that each side holds.
+    pub max_spans: Option<NonZeroUsize>,
 
     /// Spans that each side must hold, one entry for each. A span of the side must meet every field of an entry.
     pub spans: Vec<ExpectedSpan>,
@@ -154,6 +160,19 @@ impl TracesExpectations {
                 unmet.push(format!(
                     "The {} holds {} {}, but `{}` is {}.",
                     side, found, what, key, min
+                ));
+            }
+        }
+
+        let limits = [
+            ("traces", "max_traces", held.traces, self.max_traces),
+            ("spans", "max_spans", held.spans.len(), self.max_spans),
+        ];
+        for (what, key, found, max) in limits {
+            if let Some(max) = max.filter(|max| found > max.get()) {
+                unmet.push(format!(
+                    "The {} holds {} {}, but `{}` is {}.",
+                    side, found, what, key, max
                 ));
             }
         }
