@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Fix External Data origin detection for a restarted container when the Datadog Agent has no access to the container
+    runtime and discovers containers only through the kubelet. Previously, in those setups, origin detection could stop
+    resolving the restarted container.
