@@ -11,6 +11,7 @@ use tokio::{pin, select, time::sleep};
 use tracing::debug;
 
 use super::{
+    context_cache::ContextCache,
     hash::{hash_context_with_host_and_seen, ContextKey, TagSetKey},
     Context, ContextInner,
 };
@@ -31,7 +32,6 @@ const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize = NonZeroUs
 
 const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 
-type ContextCache = Cache<ContextKey, Context, ItemCountWeighter, NoopU64BuildHasher>;
 type TagSetCache = Cache<TagSetKey, SharedTagSet, ItemCountWeighter, NoopU64BuildHasher>;
 
 #[static_metrics(prefix = context_resolver, labels(resolver_id))]
@@ -57,7 +57,7 @@ struct Telemetry {
 ///
 /// # Missing
 ///
-/// - Support for configuring the size limit of cached contexts.
+/// - Support for configuring the size limit of cached contexts. The cache limit counts contexts, not bytes.
 pub struct ContextResolverBuilder {
     name: String,
     caching_enabled: bool,
@@ -106,8 +106,13 @@ impl ContextResolverBuilder {
     /// [`ContextResolver`] provides two main benefits: consistent behavior for resolving contexts (interning, origin
     /// tags, etc), and the caching of those resolved contexts to speed up future resolutions. However, caching contexts
     /// means that we pay a memory cost for the cache itself, even if the contexts aren't ever reused or are seen
-    /// infrequently. While expiration can help free up cache capacity, it can't help recover the memory used by the
-    /// underlying cache data structure once they have expanded to hold the contexts.
+    /// infrequently.
+    ///
+    /// Idle expiration and eviction return most of that memory. After a sweep, a cache shard shrinks its storage when
+    /// it uses a quarter or less of its capacity, and it keeps twice its current length. Thus, a cache that empties
+    /// keeps some spare capacity, so it does not reallocate on each small change in size. An evicted context that
+    /// another owner still holds keeps a 16-byte weak entry. After that context drops, the entry keeps its allocation
+    /// alive until a later sweep or miss removes the entry.
     ///
     /// Disabling caching allows normal resolving to take place without the overhead of caching the contexts. This can
     /// lead to lower average memory usage, as contexts will only live as long as they're needed, but it will reduce
@@ -273,21 +278,23 @@ impl ContextResolverBuilder {
         // a cache that it builds. The context cache has drivers if it expires idle contexts or reports telemetry. A tags
         // resolver that this resolver builds always expires idle tagsets. If the resolver is built outside supervision,
         // its tasks run detached.
-        let needs_scope =
-            self.telemetry_enabled || self.idle_context_expiration.is_some() || self.tags_resolver.is_none();
+        let needs_scope = self.telemetry_enabled
+            || (self.caching_enabled && self.idle_context_expiration.is_some())
+            || self.tags_resolver.is_none();
         let mut drivers =
             needs_scope.then(|| runtime::scope::nested_or_detached(format!("context_resolver_{}", self.name)));
 
         let build_caches = || {
             // NOTE: We should switch to using a size-based weighter so that we can do more firm bounding of what we
-            // cache.
-            let context_cache = CacheBuilder::from_identifier(format!("{}/contexts", self.name))
-                .expect("cache identifier cannot possibly be empty")
-                .with_capacity(cached_context_limit)
-                .with_time_to_idle(self.idle_context_expiration)
-                .with_hasher::<NoopU64BuildHasher>()
-                .with_telemetry(self.telemetry_enabled)
-                .build();
+            // cache. The context cache limit counts contexts, not bytes.
+            let context_cache = self.caching_enabled.then(|| {
+                ContextCache::new(
+                    format!("{}/contexts", self.name),
+                    cached_context_limit,
+                    self.idle_context_expiration,
+                    self.telemetry_enabled,
+                )
+            });
 
             // If no tags resolver is provided, we need to create one using the same interner used for the context
             // resolver.
@@ -322,7 +329,6 @@ impl ContextResolverBuilder {
         ContextResolver {
             telemetry,
             interner,
-            caching_enabled: self.caching_enabled,
             context_cache,
             hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
                 SEEN_HASHSET_INITIAL_CAPACITY,
@@ -351,9 +357,10 @@ impl ContextResolverBuilder {
 ///
 /// `ContextResolver` specifically manages interning and mapping of contexts. It can be cheaply cloned itself.
 ///
-/// In order to resolve a context, `resolve` must be called which requires taking a lock to check for an existing
-/// context. A read/write lock is used in order to prioritize lookups over inserts, as lookups are expected to be more
-/// common given how often a given context is used and resolved.
+/// When caching is enabled, `resolve` takes a lock to look for an existing context. We use a read/write lock because lookups happen much more
+/// often than inserts. The cache splits its contexts over shards, and each shard has its own lock. A hit takes the
+/// read lock of one shard. A miss takes the write lock of that shard, so requests for other shards continue while the
+/// resolver creates a context.
 ///
 /// Once a context is resolved, a cheap handle -- `Context` -- is returned. This handle, like `ContextResolver`, can be
 /// cheaply cloned. It points directly to the underlying context data (name and tags) and provides access to these
@@ -361,8 +368,7 @@ impl ContextResolverBuilder {
 pub struct ContextResolver {
     telemetry: Telemetry,
     interner: GenericMapInterner,
-    caching_enabled: bool,
-    context_cache: ContextCache,
+    pub(super) context_cache: Option<ContextCache>,
     hash_seen_buffer: PrehashedHashSet<u64>,
     allow_heap_allocations: bool,
     tags_resolver: TagsResolver,
@@ -572,44 +578,34 @@ impl ContextResolver {
             self.create_context_key_with_host(&name, host.as_ref(), tags.clone(), &origin_tags);
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
-        if !self.caching_enabled {
+        let Some(cache) = &self.context_cache else {
             let tag_set = self.tags_resolver.create_tag_set(tags).unwrap_or_default();
 
             let context = self.create_context(context_key, name, host, tag_set, origin_tags)?;
 
             debug!(?context_key, ?context, "Resolved new non-cached context.");
             return Some(context);
+        };
+
+        let (context, existing) = cache.get_or_insert_with(context_key, || {
+            // Try seeing if we have the tagset cached already, and create it if not.
+            let tag_set = if let Some(tag_set) = self.tags_resolver.get_tag_set(tagset_key) {
+                self.telemetry.resolved_existing_tagset_total().increment(1);
+                tag_set
+            } else {
+                // If the tagset is not cached, we need to create it.
+                let tag_set = self.tags_resolver.create_tag_set(tags).unwrap_or_default();
+                self.tags_resolver.insert_tag_set(tagset_key, tag_set.clone());
+                tag_set
+            };
+            self.create_context(context_key, name, host, tag_set, origin_tags)
+        })?;
+        if existing {
+            self.telemetry.resolved_existing_context_total().increment(1);
+        } else {
+            debug!(?context_key, ?context, "Resolved new context.");
         }
-
-        match self.context_cache.get(&context_key) {
-            Some(context) => {
-                self.telemetry.resolved_existing_context_total().increment(1);
-                Some(context)
-            }
-            None => {
-                // Try seeing if we have the tagset cached already, and create it if not.
-                let tag_set = match self.tags_resolver.get_tag_set(tagset_key) {
-                    Some(tag_set) => {
-                        self.telemetry.resolved_existing_tagset_total().increment(1);
-                        tag_set
-                    }
-                    None => {
-                        // If the tagset is not cached, we need to create it.
-                        let tag_set = self.tags_resolver.create_tag_set(tags.clone()).unwrap_or_default();
-
-                        self.tags_resolver.insert_tag_set(tagset_key, tag_set.clone());
-
-                        tag_set
-                    }
-                };
-
-                let context = self.create_context(context_key, name, host, tag_set, origin_tags)?;
-                self.context_cache.insert(context_key, context.clone());
-
-                debug!(?context_key, ?context, "Resolved new context.");
-                Some(context)
-            }
-        }
+        Some(context)
     }
 }
 
@@ -618,7 +614,6 @@ impl Clone for ContextResolver {
         Self {
             telemetry: self.telemetry.clone(),
             interner: self.interner.clone(),
-            caching_enabled: self.caching_enabled,
             context_cache: self.context_cache.clone(),
             hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
                 SEEN_HASHSET_INITIAL_CAPACITY,
@@ -878,11 +873,10 @@ impl TagsResolver {
 
     /// Creates a new tag set from the given tags.
     ///
-    /// This will intern the tags, and then return a shared tag set. If the interner is full, and heap allocations are
-    /// not allowed, then this will return `None`.
+    /// This interns each tag, and then returns a shared tag set. It doesn't cache the tag set.
     ///
-    /// If heap allocations are allowed, then this will return a shared tag set, and the tag set will be cached.
-    pub fn create_tag_set<I, T>(&mut self, tags: I) -> Option<SharedTagSet>
+    /// Returns `None` if the interner is full and heap allocations are not allowed.
+    pub fn create_tag_set<I, T>(&self, tags: I) -> Option<SharedTagSet>
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str> + CheapMetaString,
@@ -1364,13 +1358,12 @@ mod tests {
         let context1 = resolver
             .resolve(name, &tags[..], Some(origin1.clone()))
             .expect("should not fail to resolve");
-        assert_eq!(resolver.context_cache.len(), 0);
+        assert!(resolver.context_cache.is_none());
 
         // Create a second context with the same name and tags, and verify that it is not cached:
         let context2 = resolver
             .resolve(name, &tags[..], Some(origin1))
             .expect("should not fail to resolve");
-        assert_eq!(resolver.context_cache.len(), 0);
 
         // The contexts should be equal to each other, but the underlying `Arc` pointers should be different since
         // they're two distinct contexts in terms of not being cached:

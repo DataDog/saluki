@@ -22,6 +22,7 @@ bytesize = { workspace = true }
 crossbeam-queue = { workspace = true }
 ddsketch = { workspace = true }
 futures = { workspace = true }
+hashbrown = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 libdd-trace-model = { workspace = true }

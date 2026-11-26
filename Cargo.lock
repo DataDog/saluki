@@ -5902,6 +5902,7 @@ dependencies = [
  "crossbeam-queue",
  "ddsketch",
  "futures",
+ "hashbrown 0.17.1",
  "http",
  "http-body-util",
  "hyper",
