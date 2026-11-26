@@ -478,10 +478,12 @@ case from `test/integration/cases` that uses the same steps.
   confirm a UDP listener, so `port_listening` is not a readiness gate for it.
 - Use `config_key_equals`, `config_set` or an `exec` of the `adp` command for the privileged API of ADP.
   `http_check` and `http_request` cannot reach it.
-- To compare the answers of ADP and the Agent to the same requests, run a script in each container with `exec`, as
-  `test/integration/cases/otlp-rcv-http` does. Its `probes.json` holds what the Agent answers, and a `known` entry for
-  each difference of ADP, with an issue. A script that finds a known difference gone fails the step, so the entry
-  cannot outlive the fix.
+- `otlp-rcv-http` compares the answers of ADP and the Agent to the same HTTP requests. It runs a script in each
+  container with `exec`. Its `probes.json` holds what the Agent answers, and a `known` entry for each difference of
+  ADP, with a gap and an issue. The script, `otlp_http_probe.py`, fails the step when a known difference is gone, so
+  those staleness rules live in the helper and not in panoramic. Its entries are not the `known_differences` of the
+  [Known differences](#known-differences) section, which only the `compare` step reads. A case with other needs
+  writes its own checks, or a step for them.
 - List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
   See [Files](#files).
 
