@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::vec::IntoIter;
 
 use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
@@ -11,13 +10,15 @@ use saluki_core::data_model::{
     origin::OriginTagsResolver,
     tags::{Tag, TagSet},
 };
+use saluki_error::GenericError;
 use stringtheory::MetaString;
 
 use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::hostname_from_source_attributes;
-use crate::common::otlp::util::get_string_attribute;
+use crate::common::otlp::util::first_attribute;
+use crate::common::otlp::value::otlp_value_as_string;
 use crate::common::otlp::Metrics;
 use crate::sources::otlp::logs::render::OtlpLogsRenderer;
 use crate::sources::otlp::logs::transform::transform_log_record;
@@ -50,7 +51,13 @@ impl OtlpLogsTranslator {
     ) -> impl Iterator<Item = Log> + 'a {
         ResourceLogsIter::new(resource_logs, &self.origin_tag_resolver).filter_map(|log| {
             metrics.logs_received().increment(1);
-            self.renderer.render(log, metrics)
+            match log {
+                Ok(log) => self.renderer.render(log, metrics),
+                Err(error) => {
+                    self.renderer.record_failure(error, metrics);
+                    None
+                }
+            }
         })
     }
 }
@@ -71,7 +78,7 @@ impl ResourceLogsIter {
         // An empty host or service counts as missing, so the record fallbacks still apply.
         let host = host_from_attributes(&resource.attributes);
 
-        let service = non_empty_string_attribute(&resource.attributes, SERVICE_NAME);
+        let service = service_from_attributes(&resource.attributes);
         let mut attribute_tags = tags_from_attributes(&resource.attributes, ResourceAttributeTagMode::Mapped);
         attribute_tags.insert_tag(OTEL_SOURCE_TAG.clone());
         let origin = raw_origin_from_attributes(&resource.attributes);
@@ -88,7 +95,8 @@ impl ResourceLogsIter {
         }
     }
 
-    fn next_log(&mut self) -> Option<Log> {
+    /// Returns the next log, or an error for a record that the Agent fails to marshal.
+    fn next_log(&mut self) -> Option<Result<Log, GenericError>> {
         loop {
             let (current_scope, current_log_records) = match self.current_scope_logs.as_mut() {
                 Some(current) => current,
@@ -113,7 +121,7 @@ impl ResourceLogsIter {
                         self.host = host_from_attributes(&log_record.attributes);
                     }
                     if self.service.is_none() {
-                        self.service = non_empty_string_attribute(&log_record.attributes, SERVICE_NAME);
+                        self.service = service_from_attributes(&log_record.attributes);
                     }
 
                     let log = transform_log_record(
@@ -124,7 +132,7 @@ impl ResourceLogsIter {
                         self.service.clone(),
                         self.attribute_tags.clone(),
                     )
-                    .with_ingestion_timestamp(get_unix_timestamp_nanos());
+                    .map(|log| log.with_ingestion_timestamp(get_unix_timestamp_nanos()));
 
                     return Some(log);
                 }
@@ -141,20 +149,19 @@ impl ResourceLogsIter {
 fn host_from_attributes(attributes: &[KeyValue]) -> Option<MetaString> {
     hostname_from_source_attributes(attributes)
         .filter(|hostname| !hostname.is_empty())
-        .map(|hostname| match hostname {
-            Cow::Borrowed(hostname) => MetaString::from(hostname),
-            Cow::Owned(hostname) => MetaString::from(hostname),
-        })
+        .map(MetaString::from)
 }
 
-fn non_empty_string_attribute(attributes: &[KeyValue], key: &str) -> Option<MetaString> {
-    get_string_attribute(attributes, key)
-        .filter(|value| !value.is_empty())
+/// Returns the first `service.name` attribute as a string, unless it's empty.
+fn service_from_attributes(attributes: &[KeyValue]) -> Option<MetaString> {
+    first_attribute(attributes, SERVICE_NAME)
+        .map(otlp_value_as_string)
+        .filter(|service| !service.is_empty())
         .map(MetaString::from)
 }
 
 impl Iterator for ResourceLogsIter {
-    type Item = Log;
+    type Item = Result<Log, GenericError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_log()
@@ -163,7 +170,7 @@ impl Iterator for ResourceLogsIter {
 
 #[cfg(test)]
 mod tests {
-    use otlp_common::any_value::Value::{KvlistValue, StringValue};
+    use otlp_common::any_value::Value::{DoubleValue, IntValue, KvlistValue, StringValue};
     use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
     use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
     use otlp_protos::opentelemetry::proto::resource::v1 as otlp_resource_v1;
@@ -242,7 +249,9 @@ mod tests {
             )),
         );
 
-        let mut logs = translator.collect::<Vec<_>>();
+        let mut logs = translator
+            .collect::<Result<Vec<_>, _>>()
+            .expect("every record should transform");
         assert_eq!(logs.len(), 1);
         logs.remove(0)
     }
@@ -465,7 +474,10 @@ mod tests {
                 saluki_env::workload::providers::NoopWorkloadProvider,
             )),
         )
-        .map(|log| (log.hostname().to_string(), log.service().to_string()))
+        .map(|log| {
+            let log = log.expect("every record should transform");
+            (log.hostname().to_string(), log.service().to_string())
+        })
         .collect()
     }
 
@@ -1048,6 +1060,16 @@ mod tests {
                         body: Some(string_to_any_value("first")),
                         ..Default::default()
                     },
+                    // The Agent fails to marshal a NaN record attribute, so this log is dropped.
+                    otlp_logs_v1::LogRecord {
+                        attributes: vec![otlp_common::KeyValue {
+                            key: "ratio".to_string(),
+                            value: Some(otlp_common::AnyValue {
+                                value: Some(DoubleValue(f64::NAN)),
+                            }),
+                        }],
+                        ..Default::default()
+                    },
                     otlp_logs_v1::LogRecord {
                         body: Some(string_to_any_value("second")),
                         ..Default::default()
@@ -1081,6 +1103,66 @@ mod tests {
             ("component_type", "source"),
             ("message_type", "otlp_logs"),
         ];
-        assert_eq!(recorder.counter(("component_events_received_total", tags)), Some(2));
+        assert_eq!(recorder.counter(("component_events_received_total", tags)), Some(3));
+        let dropped_tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("drop_reason", "render_failure"),
+            ("intentional", "false"),
+            ("message_type", "otlp_logs"),
+        ];
+        assert_eq!(
+            recorder.counter(("component_events_dropped_total", dropped_tags)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn service_name_renders_as_a_string() {
+        let int = |value| otlp_common::AnyValue {
+            value: Some(IntValue(value)),
+        };
+        let attribute = |key: &str, value| otlp_common::KeyValue {
+            key: key.to_string(),
+            value: Some(value),
+        };
+        let resource = |attributes| otlp_resource_v1::Resource {
+            attributes,
+            ..Default::default()
+        };
+        let record = |attributes| otlp_logs_v1::LogRecord {
+            attributes,
+            ..Default::default()
+        };
+
+        // (case, resource, record, service)
+        let cases = [
+            (
+                "a non-string resource service",
+                resource(vec![attribute(SERVICE_NAME, int(12))]),
+                record(vec![]),
+                "12",
+            ),
+            (
+                "a non-string record service",
+                resource(vec![]),
+                record(vec![attribute(SERVICE_NAME, int(7))]),
+                "7",
+            ),
+            (
+                "only the first resource service counts, and an empty one falls back to the record",
+                resource(vec![
+                    attribute(SERVICE_NAME, string_to_any_value("")),
+                    attribute(SERVICE_NAME, string_to_any_value("second")),
+                ]),
+                record(vec![attribute(SERVICE_NAME, string_to_any_value("record"))]),
+                "record",
+            ),
+        ];
+
+        for (name, resource, record, service) in cases {
+            let log = translate_log(record, resource, None);
+            assert_eq!(log.service(), service, "{}", name);
+        }
     }
 }

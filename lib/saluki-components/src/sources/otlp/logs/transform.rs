@@ -3,19 +3,23 @@
 //! [`transform_log_record`] follows `transform` in the Agent's `pkg/opentelemetry-mapping-go/otlp/logs/transform.go`,
 //! phase by phase. Each phase writes [`Properties`], so a later phase overwrites the keys of an earlier one.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
+use otlp_common::any_value::Value as OtlpValue;
 use otlp_common::any_value::Value::StringValue as OtlpStringValue;
-use otlp_common::any_value::Value::{ArrayValue, BoolValue, BytesValue, DoubleValue, IntValue, KvlistValue};
+use otlp_common::any_value::Value::{ArrayValue, BoolValue, DoubleValue, IntValue, KvlistValue};
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use saluki_common::time::{Timestamp, TimestampFormat};
 use saluki_core::data_model::{event::log::Log, tags::TagSet};
+use saluki_error::{generic_error, GenericError};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
 
 use crate::common::otlp::traces::transform::bytes_to_hex_lowercase;
+use crate::common::otlp::value::otlp_value_as_string;
 
 pub(super) const DDTAGS_ATTR: &str = "ddtags";
 const STATUS_KEYS: &[&str] = &["status", "severity", "level", "syslog.severity"];
@@ -45,15 +49,24 @@ const DD_TIMESTAMP: &str = "@timestamp";
 static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion");
 
 /// Transforms an OTLP log record, with its resource and scope, into a log.
+///
+/// The message, status, `ddtags`, and trace and span ID attributes, the `otel.library.*` aliases, the resource and scope
+/// attributes, and the body become strings. Other record attributes keep their types, as [`Flattener`] describes.
+///
+/// # Errors
+///
+/// Returns an error when a record attribute holds a NaN or an infinite double that no later property overwrites. The
+/// caller drops the log, as the Agent drops a log that it fails to marshal.
 pub(super) fn transform_log_record(
     lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
     record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet,
-) -> Log {
+) -> Result<Log, GenericError> {
     let mut properties = Properties::default();
+    let mut flattener = Flattener::default();
 
     // Resource attributes overwrite record attributes, and scope attributes overwrite both.
-    let reserved = apply_record_attributes(&lr.attributes, &mut properties);
-    if let Some(ddtags) = reserved.ddtags {
+    let reserved = apply_record_attributes(&lr.attributes, &mut flattener, &mut properties);
+    if let Some(ddtags) = reserved.ddtags.as_deref() {
         add_ddtags(&mut tags, ddtags);
     }
     apply_resource_attributes(&resource.attributes, &mut properties);
@@ -62,7 +75,7 @@ pub(super) fn transform_log_record(
     }
     apply_trace_context(&lr, &mut properties);
 
-    let status = derive_status(reserved.status, &lr.severity_text, lr.severity_number);
+    let status = derive_status(reserved.status.as_deref(), &lr.severity_text, lr.severity_number);
     // The Agent sends the derived status in place of any resource or scope attribute named `status`. The encoder
     // writes additional properties over the status, so the attribute must not be among them.
     properties.remove("status");
@@ -74,13 +87,25 @@ pub(super) fn transform_log_record(
         properties.insert_static(OTEL_EVENT_NAME, lr.event_name);
     }
 
-    Log::new(message(reserved.message, lr.body.as_ref()))
+    let message = message(reserved.message, lr.body.as_ref());
+
+    // A non-finite double is still a placeholder only if no later property overwrote it.
+    if flattener.wrote_non_finite {
+        if let Some(key) = properties.non_finite_placeholder() {
+            return Err(generic_error!(
+                "Log attribute '{}' holds a NaN or infinite double, which JSON can't represent.",
+                key
+            ));
+        }
+    }
+
+    Ok(Log::new(message)
         .with_status(status)
         .with_source(DEFAULT_SOURCE.clone())
         .with_hostname(record_host)
         .with_service(record_service)
         .with_tags(tags)
-        .with_additional_properties(properties.into_map())
+        .with_additional_properties(properties.into_map()))
 }
 
 /// The additional properties of a log, which the content renderer writes over the log's fields.
@@ -113,6 +138,13 @@ impl Properties {
         self.0.remove(key);
     }
 
+    fn non_finite_placeholder(&self) -> Option<&MetaString> {
+        self.0
+            .iter()
+            .find(|(_, value)| holds_non_finite_placeholder(value))
+            .map(|(key, _)| key)
+    }
+
     fn into_map(self) -> HashMap<MetaString, JsonValue> {
         self.0
     }
@@ -123,9 +155,9 @@ impl Properties {
 /// When a reserved key repeats, the last attribute wins.
 #[derive(Default)]
 struct ReservedAttributes<'a> {
-    message: Option<&'a str>,
-    status: Option<&'a str>,
-    ddtags: Option<&'a str>,
+    message: Option<Cow<'a, str>>,
+    status: Option<Cow<'a, str>>,
+    ddtags: Option<Cow<'a, str>>,
 }
 
 /// Sets the properties of the record attributes, and returns the reserved ones.
@@ -133,47 +165,37 @@ struct ReservedAttributes<'a> {
 /// Reserved keys match in any case, and every other key keeps its original spelling. The first trace and span IDs
 /// that decode win.
 fn apply_record_attributes<'a>(
-    attributes: &'a [otlp_common::KeyValue], properties: &mut Properties,
+    attributes: &'a [otlp_common::KeyValue], flattener: &mut Flattener, properties: &mut Properties,
 ) -> ReservedAttributes<'a> {
     let mut reserved = ReservedAttributes::default();
     for kv in attributes {
         match kv.key.as_str() {
-            k if is_reserved(k, MESSAGE_KEYS) => reserved.message = Some(string_value_or_empty(kv)),
-            k if is_reserved(k, STATUS_KEYS) => reserved.status = Some(string_value_or_empty(kv)),
+            k if is_reserved(k, MESSAGE_KEYS) => reserved.message = Some(as_string(kv)),
+            k if is_reserved(k, STATUS_KEYS) => reserved.status = Some(as_string(kv)),
             k if is_reserved(k, TRACE_ID_ATTR_KEYS) => {
-                if let Some(OtlpStringValue(trace_hex)) = kv.value.as_ref().and_then(|av| av.value.as_ref()) {
-                    if !properties.contains(DD_TRACE_ID) {
-                        if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
-                            insert_trace_id(properties, trace_hex.clone(), &bytes);
-                        }
+                if !properties.contains(DD_TRACE_ID) {
+                    let trace_hex = as_string(kv);
+                    if let Some(bytes) = decode_hex_exact_to_bytes(&trace_hex, 16) {
+                        insert_trace_id(properties, trace_hex.into_owned(), &bytes);
                     }
                 }
             }
             k if is_reserved(k, SPAN_ID_ATTR_KEYS) => {
-                if let Some(OtlpStringValue(span_hex)) = kv.value.as_ref().and_then(|av| av.value.as_ref()) {
-                    if !properties.contains(DD_SPAN_ID) {
-                        if let Some(bytes) = decode_hex_exact_to_bytes(span_hex, 8) {
-                            insert_span_id(properties, span_hex.clone(), &bytes);
-                        }
+                if !properties.contains(DD_SPAN_ID) {
+                    let span_hex = as_string(kv);
+                    if let Some(bytes) = decode_hex_exact_to_bytes(&span_hex, 8) {
+                        insert_span_id(properties, span_hex.into_owned(), &bytes);
                     }
                 }
             }
-            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => reserved.ddtags = Some(string_value_or_empty(kv)),
+            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => reserved.ddtags = Some(as_string(kv)),
             k if k.eq_ignore_ascii_case(OTEL_LIBRARY_NAME) => {
                 insert_scope_alias(properties, attributes, OTEL_SCOPE_NAME, kv)
             }
             k if k.eq_ignore_ascii_case(OTEL_LIBRARY_VERSION) => {
                 insert_scope_alias(properties, attributes, OTEL_SCOPE_VERSION, kv)
             }
-            _ => {
-                if let Some(av) = kv.value.as_ref() {
-                    for (key, val) in flatten_attribute(&kv.key, av, 1) {
-                        if !val.is_null() {
-                            properties.insert(key, val);
-                        }
-                    }
-                }
-            }
+            _ => flattener.flatten(Cow::Borrowed(kv.key.as_str()), attribute_value(kv), 1, properties),
         }
     }
     reserved
@@ -198,18 +220,11 @@ fn apply_resource_attributes(attributes: &[otlp_common::KeyValue], properties: &
             OTEL_LIBRARY_NAME => insert_scope_alias(properties, attributes, OTEL_SCOPE_NAME, kv),
             OTEL_LIBRARY_VERSION => insert_scope_alias(properties, attributes, OTEL_SCOPE_VERSION, kv),
             key => {
-                if let Some(av) = kv.value.as_ref() {
-                    let val = match av.value.as_ref() {
-                        Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-                        _ => any_value_to_json(av),
-                    };
-                    if !val.is_null() {
-                        match key {
-                            "hostname" => properties.insert(MetaString::from_static(OTEL_HOSTNAME), val),
-                            "service" => properties.insert(MetaString::from_static(OTEL_SERVICE), val),
-                            _ => properties.insert(key, val),
-                        }
-                    }
+                let value = JsonValue::String(as_string(kv).into_owned());
+                match key {
+                    "hostname" => properties.insert(MetaString::from_static(OTEL_HOSTNAME), value),
+                    "service" => properties.insert(MetaString::from_static(OTEL_SERVICE), value),
+                    _ => properties.insert(key, value),
                 }
             }
         }
@@ -222,15 +237,7 @@ fn apply_resource_attributes(attributes: &[otlp_common::KeyValue], properties: &
 /// name and version fill in only the keys that are still missing.
 fn apply_scope(scope: &otlp_common::InstrumentationScope, properties: &mut Properties) {
     for kv in &scope.attributes {
-        if let Some(av) = kv.value.as_ref() {
-            let val = match av.value.as_ref() {
-                Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-                _ => any_value_to_json(av),
-            };
-            if !val.is_null() {
-                properties.insert(kv.key.as_str(), val);
-            }
-        }
+        properties.insert(kv.key.as_str(), JsonValue::String(as_string(kv).into_owned()));
     }
     for (key, value) in [(OTEL_SCOPE_NAME, &scope.name), (OTEL_SCOPE_VERSION, &scope.version)] {
         if !value.is_empty() {
@@ -295,13 +302,10 @@ fn apply_timestamp(lr: &LogRecord, properties: &mut Properties) {
 }
 
 /// Returns the message: the last message attribute, or the body when that attribute is missing or empty.
-fn message(attribute: Option<&str>, body: Option<&otlp_common::AnyValue>) -> MetaString {
+fn message(attribute: Option<Cow<'_, str>>, body: Option<&otlp_common::AnyValue>) -> MetaString {
     match attribute {
         Some(message) if !message.is_empty() => MetaString::from(message),
-        _ => body
-            .map(any_value_to_message_string)
-            .map(MetaString::from)
-            .unwrap_or_default(),
+        _ => MetaString::from(otlp_value_as_string(body.and_then(|body| body.value.as_ref()))),
     }
 }
 
@@ -373,18 +377,6 @@ fn is_reserved(key: &str, reserved: &[&str]) -> bool {
     reserved.iter().any(|reserved| reserved.eq_ignore_ascii_case(key))
 }
 
-/// Returns an attribute's string value, or an empty string for any other value.
-///
-/// Converting other values to strings, as `pcommon.Value.AsString` does, is still missing. Until then, a non-string
-/// message, status, or `ddtags` attribute counts as empty, and so does a non-string duplicate that comes after a string
-/// one.
-fn string_value_or_empty(kv: &otlp_common::KeyValue) -> &str {
-    match kv.value.as_ref().and_then(|av| av.value.as_ref()) {
-        Some(OtlpStringValue(s)) => s,
-        _ => "",
-    }
-}
-
 /// Maps a deprecated `otel.library.*` attribute to its canonical `otel.scope.*` key, unless the attribute's own
 /// collection also has the canonical key, spelled exactly.
 fn insert_scope_alias(
@@ -394,82 +386,128 @@ fn insert_scope_alias(
     if collection.iter().any(|other| other.key == canonical) {
         return;
     }
-    let value = kv.value.as_ref().map(any_value_to_message_string).unwrap_or_default();
-    properties.insert_static(canonical, value);
+    properties.insert_static(canonical, as_string(kv).into_owned());
 }
 
-/// Renders a value as the message: a string as it is, and any other value as JSON.
-fn any_value_to_message_string(av: &otlp_common::AnyValue) -> String {
-    match av.value.as_ref() {
-        Some(OtlpStringValue(s)) => s.clone(),
-        _ => serde_json::to_string(&any_value_to_json(av)).unwrap_or_else(|_| String::new()),
+fn attribute_value(kv: &otlp_common::KeyValue) -> Option<&OtlpValue> {
+    kv.value.as_ref().and_then(|av| av.value.as_ref())
+}
+
+fn as_string(kv: &otlp_common::KeyValue) -> Cow<'_, str> {
+    otlp_value_as_string(attribute_value(kv))
+}
+
+/// The depth at which [`Flattener`] renders a map as a string instead of flattening it.
+const FLATTEN_STRING_DEPTH: usize = 10;
+
+/// Where [`Flattener`] writes the properties of a record attribute.
+trait PropertySink {
+    fn set(&mut self, key: String, value: JsonValue);
+}
+
+impl PropertySink for Properties {
+    fn set(&mut self, key: String, value: JsonValue) {
+        self.insert(key, value);
     }
 }
 
-/// Converts a value into JSON.
-fn any_value_to_json(av: &otlp_common::AnyValue) -> JsonValue {
-    match av.value.as_ref() {
-        Some(BoolValue(b)) => JsonValue::Bool(*b),
-        Some(IntValue(i)) => JsonValue::from(*i),
-        Some(DoubleValue(d)) => JsonValue::from(*d),
-        Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-        Some(BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
-            Ok(s) => JsonValue::String(s),
-            Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
-        },
-        Some(ArrayValue(arr)) => JsonValue::Array(arr.values.iter().map(any_value_to_json).collect::<Vec<_>>()),
-        Some(KvlistValue(kvl)) => {
-            let mut obj = serde_json::Map::new();
-            for kv in &kvl.values {
-                if let Some(val) = kv.value.as_ref() {
-                    obj.insert(kv.key.clone(), any_value_to_json(val));
+impl PropertySink for serde_json::Map<String, JsonValue> {
+    fn set(&mut self, key: String, value: JsonValue) {
+        self.insert(key, value);
+    }
+}
+
+/// Flattens record attributes as `flattenAttribute` in the Agent does.
+///
+/// - A map spreads its entries into dotted keys. Under an empty key, the entries keep their own keys.
+/// - An array stays an array at any depth, as [`Flattener::array_element`] describes.
+/// - Strings, integers, Booleans, and doubles keep their types. Bytes, empty values, and maps at depth 10 become
+///   strings.
+///
+/// A map becomes a string only at exactly depth 10. An array at depth 10 moves its elements to depth 11, so the maps
+/// below it flatten without a limit. This is a quirk of the Agent since it added array support
+/// (DataDog/datadog-agent#45708): the array branch comes before the depth check, so depth can skip past 10. We copy it.
+///
+/// JSON can't hold a NaN or an infinite double, and the Agent fails to marshal a log that holds one. A non-finite
+/// double becomes a `null` placeholder, and the flattener remembers that it wrote one, so the caller can drop the log
+/// if the placeholder is still there once every property is set. No other value becomes `null`.
+#[derive(Default)]
+struct Flattener {
+    wrote_non_finite: bool,
+}
+
+impl Flattener {
+    /// Flattens a value under `key` into `out`. A record attribute starts at depth 1.
+    fn flatten<S: PropertySink>(&mut self, key: Cow<'_, str>, value: Option<&OtlpValue>, depth: usize, out: &mut S) {
+        match value {
+            Some(KvlistValue(map)) if depth != FLATTEN_STRING_DEPTH => {
+                for kv in &map.values {
+                    let nested_key = if key.is_empty() {
+                        Cow::Borrowed(kv.key.as_str())
+                    } else {
+                        Cow::Owned(format!("{}.{}", key, kv.key))
+                    };
+                    self.flatten(nested_key, attribute_value(kv), depth + 1, out);
                 }
             }
-            JsonValue::Object(obj)
+            _ => {
+                let value = self.value(value, depth);
+                out.set(key.into_owned(), value);
+            }
         }
-        None => JsonValue::Null,
     }
-}
 
-/// Flattens a map into dotted keys, up to a maximum depth.
-///
-/// Leaf strings, integers, Booleans, and doubles keep their types, and other leaf values become strings.
-fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usize) -> Vec<(String, JsonValue)> {
-    const MAX_DEPTH: usize = 10;
-
-    fn to_leaf_json(av: &otlp_common::AnyValue) -> JsonValue {
-        match av.value.as_ref() {
+    /// Converts a value that doesn't spread into dotted keys.
+    fn value(&mut self, value: Option<&OtlpValue>, depth: usize) -> JsonValue {
+        match value {
+            Some(ArrayValue(array)) => JsonValue::Array(
+                array
+                    .values
+                    .iter()
+                    .map(|element| self.array_element(element.value.as_ref(), depth + 1))
+                    .collect(),
+            ),
             Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
             Some(IntValue(i)) => JsonValue::from(*i),
             Some(BoolValue(b)) => JsonValue::Bool(*b),
-            Some(DoubleValue(d)) => JsonValue::from(*d),
-            Some(BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
-                Ok(s) => JsonValue::String(s),
-                Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
+            Some(DoubleValue(d)) => match serde_json::Number::from_f64(*d) {
+                Some(number) => JsonValue::Number(number),
+                None => {
+                    self.wrote_non_finite = true;
+                    JsonValue::Null
+                }
             },
-            _ => JsonValue::String(serde_json::to_string(&any_value_to_json(av)).unwrap_or_else(|_| String::new())),
+            other => JsonValue::String(otlp_value_as_string(other).into_owned()),
         }
     }
 
-    if depth < MAX_DEPTH {
-        if let Some(KvlistValue(kvl)) = av.value.as_ref() {
-            let mut out = Vec::new();
-            for kv in &kvl.values {
-                if let Some(v) = kv.value.as_ref() {
-                    let new_key = format!("{}.{}", base_key, kv.key);
-                    let nested = flatten_attribute(&new_key, v, depth + 1);
-                    if nested.is_empty() {
-                        out.push((new_key, to_leaf_json(v)));
-                    } else {
-                        out.extend(nested);
-                    }
+    /// Converts an element of an array. The element is one level deeper than its array.
+    ///
+    /// The Agent flattens each element under an empty key. An element whose result has an empty key becomes that
+    /// value, and any other element becomes an object of its results. So a map that spreads becomes an object of its
+    /// dotted keys, unless it has an empty key itself, and every other element becomes a single value.
+    fn array_element(&mut self, element: Option<&OtlpValue>, depth: usize) -> JsonValue {
+        match element {
+            Some(map @ KvlistValue(_)) if depth != FLATTEN_STRING_DEPTH => {
+                let mut flattened = serde_json::Map::new();
+                self.flatten(Cow::Borrowed(""), Some(map), depth, &mut flattened);
+                match flattened.remove("") {
+                    Some(value) => value,
+                    None => JsonValue::Object(flattened),
                 }
             }
-            return out;
+            other => self.value(other, depth),
         }
     }
+}
 
-    vec![(base_key.to_string(), to_leaf_json(av))]
+fn holds_non_finite_placeholder(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Null => true,
+        JsonValue::Array(values) => values.iter().any(holds_non_finite_placeholder),
+        JsonValue::Object(map) => map.values().any(holds_non_finite_placeholder),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

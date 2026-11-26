@@ -11,8 +11,14 @@
 #![allow(clippy::enum_clike_unportable_variant)]
 
 use std::{
-    borrow::Borrow, fmt, hash, mem::ManuallyDrop, ops::Deref, ptr::NonNull, slice::from_raw_parts,
-    str::from_utf8_unchecked, sync::Arc,
+    borrow::{Borrow, Cow},
+    fmt, hash,
+    mem::ManuallyDrop,
+    ops::Deref,
+    ptr::NonNull,
+    slice::from_raw_parts,
+    str::from_utf8_unchecked,
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -885,6 +891,17 @@ impl From<&str> for MetaString {
     }
 }
 
+impl From<Cow<'_, str>> for MetaString {
+    /// Converts a borrowed string as [`From<&str>`] does, inlining it when it's short enough, and keeps an owned string
+    /// without copying it.
+    fn from(s: Cow<'_, str>) -> Self {
+        match s {
+            Cow::Borrowed(s) => Self::from(s),
+            Cow::Owned(s) => Self::from(s),
+        }
+    }
+}
+
 impl From<InternedString> for MetaString {
     fn from(s: InternedString) -> Self {
         Self {
@@ -946,7 +963,7 @@ impl fmt::Display for MetaString {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, sync::Arc};
+    use std::{borrow::Cow, num::NonZeroUsize, sync::Arc};
 
     use proptest::{prelude::*, proptest};
 
@@ -1069,6 +1086,27 @@ mod tests {
         assert_eq!(s, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
         assert_eq!(s, meta.into_owned());
+    }
+
+    #[test]
+    fn cow_string() {
+        let meta = MetaString::from(Cow::Borrowed("hello"));
+        assert_eq!(&*meta, "hello");
+        assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
+
+        let long = "a borrowed string too long to inline";
+        assert!(long.len() > INLINED_STR_MAX_LEN);
+        let meta = MetaString::from(Cow::Borrowed(long));
+        assert_eq!(&*meta, long);
+        assert_eq!(meta.inner.get_union_type(), UnionType::Owned);
+
+        // An owned string keeps its allocation, even when it's short enough to inline.
+        let owned = String::from("hello");
+        let ptr = owned.as_ptr();
+        let meta = MetaString::from(Cow::<str>::Owned(owned));
+        assert_eq!(&*meta, "hello");
+        assert_eq!(meta.inner.get_union_type(), UnionType::Owned);
+        assert_eq!(meta.as_ptr(), ptr);
     }
 
     #[test]
