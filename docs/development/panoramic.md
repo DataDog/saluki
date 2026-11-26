@@ -485,8 +485,9 @@ case from `test/integration/cases` that uses the same steps.
   this.
 - When several API keys deliver to one intake, `intake_from` takes `api_key` to count only the requests with that key.
   The step ignores the other requests. Add a step without `api_key` whose `count` bounds the total, so that a key that
-  no step names cannot deliver more. Use synthetic keys: the step never prints the value of `api_key`, but the case
-  file holds it.
+  no step names cannot deliver more. The reports, the kept files and the `Debug` form of the step never show the value
+  of `api_key`. The case file, the output of `panoramic plan` and the `plan.json` of a failed case do show it, so use
+  only synthetic keys.
 - To check that telemetry does not reach an intake, use `intake_from` with `count: 0` and an explicit `settle`. Put it
   after the steps that saw the same payload arrive at its right intake, and let `settle` cover the time that a wrong
   delivery needs to arrive. An absence step with no such delivery before it also passes when the payload went nowhere.

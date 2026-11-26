@@ -50,7 +50,9 @@
 //! An intake that several keys deliver to can tell the deliveries apart by the `DD-API-KEY` header. With `api_key`,
 //! only the requests that carry that key count. The step ignores the other requests, so it does not fail on a delivery
 //! with another key. Pair it with a step without `api_key` whose `count` bounds the total, so that a key that no
-//! step names cannot deliver more. The step never prints the value of `api_key`:
+//! step names cannot deliver more. The reports, the kept files and the `Debug` form of the step never show the value of
+//! `api_key`. The case file, the output of `panoramic plan` and the `plan.json` that a failed case keeps do show it, so
+//! use only synthetic keys:
 //!
 //! ```yaml
 //! - step: intake_from
@@ -248,7 +250,8 @@ impl Sender {
     }
 }
 
-/// The API key that selected requests carry. Nothing that the step reports shows its value, not even its `Debug` form.
+/// The API key that selected requests carry. Nothing that the step reports or keeps shows its value, and its `Debug`
+/// form does not either. The fields of the step in the plan do show it, because they hold what the case wrote.
 struct ApiKey(String);
 
 impl ApiKey {
