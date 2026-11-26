@@ -14,6 +14,8 @@ use saluki_core::data_model::{
 use saluki_metrics::MetricsBuilder;
 use smallvec::SmallVec;
 
+use super::AggregateMetricType;
+
 #[derive(Clone)]
 struct MetricTypedGauge {
     for_counter: Gauge,
@@ -48,14 +50,14 @@ impl MetricTypedGauge {
         }
     }
 
-    pub fn for_values(&self, values: &MetricValues) -> &Gauge {
-        match values {
-            MetricValues::Counter(_) => &self.for_counter,
-            MetricValues::Gauge(_) => &self.for_gauge,
-            MetricValues::Rate(_, _) => &self.for_rate,
-            MetricValues::Set(_) => &self.for_set,
-            MetricValues::Histogram(_) => &self.for_histogram,
-            MetricValues::Distribution(_) => &self.for_distribution,
+    pub fn for_kind(&self, kind: AggregateMetricType) -> &Gauge {
+        match kind {
+            AggregateMetricType::Counter => &self.for_counter,
+            AggregateMetricType::Gauge => &self.for_gauge,
+            AggregateMetricType::Rate => &self.for_rate,
+            AggregateMetricType::Set => &self.for_set,
+            AggregateMetricType::Histogram => &self.for_histogram,
+            AggregateMetricType::Distribution => &self.for_distribution,
         }
     }
 }
@@ -167,7 +169,7 @@ const ORIGIN_SERIES_RETIREMENT_MILLIS: u128 = 5_000;
 /// Each series holds its canonical tags here, and its encoded labels in the internal metrics registry key, resolver
 /// cache key, and resolved context. Canonical tags never exceed their encoded size. Slots are freed and reused at
 /// most once per flush, so a series retired in each flush within the retirement window can still be held there.
-/// The per-context admission ID is already included in AggregatedMetric's size.
+/// The dense row includes its admission ID.
 pub(super) fn origin_telemetry_bytes(flush_interval: Duration) -> usize {
     let retiring_generations = ORIGIN_SERIES_RETIREMENT_MILLIS.div_ceil(flush_interval.as_millis().max(1)) as usize;
     MAX_ORIGIN_SERIES * ORIGIN_SERIES_BYTES
@@ -383,11 +385,11 @@ impl Telemetry {
         }
     }
 
-    pub fn increment_contexts(&self, context: &Context, values: &MetricValues) -> OriginContextId {
+    pub fn increment_contexts(&self, context: &Context, kind: AggregateMetricType) -> OriginContextId {
         self.active_contexts.increment(1);
-        self.active_contexts_by_type.for_values(values).increment(1);
+        self.active_contexts_by_type.for_kind(kind).increment(1);
         self.active_contexts_bytes_by_type
-            .for_values(values)
+            .for_kind(kind)
             .increment(context.size_of() as f64);
         match &self.origin_contexts {
             Some(origin) if !context.origin_tags().is_empty() => origin
@@ -399,15 +401,23 @@ impl Telemetry {
         }
     }
 
-    pub fn decrement_contexts(&self, context: &Context, values: &MetricValues, origin_id: OriginContextId) {
+    pub fn decrement_contexts(&self, context: &Context, kind: AggregateMetricType, origin_id: OriginContextId) {
         self.active_contexts.decrement(1);
-        self.active_contexts_by_type.for_values(values).decrement(1);
+        self.active_contexts_by_type.for_kind(kind).decrement(1);
         self.active_contexts_bytes_by_type
-            .for_values(values)
+            .for_kind(kind)
             .decrement(context.size_of() as f64);
         if let Some(origin) = &self.origin_contexts {
             origin.contexts.lock().unwrap().decrement(origin_id);
         }
+    }
+
+    pub fn change_context_type(&self, context: &Context, old: AggregateMetricType, new: AggregateMetricType) {
+        let bytes = context.size_of() as f64;
+        self.active_contexts_by_type.for_kind(old).decrement(1);
+        self.active_contexts_by_type.for_kind(new).increment(1);
+        self.active_contexts_bytes_by_type.for_kind(old).decrement(bytes);
+        self.active_contexts_bytes_by_type.for_kind(new).increment(bytes);
     }
 
     pub fn increment_events_dropped(&self) {

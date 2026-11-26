@@ -57,6 +57,15 @@ impl ScalarPoints {
         self.0.values.len()
     }
 
+    /// Returns the point if there is exactly one.
+    #[inline]
+    pub fn single_point(&self) -> Option<(Option<NonZeroU64>, f64)> {
+        match self.0.values.as_slice() {
+            [point] => Some((point.timestamp, point.value.0)),
+            _ => None,
+        }
+    }
+
     /// Merges another set of points into this one.
     ///
     /// If a point with the same timestamp exists in both sets, the values will be added together. Otherwise, the points

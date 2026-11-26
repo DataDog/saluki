@@ -16,7 +16,7 @@ mod scalar;
 pub use self::scalar::ScalarPoints;
 
 mod set;
-pub use self::set::SetPoints;
+pub use self::set::{SetBucket, SetPoints};
 use super::SampleRate;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
