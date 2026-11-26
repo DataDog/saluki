@@ -606,7 +606,8 @@ See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching r
 
 ### When a metric has a different type
 
-In `otlp-metrics-cumulative-monotonic`, the Agent sends `raymond.test.cumulative.as.gauge` as a count of 30.
+In `test/correctness/cases/otlp-metrics-cumulative-monotonic/config.yaml`, the Agent sends
+`raymond.test.cumulative.as.gauge` as a count of 30.
 ADP sends its rate over ten seconds as a gauge of 3. Comparing 30 to 3 would not test either value. The case
 records the type difference under `metrics`:
 
@@ -619,9 +620,9 @@ known_differences:
     reason: ADP reports this sum as a gauge of its rate, and the Agent reports it as a count
 ```
 
-The entry covers only `type`, for the names in `when`. If you specify `kinds`, use `[value]`. Each intake must hold
-the same name and tags with exactly one type. If those types differ, `compare` leaves that pair out of the value
-comparison. A missing series or an extra type is not a type difference.
+A metric entry needs an `issue` and covers only `type` for the names in `when`. If you specify `kinds`, use `[value]`.
+Each intake must hold the same name and tags with exactly one type. If those types differ, `compare` leaves that pair
+out of the value comparison. A missing series or an extra type is not a type difference.
 
 The fixture sends another sum, `otlp.cumulative.monotonic`. Its count must still match. To check the values of the
 pair that `compare` left out, the case uses `intake_has_metric` on each intake: count 30 on one, gauge 3 on the other.
@@ -644,8 +645,8 @@ stats, it checks every group, not just the first mismatch. Each entry under `tra
 
 ### A span field or an ignored field?
 
-For a string HTTP status code, the Agent sends both the text and the number. ADP sends only the number. The
-`otlp-traces` case records [this gap][status-issue] on the HTTP spans:
+For a string HTTP status code, the Agent sends both the text and the number. ADP sends only the number.
+`test/correctness/cases/otlp-traces/config.yaml` records [this gap][status-issue] on the HTTP spans:
 
 ```yaml
 - gap: gap/otlp-http-status-code-string
