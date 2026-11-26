@@ -96,18 +96,15 @@ impl ExternalDataStore {
             return;
         }
 
-        // We create a "resolved" form of the External Data, which includes entity IDs for both the pod and the
-        // container that this External Data is attached to.
-        let resolved = ResolvedExternalData::new(EntityId::PodUid(external_data.pod_uid().clone()), entity_id.clone());
-
-        // An entity can be re-attached with different External Data. Drop the forward entry for the previous External
-        // Data so that it stops resolving to this entity.
         if let Some(previous) = self.reverse_mappings.insert(entity_id.clone(), external_data.clone()) {
             if previous != external_data {
                 self.remove_forward_mapping_if_owned(&previous, &entity_id);
             }
         }
 
+        // We create a "resolved" form of the External Data, which includes entity IDs for both the pod and the
+        // container that this External Data is attached to.
+        let resolved = ResolvedExternalData::new(EntityId::PodUid(external_data.pod_uid().clone()), entity_id);
         let _ = self.forward_mappings.insert(external_data, resolved);
     }
 
