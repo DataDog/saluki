@@ -4,7 +4,7 @@ use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_val
 use saluki_common::collections::FastHashSet;
 use saluki_core::data_model::{
     origin::{OriginTagCardinality, RawOrigin},
-    tags::{SharedTagSet, Tag, TagSet},
+    tags::{SharedTagSet, TagSet},
 };
 use saluki_env::{workload::EntityId, WorkloadProvider};
 use stringtheory::MetaString;
@@ -108,13 +108,12 @@ impl OtlpOriginTagResolver {
     pub fn resolve_ordered_tags(
         &self, entity_ids: impl IntoIterator<Item = EntityId>, tag_cardinality: OriginTagCardinality,
     ) -> TagSet {
-        let mut tags = Vec::new();
+        let mut tags = TagSet::default();
         let mut written_keys = FastHashSet::default();
         for entity_id in entity_ids.into_iter().chain([EntityId::Global]) {
             self.collect_tags_for_entity(entity_id, tag_cardinality, &mut written_keys, &mut tags);
         }
-        // Each key appears once, so the tags are unique, and `from_iter` doesn't need to look for duplicates.
-        TagSet::from_iter(tags)
+        tags
     }
 
     fn container_entity_from_attributes(
@@ -182,7 +181,7 @@ impl OtlpOriginTagResolver {
 
     fn collect_tags_for_entity(
         &self, entity_id: EntityId, tag_cardinality: OriginTagCardinality, written_keys: &mut FastHashSet<String>,
-        tags: &mut Vec<Tag>,
+        tags: &mut TagSet,
     ) {
         let Some(entity_tags) = self.workload_provider.get_tags_for_entity(&entity_id, tag_cardinality) else {
             trace!(
@@ -200,7 +199,9 @@ impl OtlpOriginTagResolver {
             if key.is_empty() || value.is_empty() || !written_keys.insert(key.to_owned()) {
                 continue;
             }
-            tags.push(tag.clone());
+            // Each key appears once, so the tags are unique, and `extend` doesn't need to look for duplicates as
+            // `insert_tag` does.
+            tags.extend([tag.clone()]);
         }
     }
 }
