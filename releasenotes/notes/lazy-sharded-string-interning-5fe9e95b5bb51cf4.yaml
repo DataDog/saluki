@@ -1,0 +1,5 @@
+---
+enhancements:
+  - |
+    Reduce startup memory use for workload metadata, origin tags, and OTLP traces. The string cache allocates
+    storage as needed and uses separate locks to reduce contention between concurrent requests.
