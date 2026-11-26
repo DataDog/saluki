@@ -1062,6 +1062,9 @@ mod tests {
             .expect("endpoint should resolve");
         let custom = ResolvedEndpoint::from_raw_endpoint("https://example.com", "fake-api-key")
             .expect("endpoint should resolve");
+        // A plain-HTTP intake with a port, such as the fake intake of a correctness case.
+        let intake =
+            ResolvedEndpoint::from_raw_endpoint("http://intake:2049", "fake-api-key").expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig {
             enabled: V3SeriesMode::DatadogOnly,
             endpoints: HashMap::new(),
@@ -1069,9 +1072,64 @@ mod tests {
 
         let datadog_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&datadog, &series_config));
         let custom_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&custom, &series_config));
+        let intake_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&intake, &series_config));
 
         assert!(datadog_settings.use_v3_series);
         assert!(!custom_settings.use_v3_series);
+        assert!(!intake_settings.use_v3_series);
+    }
+
+    #[test]
+    fn serializer_v3_sketches_endpoints_match_the_configured_endpoint_exactly() {
+        // The Agent compares the list with the configured name of the resolver, as a string
+        // (`pkg/serializer/metrics.go:53-55` at `92824ec3d3`).
+        let series_config = UseV3ApiSeriesConfig {
+            enabled: V3SeriesMode::Disabled,
+            endpoints: HashMap::new(),
+        };
+        let listed = ["http://intake:2049".to_string()];
+        let cases = [
+            ("http://intake:2049", true),
+            ("http://intake:2049/", false),
+            ("http://intake:2050", false),
+            ("http://other:2049", false),
+        ];
+
+        for (raw, expected) in cases {
+            let resolved = ResolvedEndpoint::from_raw_endpoint(raw, "fake-api-key").expect("endpoint should resolve");
+            let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+                serializer_v3_sketches_endpoints: &listed,
+                ..v3_endpoint_config(&resolved, &series_config)
+            });
+
+            assert_eq!(settings.use_v3_sketches, expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn v3_sketches_do_not_depend_on_the_series_mode() {
+        let resolved =
+            ResolvedEndpoint::from_raw_endpoint("http://intake:2049", "fake-api-key").expect("endpoint should resolve");
+        let listed = ["http://intake:2049".to_string()];
+
+        let series_enabled = UseV3ApiSeriesConfig {
+            enabled: V3SeriesMode::Enabled,
+            endpoints: HashMap::new(),
+        };
+        let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_enabled));
+        assert!(settings.use_v3_series);
+        assert!(!settings.use_v3_sketches);
+
+        let series_disabled = UseV3ApiSeriesConfig {
+            enabled: V3SeriesMode::Disabled,
+            endpoints: HashMap::new(),
+        };
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            serializer_v3_sketches_endpoints: &listed,
+            ..v3_endpoint_config(&resolved, &series_disabled)
+        });
+        assert!(!settings.use_v3_series);
+        assert!(settings.use_v3_sketches);
     }
 
     #[test]
