@@ -68,11 +68,22 @@ pub enum CustomTags {
 
 /// Writes the entity and global tags of an OTLP resource into its attributes, as `ProcessTags` does.
 ///
-/// When the resource has no `container.id`, the container found from the origin attributes comes first in the entity
-/// list. The Agent instead detects the container ID, writes it into `container.id`, and so also sends it as a tag.
-/// ADP doesn't write `container.id` yet (`gap/origin-detection`). The lookup also reads the origin attributes as the
-/// metrics path does, not as the Agent's `originInfoFromAttributes` does: it uses the last valid attribute with a key,
-/// reads the pod UID and the container name only as strings, and skips a process ID that doesn't fit a `u32`.
+/// # Differences from the Agent
+///
+/// - **No container ID detection** (`gap/origin-detection`). When the resource has no `container.id`, the container
+///   found from the origin attributes comes first in the entity list. The Agent instead generates the container ID,
+///   writes it into `container.id`, and so also sends it as a tag. The lookup reads the origin attributes as the
+///   metrics path does, not as the Agent's `originInfoFromAttributes` does: it uses the last valid attribute with a
+///   key, reads the pod UID and the container name only as strings, and skips a process ID that doesn't fit a `u32`.
+///   It also tries the process ID, the cgroup inode, and then External Data, and keeps the first container that has
+///   tags at `cardinality`. The Agent takes the container ID that origin detection gives, and then gets its tags.
+/// - **No lookup reuse across resources.** The Agent's `tagBatch` keeps each entity's tags, and the global tags, for
+///   all the resources of a batch. This function looks up the tags for each resource, so the resources of one request
+///   can see a tag change between them.
+/// - **Write order.** The tags go into the attributes in resolution order. The Agent iterates a Go map, so its order
+///   is random. The order changes the result when an earlier tag writes an attribute that a later unified service tag
+///   checks, such as a `deployment.environment` tag before the `env` tag.
+/// - **No `allow_hostname_override`.** The Agent's OTLP ingest doesn't set it.
 pub fn process_tags(
     attributes: &mut Vec<KeyValue>, resolver: &OtlpOriginTagResolver, cardinality: OriginTagCardinality,
     custom_tags: CustomTags,
@@ -130,7 +141,8 @@ fn put_prefixed_str_if_absent(attributes: &mut Vec<KeyValue>, key: &str, value: 
 
 /// Returns the entities of an OTLP resource, in the order of `entityIDsFromAttributes`.
 ///
-/// Every value of an entity attribute counts, whatever its type: it converts to a string as `pdata`'s `AsString` does.
+/// Every value of an entity attribute counts, whatever its type: it converts to a string with
+/// [`otlp_value_as_string`], as `pdata`'s `AsString` does. Arrays and maps differ from `pdata` until #3397 lands.
 fn entity_ids_from_attributes(attributes: &[KeyValue]) -> impl Iterator<Item = EntityId> {
     let value = |key| first_attribute(attributes, key).map(otlp_value_as_string);
     let namespace = value(K8S_NAMESPACE_NAME);
