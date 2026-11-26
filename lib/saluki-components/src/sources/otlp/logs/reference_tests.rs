@@ -1154,11 +1154,7 @@ fn log_source_attribute_cases() -> Vec<ExporterCase> {
 
 #[test]
 fn exporter() {
-    check_exporter(exporter_cases());
-}
-
-#[test]
-#[ignore = "target for `gap/log-source-attribute`"]
-fn target_log_source_attribute() {
-    check_exporter(log_source_attribute_cases());
+    let mut cases = exporter_cases();
+    cases.extend(log_source_attribute_cases());
+    check_exporter(cases);
 }

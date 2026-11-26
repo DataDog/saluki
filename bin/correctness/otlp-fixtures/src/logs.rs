@@ -537,6 +537,80 @@ pub fn resource_host_fixture() -> Vec<u8> {
             ],
             vec![scope_logs(no_scope(), vec![record(9, "log-source-resource", vec![])])],
         ),
+        // gap/log-source-attribute: resource and scope attributes become strings, so any non-empty value sets the source.
+        resource_logs(
+            vec![
+                kv("service.name", string("fixture-log-source")),
+                kv("host.name", string("resource-host")),
+                kv("datadog.log.source", int(1)),
+            ],
+            vec![scope_logs(
+                no_scope(),
+                vec![record(65, "log-source-resource-int", vec![])],
+            )],
+        ),
+        resource_logs(
+            vec![
+                kv("service.name", string("fixture-log-source")),
+                kv("host.name", string("resource-host")),
+            ],
+            vec![
+                scope_logs(
+                    InstrumentationScope {
+                        attributes: vec![kv("datadog.log.source", string("scope-source"))],
+                        ..Default::default()
+                    },
+                    vec![record(66, "log-source-scope", vec![])],
+                ),
+                // Record bytes become base64, and a record map flattens into the `datadog.log.source` key.
+                scope_logs(
+                    no_scope(),
+                    vec![
+                        record(
+                            69,
+                            "log-source-record-bytes",
+                            vec![kv("datadog.log.source", bytes(&[0xff, 0x00, b'a']))],
+                        ),
+                        record(
+                            70,
+                            "log-source-record-nested",
+                            vec![kv("datadog.log", map(vec![kv("source", string("nested-source"))]))],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        // The scope attribute overwrites the resource attribute.
+        resource_logs(
+            vec![
+                kv("service.name", string("fixture-log-source")),
+                kv("host.name", string("resource-host")),
+                kv("datadog.log.source", string("resource-source")),
+            ],
+            vec![scope_logs(
+                InstrumentationScope {
+                    attributes: vec![kv("datadog.log.source", string("scope-source"))],
+                    ..Default::default()
+                },
+                vec![record(67, "log-source-scope-over-resource", vec![])],
+            )],
+        ),
+        // An empty resource attribute overwrites the record attribute, so the default source applies.
+        resource_logs(
+            vec![
+                kv("service.name", string("fixture-log-source")),
+                kv("host.name", string("resource-host")),
+                kv("datadog.log.source", string("")),
+            ],
+            vec![scope_logs(
+                no_scope(),
+                vec![record(
+                    68,
+                    "log-source-resource-empty-over-record",
+                    vec![kv("datadog.log.source", string("record-source"))],
+                )],
+            )],
+        ),
         // gap/host-resolution: the record-level host and service fallbacks carry over to later records of the same resource,
         // including records in a later `ScopeLogs`.
         resource_logs(

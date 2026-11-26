@@ -47,11 +47,15 @@ const DD_SPAN_ID: &str = "dd.span_id";
 const DD_TIMESTAMP: &str = "@timestamp";
 
 static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion");
+const LOG_SOURCE_ATTR: &str = "datadog.log.source";
 
 /// Transforms an OTLP log record, with its resource and scope, into a log.
 ///
 /// The message, status, `ddtags`, and trace and span ID attributes, the `otel.library.*` aliases, the resource and scope
 /// attributes, and the body become strings. Other record attributes keep their types, as [`Flattener`] describes.
+///
+/// The source is the final `datadog.log.source` property when it's a non-empty string, and `otlp_log_ingestion`
+/// otherwise, as the Agent's logs agent exporter chooses it. The property stays in the content.
 ///
 /// # Errors
 ///
@@ -99,9 +103,14 @@ pub(super) fn transform_log_record(
         }
     }
 
+    let source = match properties.get(LOG_SOURCE_ATTR) {
+        Some(JsonValue::String(source)) if !source.is_empty() => MetaString::from(source.as_str()),
+        _ => DEFAULT_SOURCE.clone(),
+    };
+
     Ok(Log::new(message)
         .with_status(status)
-        .with_source(DEFAULT_SOURCE.clone())
+        .with_source(source)
         .with_hostname(record_host)
         .with_service(record_service)
         .with_tags(tags)
@@ -128,6 +137,10 @@ impl Properties {
         self.0
             .entry(MetaString::from_static(key))
             .or_insert_with(|| JsonValue::String(value.to_string()));
+    }
+
+    fn get(&self, key: &str) -> Option<&JsonValue> {
+        self.0.get(key)
     }
 
     fn contains(&self, key: &str) -> bool {

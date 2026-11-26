@@ -923,3 +923,245 @@ fn status_from_severity_number_matches_the_reference() {
         );
     }
 }
+
+/// A `datadog.log.source` case: the record, resource, and scope attributes, and the expected source and properties.
+struct LogSourceCase {
+    name: &'static str,
+    record: Vec<KeyValue>,
+    resource: Vec<KeyValue>,
+    scope: Vec<KeyValue>,
+    source: &'static str,
+    properties: JsonValue,
+}
+
+fn log_source_case(name: &'static str) -> LogSourceCase {
+    LogSourceCase {
+        name,
+        record: vec![],
+        resource: vec![],
+        scope: vec![],
+        source: DEFAULT_SOURCE.as_ref(),
+        properties: json!({}),
+    }
+}
+
+/// Checks the source of each case, and that the properties holding a source stay in the log.
+fn check_log_source_cases(cases: Vec<LogSourceCase>) {
+    for case in cases {
+        let lr = LogRecord {
+            attributes: case.record,
+            ..Default::default()
+        };
+        let resource = Resource {
+            attributes: case.resource,
+            ..Default::default()
+        };
+        let scope = otlp_common::InstrumentationScope {
+            attributes: case.scope,
+            ..Default::default()
+        };
+        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+            .unwrap_or_else(|e| panic!("{}: {}", case.name, e));
+
+        assert_eq!(log.source().as_deref(), Some(case.source), "{}", case.name);
+        let properties: serde_json::Map<String, JsonValue> = log
+            .additional_properties()
+            .iter()
+            .filter(|(key, _)| key.to_lowercase().contains("source"))
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect();
+        assert_eq!(JsonValue::Object(properties), case.properties, "{}", case.name);
+    }
+}
+
+#[test]
+fn log_source_follows_the_reference() {
+    // The Agent's logs agent exporter uses the final `datadog.log.source` property as the source when it's a non-empty
+    // string. Record attributes keep their types, and resource and scope attributes become strings.
+    let attr = |value| vec![key_value(LOG_SOURCE_ATTR, value)];
+    let cases = vec![
+        log_source_case("no attribute keeps the default source"),
+        LogSourceCase {
+            record: attr(string("record-source")),
+            source: "record-source",
+            properties: json!({"datadog.log.source": "record-source"}),
+            ..log_source_case("a record string sets the source")
+        },
+        LogSourceCase {
+            record: attr(string("")),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("an empty record string keeps the default source")
+        },
+        LogSourceCase {
+            record: attr(empty()),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("an empty record value keeps the default source")
+        },
+        LogSourceCase {
+            record: attr(value(Value::BytesValue(vec![]))),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("empty record bytes keep the default source")
+        },
+        LogSourceCase {
+            record: attr(value(Value::IntValue(1))),
+            properties: json!({"datadog.log.source": 1}),
+            ..log_source_case("a record int keeps the default source")
+        },
+        LogSourceCase {
+            record: attr(value(Value::DoubleValue(1.5))),
+            properties: json!({"datadog.log.source": 1.5}),
+            ..log_source_case("a record double keeps the default source")
+        },
+        LogSourceCase {
+            record: attr(value(Value::BoolValue(true))),
+            properties: json!({"datadog.log.source": true}),
+            ..log_source_case("a record bool keeps the default source")
+        },
+        LogSourceCase {
+            record: attr(array(vec![string("x")])),
+            properties: json!({"datadog.log.source": ["x"]}),
+            ..log_source_case("a record array keeps the default source")
+        },
+        LogSourceCase {
+            record: attr(value(Value::BytesValue(vec![0xff, 0x00, b'a']))),
+            source: "/wBh",
+            properties: json!({"datadog.log.source": "/wBh"}),
+            ..log_source_case("record bytes set the source to their base64")
+        },
+        LogSourceCase {
+            record: vec![key_value("datadog.log", map(vec![("source", string("nested-source"))]))],
+            source: "nested-source",
+            properties: json!({"datadog.log.source": "nested-source"}),
+            ..log_source_case("a flattened record map sets the source")
+        },
+        LogSourceCase {
+            record: vec![key_value("Datadog.Log.Source", string("mixed-case"))],
+            properties: json!({"Datadog.Log.Source": "mixed-case"}),
+            ..log_source_case("a record key matches only in lowercase")
+        },
+        LogSourceCase {
+            resource: attr(string("resource-source")),
+            source: "resource-source",
+            properties: json!({"datadog.log.source": "resource-source"}),
+            ..log_source_case("a resource string sets the source")
+        },
+        LogSourceCase {
+            resource: attr(value(Value::IntValue(1))),
+            source: "1",
+            properties: json!({"datadog.log.source": "1"}),
+            ..log_source_case("a resource int becomes a string source")
+        },
+        LogSourceCase {
+            resource: attr(value(Value::DoubleValue(f64::NAN))),
+            source: "NaN",
+            properties: json!({"datadog.log.source": "NaN"}),
+            ..log_source_case("a resource NaN becomes a string source")
+        },
+        LogSourceCase {
+            resource: attr(empty()),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("an empty resource value keeps the default source")
+        },
+        LogSourceCase {
+            resource: attr(value(Value::BytesValue(vec![]))),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("empty resource bytes keep the default source")
+        },
+        LogSourceCase {
+            scope: attr(value(Value::BoolValue(false))),
+            source: "false",
+            properties: json!({"datadog.log.source": "false"}),
+            ..log_source_case("a scope bool becomes a string source")
+        },
+        LogSourceCase {
+            scope: attr(value(Value::DoubleValue(f64::INFINITY))),
+            source: "Infinity",
+            properties: json!({"datadog.log.source": "Infinity"}),
+            ..log_source_case("a scope infinity becomes a string source")
+        },
+        LogSourceCase {
+            scope: attr(string("")),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("an empty scope string keeps the default source")
+        },
+        LogSourceCase {
+            record: attr(string("record-source")),
+            resource: attr(string("resource-source")),
+            source: "resource-source",
+            properties: json!({"datadog.log.source": "resource-source"}),
+            ..log_source_case("a resource attribute overwrites a record attribute")
+        },
+        LogSourceCase {
+            record: attr(string("record-source")),
+            resource: attr(string("")),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("an empty resource string overwrites a record source")
+        },
+        LogSourceCase {
+            record: attr(value(Value::IntValue(1))),
+            resource: attr(value(Value::IntValue(2))),
+            source: "2",
+            properties: json!({"datadog.log.source": "2"}),
+            ..log_source_case("a resource int overwrites a record int")
+        },
+        LogSourceCase {
+            resource: attr(string("resource-source")),
+            scope: attr(string("scope-source")),
+            source: "scope-source",
+            properties: json!({"datadog.log.source": "scope-source"}),
+            ..log_source_case("a scope attribute overwrites a resource attribute")
+        },
+        LogSourceCase {
+            record: attr(string("record-source")),
+            scope: attr(string("")),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("an empty scope string overwrites a record source")
+        },
+        LogSourceCase {
+            record: attr(value(Value::DoubleValue(f64::NAN))),
+            resource: attr(string("resource-source")),
+            source: "resource-source",
+            properties: json!({"datadog.log.source": "resource-source"}),
+            ..log_source_case("a resource attribute overwrites a record NaN")
+        },
+    ];
+    check_log_source_cases(cases);
+}
+
+#[test]
+fn a_non_finite_record_log_source_drops_the_log() {
+    let lr = LogRecord {
+        attributes: vec![key_value(LOG_SOURCE_ATTR, value(Value::DoubleValue(f64::NAN)))],
+        ..Default::default()
+    };
+    let result = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+    assert!(result.is_err(), "{:?}", result.map(|log| log.source().clone()));
+}
+
+#[test]
+#[ignore = "target for `gap/value-formatting`"]
+fn target_log_source_value_formatting() {
+    // The Agent's source is `AsString` of a resource or scope array or map, so it follows pdata's JSON.
+    let attr = |value| vec![key_value(LOG_SOURCE_ATTR, value)];
+    let cases = vec![
+        LogSourceCase {
+            resource: attr(array(vec![value(Value::DoubleValue(1.0))])),
+            source: "[1]",
+            properties: json!({"datadog.log.source": "[1]"}),
+            ..log_source_case("a resource array of a whole double")
+        },
+        LogSourceCase {
+            // A non-finite element makes `AsString` fail, so it returns an empty string.
+            resource: attr(array(vec![value(Value::DoubleValue(f64::NAN))])),
+            properties: json!({"datadog.log.source": ""}),
+            ..log_source_case("a resource array of a NaN keeps the default source")
+        },
+        LogSourceCase {
+            scope: attr(map(vec![("b", value(Value::DoubleValue(1.0)))])),
+            source: r#"{"b":1}"#,
+            properties: json!({"datadog.log.source": r#"{"b":1}"#}),
+            ..log_source_case("a scope map of a whole double")
+        },
+    ];
+    check_log_source_cases(cases);
+}
