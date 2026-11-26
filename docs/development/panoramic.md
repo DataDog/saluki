@@ -477,6 +477,19 @@ case from `test/integration/cases` that uses the same steps.
   confirm a UDP listener, so `port_listening` is not a readiness gate for it.
 - Use `config_key_equals`, `config_set` or an `exec` of the `adp` command for the privileged API of ADP.
   `http_check` and `http_request` cannot reach it.
+- To check which intake each kind of telemetry reaches, give each destination its own `datadog-intake` and send one
+  fixture for each signal. The `intake` connection sets `DD_DD_URL` and `DD_APM_DD_URL`, and environment masks
+  `datadog.yaml`, so a case that sets other intake URLs in `datadog.yaml` does not use it. Give each connection a name
+  of your own, such as `main` or `extra`, and refer to its `url` from a template of `datadog.yaml`. See
+  [References](#references). Panoramic accepts a connection that a template refers to. `otlp-traces-endpoints` does
+  this.
+- When several API keys deliver to one intake, `intake_from` takes `api_key` to count only the requests with that key.
+  The step ignores the other requests. Add a step without `api_key` whose `count` bounds the total, so that a key that
+  no step names cannot deliver more. Use synthetic keys: the step never prints the value of `api_key`, but the case
+  file holds it.
+- To check that telemetry does not reach an intake, use `intake_from` with `count: 0` and an explicit `settle`. Put it
+  after the steps that saw the same payload arrive at its right intake, and let `settle` cover the time that a wrong
+  delivery needs to arrive. An absence step with no such delivery before it also passes when the payload went nowhere.
 - List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
   See [Files](#files).
 

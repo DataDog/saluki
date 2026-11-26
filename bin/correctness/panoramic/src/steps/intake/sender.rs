@@ -1,5 +1,5 @@
 //! `intake_from`: selected telemetry reached an intake from the expected sender, and from no other, the expected number
-//! of times.
+//! of times. Or, with `count: 0`, no selected telemetry reached it from anyone.
 //!
 //! The step reads the requests that a `datadog-intake` participant recorded. A record holds the path and headers of one
 //! request, and the items that the request carried. The step reads them with `GET` requests to the `api` endpoint of
@@ -47,23 +47,59 @@
 //!   timeout: 1m
 //! ```
 //!
+//! An intake that several keys deliver to can tell the deliveries apart by the `DD-API-KEY` header. With `api_key`,
+//! only the requests that carry that key count. The step ignores the other requests, so it does not fail on a delivery
+//! with another key. Pair it with a step without `api_key` whose `count` bounds the total, so that a key that no
+//! step names cannot deliver more. The step never prints the value of `api_key`:
+//!
+//! ```yaml
+//! - step: intake_from
+//!   on: intake-extra
+//!   telemetry: spans
+//!   select: {service: otlp-routing-endpoints-split-http}
+//!   sender: adp
+//!   api_key: "11111111111111111111111111111111"
+//!   count: 3
+//!   timeout: 2m
+//! ```
+//!
+//! With `count: 0`, the step checks that nothing arrives. It passes when no selected item reached the intake from any
+//! sender for the whole `settle`, and fails when one does. It takes no `sender` or `path`, because no item may arrive
+//! at all, and it needs an explicit `settle`: the step cannot see a request that is still in flight, so `settle` is the
+//! time that a wrong delivery has to arrive. Use it only after a step that saw the same payload arrive at the
+//! right intake, so that the payload had time to reach its destination. An absence that follows no delivery proves
+//! nothing:
+//!
+//! ```yaml
+//! - step: intake_from
+//!   on: intake-main
+//!   telemetry: spans
+//!   select: {service: otlp-routing-endpoints-split-http}
+//!   count: 0
+//!   settle: 30s
+//!   timeout: 1m
+//! ```
+//!
 //! The options of the step:
 //!
 //! - `on`: the intake participant.
 //! - `telemetry`: `metrics`, `spans`, `trace_stats` or `logs`.
 //! - `select`: `{name_prefix: <prefix>}` for `metrics`, and `{service: <name>}` for the others.
-//! - `sender`: `adp`, `agent` or `trace-agent`.
+//! - `sender`: `adp`, `agent` or `trace-agent`. Required, except with `count: 0`, where it is not allowed.
 //! - `path`: the path of the requests that carry the selected items, such as `/api/intake/metrics/v3/series`. It starts
-//!   with `/`. Without it, the path does not matter.
-//! - `count`: the exact number of items. Not allowed for `trace_stats`, whose buckets vary, so the step only checks that
-//!   statistics arrived from the sender.
-//! - `settle`: how long to keep watching after the result first holds. Defaults to `20s`.
-//! - `timeout`: how long to wait for the result to first hold.
+//!   with `/`. Without it, the path does not matter. Not allowed with `count: 0`.
+//! - `api_key`: the value of the `DD-API-KEY` header. Only the requests with exactly this value count. Without it, the
+//!   key does not matter.
+//! - `count`: the exact number of items. Not allowed for `trace_stats`, whose buckets vary, so the step only checks
+//!   that statistics arrived from the sender. `0` is allowed for every telemetry, and means that no item arrives.
+//! - `settle`: how long to keep watching after the result first holds. Defaults to `20s`, and is required with
+//!   `count: 0`.
+//! - `timeout`: how long to wait for the result to first hold. With `count: 0` the result holds at the first read, so
+//!   `timeout` only bounds a read that fails.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::future::Future;
-use std::num::NonZeroU64;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -93,6 +129,9 @@ const USER_AGENTS: [(&str, Sender); 3] = [
 /// The header that names the sender of a request, in lower case.
 const USER_AGENT: &str = "user-agent";
 
+/// The header that carries the API key of a request, in lower case.
+const DD_API_KEY: &str = "dd-api-key";
+
 /// What a failure message calls a request that no sender claims.
 const UNATTRIBUTABLE: &str = "unattributable";
 
@@ -100,7 +139,7 @@ const UNATTRIBUTABLE: &str = "unattributable";
 const MAX_QUOTED: usize = 10;
 
 /// Headers that carry a secret, in lower case. A failure shows [`REDACTED`] as their value.
-const SECRET_HEADERS: [&str; 3] = ["dd-api-key", "dd-application-key", "authorization"];
+const SECRET_HEADERS: [&str; 3] = [DD_API_KEY, "dd-application-key", "authorization"];
 
 /// What a failure shows as the value of a header in [`SECRET_HEADERS`].
 const REDACTED: &str = "<redacted>";
@@ -123,13 +162,16 @@ struct Fields {
     on: String,
     telemetry: Telemetry,
     select: Select,
-    sender: Sender,
+    #[serde(default)]
+    sender: Option<Sender>,
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
-    count: Option<NonZeroU64>,
-    #[serde(default = "default_settle")]
-    settle: Timeout,
+    api_key: Option<String>,
+    #[serde(default)]
+    count: Option<u64>,
+    #[serde(default)]
+    settle: Option<Timeout>,
     timeout: Timeout,
 }
 
@@ -207,6 +249,24 @@ impl Sender {
     }
 }
 
+/// The API key that selected requests carry. Nothing that the step reports shows its value, not even its `Debug` form.
+struct ApiKey(String);
+
+impl ApiKey {
+    /// Whether `headers` hold this key as the value of the `DD-API-KEY` header, whatever the case of the name.
+    fn is_in(&self, headers: &BTreeMap<String, String>) -> bool {
+        headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case(DD_API_KEY) && *value == self.0)
+    }
+}
+
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ApiKey({})", REDACTED)
+    }
+}
+
 /// The telemetry that the step reads, with the selection of its items.
 #[derive(Debug)]
 struct Target {
@@ -251,30 +311,26 @@ impl Target {
         }
     }
 
-    /// A file name that is safe on every host. Two steps share it if they have the same telemetry, sender and selector,
-    /// or selectors that differ only in replaced characters or after the first 60.
-    fn file_name(&self, sender: Sender) -> String {
+    /// A file name that is safe on every host. Two steps share it if they have the same telemetry, expected sender and
+    /// selector, or selectors that differ only in replaced characters or after the first 60. The API key of a step does
+    /// not change the name, because the name must not show it.
+    fn file_name(&self, expected: &str) -> String {
         let selector: String = self
             .selector
             .chars()
             .take(60)
             .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
             .collect();
-        format!(
-            "intake_from-{}-{}-{}.txt",
-            self.telemetry.name(),
-            sender.name(),
-            selector
-        )
+        format!("intake_from-{}-{}-{}.txt", self.telemetry.name(), expected, selector)
     }
 
     /// Decodes the answer of the intake at the route of the telemetry, and keeps the requests that carried selected
-    /// items.
+    /// items. With `api_key`, it keeps only the requests that carried that key.
     ///
     /// # Errors
     ///
     /// Returns an error if the answer does not decode as the records of the telemetry.
-    fn selected(&self, body: &[u8]) -> Result<Tally, String> {
+    fn selected(&self, body: &[u8], api_key: Option<&ApiKey>) -> Result<Tally, String> {
         fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, String> {
             serde_json::from_slice(body).map_err(|e| {
                 if body.is_empty() {
@@ -289,46 +345,58 @@ impl Target {
         Ok(match self.telemetry {
             Telemetry::Metrics => {
                 let requests: Vec<IntakeRequest<Vec<Metric>>> = decode(body)?;
-                Tally::of(requests.iter().map(|request| {
-                    let points = request
-                        .items()
-                        .iter()
-                        .filter(|metric| metric.context().name().starts_with(selector))
-                        .map(|metric| metric.values().len() as u64)
-                        .sum::<u64>();
-                    (request.path(), request.headers(), points)
-                }))
+                Tally::of(
+                    api_key,
+                    requests.iter().map(|request| {
+                        let points = request
+                            .items()
+                            .iter()
+                            .filter(|metric| metric.context().name().starts_with(selector))
+                            .map(|metric| metric.values().len() as u64)
+                            .sum::<u64>();
+                        (request.path(), request.headers(), points)
+                    }),
+                )
             }
             Telemetry::Spans => {
                 let requests: Vec<IntakeRequest<Vec<Span>>> = decode(body)?;
-                Tally::of(requests.iter().map(|request| {
-                    let spans = request.items().iter().filter(|span| span.service() == selector).count();
-                    (request.path(), request.headers(), spans as u64)
-                }))
+                Tally::of(
+                    api_key,
+                    requests.iter().map(|request| {
+                        let spans = request.items().iter().filter(|span| span.service() == selector).count();
+                        (request.path(), request.headers(), spans as u64)
+                    }),
+                )
             }
             Telemetry::TraceStats => {
                 let requests: Vec<IntakeRequest<ClientStatisticsAggregator>> = decode(body)?;
-                Tally::of(requests.iter().map(|request| {
-                    let groups = request
-                        .items()
-                        .groups()
-                        .values()
-                        .flat_map(|group| group.buckets())
-                        .filter(|(_, statistics)| statistics.service() == selector)
-                        .count();
-                    (request.path(), request.headers(), groups as u64)
-                }))
+                Tally::of(
+                    api_key,
+                    requests.iter().map(|request| {
+                        let groups = request
+                            .items()
+                            .groups()
+                            .values()
+                            .flat_map(|group| group.buckets())
+                            .filter(|(_, statistics)| statistics.service() == selector)
+                            .count();
+                        (request.path(), request.headers(), groups as u64)
+                    }),
+                )
             }
             Telemetry::Logs => {
                 let requests: Vec<LogsRequest> = decode(body)?;
-                Tally::of(requests.iter().map(|request| {
-                    let logs = request
-                        .logs()
-                        .iter()
-                        .filter(|log| log.service().and_then(|value| value.as_str()) == Some(selector))
-                        .count();
-                    (request.path(), request.headers(), logs as u64)
-                }))
+                Tally::of(
+                    api_key,
+                    requests.iter().map(|request| {
+                        let logs = request
+                            .logs()
+                            .iter()
+                            .filter(|log| log.service().and_then(|value| value.as_str()) == Some(selector))
+                            .count();
+                        (request.path(), request.headers(), logs as u64)
+                    }),
+                )
             }
         })
     }
@@ -381,13 +449,17 @@ impl Selected {
 struct Tally(Vec<Selected>);
 
 impl Tally {
-    /// Keeps the requests that carried items, from each request's path, headers, and number of selected items. The
-    /// value of each secret header is replaced here, so nothing that the step reports can show it.
-    fn of<'a>(requests: impl IntoIterator<Item = (&'a str, &'a BTreeMap<String, String>, u64)>) -> Self {
+    /// Keeps the requests that carried items, from each request's path, headers, and number of selected items. With
+    /// `api_key`, it drops each request that does not carry that key. The value of each secret header is replaced
+    /// here, after the filter, so nothing that the step reports can show it.
+    fn of<'a>(
+        api_key: Option<&ApiKey>, requests: impl IntoIterator<Item = (&'a str, &'a BTreeMap<String, String>, u64)>,
+    ) -> Self {
         Self(
             requests
                 .into_iter()
                 .filter(|(_, _, items)| *items > 0)
+                .filter(|(_, headers, _)| api_key.is_none_or(|key| key.is_in(headers)))
                 .map(|(path, headers, items)| Selected {
                     path: path.to_string(),
                     headers: headers
@@ -445,12 +517,32 @@ enum Check {
     Short,
     /// The expected sender delivered the expected number of items, and nobody else delivered any.
     Met,
-    /// Another sender, or an unattributable request, delivered selected items.
+    /// Another sender, or an unattributable request, delivered selected items. For a step that expects no item, every
+    /// sender is another sender.
     Foreign,
     /// The expected sender delivered selected items on a path other than `path`.
     Misrouted,
     /// The expected sender delivered more items than `count`.
     Duplicate,
+}
+
+/// What the step expects of the selected items.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Expect {
+    /// Items from `sender` and from no other sender: `count` of them, or at least one without `count`.
+    From { sender: Sender, count: Option<u64> },
+    /// No item, from any sender.
+    Nothing,
+}
+
+impl Expect {
+    /// The expected sender, or `none` if the step expects no item.
+    fn sender_name(self) -> &'static str {
+        match self {
+            Self::From { sender, .. } => sender.name(),
+            Self::Nothing => "none",
+        }
+    }
 }
 
 /// What a watch of the intake found.
@@ -462,16 +554,17 @@ struct Watched {
     settling: bool,
 }
 
-/// Passes once selected items arrived from the expected sender, and nothing else arrived for the settle.
+/// Passes once selected items arrived from the expected sender, and nothing else arrived for the settle. Or, if it
+/// expects nothing, passes when no selected item arrived for the settle.
 #[derive(Debug)]
 struct IntakeFrom {
     on: String,
     target: Target,
-    sender: Sender,
+    expect: Expect,
     /// The path of the requests that carry the selected items, or `None` for any path.
     path: Option<String>,
-    /// The exact number of items, or `None` for at least one.
-    count: Option<u64>,
+    /// The key that a request must carry to count, or `None` for any key.
+    api_key: Option<ApiKey>,
     settle: Timeout,
     timeout: Timeout,
 }
@@ -481,8 +574,9 @@ impl IntakeFrom {
     ///
     /// # Errors
     ///
-    /// Returns an error if the selection does not suit the telemetry, `count` is set for `trace_stats`, or `path` does
-    /// not start with `/`.
+    /// Returns an error if the selection does not suit the telemetry, `count` is not `0` for `trace_stats`, `path` does
+    /// not start with `/`, `api_key` is empty, `sender` is missing or given with `count: 0`, or `path` is given or
+    /// `settle` is missing with `count: 0`.
     fn new(fields: Fields) -> Result<Self, String> {
         let Fields {
             on,
@@ -490,40 +584,70 @@ impl IntakeFrom {
             select,
             sender,
             path,
+            api_key,
             count,
             settle,
             timeout,
         } = fields;
-        if telemetry == Telemetry::TraceStats && count.is_some() {
+        if telemetry == Telemetry::TraceStats && count.is_some_and(|count| count != 0) {
             return Err(
-                "'count' is not an option for trace_stats: the buckets of statistics vary, so the step checks only \
-                 that statistics arrive from the sender"
+                "'count' is not an option for trace_stats, except 0: the buckets of statistics vary, so the step \
+                 checks only that statistics arrive from the sender"
                     .to_string(),
             );
         }
         if let Some(path) = path.as_deref().filter(|path| !path.starts_with('/')) {
             return Err(format!("'path' must start with '/', and '{}' does not", path));
         }
+        if api_key.as_deref() == Some("") {
+            return Err("'api_key' is empty, so it selects no request".to_string());
+        }
+        let expect = match (sender, count) {
+            (None, Some(0)) => Expect::Nothing,
+            (Some(_), Some(0)) => {
+                return Err(
+                    "'sender' is not an option with 'count: 0': no sender may deliver a selected item".to_string(),
+                )
+            }
+            (None, _) => return Err("'sender' is required, except with 'count: 0'".to_string()),
+            (Some(sender), count) => Expect::From { sender, count },
+        };
+        if expect == Expect::Nothing && path.is_some() {
+            return Err("'path' is not an option with 'count: 0': no selected item may arrive on any path".to_string());
+        }
+        let settle = match (expect, settle) {
+            (_, Some(settle)) => settle,
+            (Expect::From { .. }, None) => default_settle(),
+            (Expect::Nothing, None) => {
+                return Err(
+                    "'settle' is required with 'count: 0': it is how long the step watches for a selected item"
+                        .to_string(),
+                )
+            }
+        };
         Ok(Self {
             on,
             target: Target::new(telemetry, select)?,
-            sender,
+            expect,
             path,
-            count: count.map(NonZeroU64::get),
+            api_key: api_key.map(ApiKey),
             settle,
             timeout,
         })
     }
 
     fn check(&self, tally: &Tally) -> Check {
-        let have = tally.items_from(self.sender);
+        let Expect::From { sender, count } = self.expect else {
+            return if tally.total() == 0 { Check::Met } else { Check::Foreign };
+        };
+        let have = tally.items_from(sender);
         if tally.total() > have {
             return Check::Foreign;
         }
         if self.path.as_deref().is_some_and(|path| tally.reached_other_than(path)) {
             return Check::Misrouted;
         }
-        match self.count {
+        match count {
             Some(count) if have > count => Check::Duplicate,
             Some(count) if have < count => Check::Short,
             None if have == 0 => Check::Short,
@@ -562,7 +686,7 @@ impl IntakeFrom {
             }
             let read = match fetch(limit).await {
                 Ok(body) => {
-                    let tally = self.target.selected(&body).map_err(|why| {
+                    let tally = self.target.selected(&body, self.api_key.as_ref()).map_err(|why| {
                         HandleError::Harness(format!(
                             "the records that '{}' answers at {} do not decode: {}",
                             self.on,
@@ -625,17 +749,9 @@ impl IntakeFrom {
             Err(e) => return stopped(e),
         };
         let Some(mut message) = self.failure(check, &tally) else {
-            let path = self.path.as_ref().map_or(String::new(), |path| format!(" on {}", path));
             return StepReport {
                 status: StepStatus::Passed,
-                message: format!(
-                    "{} selected item(s) reached '{}' from {}{} and from no other sender, and the result held for {}.",
-                    tally.total(),
-                    self.on,
-                    self.sender.name(),
-                    path,
-                    self.settle.text
-                ),
+                message: self.success(&tally),
             };
         };
 
@@ -646,19 +762,17 @@ impl IntakeFrom {
                 self.settle.text
             );
         }
-        let _ = write!(
-            message,
-            "\nSelection: {}. Expected sender: {}.",
-            self.target.describe(),
-            self.sender.name()
-        );
+        let _ = write!(message, "\nSelection: {}.", self.selection());
+        if let Expect::From { sender, .. } = self.expect {
+            let _ = write!(message, " Expected sender: {}.", sender.name());
+        }
         if let Some(path) = &self.path {
             let _ = write!(message, " Expected path: {}.", path);
         }
         let _ = write!(message, "\nItems by sender: {}.", tally.counts());
         let lines: Vec<String> = tally.0.iter().map(Selected::line).collect();
         if !lines.is_empty() {
-            let file = self.target.file_name(self.sender);
+            let file = self.target.file_name(self.expect.sender_name());
             cx.keep(&self.on, &file, lines.join("\n").as_bytes(), Keep::Always)
                 .await;
             let _ = write!(
@@ -679,11 +793,58 @@ impl IntakeFrom {
         }
     }
 
+    /// The items that the step selects, and the key of their requests if the step names one.
+    fn selection(&self) -> String {
+        let selection = self.target.describe();
+        if self.api_key.is_some() {
+            format!("{} with the expected API key", selection)
+        } else {
+            selection
+        }
+    }
+
+    /// The message of a step that passed.
+    fn success(&self, tally: &Tally) -> String {
+        let (on, settle) = (&self.on, &self.settle.text);
+        let key = if self.api_key.is_some() {
+            " with the expected API key"
+        } else {
+            ""
+        };
+        match self.expect {
+            Expect::From { sender, .. } => {
+                let path = self.path.as_ref().map_or(String::new(), |path| format!(" on {}", path));
+                format!(
+                    "{} selected item(s) reached '{}' from {}{}{} and from no other sender, and the result held for {}.",
+                    tally.total(),
+                    on,
+                    sender.name(),
+                    path,
+                    key,
+                    settle
+                )
+            }
+            Expect::Nothing => format!(
+                "No selected item{} reached '{}' within the settle of {}.",
+                key, on, settle
+            ),
+        }
+    }
+
     /// The first sentence of the message for a check that failed, or `None` if the check held.
     fn failure(&self, check: Check, tally: &Tally) -> Option<String> {
-        let (on, sender) = (&self.on, self.sender.name());
-        let have = tally.items_from(self.sender);
-        let expected = match self.count {
+        let on = &self.on;
+        let Expect::From { sender, count } = self.expect else {
+            return (check != Check::Met).then(|| {
+                format!(
+                    "{} selected item(s) reached '{}', and the step expects none.",
+                    tally.total(),
+                    on
+                )
+            });
+        };
+        let (have, sender) = (tally.items_from(sender), sender.name());
+        let expected = match count {
             Some(count) => format!("exactly {}", count),
             None => "at least 1".to_string(),
         };
@@ -769,6 +930,10 @@ mod tests {
 
     const V3_SERIES: &str = "/api/intake/metrics/v3/series";
     const V2_SERIES: &str = "/api/v2/series";
+
+    /// Synthetic keys.
+    const KEY_ONE: &str = "11111111111111111111111111111111";
+    const KEY_TWO: &str = "22222222222222222222222222222222";
 
     const TELEMETRIES: [Telemetry; 4] = [
         Telemetry::Metrics,
@@ -878,6 +1043,12 @@ mod tests {
         Ok(Value::Array(requests).to_string().into_bytes())
     }
 
+    /// `request` with the header `DD-API-KEY` set to `key`.
+    fn keyed(mut request: Value, key: &str) -> Value {
+        request["headers"]["dd-api-key"] = json!(key);
+        request
+    }
+
     fn step(fields: &str) -> IntakeFrom {
         let fields = StepFields::of(serde_saphyr::from_str(fields).unwrap());
         IntakeFrom::new(fields.decode().unwrap()).unwrap()
@@ -886,16 +1057,41 @@ mod tests {
     /// The step that selects the fixtures of `telemetry` and expects them from ADP, three times unless `telemetry` is
     /// `trace_stats`.
     fn adp_step(telemetry: Telemetry) -> IntakeFrom {
-        let (select, count) = match telemetry {
-            Telemetry::Metrics => ("{name_prefix: 'fx.'}", ", count: 3"),
-            Telemetry::TraceStats => ("{service: fx}", ""),
-            Telemetry::Spans | Telemetry::Logs => ("{service: fx}", ", count: 3"),
+        let count = match telemetry {
+            Telemetry::TraceStats => "",
+            Telemetry::Metrics | Telemetry::Spans | Telemetry::Logs => ", count: 3",
         };
         step(&format!(
             "{{on: intake, telemetry: {}, select: {}, sender: adp, settle: 2s, timeout: 10s{}}}",
             telemetry.name(),
-            select,
+            selection(telemetry),
             count
+        ))
+    }
+
+    /// The `select` of the steps below, for the fixtures of `telemetry`.
+    fn selection(telemetry: Telemetry) -> &'static str {
+        match telemetry {
+            Telemetry::Metrics => "{name_prefix: 'fx.'}",
+            Telemetry::Spans | Telemetry::TraceStats | Telemetry::Logs => "{service: fx}",
+        }
+    }
+
+    /// The step that selects the fixtures of `telemetry` and expects none of them from anyone.
+    fn absent_step(telemetry: Telemetry) -> IntakeFrom {
+        step(&format!(
+            "{{on: intake, telemetry: {}, select: {}, count: 0, settle: 2s, timeout: 10s}}",
+            telemetry.name(),
+            selection(telemetry)
+        ))
+    }
+
+    /// The step on spans that expects `count` of them from ADP, in the requests with `key`.
+    fn keyed_step(key: &str, count: u64) -> IntakeFrom {
+        step(&format!(
+            "{{on: intake, telemetry: spans, select: {{service: fx}}, sender: adp, api_key: '{}', count: {}, settle: 2s, \
+             timeout: 10s}}",
+            key, count
         ))
     }
 
@@ -1438,6 +1634,197 @@ mod tests {
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn an_intake_without_a_selected_item_passes_a_step_that_expects_none_after_the_settle() {
+        for telemetry in TELEMETRIES {
+            // Background items, and requests of any sender that hold nothing selected, are not fixtures.
+            let background = records(vec![
+                request(telemetry, Some(ADP), 0, 2),
+                request(telemetry, Some(AGENT), 0, 4),
+                request(telemetry, None, 0, 1),
+            ]);
+            for answer in [records(Vec::new()), background] {
+                let outcome = watch(&absent_step(telemetry), vec![answer]).await;
+                assert_status(&outcome, StepStatus::Passed);
+                assert_mentions(
+                    &outcome,
+                    &["No selected item reached 'intake' within the settle of 2s."],
+                );
+                assert_eq!(outcome.elapsed, Duration::from_secs(2), "{}", telemetry.name());
+                assert!(outcome.kept.is_empty(), "{}", telemetry.name());
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_selected_item_fails_a_step_that_expects_none_whoever_sent_it() {
+        for user_agent in [Some(ADP), Some(AGENT), Some(TRACE_AGENT), Some("curl/8.0"), None] {
+            let answer = records(vec![request(Telemetry::Metrics, user_agent, 1, 3)]);
+            let outcome = watch(&absent_step(Telemetry::Metrics), vec![answer]).await;
+            assert_status(&outcome, StepStatus::Failed);
+            assert_mentions(
+                &outcome,
+                &[
+                    "1 selected item(s) reached 'intake', and the step expects none.",
+                    "Selection: metric data points with a name that starts with 'fx.'.",
+                    "all kept as intake_from-metrics-none-fx_.txt of 'intake'",
+                ],
+            );
+            assert!(
+                !outcome.report.message.contains("Expected sender"),
+                "{}",
+                outcome.report.message
+            );
+            assert_eq!(outcome.elapsed, Duration::ZERO);
+            assert_eq!(outcome.kept.len(), 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_selected_item_that_arrives_during_the_settle_fails_a_step_that_expects_none() {
+        let late = records(vec![request(Telemetry::Spans, Some(ADP), 1, 0)]);
+        let answers = vec![records(Vec::new()), records(Vec::new()), late];
+        let outcome = watch(&absent_step(Telemetry::Spans), answers).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &[
+                "1 selected item(s) reached 'intake', and the step expects none.",
+                "after the result first held, within the settle of 2s",
+            ],
+        );
+        assert_eq!(outcome.reads, 3);
+        assert!(outcome.elapsed < Duration::from_secs(2), "{:?}", outcome.elapsed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_that_expects_none_fails_when_the_last_read_fails() {
+        let answers = vec![records(Vec::new()), Err(HandleError::Software("closed".to_string()))];
+        let outcome = watch(&absent_step(Telemetry::Spans), answers).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &["the last read of /traces/dump_span_requests from 'intake' failed: closed"],
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn each_api_key_counts_only_the_requests_that_carry_it() {
+        let answer = records(vec![
+            keyed(request(Telemetry::Spans, Some(ADP), 3, 1), KEY_ONE),
+            keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_TWO),
+            request(Telemetry::Spans, Some(ADP), 0, 2),
+        ]);
+        for key in [KEY_ONE, KEY_TWO] {
+            let outcome = watch(&keyed_step(key, 3), vec![answer.clone()]).await;
+            assert_status(&outcome, StepStatus::Passed);
+            assert_mentions(
+                &outcome,
+                &["3 selected item(s) reached 'intake' from adp with the expected API key and from no other sender"],
+            );
+            assert_eq!(outcome.elapsed, Duration::from_secs(2));
+        }
+
+        // A step without a key counts the requests of both, so it bounds what the keys deliver together.
+        let both = step(
+            "{on: intake, telemetry: spans, select: {service: fx}, sender: adp, count: 6, settle: 2s, timeout: 10s}",
+        );
+        assert_status(&watch(&both, vec![answer.clone()]).await, StepStatus::Passed);
+        let outcome = watch(&adp_step(Telemetry::Spans), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &["6 selected item(s) reached 'intake' from adp", "expects exactly 3"],
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_with_another_key_does_not_fail_a_step_with_an_api_key() {
+        // The step narrows the selection, so a delivery with another key, even from another sender, is not its concern.
+        let answer = records(vec![
+            keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_ONE),
+            keyed(request(Telemetry::Spans, Some(AGENT), 2, 0), KEY_TWO),
+            keyed(
+                request(Telemetry::Spans, None, 1, 0),
+                "33333333333333333333333333333333",
+            ),
+        ]);
+        let outcome = watch(&keyed_step(KEY_ONE, 3), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Passed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_key_of_a_request_is_matched_exactly_and_by_a_header_name_in_any_case() {
+        let key = "abababababababababababababababab";
+        let mut upper = request(Telemetry::Spans, Some(ADP), 3, 0);
+        upper["headers"]["DD-API-KEY"] = json!(key);
+        let outcome = watch(&keyed_step(key, 3), vec![records(vec![upper])]).await;
+        assert_status(&outcome, StepStatus::Passed);
+
+        for near in [
+            key.to_uppercase(),
+            format!("{} ", key),
+            key[1..].to_string(),
+            format!("{}b", key),
+        ] {
+            let answer = records(vec![keyed(request(Telemetry::Spans, Some(ADP), 3, 0), &near)]);
+            let outcome = watch(&keyed_step(key, 3), vec![answer]).await;
+            assert_status(&outcome, StepStatus::Failed);
+            assert_mentions(&outcome, &["0 selected item(s) reached 'intake' from adp within 10s"]);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_that_expects_none_with_an_api_key_ignores_the_other_keys() {
+        let absent = |key: &str| {
+            step(&format!(
+                "{{on: intake, telemetry: spans, select: {{service: fx}}, api_key: '{}', count: 0, settle: 2s, \
+                 timeout: 10s}}",
+                key
+            ))
+        };
+        let answer = records(vec![keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_TWO)]);
+        let outcome = watch(&absent(KEY_ONE), vec![answer.clone()]).await;
+        assert_status(&outcome, StepStatus::Passed);
+        assert_mentions(
+            &outcome,
+            &["No selected item with the expected API key reached 'intake' within the settle of 2s."],
+        );
+
+        let outcome = watch(&absent(KEY_TWO), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &[
+                "3 selected item(s) reached 'intake', and the step expects none.",
+                "Selection: spans of service 'fx' with the expected API key.",
+            ],
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_api_key_is_in_no_message_kept_file_or_debug_form() {
+        let answer = records(vec![keyed(request(Telemetry::Spans, Some(ADP), 4, 0), KEY_ONE)]);
+        let steps = [keyed_step(KEY_ONE, 3), {
+            step(&format!(
+                "{{on: intake, telemetry: spans, select: {{service: fx}}, api_key: '{}', count: 0, settle: 2s, timeout: 10s}}",
+                KEY_ONE
+            ))
+        }];
+        for step in steps {
+            let outcome = watch(&step, vec![answer.clone()]).await;
+            assert_status(&outcome, StepStatus::Failed);
+            assert_mentions(&outcome, &["with the expected API key.", "dd-api-key: <redacted>"]);
+            let [(_, kept)] = &outcome.kept[..] else {
+                panic!("{:?}", outcome.kept)
+            };
+            assert!(kept.contains("dd-api-key: <redacted>"), "{}", kept);
+            for shown in [&outcome.report.message, kept, &format!("{:?}", step)] {
+                assert!(!shown.contains(KEY_ONE), "the key is in: {}", shown);
+            }
+        }
+    }
+
     #[test]
     fn a_step_that_cannot_be_honored_is_rejected_when_it_is_built() {
         let select = "select: {service: fx}, sender: adp, timeout: 1m";
@@ -1448,9 +1835,37 @@ mod tests {
             ),
             (
                 format!("on: i, telemetry: trace_stats, count: 2, {}", select),
-                "'count' is not an option for trace_stats",
+                "'count' is not an option for trace_stats, except 0",
             ),
-            (format!("on: i, telemetry: logs, count: 0, {}", select), "nonzero"),
+            (
+                format!("on: i, telemetry: logs, count: -1, {}", select),
+                "invalid value: integer `-1`",
+            ),
+            (
+                format!("on: i, telemetry: logs, count: 0, {}", select),
+                "'sender' is not an option with 'count: 0'",
+            ),
+            (
+                "on: i, telemetry: logs, select: {service: fx}, timeout: 1m".to_string(),
+                "'sender' is required, except with 'count: 0'",
+            ),
+            (
+                "on: i, telemetry: logs, select: {service: fx}, count: 0, timeout: 1m".to_string(),
+                "'settle' is required with 'count: 0'",
+            ),
+            (
+                "on: i, telemetry: logs, select: {service: fx}, count: 0, path: /a, settle: 1s, timeout: 1m"
+                    .to_string(),
+                "'path' is not an option with 'count: 0'",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_key: '', {}", select),
+                "'api_key' is empty",
+            ),
+            (
+                format!("on: i, telemetry: logs, settle: 0s, {}", select),
+                "needs a whole number above zero",
+            ),
             (
                 "on: i, telemetry: logs, select: {service: fx}, sender: collector, timeout: 1m".to_string(),
                 "unknown variant `collector`",
@@ -1585,6 +2000,7 @@ procedure:
   - {step: intake_from, on: intake, telemetry: metrics, select: {name_prefix: "fx."}, sender: adp, count: 3, settle: 1ms, timeout: 1ms}
   - {step: intake_from, on: intake, telemetry: spans, select: {service: fx}, sender: adp, settle: 1ms, timeout: 1ms}
   - {step: intake_from, on: intake, telemetry: logs, select: {service: fx}, sender: adp, settle: 1ms, timeout: 1ms}
+  - {step: intake_from, on: intake, telemetry: trace_stats, select: {service: fx}, count: 0, settle: 1ms, timeout: 1ms}
 "#;
 
     #[tokio::test]
@@ -1610,6 +2026,7 @@ procedure:
                 (200, json!([request(Telemetry::Metrics, Some(ADP), 3, 1)]).to_string()),
             ),
             ("/traces/dump_span_requests", (500, "broken".to_string())),
+            ("/traces/dump_stats_requests", (200, "[]".to_string())),
             (
                 "/logs/dump",
                 (200, json!([request(Telemetry::Logs, Some(AGENT), 2, 0)]).to_string()),
@@ -1635,7 +2052,12 @@ procedure:
         let messages: Vec<&str> = reports.iter().map(|report| report.message.as_str()).collect();
         assert_eq!(
             statuses,
-            [StepStatus::Passed, StepStatus::Failed, StepStatus::Failed],
+            [
+                StepStatus::Passed,
+                StepStatus::Failed,
+                StepStatus::Failed,
+                StepStatus::Passed
+            ],
             "{:#?}",
             messages
         );
