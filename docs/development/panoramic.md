@@ -564,8 +564,8 @@ the right group. The [group comparison](#why-one-span-can-produce-two-group-diff
 
 #### Check that both sides drop a span
 
-The `otlp-traces-conversion` case sends a span with a zero trace ID. Neither intake should receive it. The fixture
-also sends a valid control span for the same service. Here are the two entries from `traces`:
+In `test/correctness/cases/otlp-traces-conversion/config.yaml`, the fixture sends a span with a zero trace ID.
+Neither intake should receive it. A valid control span from the same service must reach both intakes:
 
 ```yaml
 spans:
