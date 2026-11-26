@@ -27,6 +27,9 @@ pub(super) fn ddtags_value(mut tags: Vec<Tag>) -> Option<String> {
 ///
 /// An existing `ddtags` value that isn't empty keeps its tags, and `tags` follow them after a comma. Otherwise, `tags`
 /// replace the value.
+///
+/// The existing value converts with `otlp_value_as_string`, as `AsString` does. An array or map value differs from
+/// `pdata` until #3397 lands.
 pub(super) fn merge_ddtags(record_attributes: &mut Vec<KeyValue>, tags: &str) {
     let merged = match first_attribute(record_attributes, DDTAGS).map(otlp_value_as_string) {
         Some(existing) if !existing.is_empty() => format!("{existing},{tags}"),
