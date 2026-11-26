@@ -52,17 +52,17 @@ procedure:
         telemetry: traces
         comparison: intake-adp
         baseline: intake-agent
-        # The fixture holds 26 traces and 36 spans. The Agent drops 8 traces and 13 spans: the traces of 002.drop (2),
+        # The fixture holds 27 traces and 38 spans. The Agent drops 8 traces and 13 spans: the traces of 002.drop (2),
         # 035.drop, 013.not_rescued, 021.exception, 037.string, 040.client, and the drop-range trace of 045.mixed, and
-        # the roots of 035.sss, 037.int and 038.metric. It holds 18 traces and 23 spans. ADP drops 7 traces and 12
+        # the roots of 035.sss, 037.int and 038.metric. It holds 19 traces and 25 spans. ADP drops 7 traces and 12
         # spans: the same, except that it keeps the children of 037.string and 040.client, and drops 006.none. It
-        # holds 19 traces and 24 spans. The limits are the counts of each side, so a sampler that keeps every trace
+        # holds 20 traces and 26 spans. The limits are the counts of each side, so a sampler that keeps every trace
         # fails, even when the other side does the same.
         traces:
-          min_traces: 18
-          max_traces: 19
-          min_spans: 23
-          max_spans: 24
+          min_traces: 19
+          max_traces: 20
+          min_spans: 25
+          max_spans: 26
           spans:
             # The receiver keeps the traces in its keep range, with its decision maker and rate.
             - service: probe-sampling
@@ -84,6 +84,8 @@ procedure:
             # The error sampler keeps an error trace that another sampler dropped. The priority that it leaves differs,
             # so no entry sets it.
             - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue_child_root, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue_child, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.012.user_zero, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.013.rescued, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr, priority: 1, dropped_trace: false}
@@ -124,9 +126,9 @@ procedure:
             - {service: probe-sampling, name: otlpprobe.tsamp.037.string_root}
             - {service: probe-sampling, name: otlpprobe.tsamp.038.metric_root}
             - {service: probe-sampling, name: otlpprobe.tsamp.040.client_root}
-          # The Agent computes stats before it samples, so it holds 24 groups. ADP computes them from the traces that
-          # it keeps, so it holds 14.
-          min_stats_groups: 14
+          # The Agent computes stats before it samples, so it holds 25 groups. ADP computes them from the traces that
+          # it keeps, so it holds 15.
+          min_stats_groups: 15
           # The baseline is the Agent, and the comparison is ADP.
           known_differences:
             - gap: gap/otlp-sampling-span-tags
@@ -174,6 +176,8 @@ procedure:
               when:
                 name:
                   - otlpprobe.tsamp.011.rescue
+                  - otlpprobe.tsamp.011.rescue_child_root
+                  - otlpprobe.tsamp.011.rescue_child
                   - otlpprobe.tsamp.012.user_zero
                   - otlpprobe.tsamp.013.rescued
                   - otlpprobe.tsamp.028.prob_sr_rescue
@@ -238,7 +242,7 @@ procedure:
         telemetry: spans
         select: {service: probe-sampling}
         sender: adp
-        count: 22
+        count: 24
         timeout: 1m
       - step: intake_from
         on: intake-adp

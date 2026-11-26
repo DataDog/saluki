@@ -196,6 +196,12 @@ fn sampling_probes() -> Probes {
     // The error sampler keeps an error trace that the receiver dropped.
     probes.in_drop_range(vec![root("otlpprobe.tsamp.011.rescue").failed()]);
 
+    // An error on a child is enough for the error sampler to keep the trace.
+    probes.in_drop_range(vec![
+        root("otlpprobe.tsamp.011.rescue_child_root"),
+        child("otlpprobe.tsamp.011.rescue_child").failed(),
+    ]);
+
     // A priority of 0 is a user decision, and the error sampler keeps the error trace still.
     probes.in_drop_range(vec![with_priority(root("otlpprobe.tsamp.012.user_zero").failed(), 0)]);
 
@@ -462,8 +468,8 @@ mod tests {
         // The `otlp-traces-sampling` case checks these counts of the fixture, and the names that it lists.
         let spans = spans_of(&sampling_fixture());
         let traces: HashSet<Vec<u8>> = spans.iter().map(|(_, span)| span.trace_id.clone()).collect();
-        assert_eq!(traces.len(), 26);
-        assert_eq!(spans.len(), 36);
+        assert_eq!(traces.len(), 27);
+        assert_eq!(spans.len(), 38);
         assert_eq!(
             spans.iter().filter(|(service, _)| service == ANALYTICS_SERVICE).count(),
             2
@@ -576,6 +582,8 @@ mod tests {
         }
         assert_eq!(span("otlpprobe.tsamp.021.exception").events[0].name, "exception");
         assert_eq!(span("otlpprobe.tsamp.011.rescue").status.unwrap().code, 2);
+        assert_eq!(span("otlpprobe.tsamp.011.rescue_child").status.unwrap().code, 2);
+        assert!(span("otlpprobe.tsamp.011.rescue_child_root").status.is_none());
     }
 
     #[test]
