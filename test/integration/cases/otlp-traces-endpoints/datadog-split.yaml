@@ -1,0 +1,20 @@
+# ADP and the Agent read this file.
+
+# The metrics go here, with the API key `api_key` of the case.
+dd_url: "{{ self.connections.main.url }}"
+
+apm_config:
+  # The traces and the APM statistics go here, with the API key `api_key`. The trace-agent does not read `dd_url` for
+  # them.
+  apm_dd_url: "{{ self.connections.apm.url }}"
+  # The traces and the APM statistics also go here, once for each key.
+  additional_endpoints:
+    "{{ self.connections.extra.url }}":
+      - "11111111111111111111111111111111"
+      - "22222222222222222222222222222222"
+
+# The metrics also go here, with this key. The traces do not, because the trace-agent reads only
+# `apm_config.additional_endpoints` for them.
+additional_endpoints:
+  "{{ self.connections.extra.url }}":
+    - "33333333333333333333333333333333"

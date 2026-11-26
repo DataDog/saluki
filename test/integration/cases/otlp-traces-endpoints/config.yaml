@@ -1,0 +1,370 @@
+description: >-
+  ADP sends the traces and the APM statistics that it builds from OTLP to the intakes that its trace endpoint settings
+  name, with the API keys that go with them, and sends the metrics next to them to the intakes of the metrics settings.
+  Three ADPs each run an arm. The first sets `apm_dd_url` and several API keys. The second turns off the main endpoint
+  for traces. The third sets an Observability Pipelines Worker, which wins over a Vector intake and `apm_dd_url`. Each
+  intake must hold the expected items with the expected key, and the other intakes must hold none of them.
+timeout: 6m
+subject_os: [linux]
+
+participants:
+  # The arm with `apm_dd_url`, additional endpoints for traces, and additional endpoints for metrics.
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-traces-endpoints-split"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read this. The endpoint is the harness's, not the default one. ADP handles OTLP traces and
+      # metrics itself, because it proxies none of them to the Agent by default.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+    files:
+      datadog.yaml: {from: datadog-split.yaml, template: true}
+    # Not the `intake` connection: it sets `DD_DD_URL` and `DD_APM_DD_URL`, which mask the intake URLs of
+    # `datadog.yaml`. Each connection here is only a name for the template to refer to.
+    connect: {main: intake-split-main.api, apm: intake-split-apm.api, extra: intake-split-extra.api}
+  # The arm that turns off the main endpoint for traces.
+  adp-skipmain:
+    type: agent-adp
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-traces-endpoints-skipmain"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+    files:
+      datadog.yaml: {from: datadog-skipmain.yaml, template: true}
+    connect: {main: intake-skipmain-main.api, extra: intake-skipmain-extra.api}
+  # The arm with an Observability Pipelines Worker and a Vector intake for traces.
+  adp-opw:
+    type: agent-adp
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-traces-endpoints-opw"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+    files:
+      datadog.yaml: {from: datadog-opw.yaml, template: true}
+    connect: {main: intake-opw-main.api, opw: intake-opw-opw.api, shadowed: intake-opw-shadowed.api}
+  intake-split-main: {type: datadog-intake}
+  intake-split-apm: {type: datadog-intake}
+  intake-split-extra: {type: datadog-intake}
+  intake-skipmain-main: {type: datadog-intake}
+  intake-skipmain-extra: {type: datadog-intake}
+  intake-opw-main: {type: datadog-intake}
+  intake-opw-opw: {type: datadog-intake}
+  intake-opw-shadowed: {type: datadog-intake}
+  # The sender waits idle. The procedure runs millstone in it once the receivers of the three ADPs listen.
+  sender:
+    image: saluki-images/correctness-tools:latest
+    command: [sleep, infinity]
+    files:
+      /etc/millstone/metrics-split.yaml: {from: millstone-metrics-split.yaml, template: true}
+      /etc/millstone/traces-split.yaml: {from: millstone-traces-split.yaml, template: true}
+      /etc/millstone/metrics-skipmain.yaml: {from: millstone-metrics-skipmain.yaml, template: true}
+      /etc/millstone/traces-skipmain.yaml: {from: millstone-traces-skipmain.yaml, template: true}
+      /etc/millstone/metrics-opw.yaml: {from: millstone-metrics-opw.yaml, template: true}
+      /etc/millstone/traces-opw.yaml: {from: millstone-traces-opw.yaml, template: true}
+    connect: {split: adp.otlp_http, skipmain: adp-skipmain.otlp_http, opw: adp-opw.otlp_http}
+
+procedure:
+  # Each ADP listens on the endpoint that env sets, and its Agent leaves OTLP to ADP.
+  - parallel:
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp.endpoints.otlp_http.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: "Not starting the OTLP ingest pipeline because the data plane handles OTLP ingest"
+        timeout: 60s
+      - step: log_contains
+        on: adp-skipmain
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp-skipmain.endpoints.otlp_http.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp-skipmain
+        process: agent
+        pattern: "Not starting the OTLP ingest pipeline because the data plane handles OTLP ingest"
+        timeout: 60s
+      - step: log_contains
+        on: adp-opw
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp-opw.endpoints.otlp_http.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp-opw
+        process: agent
+        pattern: "Not starting the OTLP ingest pipeline because the data plane handles OTLP ingest"
+        timeout: 60s
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/metrics-split.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/traces-split.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/metrics-skipmain.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/traces-skipmain.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/metrics-opw.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/traces-opw.yaml], timeout: 2m}
+  # Each intake that must receive an item gets it from ADP, with the expected key. A step for an intake that two keys
+  # deliver to counts the items of one key, and the step without `api_key` bounds the total of both.
+  - parallel:
+      # Split arm. The traces and the statistics go to `apm_dd_url` with the key `api_key`, and to the extra intake once
+      # for each key of `apm_config.additional_endpoints`. The metrics go to `dd_url`, and to the extra intake with the
+      # key of `additional_endpoints`. The trace-agent picks the same destinations for traces, because it reads
+      # `apm_dd_url` and `apm_config.additional_endpoints`, and not `dd_url` or `additional_endpoints`.
+      - step: intake_from
+        on: intake-split-main
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-split.http."}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-apm
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-split-http}
+        sender: adp
+        path: /api/v0.2/traces
+        api_key: "00000000000000000000000000000000"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-apm
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-split-http}
+        sender: adp
+        path: /api/v0.2/stats
+        api_key: "00000000000000000000000000000000"
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-split-http}
+        sender: adp
+        path: /api/v0.2/traces
+        count: 6
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-split-http}
+        sender: adp
+        path: /api/v0.2/traces
+        api_key: "11111111111111111111111111111111"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-split-http}
+        sender: adp
+        path: /api/v0.2/traces
+        api_key: "22222222222222222222222222222222"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-split-http}
+        sender: adp
+        path: /api/v0.2/stats
+        api_key: "11111111111111111111111111111111"
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-split-http}
+        sender: adp
+        path: /api/v0.2/stats
+        api_key: "22222222222222222222222222222222"
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-split.http."}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-split.http."}
+        sender: adp
+        api_key: "33333333333333333333333333333333"
+        count: 3
+        timeout: 2m
+      # Skip-main arm. `traces_send_to_main_endpoint: false` leaves only the additional endpoint for the traces and the
+      # statistics, as for the trace-agent. The metrics still go to `dd_url`.
+      - step: intake_from
+        on: intake-skipmain-main
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-skipmain.http."}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-skipmain-extra
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-skipmain-http}
+        sender: adp
+        path: /api/v0.2/traces
+        api_key: "11111111111111111111111111111111"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-skipmain-extra
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-skipmain-http}
+        sender: adp
+        path: /api/v0.2/stats
+        api_key: "11111111111111111111111111111111"
+        timeout: 2m
+      # Worker arm. The traces and the statistics go to the Worker, as they do for the trace-agent, which prefers an
+      # enabled Worker to a Vector intake and `apm_dd_url`. The metrics go to `dd_url`.
+      - step: intake_from
+        on: intake-opw-main
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-opw.http."}
+        sender: adp
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-opw-opw
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-opw-http}
+        sender: adp
+        path: /api/v0.2/traces
+        api_key: "00000000000000000000000000000000"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-opw-opw
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-opw-http}
+        sender: adp
+        path: /api/v0.2/stats
+        api_key: "00000000000000000000000000000000"
+        timeout: 2m
+  # The other intakes get none of them. These steps follow the steps above, which saw each fixture arrive where it
+  # belongs. An item that went astray had the time to arrive during those steps, and the settle covers a late request.
+  - parallel:
+      # Split arm. `dd_url` gets no traces and no statistics, and `apm_dd_url` gets no metrics. The key of the top-level
+      # additional endpoint carries metrics only.
+      - step: intake_from
+        on: intake-split-main
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-split-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-split-main
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-split-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-split-apm
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-split.http."}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-split-http}
+        api_key: "33333333333333333333333333333333"
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-split-extra
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-split-http}
+        api_key: "33333333333333333333333333333333"
+        count: 0
+        settle: 30s
+        timeout: 1m
+      # Skip-main arm. The main endpoint gets no traces and no statistics, and the additional endpoint of `apm_config`
+      # gets no metrics.
+      - step: intake_from
+        on: intake-skipmain-main
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-skipmain-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-skipmain-main
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-skipmain-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-skipmain-extra
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-skipmain.http."}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      # Worker arm. `dd_url` gets no traces and no statistics, and neither does the intake that the Vector settings and
+      # `apm_dd_url` name. That intake gets no metrics, and neither does the Worker.
+      - step: intake_from
+        on: intake-opw-main
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-opw-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-opw-main
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-opw-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-opw-shadowed
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-opw-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-opw-shadowed
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-opw-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-opw-shadowed
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-opw.http."}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      - step: intake_from
+        on: intake-opw-opw
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-opw.http."}
+        count: 0
+        settle: 30s
+        timeout: 1m
+  - parallel:
+      - {step: process_stable_for, on: adp, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
+      - {step: process_stable_for, on: adp-skipmain, duration: 10s}
+      - {step: log_not_contains, on: adp-skipmain, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
+      - {step: process_stable_for, on: adp-opw, duration: 10s}
+      - {step: log_not_contains, on: adp-opw, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
