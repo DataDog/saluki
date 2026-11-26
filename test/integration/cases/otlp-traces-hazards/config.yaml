@@ -7,7 +7,7 @@ description: >-
 # The script keeps this known difference, and not a `known_differences` list, because panoramic has no step that sends
 # an arbitrary HTTP request or reads an intake in a script. The docstring of `oversized_trace.py` describes how the
 # script checks it.
-timeout: 8m
+timeout: 4m
 subject_os: [linux]
 
 participants:
