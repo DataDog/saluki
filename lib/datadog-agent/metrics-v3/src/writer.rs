@@ -23,7 +23,7 @@ use crate::{
         TYPES_FIELD_NUMBER, UNIT_REFS_FIELD_NUMBER, VALS_FLOAT32_FIELD_NUMBER, VALS_FLOAT64_FIELD_NUMBER,
         VALS_SINT64_FIELD_NUMBER,
     },
-    interner::Interner,
+    interner::{Interner, PinnedSymbols, SymbolOwner},
     types::{value_type_for_values, V3MetricType, V3ValueType},
 };
 
@@ -148,6 +148,7 @@ pub struct V3Writer {
     // Each interner assigns IDs within one dictionary and points into its backing storage by offset.
     name_interner: Interner,
     tag_interner: Interner,
+    tag_symbols: PinnedSymbols,
     tagset_interner: Interner,
     resource_str_interner: Interner,
     resource_interner: Interner,
@@ -269,6 +270,7 @@ impl V3Writer {
     pub fn clear(&mut self) {
         self.name_interner.clear();
         self.tag_interner.clear();
+        self.tag_symbols.clear();
         self.tagset_interner.clear();
         self.resource_str_interner.clear();
         self.resource_interner.clear();
@@ -328,8 +330,7 @@ impl V3Writer {
         let mut tagsets = data.dict_tagsets.as_mut_slice();
         while let Some((&mut len, rest)) = tagsets.split_first_mut() {
             let (ids, remaining) = rest.split_at_mut(len as usize);
-            ids.sort_unstable();
-            delta_encode(ids);
+            sort_and_delta_tagset(ids);
             tagsets = remaining;
         }
     }
@@ -513,7 +514,9 @@ impl V3Writer {
         self.intern_tag_ids()
     }
 
-    fn intern_unique_tagset<'a>(&mut self, tags: impl Iterator<Item = (&'a str, Option<(usize, u32)>)>) -> i64 {
+    fn intern_unique_tagset<'a, F: FnMut() -> SymbolOwner>(
+        &mut self, tags: impl Iterator<Item = (&'a str, Option<(usize, u32)>)>, mut retain_owner: Option<F>,
+    ) -> i64 {
         self.tag_ids.clear();
         self.tag_epoch = self.tag_epoch.wrapping_add(1);
         if self.tag_epoch == 0 {
@@ -521,7 +524,15 @@ impl V3Writer {
             self.tag_epoch = 1;
         }
         for (tag, hint) in tags {
-            let id = intern_string_with_hint(&mut self.tag_interner, &mut self.data.dict_tags_bytes, tag, hint);
+            let interner = &mut self.tag_interner;
+            let arena = &mut self.data.dict_tags_bytes;
+            let id = match (hint, retain_owner.as_mut()) {
+                (Some(hint), Some(retain)) => {
+                    self.tag_symbols
+                        .intern(hint, tag, || intern_string(interner, arena, tag), retain)
+                }
+                _ => intern_string_with_hint(interner, arena, tag, hint),
+            };
             let idx = id as usize;
             if idx >= self.tag_epochs.len() {
                 self.tag_epochs.resize(idx + 1, 0);
@@ -616,7 +627,19 @@ impl<'a> V3MetricBuilder<'a> {
     ///
     /// Each tag can carry an optional `(table, id)` packed symbol cache hint.
     pub fn set_unique_tags<'t>(&mut self, tags: impl Iterator<Item = (&'t str, Option<(usize, u32)>)>) {
-        let tagset_id = self.writer.intern_unique_tagset(tags);
+        let tagset_id = self.writer.intern_unique_tagset(tags, None::<fn() -> SymbolOwner>);
+        self.writer.data.tags[self.metric_idx] = tagset_id;
+    }
+
+    /// Sets unique tags and maps retained packed symbols directly to V3 tag IDs.
+    ///
+    /// The owner returned by `retain_owner` must keep the hinted strings alive and immutable. The callback runs only
+    /// when a symbol enters the cache. Owners are dropped on cache replacement or writer reset.
+    pub fn set_unique_tags_with_symbols<'t>(
+        &mut self, tags: impl Iterator<Item = (&'t str, Option<(usize, u32)>)>,
+        retain_owner: impl FnMut() -> SymbolOwner,
+    ) {
+        let tagset_id = self.writer.intern_unique_tagset(tags, Some(retain_owner));
         self.writer.data.tags[self.metric_idx] = tagset_id;
     }
 
@@ -873,6 +896,32 @@ fn append_len(dst: &mut Vec<u8>, mut len: usize) {
     }
 }
 
+fn sort_and_delta_tagset(ids: &mut [i64]) {
+    if ids.len() >= 32 {
+        let mut bits = 0u128;
+        for &id in &*ids {
+            if id as u64 >= u64::from(u128::BITS) {
+                bits = 0;
+                break;
+            }
+            bits |= 1 << id;
+        }
+        // The general setter can contain duplicate IDs; keep them in the normal sorting path.
+        if bits.count_ones() as usize == ids.len() {
+            let mut previous = 0;
+            for id in ids {
+                let next = i64::from(bits.trailing_zeros());
+                *id = next - previous;
+                previous = next;
+                bits &= bits.wrapping_sub(1);
+            }
+            return;
+        }
+    }
+    ids.sort_unstable();
+    delta_encode(ids);
+}
+
 // Work backward so each subtraction reads the preceding absolute value before overwriting it.
 fn delta_encode(s: &mut [i64]) {
     if s.len() < 2 {
@@ -894,6 +943,8 @@ fn delta_encode_i32(s: &mut [i32]) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -976,6 +1027,24 @@ mod tests {
         let mut data = vec![42];
         delta_encode(&mut data);
         assert_eq!(data, vec![42]);
+    }
+
+    #[test]
+    fn large_tagsets_encode_sorted_ids_and_preserve_duplicates() {
+        let unique: Vec<_> = (0..128).rev().step_by(2).collect();
+        for extra in [None, Some(127), Some(128)] {
+            let mut ids = unique.clone();
+            ids.extend(extra);
+            let mut expected = ids.clone();
+            expected.sort_unstable();
+            sort_and_delta_tagset(&mut ids);
+            let mut decoded = 0;
+            for delta in &mut ids {
+                decoded += *delta;
+                *delta = decoded;
+            }
+            assert_eq!(ids, expected);
+        }
     }
 
     #[test]
@@ -1259,5 +1328,33 @@ mod tests {
             write_metric(target, "new", "service:other", 400);
         }
         assert_eq!(writer.finish().unwrap().payload, fresh.finalize().unwrap().payload);
+    }
+
+    #[test]
+    fn pinned_tags_share_dictionary_ids_without_aliasing_recycled_symbol_hints() {
+        let mut writer = V3Writer::new();
+        let mut exact = V3Writer::new();
+        let first = Arc::new("env:prod".to_owned());
+        let second = Arc::new("env:test".to_owned());
+        let first_weak = Arc::downgrade(&first);
+        let hint = Some((1, 42));
+        for (tag, retain) in [(&first, true), (&first, false), (&second, true)] {
+            let mut metric = writer.write(V3MetricType::Gauge, "metric");
+            metric.set_unique_tags_with_symbols([(tag.as_str(), hint), (tag.as_str(), None)].into_iter(), || {
+                assert!(retain, "a repeated symbol must not retain another reference");
+                Arc::clone(tag) as SymbolOwner
+            });
+            metric.add_point(1, 1.0);
+            metric.close();
+
+            let mut metric = exact.write(V3MetricType::Gauge, "metric");
+            metric.set_tags([tag.as_str()].into_iter());
+            metric.add_point(1, 1.0);
+            metric.close();
+        }
+        drop(first);
+        assert!(first_weak.upgrade().is_some());
+        assert_eq!(writer.finish().unwrap().payload, exact.finish().unwrap().payload);
+        assert!(first_weak.upgrade().is_none());
     }
 }
