@@ -1,6 +1,7 @@
 description: >-
   ADP's OTLP receiver and the Agent's each receive the same random OTLP traces over gRPC with error tracking standalone
-  on, and their intakes must hold the same spans and APM stats.
+  on and the receiver at its default rate. Both sides must forward every trace, and mark each trace with an error on any
+  span as an error trace. Their intakes must hold the same spans and APM stats.
 timeout: 8m
 subject_os: [linux]
 participants:
@@ -45,17 +46,33 @@ procedure:
         telemetry: traces
         comparison: intake-adp
         baseline: intake-agent
-        # Error Tracking Standalone keeps the traces without an error, marked as dropped. The intake holds all 2000 traces
-        # of the load, as in `otlp-traces`.
+        # Error tracking standalone mode forwards every trace, so each side holds the 2000 traces, the 4096 spans and
+        # the 119 groups of stats of the load. The receiver keeps every trace at its default rate, so every chunk has
+        # the priority 1, the decision maker -9 and the receiver rate 1.00. 393 traces have an error, 289 of them on a
+        # child only, and the comparison holds both sides to the same error chunks.
         traces:
           min_traces: 2000
-          min_spans: 4000
+          max_traces: 2000
+          min_spans: 4096
+          max_spans: 4096
           spans:
-            - {service: api-gateway, resource: "GET /api/v1/products/{id}"}
-            - {service: api-gateway, resource: "GET /api/v1/products"}
-            - {service: product-service, resource: ProductService/GetProduct}
-            - {service: product-service, resource: ProductService/ListProducts}
-          min_stats_groups: 4
+            - service: api-gateway
+              resource: "GET /api/v1/products/{id}"
+              priority: 1
+              chunk_tags: {_dd.otlp_sr: "1.00", _dd.p.dm: "-9"}
+            - service: api-gateway
+              resource: "GET /api/v1/products"
+              priority: 1
+              chunk_tags: {_dd.otlp_sr: "1.00", _dd.p.dm: "-9"}
+            - service: product-service
+              resource: ProductService/GetProduct
+              priority: 1
+              chunk_tags: {_dd.otlp_sr: "1.00", _dd.p.dm: "-9"}
+            - service: product-service
+              resource: ProductService/ListProducts
+              priority: 1
+              chunk_tags: {_dd.otlp_sr: "1.00", _dd.p.dm: "-9"}
+          min_stats_groups: 119
           known_differences:
             # Only `api-gateway` sends HTTP spans, and the load gives their status code as a string.
             - gap: gap/otlp-http-status-code-string
