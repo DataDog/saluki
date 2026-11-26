@@ -522,18 +522,13 @@ A comparison answers two questions:
    fails. The failure lists unmet expectations by side first, then differences from the comparison. A
    [known difference](#known-differences) cannot excuse an unmet expectation.
 
-For logs, `logs.min_count` sets the minimum number of records per intake. For metrics, set at least one field if you
-include a `metrics` section:
+For logs, `logs.min_count` sets the minimum number of records per intake. If you include a `metrics` section, set
+`min_series`, `series` or both, even if the step also declares a known difference:
 
 - `min_series`: the fewest series that each side holds after the filter that removes internal telemetry.
 - `series`: a list of criteria. One series of each side must meet each criterion. A criterion has a `name`, and
   optionally `tags`, `tags_match`, `metric_type` and `value`. See
   [Checking a metric at the intake](#checking-a-metric-at-the-intake).
-- `known_differences`: series whose type differs between the sides because of an open gap. An entry has `gap`,
-  `issue`, `paths: [type]`, `when: {name: [...]}`, `kinds` (optional, only `value`) and `reason`. A series of a
-  listed name that each side holds with a different type is left out of the comparison on both sides, and the other
-  series are still compared by value. A difference that no entry covers fails the step, and so does an entry that
-  matches no series.
 
 For traces, set expectations under `traces`:
 
@@ -567,7 +562,8 @@ This minimum counts the groups each intake holds. In spans-only mode (`otlp_dire
 A correctness case compares the Agent's intake (`baseline`) with ADP's intake (`comparison`). A **gap** is a
 difference between their outputs that we intend to fix. Instead of disabling the case, describe the mismatch in a
 `known_differences` entry on its `compare` step. The case can then pass with that difference and still catch others.
-Only logs and APM stats support these entries.
+Only `logs`, `metrics` and `traces` accept `known_differences`. Metric entries cover series types. Trace entries cover
+span fields or APM stats.
 
 ### Read a known difference
 
@@ -591,8 +587,9 @@ logs:
 - **Stale:** Suppose both logs have status `info`. The status entry no longer matches a difference, so the step
   fails. Remove the entry when the gap is fixed.
 
-Logs and trace stats use the same ratchet to enforce this last rule. Each path in each entry must match at least
-once. If a path covers several fixtures, a match on one keeps it from going stale. Keep entries narrow.
+Logs, metrics and traces use the same ratchet to enforce this last rule. Each path in each entry must match
+at least once. If a path covers several fixtures, a match on one keeps it from going stale. Keep entries narrow.
+
 See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching rules.
 
 ### Choose what the entry covers
@@ -605,7 +602,29 @@ See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching r
   (comparison only). Logs also support `location` for a field that moved. Without `kinds`, any kind matches.
 - `when` limits which records the entry covers. Each named field must match one of its listed values. For logs,
   `when` reads the baseline log's fields. A request header belongs to no log, so a rule with `when` cannot cover it.
-  Without `when`, the entry applies to every record.
+  A log or stats entry without `when` applies to every record of that kind.
+
+### When a metric has a different type
+
+In `otlp-metrics-cumulative-monotonic`, the Agent sends `raymond.test.cumulative.as.gauge` as a count of 30.
+ADP sends its rate over ten seconds as a gauge of 3. Comparing 30 to 3 would not test either value. The case
+records the type difference under `metrics`:
+
+```yaml
+known_differences:
+  - gap: gap/otlp-rate-as-gauge-test-name
+    issue: 3406
+    paths: [type]
+    when: {name: [raymond.test.cumulative.as.gauge]}
+    reason: ADP reports this sum as a gauge of its rate, and the Agent reports it as a count
+```
+
+The entry covers only `type`, for the names in `when`. If you specify `kinds`, use `[value]`. Each intake must hold
+the same name and tags with exactly one type. If those types differ, `compare` leaves that pair out of the value
+comparison. A missing series or an extra type is not a type difference.
+
+The fixture sends another sum, `otlp.cumulative.monotonic`. Its count must still match. To check the values of the
+pair that `compare` left out, the case uses `intake_has_metric` on each intake: count 30 on one, gauge 3 on the other.
 
 ### APM stats in an OTLP trace case
 
@@ -623,27 +642,28 @@ stats, it checks every group, not just the first mismatch. Each entry under `tra
 - `stats.<field>`: both intakes have the group, but a field differs. For example, `stats.hits` covers a difference
   in the hit count. A field path also covers differences inside that field, such as a value inside a sketch.
 
-### A gap, an ignored field, or a difference by design?
+### A span field or an ignored field?
 
-For a string HTTP status code, the Agent sends both the text and the number. ADP sends only the number. While
-[this gap][status-issue] is open, `otlp-traces` lists `meta.http.status_code` in `additional_span_ignore_fields`.
-That skips the field on every span. Unlike a known difference, it gives no signal when the field starts matching.
+For a string HTTP status code, the Agent sends both the text and the number. ADP sends only the number. The
+`otlp-traces` case records [this gap][status-issue] on the HTTP spans:
+
+```yaml
+- gap: gap/otlp-http-status-code-string
+  issue: 3433
+  paths: [span.meta.http.status_code]
+  kinds: [missing]
+  when: {service: [api-gateway]}
+  reason: The Agent sends a string HTTP status code in `meta` next to the number. ADP sends the number only.
+```
+
+`span.<field>` applies to spans that the two intakes have in common, including in spans-only mode. Use `when` to
+select spans by `service`, `name`, `resource` or a combination of these fields. Here, only the missing text on
+`api-gateway` spans matches. The numeric status code still has to agree. If ADP starts sending the same text, the
+entry goes stale. Putting the field in `additional_span_ignore_fields` instead would skip it on every span, even
+after a fix.
 
 If the outputs differ by design, compare what should agree. For example, the Agent and ADP each set a log timestamp
 when they encode the log. Panoramic checks that the timestamps are within a minute of each other rather than treating
 their difference as a defect.
 
 [status-issue]: https://github.com/DataDog/saluki/issues/3433
-
-**Known differences of traces.** A traces `compare` reports every difference in the APM statistics, not only the
-first. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
-`logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
-`paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
-compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a
-statistics group on one side only, `stats.<field>`, for a field of a group on both sides, or `span.<field>`, such as
-`span.metrics._top_level`, for a field of a span on both sides. `stats.<field>` covers a difference anywhere inside
-the field, such as in a sketch. A kind is `missing` (only in the baseline), `extra` (only in the comparison) or
-`value`. `when` matches the fields of the group, for example `{service: [api-gateway]}`, or the `service`, `name` and
-`resource` of the span. An entry with a `span.` path must name its spans with `when`. A difference that no entry
-covers fails the step, and so does an entry path that
-matches no difference, so that a fix removes its entries.
