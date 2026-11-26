@@ -1,0 +1,372 @@
+{
+  "probes": [
+    {
+      "id": "metrics-protobuf",
+      "description": "A protobuf metrics request. The request accepts gzip, and neither receiver compresses its answer.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics",
+        "headers": {
+          "Content-Type": "application/x-protobuf",
+          "Accept-Encoding": "gzip"
+        },
+        "body": "metrics-protobuf"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/x-protobuf",
+          "Content-Encoding": null
+        },
+        "body": "\n\u0000"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3482,
+          "reason": "ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in the content type of the request, which is what the Agent sends.",
+          "got": {
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "OK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "traces-protobuf",
+      "description": "A protobuf traces request.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/traces",
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        },
+        "body": "traces-protobuf"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        },
+        "body": "\n\u0000"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3482,
+          "reason": "ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in the content type of the request, which is what the Agent sends.",
+          "got": {
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "OK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics-protobuf-charset",
+      "description": "A protobuf metrics request whose content type has a charset parameter.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics",
+        "headers": {
+          "Content-Type": "application/x-protobuf; charset=utf-8"
+        },
+        "body": "metrics-protobuf"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        },
+        "body": "\n\u0000"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3482,
+          "reason": "ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in the content type of the request, which is what the Agent sends.",
+          "got": {
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "OK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics-json",
+      "description": "A JSON metrics request.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "metrics-json"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"partialSuccess\":{}}"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3480,
+          "reason": "ADP ignores the content type and decodes every body as protobuf, so it fails a JSON body with status 500. The Agent decodes the JSON.",
+          "got": {
+            "status": 500,
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "Internal processing error"
+          }
+        }
+      ]
+    },
+    {
+      "id": "traces-json",
+      "description": "A JSON traces request.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/traces",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "traces-json"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"partialSuccess\":{}}"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3480,
+          "reason": "ADP ignores the content type and decodes every body as protobuf, so it fails a JSON body with status 500. The Agent decodes the JSON.",
+          "got": {
+            "status": 500,
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "Internal processing error"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics-gzip",
+      "description": "A protobuf metrics request with a gzip body and the matching `Content-Encoding`.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics",
+        "headers": {
+          "Content-Type": "application/x-protobuf",
+          "Content-Encoding": "gzip"
+        },
+        "body": "metrics-protobuf",
+        "encode": "gzip"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        },
+        "body": "\n\u0000"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3481,
+          "reason": "ADP ignores `Content-Encoding` and decodes the compressed body as protobuf, so it fails with status 500. The Agent decompresses the body.",
+          "got": {
+            "status": 500,
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "Internal processing error"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics-br",
+      "description": "A protobuf metrics request that names an encoding that no receiver supports. The body is not compressed.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics",
+        "headers": {
+          "Content-Type": "application/x-protobuf",
+          "Content-Encoding": "br"
+        },
+        "body": "metrics-protobuf"
+      },
+      "expect": {
+        "status": 400,
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        },
+        "body_contains": "unsupported Content-Encoding: br"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3481,
+          "reason": "ADP ignores `Content-Encoding`, so it accepts the body. The Agent refuses an encoding that it does not know, with status 400.",
+          "got": {
+            "status": 200,
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "OK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics-text-plain",
+      "description": "A protobuf metrics request with the content type `text/plain`.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics",
+        "headers": {
+          "Content-Type": "text/plain"
+        },
+        "body": "metrics-protobuf"
+      },
+      "expect": {
+        "status": 415,
+        "headers": {
+          "Content-Type": "text/plain"
+        },
+        "body": "415 unsupported media type, supported: [application/json, application/x-protobuf]"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3480,
+          "reason": "ADP ignores the content type, so it accepts the body. The Agent refuses a content type that is not JSON or protobuf, with status 415.",
+          "got": {
+            "status": 200,
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "OK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics-no-content-type",
+      "description": "A protobuf metrics request with no content type.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics",
+        "body": "metrics-protobuf"
+      },
+      "expect": {
+        "status": 415,
+        "headers": {
+          "Content-Type": "text/plain"
+        },
+        "body": "415 unsupported media type, supported: [application/json, application/x-protobuf]"
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3480,
+          "reason": "ADP ignores the content type, so it accepts the body. The Agent refuses a request with no content type, with status 415.",
+          "got": {
+            "status": 200,
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            },
+            "body": "OK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics-garbage",
+      "description": "A protobuf metrics request whose body is not protobuf.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics",
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        },
+        "body": "garbage"
+      },
+      "expect": {
+        "status": 400,
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        }
+      },
+      "known": [
+        {
+          "side": "adp",
+          "issue": 3482,
+          "reason": "ADP answers a body that it cannot decode with status 500 and plain text. The Agent answers with status 400 and a `google.rpc.Status` message, as the OTLP specification says.",
+          "got": {
+            "status": 500,
+            "headers": {
+              "Content-Type": "text/plain; charset=utf-8"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics-get",
+      "description": "A GET to the metrics path. The bodies of the two receivers differ, and that is not a gap.",
+      "request": {
+        "method": "GET",
+        "path": "/v1/metrics"
+      },
+      "expect": {
+        "status": 405
+      }
+    },
+    {
+      "id": "unknown-path",
+      "description": "A POST to a path that no signal uses.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/unknown",
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        },
+        "body": "metrics-protobuf"
+      },
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "id": "trailing-slash",
+      "description": "A POST to the metrics path with a trailing slash.",
+      "request": {
+        "method": "POST",
+        "path": "/v1/metrics/",
+        "headers": {
+          "Content-Type": "application/x-protobuf"
+        },
+        "body": "metrics-protobuf"
+      },
+      "expect": {
+        "status": 404
+      }
+    }
+  ]
+}

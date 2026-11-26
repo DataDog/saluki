@@ -1,0 +1,191 @@
+description: >-
+  ADP's OTLP/HTTP receiver and the Agent's each answer the same requests. A script runs in each container, sends the
+  requests of `probes.json` to the receiver of that container, and checks the status, headers and body of each answer.
+  The requests that each receiver accepts then reach its intake. `probes.json` lists the known differences of ADP, each
+  with an issue.
+timeout: 5m
+subject_os: [linux]
+
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-rcv-http"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read this. The endpoint is the harness's, not the default one. ADP handles every signal itself,
+      # because it proxies none of them to the Agent by default.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+    files:
+      /otlp-rcv-http/otlp_http_probe.py: otlp_http_probe.py
+      /otlp-rcv-http/test_otlp_http_probe.py: test_otlp_http_probe.py
+      /otlp-rcv-http/probes.json: probes.json
+    connect: {intake: intake-adp.api}
+  # The Agent on its own, with the receiver that its default environment binds at `agent_otlp_http`.
+  agent:
+    type: agent
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-rcv-http"
+    files:
+      /otlp-rcv-http/otlp_http_probe.py: otlp_http_probe.py
+      /otlp-rcv-http/probes.json: probes.json
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+
+procedure:
+  # The script checks its own logic first.
+  - step: exec
+    on: adp
+    command: ["/opt/datadog-agent/embedded/bin/python3", "/otlp-rcv-http/test_otlp_http_probe.py"]
+    timeout: 30s
+  # ADP listens, and its Agent leaves OTLP to ADP. The independent Agent starts its own OTLP pipeline.
+  - parallel:
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp.endpoints.otlp_http.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: "Not starting the OTLP ingest pipeline because the data plane handles OTLP ingest"
+        timeout: 60s
+      - step: log_contains
+        on: agent
+        process: agent
+        pattern: "Everything is ready. Begin running and processing data."
+        timeout: 60s
+  # Each script prints one verdict for each probe, and fails the step when a probe fails, is stale or has an error.
+  - step: exec
+    on: adp
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/otlp-rcv-http/otlp_http_probe.py"
+      - "--spec"
+      - "/otlp-rcv-http/probes.json"
+      - "--side"
+      - "adp"
+      - "--port"
+      - "{{ adp.endpoints.otlp_http.port }}"
+    timeout: 90s
+  - step: exec
+    on: agent
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/otlp-rcv-http/otlp_http_probe.py"
+      - "--spec"
+      - "/otlp-rcv-http/probes.json"
+      - "--side"
+      - "agent"
+      - "--port"
+      - "{{ agent.endpoints.agent_otlp_http.port }}"
+    timeout: 90s
+  # Each request that a receiver accepts reaches the intake from its own sender. A metric probe names its metric after
+  # its id, and the exact totals show that no other probe delivered. The counts follow from the known differences of
+  # ADP: when one goes stale, its count changes first.
+  - parallel:
+      # The Agent delivers the four metric probes that it accepts, and the two traces probes.
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_protobuf."}
+        sender: agent
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_protobuf_charset."}
+        sender: agent
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_json."}
+        sender: agent
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_gzip."}
+        sender: agent
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http."}
+        sender: agent
+        count: 4
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-rcv-http}
+        sender: trace-agent
+        count: 2
+        timeout: 2m
+      # ADP delivers the five metric probes that it accepts, and one of the two traces probes. It decodes a JSON body as
+      # protobuf, and fails it.
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_protobuf."}
+        sender: adp
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_protobuf_charset."}
+        sender: adp
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_br."}
+        sender: adp
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_text_plain."}
+        sender: adp
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http.metrics_no_content_type."}
+        sender: adp
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlp.rcv.http."}
+        sender: adp
+        count: 5
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: otlp-rcv-http}
+        sender: adp
+        count: 1
+        timeout: 2m
+  - parallel:
+      - {step: process_stable_for, on: adp, duration: 10s}
+      - {step: process_stable_for, on: agent, duration: 10s}
+      # The errors that ADP logs for a body that it cannot decode are expected, so only a crash fails the case.
+      - {step: log_not_contains, on: adp, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
+      - {step: log_not_contains, on: agent, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
