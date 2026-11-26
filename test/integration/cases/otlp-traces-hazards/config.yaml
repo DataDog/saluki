@@ -73,8 +73,10 @@ procedure:
         pattern: "Everything is ready. Begin running and processing data."
         timeout: 60s
   # The SQL hazard goes first, and each receiver must deliver all its spans before the large trace goes in. ADP can drop
-  # other traces that its encoder holds next to a trace that is too large for one request. A SQL request that is still in
-  # the encoder would lose spans, and the case could not tell which hazard caused the loss.
+  # other traces that its encoder holds next to a trace that is too large for one request (#3488). A SQL request that is
+  # still in the encoder would lose spans, and the case could not tell which hazard caused the loss. This case does not
+  # cover that loss. Once #3488 is fixed, add a step that sends traces in the same batch as the large trace, and remove
+  # this wait if it is no longer needed.
   - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/sql-adp.yaml], timeout: 2m}
   - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/sql-agent.yaml], timeout: 2m}
   - parallel:
