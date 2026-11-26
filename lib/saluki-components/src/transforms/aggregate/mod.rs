@@ -883,7 +883,7 @@ impl AggregationState {
                 break;
             }
             let overflow = buffers.try_push(Event::Metric(metric));
-            debug_assert!(overflow.is_none());
+            assert!(overflow.is_none(), "chunk budget should keep the buffer below capacity");
             has_histograms |= histogram;
             expected_outputs += outputs;
             // A single histogram can exceed this budget. Its dispatcher yields after each full output buffer.
@@ -1137,7 +1137,7 @@ const fn align_to_bucket_start(timestamp: u64, bucket_width_secs: NonZeroU64) ->
 // then we run it to make sure that we are always generating sequential timestamps for data points, etc.
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, mem::size_of};
+    use std::{cell::Cell, mem::size_of, num::NonZeroUsize};
 
     use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
@@ -1371,7 +1371,7 @@ mod tests {
             ..AggregateConfiguration::for_test()
         };
         let (control, mut outputs) = TestComponentDriver::options()
-            .with_interconnect_capacity(std::num::NonZeroUsize::new(1).unwrap())
+            .with_interconnect_capacity(NonZeroUsize::new(1).unwrap())
             .transform(config)
             .await
             .unwrap();
