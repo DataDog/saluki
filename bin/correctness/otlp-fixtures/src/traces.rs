@@ -16,9 +16,11 @@ use crate::common::{double, int, kv, string};
 
 mod conversion;
 mod obfuscation;
+mod sampling;
 
 pub use self::conversion::conversion_fixture;
 pub use self::obfuscation::obfuscation_fixture;
+pub use self::sampling::sampling_fixture;
 
 /// 2023-11-14T22:13:20Z, in nanoseconds.
 const BASE_TIME_NANOS: u64 = 1_700_000_000_000_000_000;
@@ -290,8 +292,18 @@ impl ProbeResource {
 /// Each resource has one `ResourceSpans` that holds the spans of its service, so a trace that crosses services spans more
 /// than one of them. Trace `n`, counted from 1, has the seed `seed_base + n`.
 fn probe_request(resources: &[ProbeResource], seed_base: u32, traces: &[Vec<ProbeSpan>]) -> Vec<u8> {
+    let seeds: Vec<u32> = (seed_base + 1..).take(traces.len()).collect();
+    probe_request_with_seeds(resources, &seeds, traces)
+}
+
+/// Builds a request from probe traces, where `seeds[n]` is the seed of trace `n`, counted from 0.
+///
+/// A case that fixes the decision of a sampler for each trace picks the seeds, because a sampler hashes the trace ID.
+/// The seeds must differ, because the trace ID and the span IDs derive from the seed.
+fn probe_request_with_seeds(resources: &[ProbeResource], seeds: &[u32], traces: &[Vec<ProbeSpan>]) -> Vec<u8> {
+    assert_eq!(seeds.len(), traces.len(), "each trace needs a seed");
     let mut spans: Vec<Vec<Span>> = resources.iter().map(|_| Vec::new()).collect();
-    for (seed, trace) in (seed_base + 1..).zip(traces) {
+    for (&seed, trace) in seeds.iter().zip(traces) {
         for (number, spec) in (1..).zip(trace) {
             let index = resources
                 .iter()
