@@ -1,6 +1,9 @@
 """Check that a Panoramic run report shows exactly the selected cases passing.
 
-Usage: check_panoramic_selection.py <run.json> <comma-separated case names>
+Usage: check_panoramic_selection.py <log base directory> <comma-separated case names>
+
+The log base directory is the one given to `panoramic run -l`. It holds one `panoramic-<timestamp>` directory for each
+run, and the check reads the `run.json` of its single run.
 
 `panoramic run -t` rejects a name that matches no case, but a case that no longer declares the subject OS is skipped
 and the run still exits 0. This check turns that skip into a failure.
@@ -14,7 +17,10 @@ from pathlib import Path
 def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
-    report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    reports = sorted(Path(sys.argv[1]).glob("panoramic-*/run.json"))
+    if len(reports) != 1:
+        sys.exit(f"ERROR: expected one run report under {sys.argv[1]}, found {len(reports)}: {[str(r) for r in reports]}")
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
     selected = sys.argv[2].split(",")
 
     problems = []

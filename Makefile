@@ -737,7 +737,7 @@ test-integration-macos-run: ## Runs the macOS host-process integration tests usi
 		--set "/tmp/saluki-dda/datadog-agent/bin/agent/agent=$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		$(if $(CASE),-t $(CASE)) --no-tui \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
-	@$(if $(and $(CASE),$(PANORAMIC_LOG_DIR)),$(PYTHON) ci/tooling/check_panoramic_selection.py "$(PANORAMIC_LOG_DIR)/run.json" "$(CASE)")
+	@$(if $(and $(CASE),$(PANORAMIC_LOG_DIR)),$(PYTHON) ci/tooling/check_panoramic_selection.py "$(PANORAMIC_LOG_DIR)" "$(CASE)")
 
 .PHONY: provision-macos-test-env
 provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-agent-version.json into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if its marker matches the file.
