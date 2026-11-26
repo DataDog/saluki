@@ -2,6 +2,7 @@
 fixes:
   - |
     OTLP logs handled natively now use the ``datadog.log.source`` attribute as the log source, as the Datadog Agent
-    does. Resource and scope attributes overwrite log attributes first. A log attribute sets the source only when it's
-    a non-empty string. Resource and scope values are converted to strings, and set the source only when the result
-    isn't empty. Otherwise the source stays ``otlp_log_ingestion``. The attribute also stays in the log.
+    does. Resource attributes overwrite log attributes, and scope attributes overwrite both. A log attribute sets the
+    source only when it's a non-empty string. ADP converts resource and scope values to strings, and the result sets
+    the source only when it isn't empty. Otherwise the source stays ``otlp_log_ingestion``. The attribute also stays
+    in the log.
