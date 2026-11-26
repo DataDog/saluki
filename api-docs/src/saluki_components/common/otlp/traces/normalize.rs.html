@@ -820,49 +820,113 @@
 <a href=#820 id=820 data-nosnippet>820</a>        </span><span class="macro">assert_eq!</span>(validate_and_fix_duration(start, u64::MAX), <span class="number">0</span>);
 <a href=#821 id=821 data-nosnippet>821</a>    }
 <a href=#822 id=822 data-nosnippet>822</a>
-<a href=#823 id=823 data-nosnippet>823</a>    <span class="attr">#[test]
-<a href=#824 id=824 data-nosnippet>824</a>    </span><span class="kw">fn </span>validate_and_fix_start_time_leaves_valid_start_untouched() {
-<a href=#825 id=825 data-nosnippet>825</a>        <span class="kw">let </span>start = YEAR_2000_NANOSEC_TS + <span class="number">1_000_000_000</span>;
-<a href=#826 id=826 data-nosnippet>826</a>        <span class="macro">assert_eq!</span>(validate_and_fix_start_time(start, <span class="number">1_000_000</span>), start);
-<a href=#827 id=827 data-nosnippet>827</a>        <span class="macro">assert_eq!</span>(
-<a href=#828 id=828 data-nosnippet>828</a>            validate_and_fix_start_time(YEAR_2000_NANOSEC_TS, <span class="number">0</span>),
-<a href=#829 id=829 data-nosnippet>829</a>            YEAR_2000_NANOSEC_TS
-<a href=#830 id=830 data-nosnippet>830</a>        );
-<a href=#831 id=831 data-nosnippet>831</a>    }
+<a href=#823 id=823 data-nosnippet>823</a>    <span class="doccomment">/// The reference zeroes a duration only when `start + duration` exceeds `math.MaxInt64` (`FixDuration`,
+<a href=#824 id=824 data-nosnippet>824</a>    /// `pkg/trace/traceutil/normalize/duration.go`), so a span that ends exactly there keeps it.
+<a href=#825 id=825 data-nosnippet>825</a>    </span><span class="attr">#[test]
+<a href=#826 id=826 data-nosnippet>826</a>    </span><span class="kw">fn </span>validate_and_fix_duration_keeps_a_duration_that_ends_at_i64_max() {
+<a href=#827 id=827 data-nosnippet>827</a>        <span class="kw">let </span>start = YEAR_2000_NANOSEC_TS;
+<a href=#828 id=828 data-nosnippet>828</a>        <span class="kw">let </span>headroom = i64::MAX <span class="kw">as </span>u64 - start;
+<a href=#829 id=829 data-nosnippet>829</a>
+<a href=#830 id=830 data-nosnippet>830</a>        <span class="macro">assert_eq!</span>(validate_and_fix_duration(start, headroom), headroom);
+<a href=#831 id=831 data-nosnippet>831</a>        <span class="macro">assert_eq!</span>(validate_and_fix_duration(start, headroom + <span class="number">1</span>), <span class="number">0</span>);
 <a href=#832 id=832 data-nosnippet>832</a>
-<a href=#833 id=833 data-nosnippet>833</a>    <span class="attr">#[test]
-<a href=#834 id=834 data-nosnippet>834</a>    </span><span class="kw">fn </span>validate_and_fix_start_time_replaces_pre_year_2000_start() {
-<a href=#835 id=835 data-nosnippet>835</a>        <span class="kw">let </span>now = std::time::SystemTime::now()
-<a href=#836 id=836 data-nosnippet>836</a>            .duration_since(std::time::UNIX_EPOCH)
-<a href=#837 id=837 data-nosnippet>837</a>            .unwrap()
-<a href=#838 id=838 data-nosnippet>838</a>            .as_nanos() <span class="kw">as </span>u64;
-<a href=#839 id=839 data-nosnippet>839</a>        <span class="kw">let </span>duration = <span class="number">1_000_000_000</span>;
+<a href=#833 id=833 data-nosnippet>833</a>        <span class="comment">// At the largest start that does not wrap, the headroom is zero: a span with no duration keeps it, and any other
+<a href=#834 id=834 data-nosnippet>834</a>        // duration overflows.
+<a href=#835 id=835 data-nosnippet>835</a>        </span><span class="kw">let </span>start = i64::MAX <span class="kw">as </span>u64;
+<a href=#836 id=836 data-nosnippet>836</a>        <span class="macro">assert_eq!</span>(validate_and_fix_duration(start, <span class="number">0</span>), <span class="number">0</span>);
+<a href=#837 id=837 data-nosnippet>837</a>        <span class="macro">assert_eq!</span>(validate_and_fix_duration(start, <span class="number">1</span>), <span class="number">0</span>);
+<a href=#838 id=838 data-nosnippet>838</a>        <span class="macro">assert_eq!</span>(validate_and_fix_duration(<span class="number">0</span>, i64::MAX <span class="kw">as </span>u64), i64::MAX <span class="kw">as </span>u64);
+<a href=#839 id=839 data-nosnippet>839</a>    }
 <a href=#840 id=840 data-nosnippet>840</a>
-<a href=#841 id=841 data-nosnippet>841</a>        <span class="kw">let </span>start = validate_and_fix_start_time(<span class="number">1</span>, duration);
-<a href=#842 id=842 data-nosnippet>842</a>        <span class="macro">assert!</span>(
-<a href=#843 id=843 data-nosnippet>843</a>            start &gt;= YEAR_2000_NANOSEC_TS,
-<a href=#844 id=844 data-nosnippet>844</a>            <span class="string">"replaced start must clear the year-2000 floor"
-<a href=#845 id=845 data-nosnippet>845</a>        </span>);
-<a href=#846 id=846 data-nosnippet>846</a>        <span class="macro">assert!</span>(
-<a href=#847 id=847 data-nosnippet>847</a>            start &lt;= now &amp;&amp; now - start &lt; <span class="number">5_000_000_000</span>,
-<a href=#848 id=848 data-nosnippet>848</a>            <span class="string">"start: {start}, now: {now}"
-<a href=#849 id=849 data-nosnippet>849</a>        </span>);
-<a href=#850 id=850 data-nosnippet>850</a>    }
-<a href=#851 id=851 data-nosnippet>851</a>
-<a href=#852 id=852 data-nosnippet>852</a>    <span class="attr">#[test]
-<a href=#853 id=853 data-nosnippet>853</a>    </span><span class="kw">fn </span>validate_and_fix_start_time_clamps_when_duration_exceeds_now() {
-<a href=#854 id=854 data-nosnippet>854</a>        <span class="comment">// A duration larger than the current time cannot be subtracted; the reference clamps to the
-<a href=#855 id=855 data-nosnippet>855</a>        // receive time rather than wrapping to a far-future timestamp.
-<a href=#856 id=856 data-nosnippet>856</a>        </span><span class="kw">let </span>now = std::time::SystemTime::now()
-<a href=#857 id=857 data-nosnippet>857</a>            .duration_since(std::time::UNIX_EPOCH)
-<a href=#858 id=858 data-nosnippet>858</a>            .unwrap()
-<a href=#859 id=859 data-nosnippet>859</a>            .as_nanos() <span class="kw">as </span>u64;
-<a href=#860 id=860 data-nosnippet>860</a>        <span class="kw">let </span>start = validate_and_fix_start_time(<span class="number">1</span>, u64::MAX);
-<a href=#861 id=861 data-nosnippet>861</a>        <span class="macro">assert!</span>(
-<a href=#862 id=862 data-nosnippet>862</a>            start &gt;= YEAR_2000_NANOSEC_TS,
-<a href=#863 id=863 data-nosnippet>863</a>            <span class="string">"clamped start must clear the year-2000 floor"
-<a href=#864 id=864 data-nosnippet>864</a>        </span>);
-<a href=#865 id=865 data-nosnippet>865</a>        <span class="macro">assert!</span>(start.abs_diff(now) &lt; <span class="number">5_000_000_000</span>, <span class="string">"start: {start}, now: {now}"</span>);
-<a href=#866 id=866 data-nosnippet>866</a>    }
-<a href=#867 id=867 data-nosnippet>867</a>}
+<a href=#841 id=841 data-nosnippet>841</a>    <span class="doccomment">/// The limit is in bytes, and a cut never splits a character.
+<a href=#842 id=842 data-nosnippet>842</a>    </span><span class="attr">#[test]
+<a href=#843 id=843 data-nosnippet>843</a>    </span><span class="kw">fn </span>truncate_utf8_cuts_a_span_type_at_the_byte_limit_on_a_character_boundary() {
+<a href=#844 id=844 data-nosnippet>844</a>        <span class="kw">let </span>exact = MetaString::from(<span class="string">"t"</span>.repeat(MAX_TYPE_LEN));
+<a href=#845 id=845 data-nosnippet>845</a>        <span class="macro">assert_eq!</span>(truncate_utf8(<span class="kw-2">&amp;</span>exact, MAX_TYPE_LEN), exact.as_ref());
+<a href=#846 id=846 data-nosnippet>846</a>
+<a href=#847 id=847 data-nosnippet>847</a>        <span class="kw">let </span>over = MetaString::from(<span class="string">"t"</span>.repeat(MAX_TYPE_LEN + <span class="number">1</span>));
+<a href=#848 id=848 data-nosnippet>848</a>        <span class="macro">assert_eq!</span>(truncate_utf8(<span class="kw-2">&amp;</span>over, MAX_TYPE_LEN), <span class="string">"t"</span>.repeat(MAX_TYPE_LEN));
+<a href=#849 id=849 data-nosnippet>849</a>
+<a href=#850 id=850 data-nosnippet>850</a>        <span class="comment">// A two-byte character that ends at byte 100 stays. One that ends at byte 101 goes, and the cut falls at byte 99.
+<a href=#851 id=851 data-nosnippet>851</a>        </span><span class="kw">let </span>ends_at_limit = MetaString::from(<span class="macro">format!</span>(<span class="string">"{}é"</span>, <span class="string">"t"</span>.repeat(MAX_TYPE_LEN - <span class="number">2</span>)));
+<a href=#852 id=852 data-nosnippet>852</a>        <span class="macro">assert_eq!</span>(ends_at_limit.len(), MAX_TYPE_LEN);
+<a href=#853 id=853 data-nosnippet>853</a>        <span class="macro">assert_eq!</span>(truncate_utf8(<span class="kw-2">&amp;</span>ends_at_limit, MAX_TYPE_LEN), ends_at_limit.as_ref());
+<a href=#854 id=854 data-nosnippet>854</a>
+<a href=#855 id=855 data-nosnippet>855</a>        <span class="kw">let </span>straddles_limit = MetaString::from(<span class="macro">format!</span>(<span class="string">"{}é"</span>, <span class="string">"t"</span>.repeat(MAX_TYPE_LEN - <span class="number">1</span>)));
+<a href=#856 id=856 data-nosnippet>856</a>        <span class="macro">assert_eq!</span>(straddles_limit.len(), MAX_TYPE_LEN + <span class="number">1</span>);
+<a href=#857 id=857 data-nosnippet>857</a>        <span class="macro">assert_eq!</span>(
+<a href=#858 id=858 data-nosnippet>858</a>            truncate_utf8(<span class="kw-2">&amp;</span>straddles_limit, MAX_TYPE_LEN),
+<a href=#859 id=859 data-nosnippet>859</a>            <span class="string">"t"</span>.repeat(MAX_TYPE_LEN - <span class="number">1</span>)
+<a href=#860 id=860 data-nosnippet>860</a>        );
+<a href=#861 id=861 data-nosnippet>861</a>    }
+<a href=#862 id=862 data-nosnippet>862</a>
+<a href=#863 id=863 data-nosnippet>863</a>    <span class="doccomment">/// An attribute key or value at its limit is not cut, one byte over is, and the ellipsis comes after the cut
+<a href=#864 id=864 data-nosnippet>864</a>    /// (`Truncate`, `pkg/trace/agent/truncator.go`).
+<a href=#865 id=865 data-nosnippet>865</a>    </span><span class="attr">#[test]
+<a href=#866 id=866 data-nosnippet>866</a>    </span><span class="kw">fn </span>truncate_with_ellipses_keeps_a_key_and_a_value_at_their_limits() {
+<a href=#867 id=867 data-nosnippet>867</a>        <span class="kw">for </span>limit <span class="kw">in </span>[MAX_META_KEY_LEN, MAX_META_VAL_LEN] {
+<a href=#868 id=868 data-nosnippet>868</a>            <span class="kw">let </span>exact = <span class="string">"k"</span>.repeat(limit);
+<a href=#869 id=869 data-nosnippet>869</a>            <span class="macro">assert!</span>(<span class="macro">matches!</span>(truncate_with_ellipses(<span class="kw-2">&amp;</span>exact, limit), Cow::Borrowed(<span class="kw">_</span>)));
+<a href=#870 id=870 data-nosnippet>870</a>
+<a href=#871 id=871 data-nosnippet>871</a>            <span class="kw">let </span>over = <span class="string">"k"</span>.repeat(limit + <span class="number">1</span>);
+<a href=#872 id=872 data-nosnippet>872</a>            <span class="macro">assert_eq!</span>(
+<a href=#873 id=873 data-nosnippet>873</a>                truncate_with_ellipses(<span class="kw-2">&amp;</span>over, limit).as_ref(),
+<a href=#874 id=874 data-nosnippet>874</a>                <span class="macro">format!</span>(<span class="string">"{}..."</span>, <span class="string">"k"</span>.repeat(limit))
+<a href=#875 id=875 data-nosnippet>875</a>            );
+<a href=#876 id=876 data-nosnippet>876</a>        }
+<a href=#877 id=877 data-nosnippet>877</a>
+<a href=#878 id=878 data-nosnippet>878</a>        <span class="comment">// The cut comes before the character that straddles the limit, so the result is shorter than limit + 3.
+<a href=#879 id=879 data-nosnippet>879</a>        </span><span class="kw">let </span>key = <span class="macro">format!</span>(<span class="string">"{}é"</span>, <span class="string">"k"</span>.repeat(MAX_META_KEY_LEN - <span class="number">1</span>));
+<a href=#880 id=880 data-nosnippet>880</a>        <span class="macro">assert_eq!</span>(key.len(), MAX_META_KEY_LEN + <span class="number">1</span>);
+<a href=#881 id=881 data-nosnippet>881</a>        <span class="macro">assert_eq!</span>(
+<a href=#882 id=882 data-nosnippet>882</a>            truncate_with_ellipses(<span class="kw-2">&amp;</span>key, MAX_META_KEY_LEN).as_ref(),
+<a href=#883 id=883 data-nosnippet>883</a>            <span class="macro">format!</span>(<span class="string">"{}..."</span>, <span class="string">"k"</span>.repeat(MAX_META_KEY_LEN - <span class="number">1</span>))
+<a href=#884 id=884 data-nosnippet>884</a>        );
+<a href=#885 id=885 data-nosnippet>885</a>    }
+<a href=#886 id=886 data-nosnippet>886</a>
+<a href=#887 id=887 data-nosnippet>887</a>    <span class="attr">#[test]
+<a href=#888 id=888 data-nosnippet>888</a>    </span><span class="kw">fn </span>validate_and_fix_start_time_leaves_valid_start_untouched() {
+<a href=#889 id=889 data-nosnippet>889</a>        <span class="kw">let </span>start = YEAR_2000_NANOSEC_TS + <span class="number">1_000_000_000</span>;
+<a href=#890 id=890 data-nosnippet>890</a>        <span class="macro">assert_eq!</span>(validate_and_fix_start_time(start, <span class="number">1_000_000</span>), start);
+<a href=#891 id=891 data-nosnippet>891</a>        <span class="macro">assert_eq!</span>(
+<a href=#892 id=892 data-nosnippet>892</a>            validate_and_fix_start_time(YEAR_2000_NANOSEC_TS, <span class="number">0</span>),
+<a href=#893 id=893 data-nosnippet>893</a>            YEAR_2000_NANOSEC_TS
+<a href=#894 id=894 data-nosnippet>894</a>        );
+<a href=#895 id=895 data-nosnippet>895</a>    }
+<a href=#896 id=896 data-nosnippet>896</a>
+<a href=#897 id=897 data-nosnippet>897</a>    <span class="attr">#[test]
+<a href=#898 id=898 data-nosnippet>898</a>    </span><span class="kw">fn </span>validate_and_fix_start_time_replaces_pre_year_2000_start() {
+<a href=#899 id=899 data-nosnippet>899</a>        <span class="kw">let </span>now = std::time::SystemTime::now()
+<a href=#900 id=900 data-nosnippet>900</a>            .duration_since(std::time::UNIX_EPOCH)
+<a href=#901 id=901 data-nosnippet>901</a>            .unwrap()
+<a href=#902 id=902 data-nosnippet>902</a>            .as_nanos() <span class="kw">as </span>u64;
+<a href=#903 id=903 data-nosnippet>903</a>        <span class="kw">let </span>duration = <span class="number">1_000_000_000</span>;
+<a href=#904 id=904 data-nosnippet>904</a>
+<a href=#905 id=905 data-nosnippet>905</a>        <span class="kw">let </span>start = validate_and_fix_start_time(<span class="number">1</span>, duration);
+<a href=#906 id=906 data-nosnippet>906</a>        <span class="macro">assert!</span>(
+<a href=#907 id=907 data-nosnippet>907</a>            start &gt;= YEAR_2000_NANOSEC_TS,
+<a href=#908 id=908 data-nosnippet>908</a>            <span class="string">"replaced start must clear the year-2000 floor"
+<a href=#909 id=909 data-nosnippet>909</a>        </span>);
+<a href=#910 id=910 data-nosnippet>910</a>        <span class="macro">assert!</span>(
+<a href=#911 id=911 data-nosnippet>911</a>            start &lt;= now &amp;&amp; now - start &lt; <span class="number">5_000_000_000</span>,
+<a href=#912 id=912 data-nosnippet>912</a>            <span class="string">"start: {start}, now: {now}"
+<a href=#913 id=913 data-nosnippet>913</a>        </span>);
+<a href=#914 id=914 data-nosnippet>914</a>    }
+<a href=#915 id=915 data-nosnippet>915</a>
+<a href=#916 id=916 data-nosnippet>916</a>    <span class="attr">#[test]
+<a href=#917 id=917 data-nosnippet>917</a>    </span><span class="kw">fn </span>validate_and_fix_start_time_clamps_when_duration_exceeds_now() {
+<a href=#918 id=918 data-nosnippet>918</a>        <span class="comment">// A duration larger than the current time cannot be subtracted; the reference clamps to the
+<a href=#919 id=919 data-nosnippet>919</a>        // receive time rather than wrapping to a far-future timestamp.
+<a href=#920 id=920 data-nosnippet>920</a>        </span><span class="kw">let </span>now = std::time::SystemTime::now()
+<a href=#921 id=921 data-nosnippet>921</a>            .duration_since(std::time::UNIX_EPOCH)
+<a href=#922 id=922 data-nosnippet>922</a>            .unwrap()
+<a href=#923 id=923 data-nosnippet>923</a>            .as_nanos() <span class="kw">as </span>u64;
+<a href=#924 id=924 data-nosnippet>924</a>        <span class="kw">let </span>start = validate_and_fix_start_time(<span class="number">1</span>, u64::MAX);
+<a href=#925 id=925 data-nosnippet>925</a>        <span class="macro">assert!</span>(
+<a href=#926 id=926 data-nosnippet>926</a>            start &gt;= YEAR_2000_NANOSEC_TS,
+<a href=#927 id=927 data-nosnippet>927</a>            <span class="string">"clamped start must clear the year-2000 floor"
+<a href=#928 id=928 data-nosnippet>928</a>        </span>);
+<a href=#929 id=929 data-nosnippet>929</a>        <span class="macro">assert!</span>(start.abs_diff(now) &lt; <span class="number">5_000_000_000</span>, <span class="string">"start: {start}, now: {now}"</span>);
+<a href=#930 id=930 data-nosnippet>930</a>    }
+<a href=#931 id=931 data-nosnippet>931</a>}
 </code></pre></div></section></main></body></html>

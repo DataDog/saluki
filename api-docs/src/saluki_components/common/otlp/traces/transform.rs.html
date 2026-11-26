@@ -5040,646 +5040,847 @@
 <a href=#5040 id=5040 data-nosnippet>5040</a>        <span class="macro">assert_eq!</span>(dd_span.span_type(), span_type);
 <a href=#5041 id=5041 data-nosnippet>5041</a>    }
 <a href=#5042 id=5042 data-nosnippet>5042</a>
-<a href=#5043 id=5043 data-nosnippet>5043</a>    <span class="comment">// ===============================================================================================
-<a href=#5044 id=5044 data-nosnippet>5044</a>    // V1 naming and the V1 receive path.
-<a href=#5045 id=5045 data-nosnippet>5045</a>    //
-<a href=#5046 id=5046 data-nosnippet>5046</a>    // Cases marked as ported come from `testOTelSpanToDDSpan`, `testOTLPConvertSpan`, and `testOTLPNameRemapping` in
-<a href=#5047 id=5047 data-nosnippet>5047</a>    // https://github.com/DataDog/datadog-agent/blob/00b7aa9aa8/pkg/trace/api/otlp_test.go
-<a href=#5048 id=5048 data-nosnippet>5048</a>    // Those tests check spans before normalization, so the expected names here are normalized.
-<a href=#5049 id=5049 data-nosnippet>5049</a>
-<a href=#5050 id=5050 data-nosnippet>5050</a>    </span><span class="doccomment">/// The trace and span IDs of the ported fixtures.
-<a href=#5051 id=5051 data-nosnippet>5051</a>    </span><span class="kw">const </span>FIXTURE_TRACE_ID: [u8; <span class="number">16</span>] = [
-<a href=#5052 id=5052 data-nosnippet>5052</a>        <span class="number">0x72</span>, <span class="number">0xdf</span>, <span class="number">0x52</span>, <span class="number">0x0a</span>, <span class="number">0xf2</span>, <span class="number">0xbd</span>, <span class="number">0xe7</span>, <span class="number">0xa5</span>, <span class="number">0x24</span>, <span class="number">0x00</span>, <span class="number">0x31</span>, <span class="number">0xea</span>, <span class="number">0xd7</span>, <span class="number">0x50</span>, <span class="number">0xe5</span>, <span class="number">0xf3</span>,
-<a href=#5053 id=5053 data-nosnippet>5053</a>    ];
-<a href=#5054 id=5054 data-nosnippet>5054</a>    <span class="kw">const </span>FIXTURE_SPAN_ID: [u8; <span class="number">8</span>] = [<span class="number">0x24</span>, <span class="number">0x00</span>, <span class="number">0x31</span>, <span class="number">0xea</span>, <span class="number">0xd7</span>, <span class="number">0x50</span>, <span class="number">0xe5</span>, <span class="number">0xf3</span>];
-<a href=#5055 id=5055 data-nosnippet>5055</a>    <span class="kw">const </span>FIXTURE_START: u64 = <span class="number">1_700_000_000_000_000_000</span>;
-<a href=#5056 id=5056 data-nosnippet>5056</a>
-<a href=#5057 id=5057 data-nosnippet>5057</a>    <span class="kw">fn </span>fixture_span(name: <span class="kw-2">&amp;</span>str, kind: SpanKind, attributes: Vec&lt;KeyValue&gt;) -&gt; OtlpSpan {
-<a href=#5058 id=5058 data-nosnippet>5058</a>        OtlpSpan {
-<a href=#5059 id=5059 data-nosnippet>5059</a>            trace_id: FIXTURE_TRACE_ID.to_vec(),
-<a href=#5060 id=5060 data-nosnippet>5060</a>            span_id: FIXTURE_SPAN_ID.to_vec(),
-<a href=#5061 id=5061 data-nosnippet>5061</a>            name: name.to_string(),
-<a href=#5062 id=5062 data-nosnippet>5062</a>            kind: kind <span class="kw">as </span>i32,
-<a href=#5063 id=5063 data-nosnippet>5063</a>            start_time_unix_nano: FIXTURE_START,
-<a href=#5064 id=5064 data-nosnippet>5064</a>            end_time_unix_nano: FIXTURE_START + <span class="number">200_000_000</span>,
-<a href=#5065 id=5065 data-nosnippet>5065</a>            attributes,
-<a href=#5066 id=5066 data-nosnippet>5066</a>            ..Default::default()
-<a href=#5067 id=5067 data-nosnippet>5067</a>        }
-<a href=#5068 id=5068 data-nosnippet>5068</a>    }
-<a href=#5069 id=5069 data-nosnippet>5069</a>
-<a href=#5070 id=5070 data-nosnippet>5070</a>    <span class="kw">fn </span>scope(name: <span class="kw-2">&amp;</span>str, version: <span class="kw-2">&amp;</span>str) -&gt; OtlpInstrumentationScope {
-<a href=#5071 id=5071 data-nosnippet>5071</a>        OtlpInstrumentationScope {
-<a href=#5072 id=5072 data-nosnippet>5072</a>            name: name.to_string(),
-<a href=#5073 id=5073 data-nosnippet>5073</a>            version: version.to_string(),
-<a href=#5074 id=5074 data-nosnippet>5074</a>            ..Default::default()
-<a href=#5075 id=5075 data-nosnippet>5075</a>        }
-<a href=#5076 id=5076 data-nosnippet>5076</a>    }
-<a href=#5077 id=5077 data-nosnippet>5077</a>
-<a href=#5078 id=5078 data-nosnippet>5078</a>    <span class="kw">fn </span>resource(attributes: Vec&lt;KeyValue&gt;) -&gt; Resource {
-<a href=#5079 id=5079 data-nosnippet>5079</a>        Resource {
-<a href=#5080 id=5080 data-nosnippet>5080</a>            attributes,
-<a href=#5081 id=5081 data-nosnippet>5081</a>            ..Default::default()
-<a href=#5082 id=5082 data-nosnippet>5082</a>        }
-<a href=#5083 id=5083 data-nosnippet>5083</a>    }
-<a href=#5084 id=5084 data-nosnippet>5084</a>
-<a href=#5085 id=5085 data-nosnippet>5085</a>    <span class="doccomment">/// The conversion with V1 naming, selected by `disable_operation_and_resource_name_logic_v2`.
-<a href=#5086 id=5086 data-nosnippet>5086</a>    </span><span class="kw">fn </span>v1_naming(span_name_as_resource_name: bool, remappings: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) -&gt; SpanConversion {
-<a href=#5087 id=5087 data-nosnippet>5087</a>        <span class="kw">let </span>remappings = remappings
-<a href=#5088 id=5088 data-nosnippet>5088</a>            .iter()
-<a href=#5089 id=5089 data-nosnippet>5089</a>            .map(|(from, to)| (from.to_string(), to.to_string()))
-<a href=#5090 id=5090 data-nosnippet>5090</a>            .collect();
-<a href=#5091 id=5091 data-nosnippet>5091</a>        SpanConversion {
-<a href=#5092 id=5092 data-nosnippet>5092</a>            naming: SpanNaming::select(span_name_as_resource_name, <span class="kw-2">&amp;</span>remappings, <span class="bool-val">true</span>),
-<a href=#5093 id=5093 data-nosnippet>5093</a>            ..conversion()
-<a href=#5094 id=5094 data-nosnippet>5094</a>        }
-<a href=#5095 id=5095 data-nosnippet>5095</a>    }
-<a href=#5096 id=5096 data-nosnippet>5096</a>
-<a href=#5097 id=5097 data-nosnippet>5097</a>    <span class="kw">fn </span>convert_v1(
-<a href=#5098 id=5098 data-nosnippet>5098</a>        span: <span class="kw-2">&amp;</span>OtlpSpan, resource: <span class="kw-2">&amp;</span>Resource, scope: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>OtlpInstrumentationScope&gt;, conversion: <span class="kw-2">&amp;</span>SpanConversion,
-<a href=#5099 id=5099 data-nosnippet>5099</a>    ) -&gt; DdSpan {
-<a href=#5100 id=5100 data-nosnippet>5100</a>        <span class="kw">let </span>(interner, <span class="kw-2">mut </span>sb) = extraction_env();
-<a href=#5101 id=5101 data-nosnippet>5101</a>        otel_span_to_dd_span_v1(span, resource, scope, conversion, <span class="kw-2">&amp;</span>interner, <span class="kw-2">&amp;mut </span>sb, <span class="prelude-val">None</span>)
-<a href=#5102 id=5102 data-nosnippet>5102</a>    }
-<a href=#5103 id=5103 data-nosnippet>5103</a>
-<a href=#5104 id=5104 data-nosnippet>5104</a>    <span class="kw">fn </span>convert_v2(
-<a href=#5105 id=5105 data-nosnippet>5105</a>        span: <span class="kw-2">&amp;</span>OtlpSpan, resource: <span class="kw-2">&amp;</span>Resource, scope: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>OtlpInstrumentationScope&gt;, conversion: <span class="kw-2">&amp;</span>SpanConversion,
-<a href=#5106 id=5106 data-nosnippet>5106</a>    ) -&gt; DdSpan {
-<a href=#5107 id=5107 data-nosnippet>5107</a>        <span class="kw">let </span>(interner, <span class="kw-2">mut </span>sb) = extraction_env();
-<a href=#5108 id=5108 data-nosnippet>5108</a>        otel_span_to_dd_span(
-<a href=#5109 id=5109 data-nosnippet>5109</a>            span,
-<a href=#5110 id=5110 data-nosnippet>5110</a>            resource,
-<a href=#5111 id=5111 data-nosnippet>5111</a>            scope,
-<a href=#5112 id=5112 data-nosnippet>5112</a>            conversion,
-<a href=#5113 id=5113 data-nosnippet>5113</a>            <span class="kw-2">&amp;</span>EMBEDDED_REGISTRY,
-<a href=#5114 id=5114 data-nosnippet>5114</a>            <span class="kw-2">&amp;</span>interner,
-<a href=#5115 id=5115 data-nosnippet>5115</a>            <span class="kw-2">&amp;mut </span>sb,
-<a href=#5116 id=5116 data-nosnippet>5116</a>            <span class="prelude-val">None</span>,
-<a href=#5117 id=5117 data-nosnippet>5117</a>        )
-<a href=#5118 id=5118 data-nosnippet>5118</a>    }
-<a href=#5119 id=5119 data-nosnippet>5119</a>
-<a href=#5120 id=5120 data-nosnippet>5120</a>    <span class="kw">fn </span>string(value: <span class="kw-2">&amp;</span>str) -&gt; AttributeValue {
-<a href=#5121 id=5121 data-nosnippet>5121</a>        AttributeValue::String(MetaString::from(value))
-<a href=#5122 id=5122 data-nosnippet>5122</a>    }
-<a href=#5123 id=5123 data-nosnippet>5123</a>
-<a href=#5124 id=5124 data-nosnippet>5124</a>    <span class="attr">#[track_caller]
-<a href=#5125 id=5125 data-nosnippet>5125</a>    </span><span class="kw">fn </span>assert_attributes(dd_span: <span class="kw-2">&amp;</span>DdSpan, expected: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, AttributeValue)]) {
-<a href=#5126 id=5126 data-nosnippet>5126</a>        <span class="kw">let </span>expected: FastHashMap&lt;MetaString, AttributeValue&gt; = expected
-<a href=#5127 id=5127 data-nosnippet>5127</a>            .iter()
-<a href=#5128 id=5128 data-nosnippet>5128</a>            .map(|(key, value)| (MetaString::from(<span class="kw-2">*</span>key), value.clone()))
-<a href=#5129 id=5129 data-nosnippet>5129</a>            .collect();
-<a href=#5130 id=5130 data-nosnippet>5130</a>        <span class="macro">assert_eq!</span>(dd_span.attributes, expected);
-<a href=#5131 id=5131 data-nosnippet>5131</a>    }
-<a href=#5132 id=5132 data-nosnippet>5132</a>
-<a href=#5133 id=5133 data-nosnippet>5133</a>    <span class="attr">#[test]
-<a href=#5134 id=5134 data-nosnippet>5134</a>    </span><span class="kw">fn </span>span_naming_selects_v1_when_any_v1_setting_is_set() {
-<a href=#5135 id=5135 data-nosnippet>5135</a>        <span class="kw">let </span>remappings = HashMap::from([(<span class="string">"old"</span>.to_string(), <span class="string">"new"</span>.to_string())]);
-<a href=#5136 id=5136 data-nosnippet>5136</a>        <span class="kw">let </span>none = HashMap::new();
-<a href=#5137 id=5137 data-nosnippet>5137</a>
-<a href=#5138 id=5138 data-nosnippet>5138</a>        <span class="macro">assert_eq!</span>(SpanNaming::select(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>none, <span class="bool-val">false</span>), SpanNaming::V2);
-<a href=#5139 id=5139 data-nosnippet>5139</a>        <span class="kw">for </span>(span_name_as_resource_name, remappings, disable_v2) <span class="kw">in
-<a href=#5140 id=5140 data-nosnippet>5140</a>            </span>[(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>none, <span class="bool-val">false</span>), (<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>remappings, <span class="bool-val">false</span>), (<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>none, <span class="bool-val">true</span>)]
-<a href=#5141 id=5141 data-nosnippet>5141</a>        {
-<a href=#5142 id=5142 data-nosnippet>5142</a>            <span class="macro">assert_eq!</span>(
-<a href=#5143 id=5143 data-nosnippet>5143</a>                SpanNaming::select(span_name_as_resource_name, remappings, disable_v2),
-<a href=#5144 id=5144 data-nosnippet>5144</a>                SpanNaming::V1 {
-<a href=#5145 id=5145 data-nosnippet>5145</a>                    span_name_as_resource_name,
-<a href=#5146 id=5146 data-nosnippet>5146</a>                    span_name_remappings: remappings
-<a href=#5147 id=5147 data-nosnippet>5147</a>                        .iter()
-<a href=#5148 id=5148 data-nosnippet>5148</a>                        .map(|(from, to)| (from.clone(), MetaString::from(to.as_str())))
-<a href=#5149 id=5149 data-nosnippet>5149</a>                        .collect(),
-<a href=#5150 id=5150 data-nosnippet>5150</a>                },
-<a href=#5151 id=5151 data-nosnippet>5151</a>                <span class="string">"{span_name_as_resource_name} {remappings:?} {disable_v2}"
-<a href=#5152 id=5152 data-nosnippet>5152</a>            </span>);
-<a href=#5153 id=5153 data-nosnippet>5153</a>        }
-<a href=#5154 id=5154 data-nosnippet>5154</a>    }
-<a href=#5155 id=5155 data-nosnippet>5155</a>
-<a href=#5156 id=5156 data-nosnippet>5156</a>    <span class="attr">#[test]
-<a href=#5157 id=5157 data-nosnippet>5157</a>    </span><span class="kw">fn </span>v1_naming_on_the_v2_receive_path_matches_the_fixtures() {
-<a href=#5158 id=5158 data-nosnippet>5158</a>        <span class="kw">struct </span>Case {
-<a href=#5159 id=5159 data-nosnippet>5159</a>            name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#5160 id=5160 data-nosnippet>5160</a>            library: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#5161 id=5161 data-nosnippet>5161</a>            kind: SpanKind,
-<a href=#5162 id=5162 data-nosnippet>5162</a>            span_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#5163 id=5163 data-nosnippet>5163</a>            resource_attrs: Vec&lt;KeyValue&gt;,
-<a href=#5164 id=5164 data-nosnippet>5164</a>            span_attrs: Vec&lt;KeyValue&gt;,
-<a href=#5165 id=5165 data-nosnippet>5165</a>            conversion: SpanConversion,
-<a href=#5166 id=5166 data-nosnippet>5166</a>            operation_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#5167 id=5167 data-nosnippet>5167</a>            resource_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#5168 id=5168 data-nosnippet>5168</a>        }
-<a href=#5169 id=5169 data-nosnippet>5169</a>
-<a href=#5170 id=5170 data-nosnippet>5170</a>        <span class="kw">let </span>cases = [
-<a href=#5171 id=5171 data-nosnippet>5171</a>            <span class="comment">// Ported from `testOTelSpanToDDSpan`.
-<a href=#5172 id=5172 data-nosnippet>5172</a>            </span>Case {
-<a href=#5173 id=5173 data-nosnippet>5173</a>                name: <span class="string">"library and kind, RPC resource"</span>,
-<a href=#5174 id=5174 data-nosnippet>5174</a>                library: <span class="string">"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"</span>,
-<a href=#5175 id=5175 data-nosnippet>5175</a>                kind: SpanKind::Server,
-<a href=#5176 id=5176 data-nosnippet>5176</a>                span_name: <span class="string">"opentelemetry.proto.collector.trace.v1.TraceService/Export"</span>,
-<a href=#5177 id=5177 data-nosnippet>5177</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5178 id=5178 data-nosnippet>5178</a>                span_attrs: <span class="macro">vec!</span>[
-<a href=#5179 id=5179 data-nosnippet>5179</a>                    kv_str(<span class="string">"rpc.method"</span>, <span class="string">"Export"</span>),
-<a href=#5180 id=5180 data-nosnippet>5180</a>                    kv_str(<span class="string">"rpc.service"</span>, <span class="string">"opentelemetry.proto.collector.trace.v1.TraceService"</span>),
-<a href=#5181 id=5181 data-nosnippet>5181</a>                ],
-<a href=#5182 id=5182 data-nosnippet>5182</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5183 id=5183 data-nosnippet>5183</a>                operation_name: <span class="string">"go.opentelemetry.io_contrib_instrumentation_google.golang.org_grpc_otelgrpc.server"</span>,
-<a href=#5184 id=5184 data-nosnippet>5184</a>                resource_name: <span class="string">"Export opentelemetry.proto.collector.trace.v1.TraceService"</span>,
-<a href=#5185 id=5185 data-nosnippet>5185</a>            },
-<a href=#5186 id=5186 data-nosnippet>5186</a>            Case {
-<a href=#5187 id=5187 data-nosnippet>5187</a>                name: <span class="string">"resource attributes take precedence"</span>,
-<a href=#5188 id=5188 data-nosnippet>5188</a>                library: <span class="string">"ddtracer"</span>,
-<a href=#5189 id=5189 data-nosnippet>5189</a>                kind: SpanKind::Server,
-<a href=#5190 id=5190 data-nosnippet>5190</a>                span_name: <span class="string">"/path"</span>,
-<a href=#5191 id=5191 data-nosnippet>5191</a>                resource_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"res-op"</span>), kv_str(<span class="string">"resource.name"</span>, <span class="string">"res-res"</span>)],
-<a href=#5192 id=5192 data-nosnippet>5192</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"span-op"</span>), kv_str(<span class="string">"resource.name"</span>, <span class="string">"span-res"</span>)],
-<a href=#5193 id=5193 data-nosnippet>5193</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5194 id=5194 data-nosnippet>5194</a>                operation_name: <span class="string">"res_op"</span>,
-<a href=#5195 id=5195 data-nosnippet>5195</a>                resource_name: <span class="string">"res-res"</span>,
-<a href=#5196 id=5196 data-nosnippet>5196</a>            },
-<a href=#5197 id=5197 data-nosnippet>5197</a>            Case {
-<a href=#5198 id=5198 data-nosnippet>5198</a>                name: <span class="string">"operation.name keeps its case"</span>,
-<a href=#5199 id=5199 data-nosnippet>5199</a>                library: <span class="string">"ddtracer"</span>,
-<a href=#5200 id=5200 data-nosnippet>5200</a>                kind: SpanKind::Unspecified,
-<a href=#5201 id=5201 data-nosnippet>5201</a>                span_name: <span class="string">"/path"</span>,
-<a href=#5202 id=5202 data-nosnippet>5202</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5203 id=5203 data-nosnippet>5203</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"READ"</span>), kv_str(<span class="string">"resource.name"</span>, <span class="string">"/path"</span>)],
-<a href=#5204 id=5204 data-nosnippet>5204</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5205 id=5205 data-nosnippet>5205</a>                operation_name: <span class="string">"READ"</span>,
-<a href=#5206 id=5206 data-nosnippet>5206</a>                resource_name: <span class="string">"/path"</span>,
-<a href=#5207 id=5207 data-nosnippet>5207</a>            },
-<a href=#5208 id=5208 data-nosnippet>5208</a>            Case {
-<a href=#5209 id=5209 data-nosnippet>5209</a>                name: <span class="string">"HTTP method and route"</span>,
-<a href=#5210 id=5210 data-nosnippet>5210</a>                library: <span class="string">"ddtracer"</span>,
-<a href=#5211 id=5211 data-nosnippet>5211</a>                kind: SpanKind::Server,
-<a href=#5212 id=5212 data-nosnippet>5212</a>                span_name: <span class="string">"/path"</span>,
-<a href=#5213 id=5213 data-nosnippet>5213</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5214 id=5214 data-nosnippet>5214</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"GET"</span>), kv_str(<span class="string">"http.route"</span>, <span class="string">"/path"</span>)],
-<a href=#5215 id=5215 data-nosnippet>5215</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5216 id=5216 data-nosnippet>5216</a>                operation_name: <span class="string">"ddtracer.server"</span>,
-<a href=#5217 id=5217 data-nosnippet>5217</a>                resource_name: <span class="string">"GET /path"</span>,
-<a href=#5218 id=5218 data-nosnippet>5218</a>            },
-<a href=#5219 id=5219 data-nosnippet>5219</a>            <span class="comment">// Ported from `testOTLPNameRemapping`.
-<a href=#5220 id=5220 data-nosnippet>5220</a>            </span>Case {
-<a href=#5221 id=5221 data-nosnippet>5221</a>                name: <span class="string">"remapped library and kind"</span>,
-<a href=#5222 id=5222 data-nosnippet>5222</a>                library: <span class="string">"libname"</span>,
-<a href=#5223 id=5223 data-nosnippet>5223</a>                kind: SpanKind::Unspecified,
-<a href=#5224 id=5224 data-nosnippet>5224</a>                span_name: <span class="string">"asd"</span>,
-<a href=#5225 id=5225 data-nosnippet>5225</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5226 id=5226 data-nosnippet>5226</a>                span_attrs: <span class="macro">vec!</span>[],
-<a href=#5227 id=5227 data-nosnippet>5227</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[(<span class="string">"libname.unspecified"</span>, <span class="string">"new"</span>)]),
-<a href=#5228 id=5228 data-nosnippet>5228</a>                operation_name: <span class="string">"new"</span>,
-<a href=#5229 id=5229 data-nosnippet>5229</a>                resource_name: <span class="string">"asd"</span>,
-<a href=#5230 id=5230 data-nosnippet>5230</a>            },
-<a href=#5231 id=5231 data-nosnippet>5231</a>            <span class="comment">// The remaining cases cover the other branches of V1 naming.
-<a href=#5232 id=5232 data-nosnippet>5232</a>            </span>Case {
-<a href=#5233 id=5233 data-nosnippet>5233</a>                name: <span class="string">"remapped operation.name"</span>,
-<a href=#5234 id=5234 data-nosnippet>5234</a>                library: <span class="string">"ddtracer"</span>,
-<a href=#5235 id=5235 data-nosnippet>5235</a>                kind: SpanKind::Internal,
-<a href=#5236 id=5236 data-nosnippet>5236</a>                span_name: <span class="string">"span"</span>,
-<a href=#5237 id=5237 data-nosnippet>5237</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5238 id=5238 data-nosnippet>5238</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"legacy.op"</span>)],
-<a href=#5239 id=5239 data-nosnippet>5239</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[(<span class="string">"legacy.op"</span>, <span class="string">"modern.op"</span>)]),
-<a href=#5240 id=5240 data-nosnippet>5240</a>                operation_name: <span class="string">"modern.op"</span>,
-<a href=#5241 id=5241 data-nosnippet>5241</a>                resource_name: <span class="string">"span"</span>,
-<a href=#5242 id=5242 data-nosnippet>5242</a>            },
-<a href=#5243 id=5243 data-nosnippet>5243</a>            Case {
-<a href=#5244 id=5244 data-nosnippet>5244</a>                name: <span class="string">"span name as operation name"</span>,
-<a href=#5245 id=5245 data-nosnippet>5245</a>                library: <span class="string">"ddtracer"</span>,
-<a href=#5246 id=5246 data-nosnippet>5246</a>                kind: SpanKind::Internal,
-<a href=#5247 id=5247 data-nosnippet>5247</a>                span_name: <span class="string">"checkout"</span>,
-<a href=#5248 id=5248 data-nosnippet>5248</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5249 id=5249 data-nosnippet>5249</a>                span_attrs: <span class="macro">vec!</span>[],
-<a href=#5250 id=5250 data-nosnippet>5250</a>                conversion: v1_naming(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5251 id=5251 data-nosnippet>5251</a>                operation_name: <span class="string">"checkout"</span>,
-<a href=#5252 id=5252 data-nosnippet>5252</a>                resource_name: <span class="string">"checkout"</span>,
-<a href=#5253 id=5253 data-nosnippet>5253</a>            },
-<a href=#5254 id=5254 data-nosnippet>5254</a>            Case {
-<a href=#5255 id=5255 data-nosnippet>5255</a>                name: <span class="string">"no library"</span>,
-<a href=#5256 id=5256 data-nosnippet>5256</a>                library: <span class="string">""</span>,
-<a href=#5257 id=5257 data-nosnippet>5257</a>                kind: SpanKind::Consumer,
-<a href=#5258 id=5258 data-nosnippet>5258</a>                span_name: <span class="string">"span"</span>,
-<a href=#5259 id=5259 data-nosnippet>5259</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5260 id=5260 data-nosnippet>5260</a>                span_attrs: <span class="macro">vec!</span>[
-<a href=#5261 id=5261 data-nosnippet>5261</a>                    kv_str(<span class="string">"messaging.operation"</span>, <span class="string">"process"</span>),
-<a href=#5262 id=5262 data-nosnippet>5262</a>                    kv_str(<span class="string">"messaging.destination.name"</span>, <span class="string">"orders"</span>),
-<a href=#5263 id=5263 data-nosnippet>5263</a>                ],
-<a href=#5264 id=5264 data-nosnippet>5264</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5265 id=5265 data-nosnippet>5265</a>                operation_name: <span class="string">"opentelemetry.consumer"</span>,
-<a href=#5266 id=5266 data-nosnippet>5266</a>                resource_name: <span class="string">"process orders"</span>,
-<a href=#5267 id=5267 data-nosnippet>5267</a>            },
-<a href=#5268 id=5268 data-nosnippet>5268</a>            Case {
-<a href=#5269 id=5269 data-nosnippet>5269</a>                name: <span class="string">"HTTP route on a client span"</span>,
-<a href=#5270 id=5270 data-nosnippet>5270</a>                library: <span class="string">"ddtracer"</span>,
-<a href=#5271 id=5271 data-nosnippet>5271</a>                kind: SpanKind::Client,
-<a href=#5272 id=5272 data-nosnippet>5272</a>                span_name: <span class="string">"span"</span>,
-<a href=#5273 id=5273 data-nosnippet>5273</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5274 id=5274 data-nosnippet>5274</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"http.request.method"</span>, <span class="string">"GET"</span>), kv_str(<span class="string">"http.route"</span>, <span class="string">"/users"</span>)],
-<a href=#5275 id=5275 data-nosnippet>5275</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5276 id=5276 data-nosnippet>5276</a>                operation_name: <span class="string">"ddtracer.client"</span>,
-<a href=#5277 id=5277 data-nosnippet>5277</a>                resource_name: <span class="string">"GET /users"</span>,
-<a href=#5278 id=5278 data-nosnippet>5278</a>            },
-<a href=#5279 id=5279 data-nosnippet>5279</a>            Case {
-<a href=#5280 id=5280 data-nosnippet>5280</a>                name: <span class="string">"an empty resource attribute hides later keys of the resource only"</span>,
-<a href=#5281 id=5281 data-nosnippet>5281</a>                library: <span class="string">"ddtracer"</span>,
-<a href=#5282 id=5282 data-nosnippet>5282</a>                kind: SpanKind::Internal,
-<a href=#5283 id=5283 data-nosnippet>5283</a>                span_name: <span class="string">"span"</span>,
-<a href=#5284 id=5284 data-nosnippet>5284</a>                resource_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"http.request.method"</span>, <span class="string">""</span>), kv_str(<span class="string">"http.method"</span>, <span class="string">"PUT"</span>)],
-<a href=#5285 id=5285 data-nosnippet>5285</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"GET"</span>)],
-<a href=#5286 id=5286 data-nosnippet>5286</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5287 id=5287 data-nosnippet>5287</a>                operation_name: <span class="string">"ddtracer.internal"</span>,
-<a href=#5288 id=5288 data-nosnippet>5288</a>                resource_name: <span class="string">"GET"</span>,
-<a href=#5289 id=5289 data-nosnippet>5289</a>            },
-<a href=#5290 id=5290 data-nosnippet>5290</a>            Case {
-<a href=#5291 id=5291 data-nosnippet>5291</a>                name: <span class="string">"GraphQL values are not normalized"</span>,
-<a href=#5292 id=5292 data-nosnippet>5292</a>                library: <span class="string">"ddtracer"</span>,
-<a href=#5293 id=5293 data-nosnippet>5293</a>                kind: SpanKind::Server,
-<a href=#5294 id=5294 data-nosnippet>5294</a>                span_name: <span class="string">"span"</span>,
-<a href=#5295 id=5295 data-nosnippet>5295</a>                resource_attrs: <span class="macro">vec!</span>[],
-<a href=#5296 id=5296 data-nosnippet>5296</a>                span_attrs: <span class="macro">vec!</span>[
-<a href=#5297 id=5297 data-nosnippet>5297</a>                    kv_str(<span class="string">"graphql.operation.type"</span>, <span class="string">"Query"</span>),
-<a href=#5298 id=5298 data-nosnippet>5298</a>                    kv_str(<span class="string">"graphql.operation.name"</span>, <span class="string">"GetUser"</span>),
-<a href=#5299 id=5299 data-nosnippet>5299</a>                ],
-<a href=#5300 id=5300 data-nosnippet>5300</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
-<a href=#5301 id=5301 data-nosnippet>5301</a>                operation_name: <span class="string">"ddtracer.server"</span>,
-<a href=#5302 id=5302 data-nosnippet>5302</a>                resource_name: <span class="string">"Query GetUser"</span>,
-<a href=#5303 id=5303 data-nosnippet>5303</a>            },
-<a href=#5304 id=5304 data-nosnippet>5304</a>        ];
-<a href=#5305 id=5305 data-nosnippet>5305</a>
-<a href=#5306 id=5306 data-nosnippet>5306</a>        <span class="kw">for </span>case <span class="kw">in </span>cases {
-<a href=#5307 id=5307 data-nosnippet>5307</a>            <span class="kw">let </span>span = fixture_span(case.span_name, case.kind, case.span_attrs);
-<a href=#5308 id=5308 data-nosnippet>5308</a>            <span class="kw">let </span>library = scope(case.library, <span class="string">""</span>);
-<a href=#5309 id=5309 data-nosnippet>5309</a>            <span class="kw">let </span>dd_span = convert_v2(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(case.resource_attrs), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>case.conversion);
-<a href=#5310 id=5310 data-nosnippet>5310</a>
-<a href=#5311 id=5311 data-nosnippet>5311</a>            <span class="macro">assert_eq!</span>(dd_span.name(), case.operation_name, <span class="string">"{}"</span>, case.name);
-<a href=#5312 id=5312 data-nosnippet>5312</a>            <span class="macro">assert_eq!</span>(dd_span.resource(), case.resource_name, <span class="string">"{}"</span>, case.name);
-<a href=#5313 id=5313 data-nosnippet>5313</a>        }
-<a href=#5314 id=5314 data-nosnippet>5314</a>    }
-<a href=#5315 id=5315 data-nosnippet>5315</a>
-<a href=#5316 id=5316 data-nosnippet>5316</a>    <span class="attr">#[test]
-<a href=#5317 id=5317 data-nosnippet>5317</a>    </span><span class="kw">fn </span>v1_receive_path_matches_the_fixtures() {
-<a href=#5318 id=5318 data-nosnippet>5318</a>        <span class="kw">let </span>trace_id = string(<span class="string">"72df520af2bde7a5240031ead750e5f3"</span>);
-<a href=#5319 id=5319 data-nosnippet>5319</a>
-<a href=#5320 id=5320 data-nosnippet>5320</a>        <span class="comment">// Ported from `testOTLPConvertSpan`: Datadog fields set by attributes.
-<a href=#5321 id=5321 data-nosnippet>5321</a>        </span><span class="kw">let </span>span = fixture_span(
-<a href=#5322 id=5322 data-nosnippet>5322</a>            <span class="string">"/path"</span>,
-<a href=#5323 id=5323 data-nosnippet>5323</a>            SpanKind::Unspecified,
-<a href=#5324 id=5324 data-nosnippet>5324</a>            <span class="macro">vec!</span>[
-<a href=#5325 id=5325 data-nosnippet>5325</a>                kv_str(<span class="string">"service.name"</span>, <span class="string">"mongo"</span>),
-<a href=#5326 id=5326 data-nosnippet>5326</a>                kv_str(<span class="string">"operation.name"</span>, <span class="string">"READ"</span>),
-<a href=#5327 id=5327 data-nosnippet>5327</a>                kv_str(<span class="string">"resource.name"</span>, <span class="string">"/path"</span>),
-<a href=#5328 id=5328 data-nosnippet>5328</a>                kv_str(<span class="string">"span.type"</span>, <span class="string">"db"</span>),
-<a href=#5329 id=5329 data-nosnippet>5329</a>                kv_str(<span class="string">"name"</span>, <span class="string">"john"</span>),
-<a href=#5330 id=5330 data-nosnippet>5330</a>                kv_str(<span class="string">"container.id"</span>, <span class="string">"cid"</span>),
-<a href=#5331 id=5331 data-nosnippet>5331</a>                kv_str(<span class="string">"k8s.container.name"</span>, <span class="string">"k8s-container"</span>),
-<a href=#5332 id=5332 data-nosnippet>5332</a>                kv_str(<span class="string">"http.method"</span>, <span class="string">"GET"</span>),
-<a href=#5333 id=5333 data-nosnippet>5333</a>                kv_str(<span class="string">"http.route"</span>, <span class="string">"/path"</span>),
-<a href=#5334 id=5334 data-nosnippet>5334</a>                kv_value(<span class="string">"approx"</span>, OtlpValue::DoubleValue(<span class="number">1.2</span>)),
-<a href=#5335 id=5335 data-nosnippet>5335</a>                kv_int(<span class="string">"count"</span>, <span class="number">2</span>),
-<a href=#5336 id=5336 data-nosnippet>5336</a>                kv_bool(<span class="string">"analytics.event"</span>, <span class="bool-val">true</span>),
-<a href=#5337 id=5337 data-nosnippet>5337</a>            ],
-<a href=#5338 id=5338 data-nosnippet>5338</a>        );
-<a href=#5339 id=5339 data-nosnippet>5339</a>        <span class="kw">let </span>resource_attrs = resource(<span class="macro">vec!</span>[kv_str(<span class="string">"env"</span>, <span class="string">"staging"</span>)]);
-<a href=#5340 id=5340 data-nosnippet>5340</a>        <span class="kw">let </span>library = scope(<span class="string">"ddtracer"</span>, <span class="string">"v2"</span>);
-<a href=#5341 id=5341 data-nosnippet>5341</a>        <span class="kw">for </span>(conversion, operation_name) <span class="kw">in </span>[(v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]), <span class="string">"READ"</span>), (conversion(), <span class="string">"read"</span>)] {
-<a href=#5342 id=5342 data-nosnippet>5342</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource_attrs, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>conversion);
-<a href=#5343 id=5343 data-nosnippet>5343</a>            <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"mongo"</span>);
-<a href=#5344 id=5344 data-nosnippet>5344</a>            <span class="macro">assert_eq!</span>(dd_span.name(), operation_name);
-<a href=#5345 id=5345 data-nosnippet>5345</a>            <span class="macro">assert_eq!</span>(dd_span.resource(), <span class="string">"/path"</span>);
-<a href=#5346 id=5346 data-nosnippet>5346</a>            <span class="macro">assert_eq!</span>(dd_span.span_type(), <span class="string">"db"</span>);
-<a href=#5347 id=5347 data-nosnippet>5347</a>            <span class="macro">assert_eq!</span>(dd_span.error(), <span class="number">0</span>);
-<a href=#5348 id=5348 data-nosnippet>5348</a>            <span class="macro">assert_eq!</span>(dd_span.span_id(), <span class="number">2594128270069917171</span>);
-<a href=#5349 id=5349 data-nosnippet>5349</a>            <span class="macro">assert_eq!</span>(dd_span.parent_id(), <span class="number">0</span>);
-<a href=#5350 id=5350 data-nosnippet>5350</a>            <span class="macro">assert_eq!</span>(dd_span.start(), FIXTURE_START);
-<a href=#5351 id=5351 data-nosnippet>5351</a>            <span class="macro">assert_eq!</span>(dd_span.duration(), <span class="number">200_000_000</span>);
-<a href=#5352 id=5352 data-nosnippet>5352</a>            assert_attributes(
-<a href=#5353 id=5353 data-nosnippet>5353</a>                <span class="kw-2">&amp;</span>dd_span,
-<a href=#5354 id=5354 data-nosnippet>5354</a>                <span class="kw-2">&amp;</span>[
-<a href=#5355 id=5355 data-nosnippet>5355</a>                    (<span class="string">"env"</span>, string(<span class="string">"staging"</span>)),
-<a href=#5356 id=5356 data-nosnippet>5356</a>                    (<span class="string">"container.id"</span>, string(<span class="string">"cid"</span>)),
-<a href=#5357 id=5357 data-nosnippet>5357</a>                    (<span class="string">"k8s.container.name"</span>, string(<span class="string">"k8s-container"</span>)),
-<a href=#5358 id=5358 data-nosnippet>5358</a>                    (<span class="string">"http.method"</span>, string(<span class="string">"GET"</span>)),
-<a href=#5359 id=5359 data-nosnippet>5359</a>                    (<span class="string">"http.route"</span>, string(<span class="string">"/path"</span>)),
-<a href=#5360 id=5360 data-nosnippet>5360</a>                    (<span class="string">"otel.status_code"</span>, string(<span class="string">"Unset"</span>)),
-<a href=#5361 id=5361 data-nosnippet>5361</a>                    (<span class="string">"otel.library.name"</span>, string(<span class="string">"ddtracer"</span>)),
-<a href=#5362 id=5362 data-nosnippet>5362</a>                    (<span class="string">"otel.library.version"</span>, string(<span class="string">"v2"</span>)),
-<a href=#5363 id=5363 data-nosnippet>5363</a>                    (<span class="string">"name"</span>, string(<span class="string">"john"</span>)),
-<a href=#5364 id=5364 data-nosnippet>5364</a>                    (<span class="string">"otel.trace_id"</span>, trace_id.clone()),
-<a href=#5365 id=5365 data-nosnippet>5365</a>                    (<span class="string">"span.kind"</span>, string(<span class="string">"unspecified"</span>)),
-<a href=#5366 id=5366 data-nosnippet>5366</a>                    (<span class="string">"approx"</span>, AttributeValue::Float(<span class="number">1.2</span>)),
-<a href=#5367 id=5367 data-nosnippet>5367</a>                    (<span class="string">"count"</span>, AttributeValue::Int(<span class="number">2</span>)),
-<a href=#5368 id=5368 data-nosnippet>5368</a>                    (EVENT_EXTRACTION_METRIC_KEY, AttributeValue::Float(<span class="number">1.0</span>)),
-<a href=#5369 id=5369 data-nosnippet>5369</a>                    (<span class="string">"_top_level"</span>, AttributeValue::Float(<span class="number">1.0</span>)),
-<a href=#5370 id=5370 data-nosnippet>5370</a>                ],
-<a href=#5371 id=5371 data-nosnippet>5371</a>            );
-<a href=#5372 id=5372 data-nosnippet>5372</a>        }
-<a href=#5373 id=5373 data-nosnippet>5373</a>
-<a href=#5374 id=5374 data-nosnippet>5374</a>        <span class="comment">// Ported from `testOTLPConvertSpan`: an HTTP server error with the current semantic conventions.
-<a href=#5375 id=5375 data-nosnippet>5375</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>span = fixture_span(
-<a href=#5376 id=5376 data-nosnippet>5376</a>            <span class="string">"POST /uploads/:document_id"</span>,
-<a href=#5377 id=5377 data-nosnippet>5377</a>            SpanKind::Unspecified,
-<a href=#5378 id=5378 data-nosnippet>5378</a>            <span class="macro">vec!</span>[
-<a href=#5379 id=5379 data-nosnippet>5379</a>                kv_str(<span class="string">"operation.name"</span>, <span class="string">"ddtracer.server"</span>),
-<a href=#5380 id=5380 data-nosnippet>5380</a>                kv_str(<span class="string">"http.request.method"</span>, <span class="string">"POST"</span>),
-<a href=#5381 id=5381 data-nosnippet>5381</a>                kv_str(<span class="string">"url.path"</span>, <span class="string">"/uploads/4"</span>),
-<a href=#5382 id=5382 data-nosnippet>5382</a>                kv_str(<span class="string">"url.scheme"</span>, <span class="string">"https"</span>),
-<a href=#5383 id=5383 data-nosnippet>5383</a>                kv_str(<span class="string">"http.route"</span>, <span class="string">"/uploads/:document_id"</span>),
-<a href=#5384 id=5384 data-nosnippet>5384</a>                kv_str(<span class="string">"http.response.status_code"</span>, <span class="string">"201"</span>),
-<a href=#5385 id=5385 data-nosnippet>5385</a>                kv_str(<span class="string">"error.type"</span>, <span class="string">"WebSocketDisconnect"</span>),
-<a href=#5386 id=5386 data-nosnippet>5386</a>            ],
-<a href=#5387 id=5387 data-nosnippet>5387</a>        );
-<a href=#5388 id=5388 data-nosnippet>5388</a>        span.status = <span class="prelude-val">Some</span>(OtlpStatus {
-<a href=#5389 id=5389 data-nosnippet>5389</a>            code: StatusCode::Error <span class="kw">as </span>i32,
-<a href=#5390 id=5390 data-nosnippet>5390</a>            ..Default::default()
-<a href=#5391 id=5391 data-nosnippet>5391</a>        });
-<a href=#5392 id=5392 data-nosnippet>5392</a>        <span class="kw">let </span>resource_attrs = resource(<span class="macro">vec!</span>[
-<a href=#5393 id=5393 data-nosnippet>5393</a>            kv_str(<span class="string">"env"</span>, <span class="string">"staging"</span>),
-<a href=#5394 id=5394 data-nosnippet>5394</a>            kv_str(<span class="string">"service.name"</span>, <span class="string">"document-uploader"</span>),
-<a href=#5395 id=5395 data-nosnippet>5395</a>        ]);
-<a href=#5396 id=5396 data-nosnippet>5396</a>        <span class="kw">for </span>(conversion, resource_name) <span class="kw">in </span>[
-<a href=#5397 id=5397 data-nosnippet>5397</a>            (v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]), <span class="string">"POST /uploads/:document_id"</span>),
-<a href=#5398 id=5398 data-nosnippet>5398</a>            (conversion(), <span class="string">"POST"</span>),
-<a href=#5399 id=5399 data-nosnippet>5399</a>        ] {
-<a href=#5400 id=5400 data-nosnippet>5400</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource_attrs, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>conversion);
-<a href=#5401 id=5401 data-nosnippet>5401</a>            <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"document-uploader"</span>);
-<a href=#5402 id=5402 data-nosnippet>5402</a>            <span class="macro">assert_eq!</span>(dd_span.name(), <span class="string">"ddtracer.server"</span>);
-<a href=#5403 id=5403 data-nosnippet>5403</a>            <span class="macro">assert_eq!</span>(dd_span.resource(), resource_name);
-<a href=#5404 id=5404 data-nosnippet>5404</a>            <span class="macro">assert_eq!</span>(dd_span.span_type(), <span class="string">"custom"</span>);
-<a href=#5405 id=5405 data-nosnippet>5405</a>            <span class="macro">assert_eq!</span>(dd_span.error(), <span class="number">1</span>);
-<a href=#5406 id=5406 data-nosnippet>5406</a>            assert_attributes(
-<a href=#5407 id=5407 data-nosnippet>5407</a>                <span class="kw-2">&amp;</span>dd_span,
-<a href=#5408 id=5408 data-nosnippet>5408</a>                <span class="kw-2">&amp;</span>[
-<a href=#5409 id=5409 data-nosnippet>5409</a>                    (<span class="string">"env"</span>, string(<span class="string">"staging"</span>)),
-<a href=#5410 id=5410 data-nosnippet>5410</a>                    (<span class="string">"otel.library.name"</span>, string(<span class="string">"ddtracer"</span>)),
-<a href=#5411 id=5411 data-nosnippet>5411</a>                    (<span class="string">"otel.library.version"</span>, string(<span class="string">"v2"</span>)),
-<a href=#5412 id=5412 data-nosnippet>5412</a>                    (<span class="string">"otel.status_code"</span>, string(<span class="string">"Error"</span>)),
-<a href=#5413 id=5413 data-nosnippet>5413</a>                    (<span class="string">"error.msg"</span>, string(<span class="string">"201 Created"</span>)),
-<a href=#5414 id=5414 data-nosnippet>5414</a>                    (<span class="string">"http.request.method"</span>, string(<span class="string">"POST"</span>)),
-<a href=#5415 id=5415 data-nosnippet>5415</a>                    (<span class="string">"http.method"</span>, string(<span class="string">"POST"</span>)),
-<a href=#5416 id=5416 data-nosnippet>5416</a>                    (<span class="string">"url.path"</span>, string(<span class="string">"/uploads/4"</span>)),
-<a href=#5417 id=5417 data-nosnippet>5417</a>                    (<span class="string">"url.scheme"</span>, string(<span class="string">"https"</span>)),
-<a href=#5418 id=5418 data-nosnippet>5418</a>                    (<span class="string">"http.route"</span>, string(<span class="string">"/uploads/:document_id"</span>)),
-<a href=#5419 id=5419 data-nosnippet>5419</a>                    (<span class="string">"http.response.status_code"</span>, string(<span class="string">"201"</span>)),
-<a href=#5420 id=5420 data-nosnippet>5420</a>                    (<span class="string">"http.status_code"</span>, string(<span class="string">"201"</span>)),
-<a href=#5421 id=5421 data-nosnippet>5421</a>                    (<span class="string">"error.type"</span>, string(<span class="string">"WebSocketDisconnect"</span>)),
-<a href=#5422 id=5422 data-nosnippet>5422</a>                    (<span class="string">"otel.trace_id"</span>, trace_id.clone()),
-<a href=#5423 id=5423 data-nosnippet>5423</a>                    (<span class="string">"span.kind"</span>, string(<span class="string">"unspecified"</span>)),
-<a href=#5424 id=5424 data-nosnippet>5424</a>                    (<span class="string">"_top_level"</span>, AttributeValue::Float(<span class="number">1.0</span>)),
-<a href=#5425 id=5425 data-nosnippet>5425</a>                ],
-<a href=#5426 id=5426 data-nosnippet>5426</a>            );
-<a href=#5427 id=5427 data-nosnippet>5427</a>        }
-<a href=#5428 id=5428 data-nosnippet>5428</a>    }
-<a href=#5429 id=5429 data-nosnippet>5429</a>
-<a href=#5430 id=5430 data-nosnippet>5430</a>    <span class="attr">#[test]
-<a href=#5431 id=5431 data-nosnippet>5431</a>    </span><span class="kw">fn </span>v1_receive_path_overrides_resource_values_with_span_values() {
-<a href=#5432 id=5432 data-nosnippet>5432</a>        <span class="kw">let </span>span = fixture_span(
-<a href=#5433 id=5433 data-nosnippet>5433</a>            <span class="string">"span"</span>,
-<a href=#5434 id=5434 data-nosnippet>5434</a>            SpanKind::Internal,
-<a href=#5435 id=5435 data-nosnippet>5435</a>            <span class="macro">vec!</span>[
-<a href=#5436 id=5436 data-nosnippet>5436</a>                kv_str(<span class="string">"service.name"</span>, <span class="string">"span-service"</span>),
-<a href=#5437 id=5437 data-nosnippet>5437</a>                kv_int(<span class="string">"sampling.priority"</span>, <span class="number">2</span>),
-<a href=#5438 id=5438 data-nosnippet>5438</a>                kv_int(<span class="string">"retries"</span>, <span class="number">7</span>),
-<a href=#5439 id=5439 data-nosnippet>5439</a>                kv_int(<span class="string">"http.status_code"</span>, <span class="number">200</span>),
-<a href=#5440 id=5440 data-nosnippet>5440</a>                kv_str(<span class="string">"http.response.status_code"</span>, <span class="string">"201"</span>),
-<a href=#5441 id=5441 data-nosnippet>5441</a>            ],
-<a href=#5442 id=5442 data-nosnippet>5442</a>        );
-<a href=#5443 id=5443 data-nosnippet>5443</a>        <span class="kw">let </span>resource_attrs = resource(<span class="macro">vec!</span>[
-<a href=#5444 id=5444 data-nosnippet>5444</a>            kv_str(<span class="string">"service.name"</span>, <span class="string">"resource-service"</span>),
-<a href=#5445 id=5445 data-nosnippet>5445</a>            kv_str(<span class="string">"sampling.priority"</span>, <span class="string">"1"</span>),
-<a href=#5446 id=5446 data-nosnippet>5446</a>            kv_str(<span class="string">"retries"</span>, <span class="string">"resource-value"</span>),
-<a href=#5447 id=5447 data-nosnippet>5447</a>            kv_str(<span class="string">"team"</span>, <span class="string">"core"</span>),
-<a href=#5448 id=5448 data-nosnippet>5448</a>        ]);
-<a href=#5449 id=5449 data-nosnippet>5449</a>        <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource_attrs, <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]));
-<a href=#5450 id=5450 data-nosnippet>5450</a>
-<a href=#5451 id=5451 data-nosnippet>5451</a>        <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"span-service"</span>);
-<a href=#5452 id=5452 data-nosnippet>5452</a>        <span class="macro">assert_eq!</span>(
-<a href=#5453 id=5453 data-nosnippet>5453</a>            dd_span.attributes.get(SAMPLING_PRIORITY_METRIC_KEY),
-<a href=#5454 id=5454 data-nosnippet>5454</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>AttributeValue::Int(<span class="number">2</span>))
-<a href=#5455 id=5455 data-nosnippet>5455</a>        );
-<a href=#5456 id=5456 data-nosnippet>5456</a>        <span class="comment">// The resource's `sampling.priority` tag is dropped, though the number is stored under another key.
-<a href=#5457 id=5457 data-nosnippet>5457</a>        </span><span class="macro">assert_eq!</span>(dd_span.attributes.get(<span class="string">"sampling.priority"</span>), <span class="prelude-val">None</span>);
-<a href=#5458 id=5458 data-nosnippet>5458</a>        <span class="macro">assert_eq!</span>(dd_span.attributes.get(<span class="string">"retries"</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>AttributeValue::Int(<span class="number">7</span>)));
-<a href=#5459 id=5459 data-nosnippet>5459</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"team"</span>), <span class="prelude-val">Some</span>(<span class="string">"core"</span>));
-<a href=#5460 id=5460 data-nosnippet>5460</a>        <span class="comment">// `http.response.status_code` is mapped onto a string tag, but the numeric `http.status_code` stays a number.
-<a href=#5461 id=5461 data-nosnippet>5461</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#5462 id=5462 data-nosnippet>5462</a>            dd_span.attributes.get(<span class="string">"http.status_code"</span>),
-<a href=#5463 id=5463 data-nosnippet>5463</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>AttributeValue::Int(<span class="number">200</span>))
-<a href=#5464 id=5464 data-nosnippet>5464</a>        );
-<a href=#5465 id=5465 data-nosnippet>5465</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"http.response.status_code"</span>), <span class="prelude-val">Some</span>(<span class="string">"201"</span>));
-<a href=#5466 id=5466 data-nosnippet>5466</a>    }
-<a href=#5467 id=5467 data-nosnippet>5467</a>
-<a href=#5468 id=5468 data-nosnippet>5468</a>    <span class="attr">#[test]
-<a href=#5469 id=5469 data-nosnippet>5469</a>    </span><span class="kw">fn </span>v1_receive_path_names_only_spans_without_operation_name() {
-<a href=#5470 id=5470 data-nosnippet>5470</a>        <span class="kw">let </span>library = scope(<span class="string">"libname"</span>, <span class="string">"1.2"</span>);
-<a href=#5471 id=5471 data-nosnippet>5471</a>        <span class="kw">let </span>remapped = v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[(<span class="string">"libname.unspecified"</span>, <span class="string">"new"</span>), (<span class="string">"legacy.op"</span>, <span class="string">"modern.op"</span>)]);
-<a href=#5472 id=5472 data-nosnippet>5472</a>
-<a href=#5473 id=5473 data-nosnippet>5473</a>        <span class="comment">// Ported from `testOTLPNameRemapping`.
-<a href=#5474 id=5474 data-nosnippet>5474</a>        </span><span class="kw">let </span>span = fixture_span(<span class="string">"asd"</span>, SpanKind::Unspecified, <span class="macro">vec!</span>[]);
-<a href=#5475 id=5475 data-nosnippet>5475</a>        <span class="macro">assert_eq!</span>(
-<a href=#5476 id=5476 data-nosnippet>5476</a>            convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>remapped).name(),
-<a href=#5477 id=5477 data-nosnippet>5477</a>            <span class="string">"new"
-<a href=#5478 id=5478 data-nosnippet>5478</a>        </span>);
-<a href=#5479 id=5479 data-nosnippet>5479</a>
-<a href=#5480 id=5480 data-nosnippet>5480</a>        <span class="comment">// Unlike V1 naming on the V2 receive path, an `operation.name` is not remapped.
-<a href=#5481 id=5481 data-nosnippet>5481</a>        </span><span class="kw">let </span>span = fixture_span(
-<a href=#5482 id=5482 data-nosnippet>5482</a>            <span class="string">"asd"</span>,
-<a href=#5483 id=5483 data-nosnippet>5483</a>            SpanKind::Unspecified,
-<a href=#5484 id=5484 data-nosnippet>5484</a>            <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"legacy.op"</span>)],
-<a href=#5485 id=5485 data-nosnippet>5485</a>        );
-<a href=#5486 id=5486 data-nosnippet>5486</a>        <span class="macro">assert_eq!</span>(
-<a href=#5487 id=5487 data-nosnippet>5487</a>            convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>remapped).name(),
-<a href=#5488 id=5488 data-nosnippet>5488</a>            <span class="string">"legacy.op"
-<a href=#5489 id=5489 data-nosnippet>5489</a>        </span>);
-<a href=#5490 id=5490 data-nosnippet>5490</a>
-<a href=#5491 id=5491 data-nosnippet>5491</a>        <span class="kw">let </span>span = fixture_span(<span class="string">"checkout"</span>, SpanKind::Server, <span class="macro">vec!</span>[]);
-<a href=#5492 id=5492 data-nosnippet>5492</a>        <span class="macro">assert_eq!</span>(
-<a href=#5493 id=5493 data-nosnippet>5493</a>            convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[])).name(),
-<a href=#5494 id=5494 data-nosnippet>5494</a>            <span class="string">"checkout"
-<a href=#5495 id=5495 data-nosnippet>5495</a>        </span>);
-<a href=#5496 id=5496 data-nosnippet>5496</a>        <span class="macro">assert_eq!</span>(
-<a href=#5497 id=5497 data-nosnippet>5497</a>            convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[])).name(),
-<a href=#5498 id=5498 data-nosnippet>5498</a>            <span class="string">"opentelemetry.server"
-<a href=#5499 id=5499 data-nosnippet>5499</a>        </span>);
-<a href=#5500 id=5500 data-nosnippet>5500</a>    }
-<a href=#5501 id=5501 data-nosnippet>5501</a>
-<a href=#5502 id=5502 data-nosnippet>5502</a>    <span class="attr">#[test]
-<a href=#5503 id=5503 data-nosnippet>5503</a>    </span><span class="kw">fn </span>v1_receive_path_falls_back_to_its_own_defaults() {
-<a href=#5504 id=5504 data-nosnippet>5504</a>        <span class="comment">// The database system is read from the resource first, and normalized.
-<a href=#5505 id=5505 data-nosnippet>5505</a>        </span><span class="kw">for </span>(kind, resource_attrs, span_attrs, span_type) <span class="kw">in </span>[
-<a href=#5506 id=5506 data-nosnippet>5506</a>            (SpanKind::Server, <span class="macro">vec!</span>[], <span class="macro">vec!</span>[], <span class="string">"web"</span>),
-<a href=#5507 id=5507 data-nosnippet>5507</a>            (SpanKind::Client, <span class="macro">vec!</span>[], <span class="macro">vec!</span>[], <span class="string">"http"</span>),
-<a href=#5508 id=5508 data-nosnippet>5508</a>            (
-<a href=#5509 id=5509 data-nosnippet>5509</a>                SpanKind::Client,
-<a href=#5510 id=5510 data-nosnippet>5510</a>                <span class="macro">vec!</span>[],
-<a href=#5511 id=5511 data-nosnippet>5511</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"memcached"</span>)],
-<a href=#5512 id=5512 data-nosnippet>5512</a>                <span class="string">"cache"</span>,
-<a href=#5513 id=5513 data-nosnippet>5513</a>            ),
-<a href=#5514 id=5514 data-nosnippet>5514</a>            (
-<a href=#5515 id=5515 data-nosnippet>5515</a>                SpanKind::Client,
-<a href=#5516 id=5516 data-nosnippet>5516</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"Redis"</span>)],
-<a href=#5517 id=5517 data-nosnippet>5517</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"mysql"</span>)],
-<a href=#5518 id=5518 data-nosnippet>5518</a>                <span class="string">"cache"</span>,
-<a href=#5519 id=5519 data-nosnippet>5519</a>            ),
-<a href=#5520 id=5520 data-nosnippet>5520</a>            (SpanKind::Client, <span class="macro">vec!</span>[], <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"mysql"</span>)], <span class="string">"db"</span>),
-<a href=#5521 id=5521 data-nosnippet>5521</a>            (SpanKind::Producer, <span class="macro">vec!</span>[], <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"redis"</span>)], <span class="string">"custom"</span>),
-<a href=#5522 id=5522 data-nosnippet>5522</a>        ] {
-<a href=#5523 id=5523 data-nosnippet>5523</a>            <span class="kw">let </span>span = fixture_span(<span class="string">"span"</span>, kind, span_attrs);
-<a href=#5524 id=5524 data-nosnippet>5524</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(resource_attrs), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]));
-<a href=#5525 id=5525 data-nosnippet>5525</a>            <span class="macro">assert_eq!</span>(dd_span.span_type(), span_type, <span class="string">"{kind:?}"</span>);
-<a href=#5526 id=5526 data-nosnippet>5526</a>            <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"otlpresourcenoservicename"</span>);
-<a href=#5527 id=5527 data-nosnippet>5527</a>        }
-<a href=#5528 id=5528 data-nosnippet>5528</a>
-<a href=#5529 id=5529 data-nosnippet>5529</a>        <span class="comment">// The resource is derived from the converted tags, so span attributes take precedence.
-<a href=#5530 id=5530 data-nosnippet>5530</a>        </span><span class="kw">for </span>(resource_attrs, span_attrs, resource_name) <span class="kw">in </span>[
-<a href=#5531 id=5531 data-nosnippet>5531</a>            (
-<a href=#5532 id=5532 data-nosnippet>5532</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"PUT"</span>)],
-<a href=#5533 id=5533 data-nosnippet>5533</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"GET"</span>), kv_str(<span class="string">"grpc.path"</span>, <span class="string">"/svc/Method"</span>)],
-<a href=#5534 id=5534 data-nosnippet>5534</a>                <span class="string">"GET /svc/Method"</span>,
-<a href=#5535 id=5535 data-nosnippet>5535</a>            ),
-<a href=#5536 id=5536 data-nosnippet>5536</a>            (<span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"PUT"</span>)], <span class="macro">vec!</span>[], <span class="string">"PUT"</span>),
-<a href=#5537 id=5537 data-nosnippet>5537</a>            (
-<a href=#5538 id=5538 data-nosnippet>5538</a>                <span class="macro">vec!</span>[],
-<a href=#5539 id=5539 data-nosnippet>5539</a>                <span class="macro">vec!</span>[
-<a href=#5540 id=5540 data-nosnippet>5540</a>                    kv_str(<span class="string">"messaging.operation"</span>, <span class="string">"publish"</span>),
-<a href=#5541 id=5541 data-nosnippet>5541</a>                    kv_str(<span class="string">"messaging.destination"</span>, <span class="string">"orders"</span>),
-<a href=#5542 id=5542 data-nosnippet>5542</a>                ],
-<a href=#5543 id=5543 data-nosnippet>5543</a>                <span class="string">"publish orders"</span>,
-<a href=#5544 id=5544 data-nosnippet>5544</a>            ),
-<a href=#5545 id=5545 data-nosnippet>5545</a>            (
-<a href=#5546 id=5546 data-nosnippet>5546</a>                <span class="macro">vec!</span>[],
-<a href=#5547 id=5547 data-nosnippet>5547</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"rpc.method"</span>, <span class="string">"Get"</span>), kv_str(<span class="string">"rpc.service"</span>, <span class="string">"Users"</span>)],
-<a href=#5548 id=5548 data-nosnippet>5548</a>                <span class="string">"Get Users"</span>,
-<a href=#5549 id=5549 data-nosnippet>5549</a>            ),
-<a href=#5550 id=5550 data-nosnippet>5550</a>            (<span class="macro">vec!</span>[], <span class="macro">vec!</span>[kv_str(<span class="string">"graphql.operation.type"</span>, <span class="string">"query"</span>)], <span class="string">"query"</span>),
-<a href=#5551 id=5551 data-nosnippet>5551</a>            (<span class="macro">vec!</span>[], <span class="macro">vec!</span>[], <span class="string">"span"</span>),
-<a href=#5552 id=5552 data-nosnippet>5552</a>        ] {
-<a href=#5553 id=5553 data-nosnippet>5553</a>            <span class="kw">let </span>span = fixture_span(<span class="string">"span"</span>, SpanKind::Internal, span_attrs);
-<a href=#5554 id=5554 data-nosnippet>5554</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(resource_attrs), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]));
-<a href=#5555 id=5555 data-nosnippet>5555</a>            <span class="macro">assert_eq!</span>(dd_span.resource(), resource_name);
-<a href=#5556 id=5556 data-nosnippet>5556</a>        }
-<a href=#5557 id=5557 data-nosnippet>5557</a>    }
-<a href=#5558 id=5558 data-nosnippet>5558</a>
-<a href=#5559 id=5559 data-nosnippet>5559</a>    <span class="attr">#[test]
-<a href=#5560 id=5560 data-nosnippet>5560</a>    </span><span class="kw">fn </span>v1_receive_path_derives_env_from_the_deployment_environment() {
-<a href=#5561 id=5561 data-nosnippet>5561</a>        <span class="kw">for </span>(span_attrs, env) <span class="kw">in </span>[
-<a href=#5562 id=5562 data-nosnippet>5562</a>            (
-<a href=#5563 id=5563 data-nosnippet>5563</a>                <span class="macro">vec!</span>[
-<a href=#5564 id=5564 data-nosnippet>5564</a>                    kv_str(<span class="string">"deployment.environment"</span>, <span class="string">"Staging"</span>),
-<a href=#5565 id=5565 data-nosnippet>5565</a>                    kv_str(<span class="string">"deployment.environment.name"</span>, <span class="string">"1Prod Env"</span>),
-<a href=#5566 id=5566 data-nosnippet>5566</a>                ],
-<a href=#5567 id=5567 data-nosnippet>5567</a>                <span class="prelude-val">Some</span>(<span class="string">"prod_env"</span>),
-<a href=#5568 id=5568 data-nosnippet>5568</a>            ),
-<a href=#5569 id=5569 data-nosnippet>5569</a>            (<span class="macro">vec!</span>[kv_str(<span class="string">"deployment.environment"</span>, <span class="string">"Staging"</span>)], <span class="prelude-val">Some</span>(<span class="string">"staging"</span>)),
-<a href=#5570 id=5570 data-nosnippet>5570</a>            (
-<a href=#5571 id=5571 data-nosnippet>5571</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"env"</span>, <span class="string">"Raw"</span>), kv_str(<span class="string">"deployment.environment"</span>, <span class="string">"Staging"</span>)],
-<a href=#5572 id=5572 data-nosnippet>5572</a>                <span class="prelude-val">Some</span>(<span class="string">"Raw"</span>),
-<a href=#5573 id=5573 data-nosnippet>5573</a>            ),
-<a href=#5574 id=5574 data-nosnippet>5574</a>            (<span class="macro">vec!</span>[], <span class="prelude-val">None</span>),
-<a href=#5575 id=5575 data-nosnippet>5575</a>        ] {
-<a href=#5576 id=5576 data-nosnippet>5576</a>            <span class="kw">let </span>span = fixture_span(<span class="string">"span"</span>, SpanKind::Internal, span_attrs);
-<a href=#5577 id=5577 data-nosnippet>5577</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]));
-<a href=#5578 id=5578 data-nosnippet>5578</a>            <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"env"</span>), env);
-<a href=#5579 id=5579 data-nosnippet>5579</a>        }
-<a href=#5580 id=5580 data-nosnippet>5580</a>    }
-<a href=#5581 id=5581 data-nosnippet>5581</a>
-<a href=#5582 id=5582 data-nosnippet>5582</a>    <span class="attr">#[test]
-<a href=#5583 id=5583 data-nosnippet>5583</a>    </span><span class="kw">fn </span>v1_receive_path_emits_only_the_deprecated_scope_tags() {
-<a href=#5584 id=5584 data-nosnippet>5584</a>        <span class="kw">let </span><span class="kw-2">mut </span>library = scope(<span class="string">"ddtracer"</span>, <span class="string">"v2"</span>);
-<a href=#5585 id=5585 data-nosnippet>5585</a>        library.attributes = <span class="macro">vec!</span>[kv_str(<span class="string">"scope.attribute"</span>, <span class="string">"dropped"</span>)];
-<a href=#5586 id=5586 data-nosnippet>5586</a>        <span class="kw">let </span>span = fixture_span(
-<a href=#5587 id=5587 data-nosnippet>5587</a>            <span class="string">"span"</span>,
-<a href=#5588 id=5588 data-nosnippet>5588</a>            SpanKind::Internal,
-<a href=#5589 id=5589 data-nosnippet>5589</a>            <span class="macro">vec!</span>[kv_str(<span class="string">"datadog.service"</span>, <span class="string">"dd-service"</span>), kv_str(<span class="string">"db.namespace"</span>, <span class="string">"users"</span>)],
-<a href=#5590 id=5590 data-nosnippet>5590</a>        );
-<a href=#5591 id=5591 data-nosnippet>5591</a>        <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>conversion());
-<a href=#5592 id=5592 data-nosnippet>5592</a>
-<a href=#5593 id=5593 data-nosnippet>5593</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"otel.library.name"</span>), <span class="prelude-val">Some</span>(<span class="string">"ddtracer"</span>));
-<a href=#5594 id=5594 data-nosnippet>5594</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"otel.library.version"</span>), <span class="prelude-val">Some</span>(<span class="string">"v2"</span>));
-<a href=#5595 id=5595 data-nosnippet>5595</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"otel.scope.name"</span>), <span class="prelude-val">None</span>);
-<a href=#5596 id=5596 data-nosnippet>5596</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"otel.scope.version"</span>), <span class="prelude-val">None</span>);
-<a href=#5597 id=5597 data-nosnippet>5597</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"scope.attribute"</span>), <span class="prelude-val">None</span>);
-<a href=#5598 id=5598 data-nosnippet>5598</a>        <span class="comment">// `datadog.*` attributes are ordinary tags on this path.
-<a href=#5599 id=5599 data-nosnippet>5599</a>        </span><span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"datadog.service"</span>), <span class="prelude-val">Some</span>(<span class="string">"dd-service"</span>));
-<a href=#5600 id=5600 data-nosnippet>5600</a>        <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"otlpresourcenoservicename"</span>);
-<a href=#5601 id=5601 data-nosnippet>5601</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"db.name"</span>), <span class="prelude-val">Some</span>(<span class="string">"users"</span>));
-<a href=#5602 id=5602 data-nosnippet>5602</a>    }
-<a href=#5603 id=5603 data-nosnippet>5603</a>
-<a href=#5604 id=5604 data-nosnippet>5604</a>    <span class="attr">#[test]
-<a href=#5605 id=5605 data-nosnippet>5605</a>    </span><span class="kw">fn </span>v1_receive_path_marks_top_level_and_measured_by_span_kind() {
-<a href=#5606 id=5606 data-nosnippet>5606</a>        <span class="kw">let </span>parent = [<span class="number">9u8</span>; <span class="number">8</span>];
-<a href=#5607 id=5607 data-nosnippet>5607</a>        <span class="kw">for </span>(kind, has_parent, compute, top_level, measured) <span class="kw">in </span>[
-<a href=#5608 id=5608 data-nosnippet>5608</a>            (SpanKind::Internal, <span class="bool-val">false</span>, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>),
-<a href=#5609 id=5609 data-nosnippet>5609</a>            (SpanKind::Server, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>),
-<a href=#5610 id=5610 data-nosnippet>5610</a>            (SpanKind::Consumer, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>),
-<a href=#5611 id=5611 data-nosnippet>5611</a>            (SpanKind::Client, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>, <span class="bool-val">true</span>),
-<a href=#5612 id=5612 data-nosnippet>5612</a>            (SpanKind::Producer, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>, <span class="bool-val">true</span>),
-<a href=#5613 id=5613 data-nosnippet>5613</a>            (SpanKind::Internal, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>, <span class="bool-val">false</span>),
-<a href=#5614 id=5614 data-nosnippet>5614</a>            (SpanKind::Server, <span class="bool-val">false</span>, <span class="bool-val">false</span>, <span class="bool-val">false</span>, <span class="bool-val">false</span>),
-<a href=#5615 id=5615 data-nosnippet>5615</a>        ] {
-<a href=#5616 id=5616 data-nosnippet>5616</a>            <span class="kw">let </span><span class="kw-2">mut </span>span = fixture_span(<span class="string">"span"</span>, kind, <span class="macro">vec!</span>[]);
-<a href=#5617 id=5617 data-nosnippet>5617</a>            <span class="kw">if </span>has_parent {
-<a href=#5618 id=5618 data-nosnippet>5618</a>                span.parent_span_id = parent.to_vec();
-<a href=#5619 id=5619 data-nosnippet>5619</a>            }
-<a href=#5620 id=5620 data-nosnippet>5620</a>            <span class="kw">let </span>conversion = SpanConversion {
-<a href=#5621 id=5621 data-nosnippet>5621</a>                compute_top_level_by_span_kind: compute,
-<a href=#5622 id=5622 data-nosnippet>5622</a>                ..conversion()
-<a href=#5623 id=5623 data-nosnippet>5623</a>            };
-<a href=#5624 id=5624 data-nosnippet>5624</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion);
-<a href=#5625 id=5625 data-nosnippet>5625</a>            <span class="kw">let </span>case = <span class="macro">format!</span>(<span class="string">"{kind:?} parent={has_parent} compute={compute}"</span>);
-<a href=#5626 id=5626 data-nosnippet>5626</a>            <span class="macro">assert_eq!</span>(dd_span.attributes.contains_key(<span class="string">"_top_level"</span>), top_level, <span class="string">"{case}"</span>);
-<a href=#5627 id=5627 data-nosnippet>5627</a>            <span class="macro">assert_eq!</span>(dd_span.attributes.contains_key(<span class="string">"_dd.measured"</span>), measured, <span class="string">"{case}"</span>);
+<a href=#5043 id=5043 data-nosnippet>5043</a>    <span class="doccomment">/// Converts `span` on each receive path, and names the path in an assertion about the result.
+<a href=#5044 id=5044 data-nosnippet>5044</a>    </span><span class="kw">fn </span>convert_on_both_paths(span: <span class="kw-2">&amp;</span>OtlpSpan) -&gt; [(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, DdSpan); <span class="number">2</span>] {
+<a href=#5045 id=5045 data-nosnippet>5045</a>        <span class="kw">let </span>resource = Resource::default();
+<a href=#5046 id=5046 data-nosnippet>5046</a>        [
+<a href=#5047 id=5047 data-nosnippet>5047</a>            (<span class="string">"v2"</span>, convert_v2(span, <span class="kw-2">&amp;</span>resource, <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion())),
+<a href=#5048 id=5048 data-nosnippet>5048</a>            (<span class="string">"v1"</span>, convert_v1(span, <span class="kw-2">&amp;</span>resource, <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion())),
+<a href=#5049 id=5049 data-nosnippet>5049</a>        ]
+<a href=#5050 id=5050 data-nosnippet>5050</a>    }
+<a href=#5051 id=5051 data-nosnippet>5051</a>
+<a href=#5052 id=5052 data-nosnippet>5052</a>    <span class="doccomment">/// A negative duration, and a duration that overflows `start + duration`, become zero, and a duration that ends
+<a href=#5053 id=5053 data-nosnippet>5053</a>    /// exactly at `math.MaxInt64` stays. The start is not touched. Mirrors `FixDuration`
+<a href=#5054 id=5054 data-nosnippet>5054</a>    /// (`pkg/trace/traceutil/normalize/duration.go`).
+<a href=#5055 id=5055 data-nosnippet>5055</a>    </span><span class="attr">#[test]
+<a href=#5056 id=5056 data-nosnippet>5056</a>    </span><span class="kw">fn </span>duration_boundaries_match_the_reference_on_both_receive_paths() {
+<a href=#5057 id=5057 data-nosnippet>5057</a>        <span class="kw">let </span>start = YEAR_2000_NANOSEC_TS + <span class="number">1_000_000_000</span>;
+<a href=#5058 id=5058 data-nosnippet>5058</a>        <span class="kw">let </span>signed_max = i64::MAX <span class="kw">as </span>u64;
+<a href=#5059 id=5059 data-nosnippet>5059</a>        <span class="kw">let </span>cases = [
+<a href=#5060 id=5060 data-nosnippet>5060</a>            (<span class="string">"ends 1 ns before it starts"</span>, start - <span class="number">1</span>, <span class="number">0</span>),
+<a href=#5061 id=5061 data-nosnippet>5061</a>            (<span class="string">"ends at zero"</span>, <span class="number">0</span>, <span class="number">0</span>),
+<a href=#5062 id=5062 data-nosnippet>5062</a>            (<span class="string">"ends when it starts"</span>, start, <span class="number">0</span>),
+<a href=#5063 id=5063 data-nosnippet>5063</a>            (<span class="string">"ends 5 ms after it starts"</span>, start + <span class="number">5_000_000</span>, <span class="number">5_000_000</span>),
+<a href=#5064 id=5064 data-nosnippet>5064</a>            (<span class="string">"ends at the signed maximum"</span>, signed_max, signed_max - start),
+<a href=#5065 id=5065 data-nosnippet>5065</a>            (<span class="string">"ends 1 ns past the signed maximum"</span>, signed_max + <span class="number">1</span>, <span class="number">0</span>),
+<a href=#5066 id=5066 data-nosnippet>5066</a>            (<span class="string">"ends at the unsigned maximum"</span>, u64::MAX, <span class="number">0</span>),
+<a href=#5067 id=5067 data-nosnippet>5067</a>        ];
+<a href=#5068 id=5068 data-nosnippet>5068</a>
+<a href=#5069 id=5069 data-nosnippet>5069</a>        <span class="kw">for </span>(label, end, expected) <span class="kw">in </span>cases {
+<a href=#5070 id=5070 data-nosnippet>5070</a>            <span class="kw">let </span>span = OtlpSpan {
+<a href=#5071 id=5071 data-nosnippet>5071</a>                name: <span class="string">"span-name"</span>.to_string(),
+<a href=#5072 id=5072 data-nosnippet>5072</a>                start_time_unix_nano: start,
+<a href=#5073 id=5073 data-nosnippet>5073</a>                end_time_unix_nano: end,
+<a href=#5074 id=5074 data-nosnippet>5074</a>                ..Default::default()
+<a href=#5075 id=5075 data-nosnippet>5075</a>            };
+<a href=#5076 id=5076 data-nosnippet>5076</a>            <span class="kw">for </span>(path, dd_span) <span class="kw">in </span>convert_on_both_paths(<span class="kw-2">&amp;</span>span) {
+<a href=#5077 id=5077 data-nosnippet>5077</a>                <span class="macro">assert_eq!</span>(dd_span.duration(), expected, <span class="string">"{label} ({path}): the duration"</span>);
+<a href=#5078 id=5078 data-nosnippet>5078</a>                <span class="macro">assert_eq!</span>(dd_span.start(), start, <span class="string">"{label} ({path}): the start stays"</span>);
+<a href=#5079 id=5079 data-nosnippet>5079</a>            }
+<a href=#5080 id=5080 data-nosnippet>5080</a>        }
+<a href=#5081 id=5081 data-nosnippet>5081</a>    }
+<a href=#5082 id=5082 data-nosnippet>5082</a>
+<a href=#5083 id=5083 data-nosnippet>5083</a>    <span class="doccomment">/// A start before the year-2000 floor becomes the receive time minus the duration, clamped to the receive time, and
+<a href=#5084 id=5084 data-nosnippet>5084</a>    /// a start on the floor stays. The duration is fixed first, so it survives. Mirrors `FixStartTime`
+<a href=#5085 id=5085 data-nosnippet>5085</a>    /// (`pkg/trace/traceutil/normalize/duration.go`).
+<a href=#5086 id=5086 data-nosnippet>5086</a>    </span><span class="attr">#[test]
+<a href=#5087 id=5087 data-nosnippet>5087</a>    </span><span class="kw">fn </span>start_time_boundaries_match_the_reference_on_both_receive_paths() {
+<a href=#5088 id=5088 data-nosnippet>5088</a>        <span class="kw">let </span>duration = <span class="number">5_000_000</span>;
+<a href=#5089 id=5089 data-nosnippet>5089</a>        <span class="comment">// The span, the duration it keeps, and the number of nanoseconds that its start is before the receive time, if
+<a href=#5090 id=5090 data-nosnippet>5090</a>        // the start is replaced.
+<a href=#5091 id=5091 data-nosnippet>5091</a>        </span><span class="kw">let </span>cases = [
+<a href=#5092 id=5092 data-nosnippet>5092</a>            (
+<a href=#5093 id=5093 data-nosnippet>5093</a>                <span class="string">"1 ns before the floor"</span>,
+<a href=#5094 id=5094 data-nosnippet>5094</a>                YEAR_2000_NANOSEC_TS - <span class="number">1</span>,
+<a href=#5095 id=5095 data-nosnippet>5095</a>                duration,
+<a href=#5096 id=5096 data-nosnippet>5096</a>                <span class="prelude-val">Some</span>(duration),
+<a href=#5097 id=5097 data-nosnippet>5097</a>            ),
+<a href=#5098 id=5098 data-nosnippet>5098</a>            (<span class="string">"on the floor"</span>, YEAR_2000_NANOSEC_TS, duration, <span class="prelude-val">None</span>),
+<a href=#5099 id=5099 data-nosnippet>5099</a>            (<span class="string">"at zero, with an end"</span>, <span class="number">0</span>, duration, <span class="prelude-val">Some</span>(duration)),
+<a href=#5100 id=5100 data-nosnippet>5100</a>            (<span class="string">"at zero, with no end"</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="prelude-val">Some</span>(<span class="number">0</span>)),
+<a href=#5101 id=5101 data-nosnippet>5101</a>            <span class="comment">// The duration is longer than the time since the epoch, so the start clamps to the receive time.
+<a href=#5102 id=5102 data-nosnippet>5102</a>            </span>(<span class="string">"at 1 ns, ending at the signed maximum"</span>, <span class="number">1</span>, i64::MAX <span class="kw">as </span>u64 - <span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="number">0</span>)),
+<a href=#5103 id=5103 data-nosnippet>5103</a>        ];
+<a href=#5104 id=5104 data-nosnippet>5104</a>
+<a href=#5105 id=5105 data-nosnippet>5105</a>        <span class="kw">for </span>(label, start, expected_duration, replaced_before_now) <span class="kw">in </span>cases {
+<a href=#5106 id=5106 data-nosnippet>5106</a>            <span class="kw">let </span>span = OtlpSpan {
+<a href=#5107 id=5107 data-nosnippet>5107</a>                name: <span class="string">"span-name"</span>.to_string(),
+<a href=#5108 id=5108 data-nosnippet>5108</a>                start_time_unix_nano: start,
+<a href=#5109 id=5109 data-nosnippet>5109</a>                end_time_unix_nano: start + expected_duration,
+<a href=#5110 id=5110 data-nosnippet>5110</a>                ..Default::default()
+<a href=#5111 id=5111 data-nosnippet>5111</a>            };
+<a href=#5112 id=5112 data-nosnippet>5112</a>            <span class="kw">for </span>(path, dd_span) <span class="kw">in </span>convert_on_both_paths(<span class="kw-2">&amp;</span>span) {
+<a href=#5113 id=5113 data-nosnippet>5113</a>                <span class="kw">let </span>now = std::time::SystemTime::now()
+<a href=#5114 id=5114 data-nosnippet>5114</a>                    .duration_since(std::time::UNIX_EPOCH)
+<a href=#5115 id=5115 data-nosnippet>5115</a>                    .unwrap()
+<a href=#5116 id=5116 data-nosnippet>5116</a>                    .as_nanos() <span class="kw">as </span>u64;
+<a href=#5117 id=5117 data-nosnippet>5117</a>                <span class="macro">assert_eq!</span>(dd_span.duration(), expected_duration, <span class="string">"{label} ({path}): the duration"</span>);
+<a href=#5118 id=5118 data-nosnippet>5118</a>                <span class="kw">match </span>replaced_before_now {
+<a href=#5119 id=5119 data-nosnippet>5119</a>                    <span class="prelude-val">None </span>=&gt; <span class="macro">assert_eq!</span>(dd_span.start(), start, <span class="string">"{label} ({path}): the start stays"</span>),
+<a href=#5120 id=5120 data-nosnippet>5120</a>                    <span class="prelude-val">Some</span>(before_now) =&gt; <span class="macro">assert!</span>(
+<a href=#5121 id=5121 data-nosnippet>5121</a>                        dd_span.start().abs_diff(now - before_now) &lt; <span class="number">5_000_000_000</span>,
+<a href=#5122 id=5122 data-nosnippet>5122</a>                        <span class="string">"{label} ({path}): start {}, now {now}"</span>,
+<a href=#5123 id=5123 data-nosnippet>5123</a>                        dd_span.start()
+<a href=#5124 id=5124 data-nosnippet>5124</a>                    ),
+<a href=#5125 id=5125 data-nosnippet>5125</a>                }
+<a href=#5126 id=5126 data-nosnippet>5126</a>            }
+<a href=#5127 id=5127 data-nosnippet>5127</a>        }
+<a href=#5128 id=5128 data-nosnippet>5128</a>    }
+<a href=#5129 id=5129 data-nosnippet>5129</a>
+<a href=#5130 id=5130 data-nosnippet>5130</a>    <span class="doccomment">/// A `span.type` of 100 bytes stays, a longer one is cut to 100 bytes, and the cut never splits a character.
+<a href=#5131 id=5131 data-nosnippet>5131</a>    /// Mirrors `validateAndFixType` (`pkg/trace/agent/normalizer.go`).
+<a href=#5132 id=5132 data-nosnippet>5132</a>    </span><span class="attr">#[test]
+<a href=#5133 id=5133 data-nosnippet>5133</a>    </span><span class="kw">fn </span>span_type_boundaries_match_the_reference_on_both_receive_paths() {
+<a href=#5134 id=5134 data-nosnippet>5134</a>        <span class="kw">let </span>cases = [
+<a href=#5135 id=5135 data-nosnippet>5135</a>            (<span class="string">"at the limit"</span>, <span class="string">"t"</span>.repeat(MAX_TYPE_LEN), <span class="string">"t"</span>.repeat(MAX_TYPE_LEN)),
+<a href=#5136 id=5136 data-nosnippet>5136</a>            (<span class="string">"1 byte over"</span>, <span class="string">"t"</span>.repeat(MAX_TYPE_LEN + <span class="number">1</span>), <span class="string">"t"</span>.repeat(MAX_TYPE_LEN)),
+<a href=#5137 id=5137 data-nosnippet>5137</a>            (
+<a href=#5138 id=5138 data-nosnippet>5138</a>                <span class="string">"a character that ends at the limit"</span>,
+<a href=#5139 id=5139 data-nosnippet>5139</a>                <span class="macro">format!</span>(<span class="string">"{}é"</span>, <span class="string">"t"</span>.repeat(MAX_TYPE_LEN - <span class="number">2</span>)),
+<a href=#5140 id=5140 data-nosnippet>5140</a>                <span class="macro">format!</span>(<span class="string">"{}é"</span>, <span class="string">"t"</span>.repeat(MAX_TYPE_LEN - <span class="number">2</span>)),
+<a href=#5141 id=5141 data-nosnippet>5141</a>            ),
+<a href=#5142 id=5142 data-nosnippet>5142</a>            (
+<a href=#5143 id=5143 data-nosnippet>5143</a>                <span class="string">"a character that straddles the limit"</span>,
+<a href=#5144 id=5144 data-nosnippet>5144</a>                <span class="macro">format!</span>(<span class="string">"{}é"</span>, <span class="string">"t"</span>.repeat(MAX_TYPE_LEN - <span class="number">1</span>)),
+<a href=#5145 id=5145 data-nosnippet>5145</a>                <span class="string">"t"</span>.repeat(MAX_TYPE_LEN - <span class="number">1</span>),
+<a href=#5146 id=5146 data-nosnippet>5146</a>            ),
+<a href=#5147 id=5147 data-nosnippet>5147</a>        ];
+<a href=#5148 id=5148 data-nosnippet>5148</a>
+<a href=#5149 id=5149 data-nosnippet>5149</a>        <span class="kw">for </span>(label, span_type, expected) <span class="kw">in </span>cases {
+<a href=#5150 id=5150 data-nosnippet>5150</a>            <span class="kw">let </span>span = OtlpSpan {
+<a href=#5151 id=5151 data-nosnippet>5151</a>                name: <span class="string">"span-name"</span>.to_string(),
+<a href=#5152 id=5152 data-nosnippet>5152</a>                attributes: <span class="macro">vec!</span>[kv_str(SPAN_TYPE_KEY, <span class="kw-2">&amp;</span>span_type)],
+<a href=#5153 id=5153 data-nosnippet>5153</a>                ..Default::default()
+<a href=#5154 id=5154 data-nosnippet>5154</a>            };
+<a href=#5155 id=5155 data-nosnippet>5155</a>            <span class="kw">for </span>(path, dd_span) <span class="kw">in </span>convert_on_both_paths(<span class="kw-2">&amp;</span>span) {
+<a href=#5156 id=5156 data-nosnippet>5156</a>                <span class="macro">assert_eq!</span>(dd_span.span_type(), expected, <span class="string">"{label} ({path})"</span>);
+<a href=#5157 id=5157 data-nosnippet>5157</a>            }
+<a href=#5158 id=5158 data-nosnippet>5158</a>        }
+<a href=#5159 id=5159 data-nosnippet>5159</a>    }
+<a href=#5160 id=5160 data-nosnippet>5160</a>
+<a href=#5161 id=5161 data-nosnippet>5161</a>    <span class="doccomment">/// An attribute key of 200 bytes and a string value of 25000 bytes stay. One byte more is cut to the limit, and an
+<a href=#5162 id=5162 data-nosnippet>5162</a>    /// ellipsis follows the cut. A number keeps its value and loses part of a long key. A structured key is exempt.
+<a href=#5163 id=5163 data-nosnippet>5163</a>    /// Mirrors `Truncate` (`pkg/trace/agent/truncator.go`).
+<a href=#5164 id=5164 data-nosnippet>5164</a>    </span><span class="attr">#[test]
+<a href=#5165 id=5165 data-nosnippet>5165</a>    </span><span class="kw">fn </span>attribute_truncation_boundaries_match_the_reference_on_both_receive_paths() {
+<a href=#5166 id=5166 data-nosnippet>5166</a>        <span class="kw">let </span>key_at_limit = <span class="string">"k"</span>.repeat(MAX_META_KEY_LEN);
+<a href=#5167 id=5167 data-nosnippet>5167</a>        <span class="kw">let </span>key_over = <span class="string">"o"</span>.repeat(MAX_META_KEY_LEN + <span class="number">1</span>);
+<a href=#5168 id=5168 data-nosnippet>5168</a>        <span class="kw">let </span>key_straddling = <span class="macro">format!</span>(<span class="string">"{}é"</span>, <span class="string">"s"</span>.repeat(MAX_META_KEY_LEN - <span class="number">1</span>));
+<a href=#5169 id=5169 data-nosnippet>5169</a>        <span class="kw">let </span>number_key_over = <span class="string">"n"</span>.repeat(MAX_META_KEY_LEN + <span class="number">50</span>);
+<a href=#5170 id=5170 data-nosnippet>5170</a>        <span class="kw">let </span>structured_key_over = <span class="macro">format!</span>(<span class="string">"_dd.{}.json"</span>, <span class="string">"j"</span>.repeat(MAX_META_KEY_LEN));
+<a href=#5171 id=5171 data-nosnippet>5171</a>        <span class="kw">let </span>value_at_limit = <span class="string">"v"</span>.repeat(MAX_META_VAL_LEN);
+<a href=#5172 id=5172 data-nosnippet>5172</a>        <span class="kw">let </span>value_over = <span class="string">"w"</span>.repeat(MAX_META_VAL_LEN + <span class="number">1</span>);
+<a href=#5173 id=5173 data-nosnippet>5173</a>        <span class="kw">let </span>value_straddling = <span class="macro">format!</span>(<span class="string">"{}é"</span>, <span class="string">"x"</span>.repeat(MAX_META_VAL_LEN - <span class="number">1</span>));
+<a href=#5174 id=5174 data-nosnippet>5174</a>        <span class="kw">let </span>structured_value = <span class="string">"y"</span>.repeat(MAX_META_VAL_LEN + <span class="number">1</span>);
+<a href=#5175 id=5175 data-nosnippet>5175</a>
+<a href=#5176 id=5176 data-nosnippet>5176</a>        <span class="kw">let </span>span = OtlpSpan {
+<a href=#5177 id=5177 data-nosnippet>5177</a>            name: <span class="string">"span-name"</span>.to_string(),
+<a href=#5178 id=5178 data-nosnippet>5178</a>            attributes: <span class="macro">vec!</span>[
+<a href=#5179 id=5179 data-nosnippet>5179</a>                kv_str(<span class="kw-2">&amp;</span>key_at_limit, <span class="string">"at the limit"</span>),
+<a href=#5180 id=5180 data-nosnippet>5180</a>                kv_str(<span class="kw-2">&amp;</span>key_over, <span class="string">"over"</span>),
+<a href=#5181 id=5181 data-nosnippet>5181</a>                kv_str(<span class="kw-2">&amp;</span>key_straddling, <span class="string">"straddling"</span>),
+<a href=#5182 id=5182 data-nosnippet>5182</a>                kv_int(<span class="kw-2">&amp;</span>number_key_over, <span class="number">7</span>),
+<a href=#5183 id=5183 data-nosnippet>5183</a>                kv_str(<span class="kw-2">&amp;</span>structured_key_over, <span class="string">"structured"</span>),
+<a href=#5184 id=5184 data-nosnippet>5184</a>                kv_str(<span class="string">"value.at_limit"</span>, <span class="kw-2">&amp;</span>value_at_limit),
+<a href=#5185 id=5185 data-nosnippet>5185</a>                kv_str(<span class="string">"value.over"</span>, <span class="kw-2">&amp;</span>value_over),
+<a href=#5186 id=5186 data-nosnippet>5186</a>                kv_str(<span class="string">"value.straddling"</span>, <span class="kw-2">&amp;</span>value_straddling),
+<a href=#5187 id=5187 data-nosnippet>5187</a>                kv_str(<span class="string">"_dd.appsec.json"</span>, <span class="kw-2">&amp;</span>structured_value),
+<a href=#5188 id=5188 data-nosnippet>5188</a>            ],
+<a href=#5189 id=5189 data-nosnippet>5189</a>            ..Default::default()
+<a href=#5190 id=5190 data-nosnippet>5190</a>        };
+<a href=#5191 id=5191 data-nosnippet>5191</a>
+<a href=#5192 id=5192 data-nosnippet>5192</a>        <span class="kw">let </span>get = |dd_span: <span class="kw-2">&amp;</span>DdSpan, key: <span class="kw-2">&amp;</span>str| dd_span.attributes.get(key).cloned();
+<a href=#5193 id=5193 data-nosnippet>5193</a>        <span class="kw">for </span>(path, dd_span) <span class="kw">in </span>convert_on_both_paths(<span class="kw-2">&amp;</span>span) {
+<a href=#5194 id=5194 data-nosnippet>5194</a>            <span class="macro">assert_eq!</span>(
+<a href=#5195 id=5195 data-nosnippet>5195</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="kw-2">&amp;</span>key_at_limit),
+<a href=#5196 id=5196 data-nosnippet>5196</a>                <span class="prelude-val">Some</span>(string(<span class="string">"at the limit"</span>)),
+<a href=#5197 id=5197 data-nosnippet>5197</a>                <span class="string">"{path}: key at limit"
+<a href=#5198 id=5198 data-nosnippet>5198</a>            </span>);
+<a href=#5199 id=5199 data-nosnippet>5199</a>            <span class="macro">assert_eq!</span>(
+<a href=#5200 id=5200 data-nosnippet>5200</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"{}..."</span>, <span class="string">"o"</span>.repeat(MAX_META_KEY_LEN))),
+<a href=#5201 id=5201 data-nosnippet>5201</a>                <span class="prelude-val">Some</span>(string(<span class="string">"over"</span>)),
+<a href=#5202 id=5202 data-nosnippet>5202</a>                <span class="string">"{path}: key over"
+<a href=#5203 id=5203 data-nosnippet>5203</a>            </span>);
+<a href=#5204 id=5204 data-nosnippet>5204</a>            <span class="macro">assert_eq!</span>(get(<span class="kw-2">&amp;</span>dd_span, <span class="kw-2">&amp;</span>key_over), <span class="prelude-val">None</span>, <span class="string">"{path}: key over, whole"</span>);
+<a href=#5205 id=5205 data-nosnippet>5205</a>            <span class="macro">assert_eq!</span>(
+<a href=#5206 id=5206 data-nosnippet>5206</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"{}..."</span>, <span class="string">"s"</span>.repeat(MAX_META_KEY_LEN - <span class="number">1</span>))),
+<a href=#5207 id=5207 data-nosnippet>5207</a>                <span class="prelude-val">Some</span>(string(<span class="string">"straddling"</span>)),
+<a href=#5208 id=5208 data-nosnippet>5208</a>                <span class="string">"{path}: key straddling"
+<a href=#5209 id=5209 data-nosnippet>5209</a>            </span>);
+<a href=#5210 id=5210 data-nosnippet>5210</a>            <span class="macro">assert_eq!</span>(
+<a href=#5211 id=5211 data-nosnippet>5211</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"{}..."</span>, <span class="string">"n"</span>.repeat(MAX_META_KEY_LEN))),
+<a href=#5212 id=5212 data-nosnippet>5212</a>                <span class="prelude-val">Some</span>(AttributeValue::Int(<span class="number">7</span>)),
+<a href=#5213 id=5213 data-nosnippet>5213</a>                <span class="string">"{path}: number key"
+<a href=#5214 id=5214 data-nosnippet>5214</a>            </span>);
+<a href=#5215 id=5215 data-nosnippet>5215</a>            <span class="macro">assert_eq!</span>(
+<a href=#5216 id=5216 data-nosnippet>5216</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="kw-2">&amp;</span>structured_key_over),
+<a href=#5217 id=5217 data-nosnippet>5217</a>                <span class="prelude-val">Some</span>(string(<span class="string">"structured"</span>)),
+<a href=#5218 id=5218 data-nosnippet>5218</a>                <span class="string">"{path}: structured key"
+<a href=#5219 id=5219 data-nosnippet>5219</a>            </span>);
+<a href=#5220 id=5220 data-nosnippet>5220</a>
+<a href=#5221 id=5221 data-nosnippet>5221</a>            <span class="macro">assert_eq!</span>(
+<a href=#5222 id=5222 data-nosnippet>5222</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="string">"value.at_limit"</span>),
+<a href=#5223 id=5223 data-nosnippet>5223</a>                <span class="prelude-val">Some</span>(string(<span class="kw-2">&amp;</span>value_at_limit)),
+<a href=#5224 id=5224 data-nosnippet>5224</a>                <span class="string">"{path}: value at limit"
+<a href=#5225 id=5225 data-nosnippet>5225</a>            </span>);
+<a href=#5226 id=5226 data-nosnippet>5226</a>            <span class="macro">assert_eq!</span>(
+<a href=#5227 id=5227 data-nosnippet>5227</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="string">"value.over"</span>),
+<a href=#5228 id=5228 data-nosnippet>5228</a>                <span class="prelude-val">Some</span>(string(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"{}..."</span>, <span class="string">"w"</span>.repeat(MAX_META_VAL_LEN)))),
+<a href=#5229 id=5229 data-nosnippet>5229</a>                <span class="string">"{path}: value over"
+<a href=#5230 id=5230 data-nosnippet>5230</a>            </span>);
+<a href=#5231 id=5231 data-nosnippet>5231</a>            <span class="macro">assert_eq!</span>(
+<a href=#5232 id=5232 data-nosnippet>5232</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="string">"value.straddling"</span>),
+<a href=#5233 id=5233 data-nosnippet>5233</a>                <span class="prelude-val">Some</span>(string(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"{}..."</span>, <span class="string">"x"</span>.repeat(MAX_META_VAL_LEN - <span class="number">1</span>)))),
+<a href=#5234 id=5234 data-nosnippet>5234</a>                <span class="string">"{path}: value straddling"
+<a href=#5235 id=5235 data-nosnippet>5235</a>            </span>);
+<a href=#5236 id=5236 data-nosnippet>5236</a>            <span class="macro">assert_eq!</span>(
+<a href=#5237 id=5237 data-nosnippet>5237</a>                get(<span class="kw-2">&amp;</span>dd_span, <span class="string">"_dd.appsec.json"</span>),
+<a href=#5238 id=5238 data-nosnippet>5238</a>                <span class="prelude-val">Some</span>(string(<span class="kw-2">&amp;</span>structured_value)),
+<a href=#5239 id=5239 data-nosnippet>5239</a>                <span class="string">"{path}: structured value"
+<a href=#5240 id=5240 data-nosnippet>5240</a>            </span>);
+<a href=#5241 id=5241 data-nosnippet>5241</a>        }
+<a href=#5242 id=5242 data-nosnippet>5242</a>    }
+<a href=#5243 id=5243 data-nosnippet>5243</a>
+<a href=#5244 id=5244 data-nosnippet>5244</a>    <span class="comment">// ===============================================================================================
+<a href=#5245 id=5245 data-nosnippet>5245</a>    // V1 naming and the V1 receive path.
+<a href=#5246 id=5246 data-nosnippet>5246</a>    //
+<a href=#5247 id=5247 data-nosnippet>5247</a>    // Cases marked as ported come from `testOTelSpanToDDSpan`, `testOTLPConvertSpan`, and `testOTLPNameRemapping` in
+<a href=#5248 id=5248 data-nosnippet>5248</a>    // https://github.com/DataDog/datadog-agent/blob/00b7aa9aa8/pkg/trace/api/otlp_test.go
+<a href=#5249 id=5249 data-nosnippet>5249</a>    // Those tests check spans before normalization, so the expected names here are normalized.
+<a href=#5250 id=5250 data-nosnippet>5250</a>
+<a href=#5251 id=5251 data-nosnippet>5251</a>    </span><span class="doccomment">/// The trace and span IDs of the ported fixtures.
+<a href=#5252 id=5252 data-nosnippet>5252</a>    </span><span class="kw">const </span>FIXTURE_TRACE_ID: [u8; <span class="number">16</span>] = [
+<a href=#5253 id=5253 data-nosnippet>5253</a>        <span class="number">0x72</span>, <span class="number">0xdf</span>, <span class="number">0x52</span>, <span class="number">0x0a</span>, <span class="number">0xf2</span>, <span class="number">0xbd</span>, <span class="number">0xe7</span>, <span class="number">0xa5</span>, <span class="number">0x24</span>, <span class="number">0x00</span>, <span class="number">0x31</span>, <span class="number">0xea</span>, <span class="number">0xd7</span>, <span class="number">0x50</span>, <span class="number">0xe5</span>, <span class="number">0xf3</span>,
+<a href=#5254 id=5254 data-nosnippet>5254</a>    ];
+<a href=#5255 id=5255 data-nosnippet>5255</a>    <span class="kw">const </span>FIXTURE_SPAN_ID: [u8; <span class="number">8</span>] = [<span class="number">0x24</span>, <span class="number">0x00</span>, <span class="number">0x31</span>, <span class="number">0xea</span>, <span class="number">0xd7</span>, <span class="number">0x50</span>, <span class="number">0xe5</span>, <span class="number">0xf3</span>];
+<a href=#5256 id=5256 data-nosnippet>5256</a>    <span class="kw">const </span>FIXTURE_START: u64 = <span class="number">1_700_000_000_000_000_000</span>;
+<a href=#5257 id=5257 data-nosnippet>5257</a>
+<a href=#5258 id=5258 data-nosnippet>5258</a>    <span class="kw">fn </span>fixture_span(name: <span class="kw-2">&amp;</span>str, kind: SpanKind, attributes: Vec&lt;KeyValue&gt;) -&gt; OtlpSpan {
+<a href=#5259 id=5259 data-nosnippet>5259</a>        OtlpSpan {
+<a href=#5260 id=5260 data-nosnippet>5260</a>            trace_id: FIXTURE_TRACE_ID.to_vec(),
+<a href=#5261 id=5261 data-nosnippet>5261</a>            span_id: FIXTURE_SPAN_ID.to_vec(),
+<a href=#5262 id=5262 data-nosnippet>5262</a>            name: name.to_string(),
+<a href=#5263 id=5263 data-nosnippet>5263</a>            kind: kind <span class="kw">as </span>i32,
+<a href=#5264 id=5264 data-nosnippet>5264</a>            start_time_unix_nano: FIXTURE_START,
+<a href=#5265 id=5265 data-nosnippet>5265</a>            end_time_unix_nano: FIXTURE_START + <span class="number">200_000_000</span>,
+<a href=#5266 id=5266 data-nosnippet>5266</a>            attributes,
+<a href=#5267 id=5267 data-nosnippet>5267</a>            ..Default::default()
+<a href=#5268 id=5268 data-nosnippet>5268</a>        }
+<a href=#5269 id=5269 data-nosnippet>5269</a>    }
+<a href=#5270 id=5270 data-nosnippet>5270</a>
+<a href=#5271 id=5271 data-nosnippet>5271</a>    <span class="kw">fn </span>scope(name: <span class="kw-2">&amp;</span>str, version: <span class="kw-2">&amp;</span>str) -&gt; OtlpInstrumentationScope {
+<a href=#5272 id=5272 data-nosnippet>5272</a>        OtlpInstrumentationScope {
+<a href=#5273 id=5273 data-nosnippet>5273</a>            name: name.to_string(),
+<a href=#5274 id=5274 data-nosnippet>5274</a>            version: version.to_string(),
+<a href=#5275 id=5275 data-nosnippet>5275</a>            ..Default::default()
+<a href=#5276 id=5276 data-nosnippet>5276</a>        }
+<a href=#5277 id=5277 data-nosnippet>5277</a>    }
+<a href=#5278 id=5278 data-nosnippet>5278</a>
+<a href=#5279 id=5279 data-nosnippet>5279</a>    <span class="kw">fn </span>resource(attributes: Vec&lt;KeyValue&gt;) -&gt; Resource {
+<a href=#5280 id=5280 data-nosnippet>5280</a>        Resource {
+<a href=#5281 id=5281 data-nosnippet>5281</a>            attributes,
+<a href=#5282 id=5282 data-nosnippet>5282</a>            ..Default::default()
+<a href=#5283 id=5283 data-nosnippet>5283</a>        }
+<a href=#5284 id=5284 data-nosnippet>5284</a>    }
+<a href=#5285 id=5285 data-nosnippet>5285</a>
+<a href=#5286 id=5286 data-nosnippet>5286</a>    <span class="doccomment">/// The conversion with V1 naming, selected by `disable_operation_and_resource_name_logic_v2`.
+<a href=#5287 id=5287 data-nosnippet>5287</a>    </span><span class="kw">fn </span>v1_naming(span_name_as_resource_name: bool, remappings: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) -&gt; SpanConversion {
+<a href=#5288 id=5288 data-nosnippet>5288</a>        <span class="kw">let </span>remappings = remappings
+<a href=#5289 id=5289 data-nosnippet>5289</a>            .iter()
+<a href=#5290 id=5290 data-nosnippet>5290</a>            .map(|(from, to)| (from.to_string(), to.to_string()))
+<a href=#5291 id=5291 data-nosnippet>5291</a>            .collect();
+<a href=#5292 id=5292 data-nosnippet>5292</a>        SpanConversion {
+<a href=#5293 id=5293 data-nosnippet>5293</a>            naming: SpanNaming::select(span_name_as_resource_name, <span class="kw-2">&amp;</span>remappings, <span class="bool-val">true</span>),
+<a href=#5294 id=5294 data-nosnippet>5294</a>            ..conversion()
+<a href=#5295 id=5295 data-nosnippet>5295</a>        }
+<a href=#5296 id=5296 data-nosnippet>5296</a>    }
+<a href=#5297 id=5297 data-nosnippet>5297</a>
+<a href=#5298 id=5298 data-nosnippet>5298</a>    <span class="kw">fn </span>convert_v1(
+<a href=#5299 id=5299 data-nosnippet>5299</a>        span: <span class="kw-2">&amp;</span>OtlpSpan, resource: <span class="kw-2">&amp;</span>Resource, scope: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>OtlpInstrumentationScope&gt;, conversion: <span class="kw-2">&amp;</span>SpanConversion,
+<a href=#5300 id=5300 data-nosnippet>5300</a>    ) -&gt; DdSpan {
+<a href=#5301 id=5301 data-nosnippet>5301</a>        <span class="kw">let </span>(interner, <span class="kw-2">mut </span>sb) = extraction_env();
+<a href=#5302 id=5302 data-nosnippet>5302</a>        otel_span_to_dd_span_v1(span, resource, scope, conversion, <span class="kw-2">&amp;</span>interner, <span class="kw-2">&amp;mut </span>sb, <span class="prelude-val">None</span>)
+<a href=#5303 id=5303 data-nosnippet>5303</a>    }
+<a href=#5304 id=5304 data-nosnippet>5304</a>
+<a href=#5305 id=5305 data-nosnippet>5305</a>    <span class="kw">fn </span>convert_v2(
+<a href=#5306 id=5306 data-nosnippet>5306</a>        span: <span class="kw-2">&amp;</span>OtlpSpan, resource: <span class="kw-2">&amp;</span>Resource, scope: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>OtlpInstrumentationScope&gt;, conversion: <span class="kw-2">&amp;</span>SpanConversion,
+<a href=#5307 id=5307 data-nosnippet>5307</a>    ) -&gt; DdSpan {
+<a href=#5308 id=5308 data-nosnippet>5308</a>        <span class="kw">let </span>(interner, <span class="kw-2">mut </span>sb) = extraction_env();
+<a href=#5309 id=5309 data-nosnippet>5309</a>        otel_span_to_dd_span(
+<a href=#5310 id=5310 data-nosnippet>5310</a>            span,
+<a href=#5311 id=5311 data-nosnippet>5311</a>            resource,
+<a href=#5312 id=5312 data-nosnippet>5312</a>            scope,
+<a href=#5313 id=5313 data-nosnippet>5313</a>            conversion,
+<a href=#5314 id=5314 data-nosnippet>5314</a>            <span class="kw-2">&amp;</span>EMBEDDED_REGISTRY,
+<a href=#5315 id=5315 data-nosnippet>5315</a>            <span class="kw-2">&amp;</span>interner,
+<a href=#5316 id=5316 data-nosnippet>5316</a>            <span class="kw-2">&amp;mut </span>sb,
+<a href=#5317 id=5317 data-nosnippet>5317</a>            <span class="prelude-val">None</span>,
+<a href=#5318 id=5318 data-nosnippet>5318</a>        )
+<a href=#5319 id=5319 data-nosnippet>5319</a>    }
+<a href=#5320 id=5320 data-nosnippet>5320</a>
+<a href=#5321 id=5321 data-nosnippet>5321</a>    <span class="kw">fn </span>string(value: <span class="kw-2">&amp;</span>str) -&gt; AttributeValue {
+<a href=#5322 id=5322 data-nosnippet>5322</a>        AttributeValue::String(MetaString::from(value))
+<a href=#5323 id=5323 data-nosnippet>5323</a>    }
+<a href=#5324 id=5324 data-nosnippet>5324</a>
+<a href=#5325 id=5325 data-nosnippet>5325</a>    <span class="attr">#[track_caller]
+<a href=#5326 id=5326 data-nosnippet>5326</a>    </span><span class="kw">fn </span>assert_attributes(dd_span: <span class="kw-2">&amp;</span>DdSpan, expected: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, AttributeValue)]) {
+<a href=#5327 id=5327 data-nosnippet>5327</a>        <span class="kw">let </span>expected: FastHashMap&lt;MetaString, AttributeValue&gt; = expected
+<a href=#5328 id=5328 data-nosnippet>5328</a>            .iter()
+<a href=#5329 id=5329 data-nosnippet>5329</a>            .map(|(key, value)| (MetaString::from(<span class="kw-2">*</span>key), value.clone()))
+<a href=#5330 id=5330 data-nosnippet>5330</a>            .collect();
+<a href=#5331 id=5331 data-nosnippet>5331</a>        <span class="macro">assert_eq!</span>(dd_span.attributes, expected);
+<a href=#5332 id=5332 data-nosnippet>5332</a>    }
+<a href=#5333 id=5333 data-nosnippet>5333</a>
+<a href=#5334 id=5334 data-nosnippet>5334</a>    <span class="attr">#[test]
+<a href=#5335 id=5335 data-nosnippet>5335</a>    </span><span class="kw">fn </span>span_naming_selects_v1_when_any_v1_setting_is_set() {
+<a href=#5336 id=5336 data-nosnippet>5336</a>        <span class="kw">let </span>remappings = HashMap::from([(<span class="string">"old"</span>.to_string(), <span class="string">"new"</span>.to_string())]);
+<a href=#5337 id=5337 data-nosnippet>5337</a>        <span class="kw">let </span>none = HashMap::new();
+<a href=#5338 id=5338 data-nosnippet>5338</a>
+<a href=#5339 id=5339 data-nosnippet>5339</a>        <span class="macro">assert_eq!</span>(SpanNaming::select(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>none, <span class="bool-val">false</span>), SpanNaming::V2);
+<a href=#5340 id=5340 data-nosnippet>5340</a>        <span class="kw">for </span>(span_name_as_resource_name, remappings, disable_v2) <span class="kw">in
+<a href=#5341 id=5341 data-nosnippet>5341</a>            </span>[(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>none, <span class="bool-val">false</span>), (<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>remappings, <span class="bool-val">false</span>), (<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>none, <span class="bool-val">true</span>)]
+<a href=#5342 id=5342 data-nosnippet>5342</a>        {
+<a href=#5343 id=5343 data-nosnippet>5343</a>            <span class="macro">assert_eq!</span>(
+<a href=#5344 id=5344 data-nosnippet>5344</a>                SpanNaming::select(span_name_as_resource_name, remappings, disable_v2),
+<a href=#5345 id=5345 data-nosnippet>5345</a>                SpanNaming::V1 {
+<a href=#5346 id=5346 data-nosnippet>5346</a>                    span_name_as_resource_name,
+<a href=#5347 id=5347 data-nosnippet>5347</a>                    span_name_remappings: remappings
+<a href=#5348 id=5348 data-nosnippet>5348</a>                        .iter()
+<a href=#5349 id=5349 data-nosnippet>5349</a>                        .map(|(from, to)| (from.clone(), MetaString::from(to.as_str())))
+<a href=#5350 id=5350 data-nosnippet>5350</a>                        .collect(),
+<a href=#5351 id=5351 data-nosnippet>5351</a>                },
+<a href=#5352 id=5352 data-nosnippet>5352</a>                <span class="string">"{span_name_as_resource_name} {remappings:?} {disable_v2}"
+<a href=#5353 id=5353 data-nosnippet>5353</a>            </span>);
+<a href=#5354 id=5354 data-nosnippet>5354</a>        }
+<a href=#5355 id=5355 data-nosnippet>5355</a>    }
+<a href=#5356 id=5356 data-nosnippet>5356</a>
+<a href=#5357 id=5357 data-nosnippet>5357</a>    <span class="attr">#[test]
+<a href=#5358 id=5358 data-nosnippet>5358</a>    </span><span class="kw">fn </span>v1_naming_on_the_v2_receive_path_matches_the_fixtures() {
+<a href=#5359 id=5359 data-nosnippet>5359</a>        <span class="kw">struct </span>Case {
+<a href=#5360 id=5360 data-nosnippet>5360</a>            name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#5361 id=5361 data-nosnippet>5361</a>            library: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#5362 id=5362 data-nosnippet>5362</a>            kind: SpanKind,
+<a href=#5363 id=5363 data-nosnippet>5363</a>            span_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#5364 id=5364 data-nosnippet>5364</a>            resource_attrs: Vec&lt;KeyValue&gt;,
+<a href=#5365 id=5365 data-nosnippet>5365</a>            span_attrs: Vec&lt;KeyValue&gt;,
+<a href=#5366 id=5366 data-nosnippet>5366</a>            conversion: SpanConversion,
+<a href=#5367 id=5367 data-nosnippet>5367</a>            operation_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#5368 id=5368 data-nosnippet>5368</a>            resource_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#5369 id=5369 data-nosnippet>5369</a>        }
+<a href=#5370 id=5370 data-nosnippet>5370</a>
+<a href=#5371 id=5371 data-nosnippet>5371</a>        <span class="kw">let </span>cases = [
+<a href=#5372 id=5372 data-nosnippet>5372</a>            <span class="comment">// Ported from `testOTelSpanToDDSpan`.
+<a href=#5373 id=5373 data-nosnippet>5373</a>            </span>Case {
+<a href=#5374 id=5374 data-nosnippet>5374</a>                name: <span class="string">"library and kind, RPC resource"</span>,
+<a href=#5375 id=5375 data-nosnippet>5375</a>                library: <span class="string">"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"</span>,
+<a href=#5376 id=5376 data-nosnippet>5376</a>                kind: SpanKind::Server,
+<a href=#5377 id=5377 data-nosnippet>5377</a>                span_name: <span class="string">"opentelemetry.proto.collector.trace.v1.TraceService/Export"</span>,
+<a href=#5378 id=5378 data-nosnippet>5378</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5379 id=5379 data-nosnippet>5379</a>                span_attrs: <span class="macro">vec!</span>[
+<a href=#5380 id=5380 data-nosnippet>5380</a>                    kv_str(<span class="string">"rpc.method"</span>, <span class="string">"Export"</span>),
+<a href=#5381 id=5381 data-nosnippet>5381</a>                    kv_str(<span class="string">"rpc.service"</span>, <span class="string">"opentelemetry.proto.collector.trace.v1.TraceService"</span>),
+<a href=#5382 id=5382 data-nosnippet>5382</a>                ],
+<a href=#5383 id=5383 data-nosnippet>5383</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5384 id=5384 data-nosnippet>5384</a>                operation_name: <span class="string">"go.opentelemetry.io_contrib_instrumentation_google.golang.org_grpc_otelgrpc.server"</span>,
+<a href=#5385 id=5385 data-nosnippet>5385</a>                resource_name: <span class="string">"Export opentelemetry.proto.collector.trace.v1.TraceService"</span>,
+<a href=#5386 id=5386 data-nosnippet>5386</a>            },
+<a href=#5387 id=5387 data-nosnippet>5387</a>            Case {
+<a href=#5388 id=5388 data-nosnippet>5388</a>                name: <span class="string">"resource attributes take precedence"</span>,
+<a href=#5389 id=5389 data-nosnippet>5389</a>                library: <span class="string">"ddtracer"</span>,
+<a href=#5390 id=5390 data-nosnippet>5390</a>                kind: SpanKind::Server,
+<a href=#5391 id=5391 data-nosnippet>5391</a>                span_name: <span class="string">"/path"</span>,
+<a href=#5392 id=5392 data-nosnippet>5392</a>                resource_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"res-op"</span>), kv_str(<span class="string">"resource.name"</span>, <span class="string">"res-res"</span>)],
+<a href=#5393 id=5393 data-nosnippet>5393</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"span-op"</span>), kv_str(<span class="string">"resource.name"</span>, <span class="string">"span-res"</span>)],
+<a href=#5394 id=5394 data-nosnippet>5394</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5395 id=5395 data-nosnippet>5395</a>                operation_name: <span class="string">"res_op"</span>,
+<a href=#5396 id=5396 data-nosnippet>5396</a>                resource_name: <span class="string">"res-res"</span>,
+<a href=#5397 id=5397 data-nosnippet>5397</a>            },
+<a href=#5398 id=5398 data-nosnippet>5398</a>            Case {
+<a href=#5399 id=5399 data-nosnippet>5399</a>                name: <span class="string">"operation.name keeps its case"</span>,
+<a href=#5400 id=5400 data-nosnippet>5400</a>                library: <span class="string">"ddtracer"</span>,
+<a href=#5401 id=5401 data-nosnippet>5401</a>                kind: SpanKind::Unspecified,
+<a href=#5402 id=5402 data-nosnippet>5402</a>                span_name: <span class="string">"/path"</span>,
+<a href=#5403 id=5403 data-nosnippet>5403</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5404 id=5404 data-nosnippet>5404</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"READ"</span>), kv_str(<span class="string">"resource.name"</span>, <span class="string">"/path"</span>)],
+<a href=#5405 id=5405 data-nosnippet>5405</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5406 id=5406 data-nosnippet>5406</a>                operation_name: <span class="string">"READ"</span>,
+<a href=#5407 id=5407 data-nosnippet>5407</a>                resource_name: <span class="string">"/path"</span>,
+<a href=#5408 id=5408 data-nosnippet>5408</a>            },
+<a href=#5409 id=5409 data-nosnippet>5409</a>            Case {
+<a href=#5410 id=5410 data-nosnippet>5410</a>                name: <span class="string">"HTTP method and route"</span>,
+<a href=#5411 id=5411 data-nosnippet>5411</a>                library: <span class="string">"ddtracer"</span>,
+<a href=#5412 id=5412 data-nosnippet>5412</a>                kind: SpanKind::Server,
+<a href=#5413 id=5413 data-nosnippet>5413</a>                span_name: <span class="string">"/path"</span>,
+<a href=#5414 id=5414 data-nosnippet>5414</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5415 id=5415 data-nosnippet>5415</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"GET"</span>), kv_str(<span class="string">"http.route"</span>, <span class="string">"/path"</span>)],
+<a href=#5416 id=5416 data-nosnippet>5416</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5417 id=5417 data-nosnippet>5417</a>                operation_name: <span class="string">"ddtracer.server"</span>,
+<a href=#5418 id=5418 data-nosnippet>5418</a>                resource_name: <span class="string">"GET /path"</span>,
+<a href=#5419 id=5419 data-nosnippet>5419</a>            },
+<a href=#5420 id=5420 data-nosnippet>5420</a>            <span class="comment">// Ported from `testOTLPNameRemapping`.
+<a href=#5421 id=5421 data-nosnippet>5421</a>            </span>Case {
+<a href=#5422 id=5422 data-nosnippet>5422</a>                name: <span class="string">"remapped library and kind"</span>,
+<a href=#5423 id=5423 data-nosnippet>5423</a>                library: <span class="string">"libname"</span>,
+<a href=#5424 id=5424 data-nosnippet>5424</a>                kind: SpanKind::Unspecified,
+<a href=#5425 id=5425 data-nosnippet>5425</a>                span_name: <span class="string">"asd"</span>,
+<a href=#5426 id=5426 data-nosnippet>5426</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5427 id=5427 data-nosnippet>5427</a>                span_attrs: <span class="macro">vec!</span>[],
+<a href=#5428 id=5428 data-nosnippet>5428</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[(<span class="string">"libname.unspecified"</span>, <span class="string">"new"</span>)]),
+<a href=#5429 id=5429 data-nosnippet>5429</a>                operation_name: <span class="string">"new"</span>,
+<a href=#5430 id=5430 data-nosnippet>5430</a>                resource_name: <span class="string">"asd"</span>,
+<a href=#5431 id=5431 data-nosnippet>5431</a>            },
+<a href=#5432 id=5432 data-nosnippet>5432</a>            <span class="comment">// The remaining cases cover the other branches of V1 naming.
+<a href=#5433 id=5433 data-nosnippet>5433</a>            </span>Case {
+<a href=#5434 id=5434 data-nosnippet>5434</a>                name: <span class="string">"remapped operation.name"</span>,
+<a href=#5435 id=5435 data-nosnippet>5435</a>                library: <span class="string">"ddtracer"</span>,
+<a href=#5436 id=5436 data-nosnippet>5436</a>                kind: SpanKind::Internal,
+<a href=#5437 id=5437 data-nosnippet>5437</a>                span_name: <span class="string">"span"</span>,
+<a href=#5438 id=5438 data-nosnippet>5438</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5439 id=5439 data-nosnippet>5439</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"legacy.op"</span>)],
+<a href=#5440 id=5440 data-nosnippet>5440</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[(<span class="string">"legacy.op"</span>, <span class="string">"modern.op"</span>)]),
+<a href=#5441 id=5441 data-nosnippet>5441</a>                operation_name: <span class="string">"modern.op"</span>,
+<a href=#5442 id=5442 data-nosnippet>5442</a>                resource_name: <span class="string">"span"</span>,
+<a href=#5443 id=5443 data-nosnippet>5443</a>            },
+<a href=#5444 id=5444 data-nosnippet>5444</a>            Case {
+<a href=#5445 id=5445 data-nosnippet>5445</a>                name: <span class="string">"span name as operation name"</span>,
+<a href=#5446 id=5446 data-nosnippet>5446</a>                library: <span class="string">"ddtracer"</span>,
+<a href=#5447 id=5447 data-nosnippet>5447</a>                kind: SpanKind::Internal,
+<a href=#5448 id=5448 data-nosnippet>5448</a>                span_name: <span class="string">"checkout"</span>,
+<a href=#5449 id=5449 data-nosnippet>5449</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5450 id=5450 data-nosnippet>5450</a>                span_attrs: <span class="macro">vec!</span>[],
+<a href=#5451 id=5451 data-nosnippet>5451</a>                conversion: v1_naming(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5452 id=5452 data-nosnippet>5452</a>                operation_name: <span class="string">"checkout"</span>,
+<a href=#5453 id=5453 data-nosnippet>5453</a>                resource_name: <span class="string">"checkout"</span>,
+<a href=#5454 id=5454 data-nosnippet>5454</a>            },
+<a href=#5455 id=5455 data-nosnippet>5455</a>            Case {
+<a href=#5456 id=5456 data-nosnippet>5456</a>                name: <span class="string">"no library"</span>,
+<a href=#5457 id=5457 data-nosnippet>5457</a>                library: <span class="string">""</span>,
+<a href=#5458 id=5458 data-nosnippet>5458</a>                kind: SpanKind::Consumer,
+<a href=#5459 id=5459 data-nosnippet>5459</a>                span_name: <span class="string">"span"</span>,
+<a href=#5460 id=5460 data-nosnippet>5460</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5461 id=5461 data-nosnippet>5461</a>                span_attrs: <span class="macro">vec!</span>[
+<a href=#5462 id=5462 data-nosnippet>5462</a>                    kv_str(<span class="string">"messaging.operation"</span>, <span class="string">"process"</span>),
+<a href=#5463 id=5463 data-nosnippet>5463</a>                    kv_str(<span class="string">"messaging.destination.name"</span>, <span class="string">"orders"</span>),
+<a href=#5464 id=5464 data-nosnippet>5464</a>                ],
+<a href=#5465 id=5465 data-nosnippet>5465</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5466 id=5466 data-nosnippet>5466</a>                operation_name: <span class="string">"opentelemetry.consumer"</span>,
+<a href=#5467 id=5467 data-nosnippet>5467</a>                resource_name: <span class="string">"process orders"</span>,
+<a href=#5468 id=5468 data-nosnippet>5468</a>            },
+<a href=#5469 id=5469 data-nosnippet>5469</a>            Case {
+<a href=#5470 id=5470 data-nosnippet>5470</a>                name: <span class="string">"HTTP route on a client span"</span>,
+<a href=#5471 id=5471 data-nosnippet>5471</a>                library: <span class="string">"ddtracer"</span>,
+<a href=#5472 id=5472 data-nosnippet>5472</a>                kind: SpanKind::Client,
+<a href=#5473 id=5473 data-nosnippet>5473</a>                span_name: <span class="string">"span"</span>,
+<a href=#5474 id=5474 data-nosnippet>5474</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5475 id=5475 data-nosnippet>5475</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"http.request.method"</span>, <span class="string">"GET"</span>), kv_str(<span class="string">"http.route"</span>, <span class="string">"/users"</span>)],
+<a href=#5476 id=5476 data-nosnippet>5476</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5477 id=5477 data-nosnippet>5477</a>                operation_name: <span class="string">"ddtracer.client"</span>,
+<a href=#5478 id=5478 data-nosnippet>5478</a>                resource_name: <span class="string">"GET /users"</span>,
+<a href=#5479 id=5479 data-nosnippet>5479</a>            },
+<a href=#5480 id=5480 data-nosnippet>5480</a>            Case {
+<a href=#5481 id=5481 data-nosnippet>5481</a>                name: <span class="string">"an empty resource attribute hides later keys of the resource only"</span>,
+<a href=#5482 id=5482 data-nosnippet>5482</a>                library: <span class="string">"ddtracer"</span>,
+<a href=#5483 id=5483 data-nosnippet>5483</a>                kind: SpanKind::Internal,
+<a href=#5484 id=5484 data-nosnippet>5484</a>                span_name: <span class="string">"span"</span>,
+<a href=#5485 id=5485 data-nosnippet>5485</a>                resource_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"http.request.method"</span>, <span class="string">""</span>), kv_str(<span class="string">"http.method"</span>, <span class="string">"PUT"</span>)],
+<a href=#5486 id=5486 data-nosnippet>5486</a>                span_attrs: <span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"GET"</span>)],
+<a href=#5487 id=5487 data-nosnippet>5487</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5488 id=5488 data-nosnippet>5488</a>                operation_name: <span class="string">"ddtracer.internal"</span>,
+<a href=#5489 id=5489 data-nosnippet>5489</a>                resource_name: <span class="string">"GET"</span>,
+<a href=#5490 id=5490 data-nosnippet>5490</a>            },
+<a href=#5491 id=5491 data-nosnippet>5491</a>            Case {
+<a href=#5492 id=5492 data-nosnippet>5492</a>                name: <span class="string">"GraphQL values are not normalized"</span>,
+<a href=#5493 id=5493 data-nosnippet>5493</a>                library: <span class="string">"ddtracer"</span>,
+<a href=#5494 id=5494 data-nosnippet>5494</a>                kind: SpanKind::Server,
+<a href=#5495 id=5495 data-nosnippet>5495</a>                span_name: <span class="string">"span"</span>,
+<a href=#5496 id=5496 data-nosnippet>5496</a>                resource_attrs: <span class="macro">vec!</span>[],
+<a href=#5497 id=5497 data-nosnippet>5497</a>                span_attrs: <span class="macro">vec!</span>[
+<a href=#5498 id=5498 data-nosnippet>5498</a>                    kv_str(<span class="string">"graphql.operation.type"</span>, <span class="string">"Query"</span>),
+<a href=#5499 id=5499 data-nosnippet>5499</a>                    kv_str(<span class="string">"graphql.operation.name"</span>, <span class="string">"GetUser"</span>),
+<a href=#5500 id=5500 data-nosnippet>5500</a>                ],
+<a href=#5501 id=5501 data-nosnippet>5501</a>                conversion: v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]),
+<a href=#5502 id=5502 data-nosnippet>5502</a>                operation_name: <span class="string">"ddtracer.server"</span>,
+<a href=#5503 id=5503 data-nosnippet>5503</a>                resource_name: <span class="string">"Query GetUser"</span>,
+<a href=#5504 id=5504 data-nosnippet>5504</a>            },
+<a href=#5505 id=5505 data-nosnippet>5505</a>        ];
+<a href=#5506 id=5506 data-nosnippet>5506</a>
+<a href=#5507 id=5507 data-nosnippet>5507</a>        <span class="kw">for </span>case <span class="kw">in </span>cases {
+<a href=#5508 id=5508 data-nosnippet>5508</a>            <span class="kw">let </span>span = fixture_span(case.span_name, case.kind, case.span_attrs);
+<a href=#5509 id=5509 data-nosnippet>5509</a>            <span class="kw">let </span>library = scope(case.library, <span class="string">""</span>);
+<a href=#5510 id=5510 data-nosnippet>5510</a>            <span class="kw">let </span>dd_span = convert_v2(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(case.resource_attrs), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>case.conversion);
+<a href=#5511 id=5511 data-nosnippet>5511</a>
+<a href=#5512 id=5512 data-nosnippet>5512</a>            <span class="macro">assert_eq!</span>(dd_span.name(), case.operation_name, <span class="string">"{}"</span>, case.name);
+<a href=#5513 id=5513 data-nosnippet>5513</a>            <span class="macro">assert_eq!</span>(dd_span.resource(), case.resource_name, <span class="string">"{}"</span>, case.name);
+<a href=#5514 id=5514 data-nosnippet>5514</a>        }
+<a href=#5515 id=5515 data-nosnippet>5515</a>    }
+<a href=#5516 id=5516 data-nosnippet>5516</a>
+<a href=#5517 id=5517 data-nosnippet>5517</a>    <span class="attr">#[test]
+<a href=#5518 id=5518 data-nosnippet>5518</a>    </span><span class="kw">fn </span>v1_receive_path_matches_the_fixtures() {
+<a href=#5519 id=5519 data-nosnippet>5519</a>        <span class="kw">let </span>trace_id = string(<span class="string">"72df520af2bde7a5240031ead750e5f3"</span>);
+<a href=#5520 id=5520 data-nosnippet>5520</a>
+<a href=#5521 id=5521 data-nosnippet>5521</a>        <span class="comment">// Ported from `testOTLPConvertSpan`: Datadog fields set by attributes.
+<a href=#5522 id=5522 data-nosnippet>5522</a>        </span><span class="kw">let </span>span = fixture_span(
+<a href=#5523 id=5523 data-nosnippet>5523</a>            <span class="string">"/path"</span>,
+<a href=#5524 id=5524 data-nosnippet>5524</a>            SpanKind::Unspecified,
+<a href=#5525 id=5525 data-nosnippet>5525</a>            <span class="macro">vec!</span>[
+<a href=#5526 id=5526 data-nosnippet>5526</a>                kv_str(<span class="string">"service.name"</span>, <span class="string">"mongo"</span>),
+<a href=#5527 id=5527 data-nosnippet>5527</a>                kv_str(<span class="string">"operation.name"</span>, <span class="string">"READ"</span>),
+<a href=#5528 id=5528 data-nosnippet>5528</a>                kv_str(<span class="string">"resource.name"</span>, <span class="string">"/path"</span>),
+<a href=#5529 id=5529 data-nosnippet>5529</a>                kv_str(<span class="string">"span.type"</span>, <span class="string">"db"</span>),
+<a href=#5530 id=5530 data-nosnippet>5530</a>                kv_str(<span class="string">"name"</span>, <span class="string">"john"</span>),
+<a href=#5531 id=5531 data-nosnippet>5531</a>                kv_str(<span class="string">"container.id"</span>, <span class="string">"cid"</span>),
+<a href=#5532 id=5532 data-nosnippet>5532</a>                kv_str(<span class="string">"k8s.container.name"</span>, <span class="string">"k8s-container"</span>),
+<a href=#5533 id=5533 data-nosnippet>5533</a>                kv_str(<span class="string">"http.method"</span>, <span class="string">"GET"</span>),
+<a href=#5534 id=5534 data-nosnippet>5534</a>                kv_str(<span class="string">"http.route"</span>, <span class="string">"/path"</span>),
+<a href=#5535 id=5535 data-nosnippet>5535</a>                kv_value(<span class="string">"approx"</span>, OtlpValue::DoubleValue(<span class="number">1.2</span>)),
+<a href=#5536 id=5536 data-nosnippet>5536</a>                kv_int(<span class="string">"count"</span>, <span class="number">2</span>),
+<a href=#5537 id=5537 data-nosnippet>5537</a>                kv_bool(<span class="string">"analytics.event"</span>, <span class="bool-val">true</span>),
+<a href=#5538 id=5538 data-nosnippet>5538</a>            ],
+<a href=#5539 id=5539 data-nosnippet>5539</a>        );
+<a href=#5540 id=5540 data-nosnippet>5540</a>        <span class="kw">let </span>resource_attrs = resource(<span class="macro">vec!</span>[kv_str(<span class="string">"env"</span>, <span class="string">"staging"</span>)]);
+<a href=#5541 id=5541 data-nosnippet>5541</a>        <span class="kw">let </span>library = scope(<span class="string">"ddtracer"</span>, <span class="string">"v2"</span>);
+<a href=#5542 id=5542 data-nosnippet>5542</a>        <span class="kw">for </span>(conversion, operation_name) <span class="kw">in </span>[(v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]), <span class="string">"READ"</span>), (conversion(), <span class="string">"read"</span>)] {
+<a href=#5543 id=5543 data-nosnippet>5543</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource_attrs, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>conversion);
+<a href=#5544 id=5544 data-nosnippet>5544</a>            <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"mongo"</span>);
+<a href=#5545 id=5545 data-nosnippet>5545</a>            <span class="macro">assert_eq!</span>(dd_span.name(), operation_name);
+<a href=#5546 id=5546 data-nosnippet>5546</a>            <span class="macro">assert_eq!</span>(dd_span.resource(), <span class="string">"/path"</span>);
+<a href=#5547 id=5547 data-nosnippet>5547</a>            <span class="macro">assert_eq!</span>(dd_span.span_type(), <span class="string">"db"</span>);
+<a href=#5548 id=5548 data-nosnippet>5548</a>            <span class="macro">assert_eq!</span>(dd_span.error(), <span class="number">0</span>);
+<a href=#5549 id=5549 data-nosnippet>5549</a>            <span class="macro">assert_eq!</span>(dd_span.span_id(), <span class="number">2594128270069917171</span>);
+<a href=#5550 id=5550 data-nosnippet>5550</a>            <span class="macro">assert_eq!</span>(dd_span.parent_id(), <span class="number">0</span>);
+<a href=#5551 id=5551 data-nosnippet>5551</a>            <span class="macro">assert_eq!</span>(dd_span.start(), FIXTURE_START);
+<a href=#5552 id=5552 data-nosnippet>5552</a>            <span class="macro">assert_eq!</span>(dd_span.duration(), <span class="number">200_000_000</span>);
+<a href=#5553 id=5553 data-nosnippet>5553</a>            assert_attributes(
+<a href=#5554 id=5554 data-nosnippet>5554</a>                <span class="kw-2">&amp;</span>dd_span,
+<a href=#5555 id=5555 data-nosnippet>5555</a>                <span class="kw-2">&amp;</span>[
+<a href=#5556 id=5556 data-nosnippet>5556</a>                    (<span class="string">"env"</span>, string(<span class="string">"staging"</span>)),
+<a href=#5557 id=5557 data-nosnippet>5557</a>                    (<span class="string">"container.id"</span>, string(<span class="string">"cid"</span>)),
+<a href=#5558 id=5558 data-nosnippet>5558</a>                    (<span class="string">"k8s.container.name"</span>, string(<span class="string">"k8s-container"</span>)),
+<a href=#5559 id=5559 data-nosnippet>5559</a>                    (<span class="string">"http.method"</span>, string(<span class="string">"GET"</span>)),
+<a href=#5560 id=5560 data-nosnippet>5560</a>                    (<span class="string">"http.route"</span>, string(<span class="string">"/path"</span>)),
+<a href=#5561 id=5561 data-nosnippet>5561</a>                    (<span class="string">"otel.status_code"</span>, string(<span class="string">"Unset"</span>)),
+<a href=#5562 id=5562 data-nosnippet>5562</a>                    (<span class="string">"otel.library.name"</span>, string(<span class="string">"ddtracer"</span>)),
+<a href=#5563 id=5563 data-nosnippet>5563</a>                    (<span class="string">"otel.library.version"</span>, string(<span class="string">"v2"</span>)),
+<a href=#5564 id=5564 data-nosnippet>5564</a>                    (<span class="string">"name"</span>, string(<span class="string">"john"</span>)),
+<a href=#5565 id=5565 data-nosnippet>5565</a>                    (<span class="string">"otel.trace_id"</span>, trace_id.clone()),
+<a href=#5566 id=5566 data-nosnippet>5566</a>                    (<span class="string">"span.kind"</span>, string(<span class="string">"unspecified"</span>)),
+<a href=#5567 id=5567 data-nosnippet>5567</a>                    (<span class="string">"approx"</span>, AttributeValue::Float(<span class="number">1.2</span>)),
+<a href=#5568 id=5568 data-nosnippet>5568</a>                    (<span class="string">"count"</span>, AttributeValue::Int(<span class="number">2</span>)),
+<a href=#5569 id=5569 data-nosnippet>5569</a>                    (EVENT_EXTRACTION_METRIC_KEY, AttributeValue::Float(<span class="number">1.0</span>)),
+<a href=#5570 id=5570 data-nosnippet>5570</a>                    (<span class="string">"_top_level"</span>, AttributeValue::Float(<span class="number">1.0</span>)),
+<a href=#5571 id=5571 data-nosnippet>5571</a>                ],
+<a href=#5572 id=5572 data-nosnippet>5572</a>            );
+<a href=#5573 id=5573 data-nosnippet>5573</a>        }
+<a href=#5574 id=5574 data-nosnippet>5574</a>
+<a href=#5575 id=5575 data-nosnippet>5575</a>        <span class="comment">// Ported from `testOTLPConvertSpan`: an HTTP server error with the current semantic conventions.
+<a href=#5576 id=5576 data-nosnippet>5576</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>span = fixture_span(
+<a href=#5577 id=5577 data-nosnippet>5577</a>            <span class="string">"POST /uploads/:document_id"</span>,
+<a href=#5578 id=5578 data-nosnippet>5578</a>            SpanKind::Unspecified,
+<a href=#5579 id=5579 data-nosnippet>5579</a>            <span class="macro">vec!</span>[
+<a href=#5580 id=5580 data-nosnippet>5580</a>                kv_str(<span class="string">"operation.name"</span>, <span class="string">"ddtracer.server"</span>),
+<a href=#5581 id=5581 data-nosnippet>5581</a>                kv_str(<span class="string">"http.request.method"</span>, <span class="string">"POST"</span>),
+<a href=#5582 id=5582 data-nosnippet>5582</a>                kv_str(<span class="string">"url.path"</span>, <span class="string">"/uploads/4"</span>),
+<a href=#5583 id=5583 data-nosnippet>5583</a>                kv_str(<span class="string">"url.scheme"</span>, <span class="string">"https"</span>),
+<a href=#5584 id=5584 data-nosnippet>5584</a>                kv_str(<span class="string">"http.route"</span>, <span class="string">"/uploads/:document_id"</span>),
+<a href=#5585 id=5585 data-nosnippet>5585</a>                kv_str(<span class="string">"http.response.status_code"</span>, <span class="string">"201"</span>),
+<a href=#5586 id=5586 data-nosnippet>5586</a>                kv_str(<span class="string">"error.type"</span>, <span class="string">"WebSocketDisconnect"</span>),
+<a href=#5587 id=5587 data-nosnippet>5587</a>            ],
+<a href=#5588 id=5588 data-nosnippet>5588</a>        );
+<a href=#5589 id=5589 data-nosnippet>5589</a>        span.status = <span class="prelude-val">Some</span>(OtlpStatus {
+<a href=#5590 id=5590 data-nosnippet>5590</a>            code: StatusCode::Error <span class="kw">as </span>i32,
+<a href=#5591 id=5591 data-nosnippet>5591</a>            ..Default::default()
+<a href=#5592 id=5592 data-nosnippet>5592</a>        });
+<a href=#5593 id=5593 data-nosnippet>5593</a>        <span class="kw">let </span>resource_attrs = resource(<span class="macro">vec!</span>[
+<a href=#5594 id=5594 data-nosnippet>5594</a>            kv_str(<span class="string">"env"</span>, <span class="string">"staging"</span>),
+<a href=#5595 id=5595 data-nosnippet>5595</a>            kv_str(<span class="string">"service.name"</span>, <span class="string">"document-uploader"</span>),
+<a href=#5596 id=5596 data-nosnippet>5596</a>        ]);
+<a href=#5597 id=5597 data-nosnippet>5597</a>        <span class="kw">for </span>(conversion, resource_name) <span class="kw">in </span>[
+<a href=#5598 id=5598 data-nosnippet>5598</a>            (v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]), <span class="string">"POST /uploads/:document_id"</span>),
+<a href=#5599 id=5599 data-nosnippet>5599</a>            (conversion(), <span class="string">"POST"</span>),
+<a href=#5600 id=5600 data-nosnippet>5600</a>        ] {
+<a href=#5601 id=5601 data-nosnippet>5601</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource_attrs, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>conversion);
+<a href=#5602 id=5602 data-nosnippet>5602</a>            <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"document-uploader"</span>);
+<a href=#5603 id=5603 data-nosnippet>5603</a>            <span class="macro">assert_eq!</span>(dd_span.name(), <span class="string">"ddtracer.server"</span>);
+<a href=#5604 id=5604 data-nosnippet>5604</a>            <span class="macro">assert_eq!</span>(dd_span.resource(), resource_name);
+<a href=#5605 id=5605 data-nosnippet>5605</a>            <span class="macro">assert_eq!</span>(dd_span.span_type(), <span class="string">"custom"</span>);
+<a href=#5606 id=5606 data-nosnippet>5606</a>            <span class="macro">assert_eq!</span>(dd_span.error(), <span class="number">1</span>);
+<a href=#5607 id=5607 data-nosnippet>5607</a>            assert_attributes(
+<a href=#5608 id=5608 data-nosnippet>5608</a>                <span class="kw-2">&amp;</span>dd_span,
+<a href=#5609 id=5609 data-nosnippet>5609</a>                <span class="kw-2">&amp;</span>[
+<a href=#5610 id=5610 data-nosnippet>5610</a>                    (<span class="string">"env"</span>, string(<span class="string">"staging"</span>)),
+<a href=#5611 id=5611 data-nosnippet>5611</a>                    (<span class="string">"otel.library.name"</span>, string(<span class="string">"ddtracer"</span>)),
+<a href=#5612 id=5612 data-nosnippet>5612</a>                    (<span class="string">"otel.library.version"</span>, string(<span class="string">"v2"</span>)),
+<a href=#5613 id=5613 data-nosnippet>5613</a>                    (<span class="string">"otel.status_code"</span>, string(<span class="string">"Error"</span>)),
+<a href=#5614 id=5614 data-nosnippet>5614</a>                    (<span class="string">"error.msg"</span>, string(<span class="string">"201 Created"</span>)),
+<a href=#5615 id=5615 data-nosnippet>5615</a>                    (<span class="string">"http.request.method"</span>, string(<span class="string">"POST"</span>)),
+<a href=#5616 id=5616 data-nosnippet>5616</a>                    (<span class="string">"http.method"</span>, string(<span class="string">"POST"</span>)),
+<a href=#5617 id=5617 data-nosnippet>5617</a>                    (<span class="string">"url.path"</span>, string(<span class="string">"/uploads/4"</span>)),
+<a href=#5618 id=5618 data-nosnippet>5618</a>                    (<span class="string">"url.scheme"</span>, string(<span class="string">"https"</span>)),
+<a href=#5619 id=5619 data-nosnippet>5619</a>                    (<span class="string">"http.route"</span>, string(<span class="string">"/uploads/:document_id"</span>)),
+<a href=#5620 id=5620 data-nosnippet>5620</a>                    (<span class="string">"http.response.status_code"</span>, string(<span class="string">"201"</span>)),
+<a href=#5621 id=5621 data-nosnippet>5621</a>                    (<span class="string">"http.status_code"</span>, string(<span class="string">"201"</span>)),
+<a href=#5622 id=5622 data-nosnippet>5622</a>                    (<span class="string">"error.type"</span>, string(<span class="string">"WebSocketDisconnect"</span>)),
+<a href=#5623 id=5623 data-nosnippet>5623</a>                    (<span class="string">"otel.trace_id"</span>, trace_id.clone()),
+<a href=#5624 id=5624 data-nosnippet>5624</a>                    (<span class="string">"span.kind"</span>, string(<span class="string">"unspecified"</span>)),
+<a href=#5625 id=5625 data-nosnippet>5625</a>                    (<span class="string">"_top_level"</span>, AttributeValue::Float(<span class="number">1.0</span>)),
+<a href=#5626 id=5626 data-nosnippet>5626</a>                ],
+<a href=#5627 id=5627 data-nosnippet>5627</a>            );
 <a href=#5628 id=5628 data-nosnippet>5628</a>        }
 <a href=#5629 id=5629 data-nosnippet>5629</a>    }
 <a href=#5630 id=5630 data-nosnippet>5630</a>
 <a href=#5631 id=5631 data-nosnippet>5631</a>    <span class="attr">#[test]
-<a href=#5632 id=5632 data-nosnippet>5632</a>    </span><span class="kw">fn </span>v1_receive_path_keeps_numbers_over_string_tags_of_the_same_key() {
-<a href=#5633 id=5633 data-nosnippet>5633</a>        <span class="kw">for </span>kind <span class="kw">in </span>[SpanKind::Server, SpanKind::Client] {
-<a href=#5634 id=5634 data-nosnippet>5634</a>            <span class="kw">let </span>span = fixture_span(
-<a href=#5635 id=5635 data-nosnippet>5635</a>                <span class="string">"span"</span>,
-<a href=#5636 id=5636 data-nosnippet>5636</a>                kind,
-<a href=#5637 id=5637 data-nosnippet>5637</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"_top_level"</span>, <span class="string">"0"</span>), kv_str(<span class="string">"_dd.measured"</span>, <span class="string">"0"</span>)],
-<a href=#5638 id=5638 data-nosnippet>5638</a>            );
-<a href=#5639 id=5639 data-nosnippet>5639</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion());
-<a href=#5640 id=5640 data-nosnippet>5640</a>
-<a href=#5641 id=5641 data-nosnippet>5641</a>            <span class="kw">let </span>marker = <span class="kw">if </span>kind == SpanKind::Server {
-<a href=#5642 id=5642 data-nosnippet>5642</a>                <span class="string">"_top_level"
-<a href=#5643 id=5643 data-nosnippet>5643</a>            </span>} <span class="kw">else </span>{
-<a href=#5644 id=5644 data-nosnippet>5644</a>                <span class="string">"_dd.measured"
-<a href=#5645 id=5645 data-nosnippet>5645</a>            </span>};
-<a href=#5646 id=5646 data-nosnippet>5646</a>            <span class="macro">assert_eq!</span>(
-<a href=#5647 id=5647 data-nosnippet>5647</a>                dd_span.attributes.get(marker),
-<a href=#5648 id=5648 data-nosnippet>5648</a>                <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>AttributeValue::Float(<span class="number">1.0</span>)),
-<a href=#5649 id=5649 data-nosnippet>5649</a>                <span class="string">"{kind:?}"
-<a href=#5650 id=5650 data-nosnippet>5650</a>            </span>);
-<a href=#5651 id=5651 data-nosnippet>5651</a>        }
-<a href=#5652 id=5652 data-nosnippet>5652</a>
-<a href=#5653 id=5653 data-nosnippet>5653</a>        <span class="comment">// Without a computed marker, the attribute is an ordinary string tag.
-<a href=#5654 id=5654 data-nosnippet>5654</a>        </span><span class="kw">let </span>span = fixture_span(<span class="string">"span"</span>, SpanKind::Internal, <span class="macro">vec!</span>[kv_str(<span class="string">"_dd.measured"</span>, <span class="string">"0"</span>)]);
-<a href=#5655 id=5655 data-nosnippet>5655</a>        <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion());
-<a href=#5656 id=5656 data-nosnippet>5656</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"_dd.measured"</span>), <span class="prelude-val">Some</span>(<span class="string">"0"</span>));
-<a href=#5657 id=5657 data-nosnippet>5657</a>    }
-<a href=#5658 id=5658 data-nosnippet>5658</a>
-<a href=#5659 id=5659 data-nosnippet>5659</a>    <span class="attr">#[test]
-<a href=#5660 id=5660 data-nosnippet>5660</a>    </span><span class="kw">fn </span>v1_receive_path_follows_the_legacy_tags_gate_and_takes_no_error_fields_from_events() {
-<a href=#5661 id=5661 data-nosnippet>5661</a>        <span class="kw">let </span><span class="kw-2">mut </span>span = span_with_links_and_events();
-<a href=#5662 id=5662 data-nosnippet>5662</a>        span.events[<span class="number">0</span>].attributes = <span class="macro">vec!</span>[
-<a href=#5663 id=5663 data-nosnippet>5663</a>            kv_str(<span class="string">"exception.message"</span>, <span class="string">"Out of memory"</span>),
-<a href=#5664 id=5664 data-nosnippet>5664</a>            kv_str(<span class="string">"exception.type"</span>, <span class="string">"mem"</span>),
-<a href=#5665 id=5665 data-nosnippet>5665</a>        ];
-<a href=#5666 id=5666 data-nosnippet>5666</a>        span.status = <span class="prelude-val">Some</span>(OtlpStatus {
-<a href=#5667 id=5667 data-nosnippet>5667</a>            code: StatusCode::Error <span class="kw">as </span>i32,
-<a href=#5668 id=5668 data-nosnippet>5668</a>            message: <span class="string">"boom"</span>.to_string(),
-<a href=#5669 id=5669 data-nosnippet>5669</a>        });
-<a href=#5670 id=5670 data-nosnippet>5670</a>        <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion());
-<a href=#5671 id=5671 data-nosnippet>5671</a>
-<a href=#5672 id=5672 data-nosnippet>5672</a>        <span class="macro">assert_eq!</span>(!dd_span.span_links().is_empty(), !LEGACY_TAG_LINKS_AND_EVENTS);
-<a href=#5673 id=5673 data-nosnippet>5673</a>        <span class="macro">assert_eq!</span>(!dd_span.span_events().is_empty(), !LEGACY_TAG_LINKS_AND_EVENTS);
-<a href=#5674 id=5674 data-nosnippet>5674</a>        <span class="macro">assert_eq!</span>(
-<a href=#5675 id=5675 data-nosnippet>5675</a>            dd_span.attributes.contains_key(<span class="string">"_dd.span_links"</span>),
-<a href=#5676 id=5676 data-nosnippet>5676</a>            LEGACY_TAG_LINKS_AND_EVENTS
-<a href=#5677 id=5677 data-nosnippet>5677</a>        );
-<a href=#5678 id=5678 data-nosnippet>5678</a>        <span class="macro">assert_eq!</span>(dd_span.attributes.contains_key(<span class="string">"events"</span>), LEGACY_TAG_LINKS_AND_EVENTS);
-<a href=#5679 id=5679 data-nosnippet>5679</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"_dd.span_events.has_exception"</span>), <span class="prelude-val">Some</span>(<span class="string">"true"</span>));
-<a href=#5680 id=5680 data-nosnippet>5680</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"error.msg"</span>), <span class="prelude-val">Some</span>(<span class="string">"boom"</span>));
-<a href=#5681 id=5681 data-nosnippet>5681</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"error.type"</span>), <span class="prelude-val">None</span>);
-<a href=#5682 id=5682 data-nosnippet>5682</a>        <span class="macro">assert_eq!</span>(dd_span.error(), <span class="number">1</span>);
-<a href=#5683 id=5683 data-nosnippet>5683</a>    }
-<a href=#5684 id=5684 data-nosnippet>5684</a>}
+<a href=#5632 id=5632 data-nosnippet>5632</a>    </span><span class="kw">fn </span>v1_receive_path_overrides_resource_values_with_span_values() {
+<a href=#5633 id=5633 data-nosnippet>5633</a>        <span class="kw">let </span>span = fixture_span(
+<a href=#5634 id=5634 data-nosnippet>5634</a>            <span class="string">"span"</span>,
+<a href=#5635 id=5635 data-nosnippet>5635</a>            SpanKind::Internal,
+<a href=#5636 id=5636 data-nosnippet>5636</a>            <span class="macro">vec!</span>[
+<a href=#5637 id=5637 data-nosnippet>5637</a>                kv_str(<span class="string">"service.name"</span>, <span class="string">"span-service"</span>),
+<a href=#5638 id=5638 data-nosnippet>5638</a>                kv_int(<span class="string">"sampling.priority"</span>, <span class="number">2</span>),
+<a href=#5639 id=5639 data-nosnippet>5639</a>                kv_int(<span class="string">"retries"</span>, <span class="number">7</span>),
+<a href=#5640 id=5640 data-nosnippet>5640</a>                kv_int(<span class="string">"http.status_code"</span>, <span class="number">200</span>),
+<a href=#5641 id=5641 data-nosnippet>5641</a>                kv_str(<span class="string">"http.response.status_code"</span>, <span class="string">"201"</span>),
+<a href=#5642 id=5642 data-nosnippet>5642</a>            ],
+<a href=#5643 id=5643 data-nosnippet>5643</a>        );
+<a href=#5644 id=5644 data-nosnippet>5644</a>        <span class="kw">let </span>resource_attrs = resource(<span class="macro">vec!</span>[
+<a href=#5645 id=5645 data-nosnippet>5645</a>            kv_str(<span class="string">"service.name"</span>, <span class="string">"resource-service"</span>),
+<a href=#5646 id=5646 data-nosnippet>5646</a>            kv_str(<span class="string">"sampling.priority"</span>, <span class="string">"1"</span>),
+<a href=#5647 id=5647 data-nosnippet>5647</a>            kv_str(<span class="string">"retries"</span>, <span class="string">"resource-value"</span>),
+<a href=#5648 id=5648 data-nosnippet>5648</a>            kv_str(<span class="string">"team"</span>, <span class="string">"core"</span>),
+<a href=#5649 id=5649 data-nosnippet>5649</a>        ]);
+<a href=#5650 id=5650 data-nosnippet>5650</a>        <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource_attrs, <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]));
+<a href=#5651 id=5651 data-nosnippet>5651</a>
+<a href=#5652 id=5652 data-nosnippet>5652</a>        <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"span-service"</span>);
+<a href=#5653 id=5653 data-nosnippet>5653</a>        <span class="macro">assert_eq!</span>(
+<a href=#5654 id=5654 data-nosnippet>5654</a>            dd_span.attributes.get(SAMPLING_PRIORITY_METRIC_KEY),
+<a href=#5655 id=5655 data-nosnippet>5655</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>AttributeValue::Int(<span class="number">2</span>))
+<a href=#5656 id=5656 data-nosnippet>5656</a>        );
+<a href=#5657 id=5657 data-nosnippet>5657</a>        <span class="comment">// The resource's `sampling.priority` tag is dropped, though the number is stored under another key.
+<a href=#5658 id=5658 data-nosnippet>5658</a>        </span><span class="macro">assert_eq!</span>(dd_span.attributes.get(<span class="string">"sampling.priority"</span>), <span class="prelude-val">None</span>);
+<a href=#5659 id=5659 data-nosnippet>5659</a>        <span class="macro">assert_eq!</span>(dd_span.attributes.get(<span class="string">"retries"</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>AttributeValue::Int(<span class="number">7</span>)));
+<a href=#5660 id=5660 data-nosnippet>5660</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"team"</span>), <span class="prelude-val">Some</span>(<span class="string">"core"</span>));
+<a href=#5661 id=5661 data-nosnippet>5661</a>        <span class="comment">// `http.response.status_code` is mapped onto a string tag, but the numeric `http.status_code` stays a number.
+<a href=#5662 id=5662 data-nosnippet>5662</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#5663 id=5663 data-nosnippet>5663</a>            dd_span.attributes.get(<span class="string">"http.status_code"</span>),
+<a href=#5664 id=5664 data-nosnippet>5664</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>AttributeValue::Int(<span class="number">200</span>))
+<a href=#5665 id=5665 data-nosnippet>5665</a>        );
+<a href=#5666 id=5666 data-nosnippet>5666</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"http.response.status_code"</span>), <span class="prelude-val">Some</span>(<span class="string">"201"</span>));
+<a href=#5667 id=5667 data-nosnippet>5667</a>    }
+<a href=#5668 id=5668 data-nosnippet>5668</a>
+<a href=#5669 id=5669 data-nosnippet>5669</a>    <span class="attr">#[test]
+<a href=#5670 id=5670 data-nosnippet>5670</a>    </span><span class="kw">fn </span>v1_receive_path_names_only_spans_without_operation_name() {
+<a href=#5671 id=5671 data-nosnippet>5671</a>        <span class="kw">let </span>library = scope(<span class="string">"libname"</span>, <span class="string">"1.2"</span>);
+<a href=#5672 id=5672 data-nosnippet>5672</a>        <span class="kw">let </span>remapped = v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[(<span class="string">"libname.unspecified"</span>, <span class="string">"new"</span>), (<span class="string">"legacy.op"</span>, <span class="string">"modern.op"</span>)]);
+<a href=#5673 id=5673 data-nosnippet>5673</a>
+<a href=#5674 id=5674 data-nosnippet>5674</a>        <span class="comment">// Ported from `testOTLPNameRemapping`.
+<a href=#5675 id=5675 data-nosnippet>5675</a>        </span><span class="kw">let </span>span = fixture_span(<span class="string">"asd"</span>, SpanKind::Unspecified, <span class="macro">vec!</span>[]);
+<a href=#5676 id=5676 data-nosnippet>5676</a>        <span class="macro">assert_eq!</span>(
+<a href=#5677 id=5677 data-nosnippet>5677</a>            convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>remapped).name(),
+<a href=#5678 id=5678 data-nosnippet>5678</a>            <span class="string">"new"
+<a href=#5679 id=5679 data-nosnippet>5679</a>        </span>);
+<a href=#5680 id=5680 data-nosnippet>5680</a>
+<a href=#5681 id=5681 data-nosnippet>5681</a>        <span class="comment">// Unlike V1 naming on the V2 receive path, an `operation.name` is not remapped.
+<a href=#5682 id=5682 data-nosnippet>5682</a>        </span><span class="kw">let </span>span = fixture_span(
+<a href=#5683 id=5683 data-nosnippet>5683</a>            <span class="string">"asd"</span>,
+<a href=#5684 id=5684 data-nosnippet>5684</a>            SpanKind::Unspecified,
+<a href=#5685 id=5685 data-nosnippet>5685</a>            <span class="macro">vec!</span>[kv_str(<span class="string">"operation.name"</span>, <span class="string">"legacy.op"</span>)],
+<a href=#5686 id=5686 data-nosnippet>5686</a>        );
+<a href=#5687 id=5687 data-nosnippet>5687</a>        <span class="macro">assert_eq!</span>(
+<a href=#5688 id=5688 data-nosnippet>5688</a>            convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>remapped).name(),
+<a href=#5689 id=5689 data-nosnippet>5689</a>            <span class="string">"legacy.op"
+<a href=#5690 id=5690 data-nosnippet>5690</a>        </span>);
+<a href=#5691 id=5691 data-nosnippet>5691</a>
+<a href=#5692 id=5692 data-nosnippet>5692</a>        <span class="kw">let </span>span = fixture_span(<span class="string">"checkout"</span>, SpanKind::Server, <span class="macro">vec!</span>[]);
+<a href=#5693 id=5693 data-nosnippet>5693</a>        <span class="macro">assert_eq!</span>(
+<a href=#5694 id=5694 data-nosnippet>5694</a>            convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[])).name(),
+<a href=#5695 id=5695 data-nosnippet>5695</a>            <span class="string">"checkout"
+<a href=#5696 id=5696 data-nosnippet>5696</a>        </span>);
+<a href=#5697 id=5697 data-nosnippet>5697</a>        <span class="macro">assert_eq!</span>(
+<a href=#5698 id=5698 data-nosnippet>5698</a>            convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[])).name(),
+<a href=#5699 id=5699 data-nosnippet>5699</a>            <span class="string">"opentelemetry.server"
+<a href=#5700 id=5700 data-nosnippet>5700</a>        </span>);
+<a href=#5701 id=5701 data-nosnippet>5701</a>    }
+<a href=#5702 id=5702 data-nosnippet>5702</a>
+<a href=#5703 id=5703 data-nosnippet>5703</a>    <span class="attr">#[test]
+<a href=#5704 id=5704 data-nosnippet>5704</a>    </span><span class="kw">fn </span>v1_receive_path_falls_back_to_its_own_defaults() {
+<a href=#5705 id=5705 data-nosnippet>5705</a>        <span class="comment">// The database system is read from the resource first, and normalized.
+<a href=#5706 id=5706 data-nosnippet>5706</a>        </span><span class="kw">for </span>(kind, resource_attrs, span_attrs, span_type) <span class="kw">in </span>[
+<a href=#5707 id=5707 data-nosnippet>5707</a>            (SpanKind::Server, <span class="macro">vec!</span>[], <span class="macro">vec!</span>[], <span class="string">"web"</span>),
+<a href=#5708 id=5708 data-nosnippet>5708</a>            (SpanKind::Client, <span class="macro">vec!</span>[], <span class="macro">vec!</span>[], <span class="string">"http"</span>),
+<a href=#5709 id=5709 data-nosnippet>5709</a>            (
+<a href=#5710 id=5710 data-nosnippet>5710</a>                SpanKind::Client,
+<a href=#5711 id=5711 data-nosnippet>5711</a>                <span class="macro">vec!</span>[],
+<a href=#5712 id=5712 data-nosnippet>5712</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"memcached"</span>)],
+<a href=#5713 id=5713 data-nosnippet>5713</a>                <span class="string">"cache"</span>,
+<a href=#5714 id=5714 data-nosnippet>5714</a>            ),
+<a href=#5715 id=5715 data-nosnippet>5715</a>            (
+<a href=#5716 id=5716 data-nosnippet>5716</a>                SpanKind::Client,
+<a href=#5717 id=5717 data-nosnippet>5717</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"Redis"</span>)],
+<a href=#5718 id=5718 data-nosnippet>5718</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"mysql"</span>)],
+<a href=#5719 id=5719 data-nosnippet>5719</a>                <span class="string">"cache"</span>,
+<a href=#5720 id=5720 data-nosnippet>5720</a>            ),
+<a href=#5721 id=5721 data-nosnippet>5721</a>            (SpanKind::Client, <span class="macro">vec!</span>[], <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"mysql"</span>)], <span class="string">"db"</span>),
+<a href=#5722 id=5722 data-nosnippet>5722</a>            (SpanKind::Producer, <span class="macro">vec!</span>[], <span class="macro">vec!</span>[kv_str(<span class="string">"db.system"</span>, <span class="string">"redis"</span>)], <span class="string">"custom"</span>),
+<a href=#5723 id=5723 data-nosnippet>5723</a>        ] {
+<a href=#5724 id=5724 data-nosnippet>5724</a>            <span class="kw">let </span>span = fixture_span(<span class="string">"span"</span>, kind, span_attrs);
+<a href=#5725 id=5725 data-nosnippet>5725</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(resource_attrs), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]));
+<a href=#5726 id=5726 data-nosnippet>5726</a>            <span class="macro">assert_eq!</span>(dd_span.span_type(), span_type, <span class="string">"{kind:?}"</span>);
+<a href=#5727 id=5727 data-nosnippet>5727</a>            <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"otlpresourcenoservicename"</span>);
+<a href=#5728 id=5728 data-nosnippet>5728</a>        }
+<a href=#5729 id=5729 data-nosnippet>5729</a>
+<a href=#5730 id=5730 data-nosnippet>5730</a>        <span class="comment">// The resource is derived from the converted tags, so span attributes take precedence.
+<a href=#5731 id=5731 data-nosnippet>5731</a>        </span><span class="kw">for </span>(resource_attrs, span_attrs, resource_name) <span class="kw">in </span>[
+<a href=#5732 id=5732 data-nosnippet>5732</a>            (
+<a href=#5733 id=5733 data-nosnippet>5733</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"PUT"</span>)],
+<a href=#5734 id=5734 data-nosnippet>5734</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"GET"</span>), kv_str(<span class="string">"grpc.path"</span>, <span class="string">"/svc/Method"</span>)],
+<a href=#5735 id=5735 data-nosnippet>5735</a>                <span class="string">"GET /svc/Method"</span>,
+<a href=#5736 id=5736 data-nosnippet>5736</a>            ),
+<a href=#5737 id=5737 data-nosnippet>5737</a>            (<span class="macro">vec!</span>[kv_str(<span class="string">"http.method"</span>, <span class="string">"PUT"</span>)], <span class="macro">vec!</span>[], <span class="string">"PUT"</span>),
+<a href=#5738 id=5738 data-nosnippet>5738</a>            (
+<a href=#5739 id=5739 data-nosnippet>5739</a>                <span class="macro">vec!</span>[],
+<a href=#5740 id=5740 data-nosnippet>5740</a>                <span class="macro">vec!</span>[
+<a href=#5741 id=5741 data-nosnippet>5741</a>                    kv_str(<span class="string">"messaging.operation"</span>, <span class="string">"publish"</span>),
+<a href=#5742 id=5742 data-nosnippet>5742</a>                    kv_str(<span class="string">"messaging.destination"</span>, <span class="string">"orders"</span>),
+<a href=#5743 id=5743 data-nosnippet>5743</a>                ],
+<a href=#5744 id=5744 data-nosnippet>5744</a>                <span class="string">"publish orders"</span>,
+<a href=#5745 id=5745 data-nosnippet>5745</a>            ),
+<a href=#5746 id=5746 data-nosnippet>5746</a>            (
+<a href=#5747 id=5747 data-nosnippet>5747</a>                <span class="macro">vec!</span>[],
+<a href=#5748 id=5748 data-nosnippet>5748</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"rpc.method"</span>, <span class="string">"Get"</span>), kv_str(<span class="string">"rpc.service"</span>, <span class="string">"Users"</span>)],
+<a href=#5749 id=5749 data-nosnippet>5749</a>                <span class="string">"Get Users"</span>,
+<a href=#5750 id=5750 data-nosnippet>5750</a>            ),
+<a href=#5751 id=5751 data-nosnippet>5751</a>            (<span class="macro">vec!</span>[], <span class="macro">vec!</span>[kv_str(<span class="string">"graphql.operation.type"</span>, <span class="string">"query"</span>)], <span class="string">"query"</span>),
+<a href=#5752 id=5752 data-nosnippet>5752</a>            (<span class="macro">vec!</span>[], <span class="macro">vec!</span>[], <span class="string">"span"</span>),
+<a href=#5753 id=5753 data-nosnippet>5753</a>        ] {
+<a href=#5754 id=5754 data-nosnippet>5754</a>            <span class="kw">let </span>span = fixture_span(<span class="string">"span"</span>, SpanKind::Internal, span_attrs);
+<a href=#5755 id=5755 data-nosnippet>5755</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(resource_attrs), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]));
+<a href=#5756 id=5756 data-nosnippet>5756</a>            <span class="macro">assert_eq!</span>(dd_span.resource(), resource_name);
+<a href=#5757 id=5757 data-nosnippet>5757</a>        }
+<a href=#5758 id=5758 data-nosnippet>5758</a>    }
+<a href=#5759 id=5759 data-nosnippet>5759</a>
+<a href=#5760 id=5760 data-nosnippet>5760</a>    <span class="attr">#[test]
+<a href=#5761 id=5761 data-nosnippet>5761</a>    </span><span class="kw">fn </span>v1_receive_path_derives_env_from_the_deployment_environment() {
+<a href=#5762 id=5762 data-nosnippet>5762</a>        <span class="kw">for </span>(span_attrs, env) <span class="kw">in </span>[
+<a href=#5763 id=5763 data-nosnippet>5763</a>            (
+<a href=#5764 id=5764 data-nosnippet>5764</a>                <span class="macro">vec!</span>[
+<a href=#5765 id=5765 data-nosnippet>5765</a>                    kv_str(<span class="string">"deployment.environment"</span>, <span class="string">"Staging"</span>),
+<a href=#5766 id=5766 data-nosnippet>5766</a>                    kv_str(<span class="string">"deployment.environment.name"</span>, <span class="string">"1Prod Env"</span>),
+<a href=#5767 id=5767 data-nosnippet>5767</a>                ],
+<a href=#5768 id=5768 data-nosnippet>5768</a>                <span class="prelude-val">Some</span>(<span class="string">"prod_env"</span>),
+<a href=#5769 id=5769 data-nosnippet>5769</a>            ),
+<a href=#5770 id=5770 data-nosnippet>5770</a>            (<span class="macro">vec!</span>[kv_str(<span class="string">"deployment.environment"</span>, <span class="string">"Staging"</span>)], <span class="prelude-val">Some</span>(<span class="string">"staging"</span>)),
+<a href=#5771 id=5771 data-nosnippet>5771</a>            (
+<a href=#5772 id=5772 data-nosnippet>5772</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"env"</span>, <span class="string">"Raw"</span>), kv_str(<span class="string">"deployment.environment"</span>, <span class="string">"Staging"</span>)],
+<a href=#5773 id=5773 data-nosnippet>5773</a>                <span class="prelude-val">Some</span>(<span class="string">"Raw"</span>),
+<a href=#5774 id=5774 data-nosnippet>5774</a>            ),
+<a href=#5775 id=5775 data-nosnippet>5775</a>            (<span class="macro">vec!</span>[], <span class="prelude-val">None</span>),
+<a href=#5776 id=5776 data-nosnippet>5776</a>        ] {
+<a href=#5777 id=5777 data-nosnippet>5777</a>            <span class="kw">let </span>span = fixture_span(<span class="string">"span"</span>, SpanKind::Internal, span_attrs);
+<a href=#5778 id=5778 data-nosnippet>5778</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>v1_naming(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[]));
+<a href=#5779 id=5779 data-nosnippet>5779</a>            <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"env"</span>), env);
+<a href=#5780 id=5780 data-nosnippet>5780</a>        }
+<a href=#5781 id=5781 data-nosnippet>5781</a>    }
+<a href=#5782 id=5782 data-nosnippet>5782</a>
+<a href=#5783 id=5783 data-nosnippet>5783</a>    <span class="attr">#[test]
+<a href=#5784 id=5784 data-nosnippet>5784</a>    </span><span class="kw">fn </span>v1_receive_path_emits_only_the_deprecated_scope_tags() {
+<a href=#5785 id=5785 data-nosnippet>5785</a>        <span class="kw">let </span><span class="kw-2">mut </span>library = scope(<span class="string">"ddtracer"</span>, <span class="string">"v2"</span>);
+<a href=#5786 id=5786 data-nosnippet>5786</a>        library.attributes = <span class="macro">vec!</span>[kv_str(<span class="string">"scope.attribute"</span>, <span class="string">"dropped"</span>)];
+<a href=#5787 id=5787 data-nosnippet>5787</a>        <span class="kw">let </span>span = fixture_span(
+<a href=#5788 id=5788 data-nosnippet>5788</a>            <span class="string">"span"</span>,
+<a href=#5789 id=5789 data-nosnippet>5789</a>            SpanKind::Internal,
+<a href=#5790 id=5790 data-nosnippet>5790</a>            <span class="macro">vec!</span>[kv_str(<span class="string">"datadog.service"</span>, <span class="string">"dd-service"</span>), kv_str(<span class="string">"db.namespace"</span>, <span class="string">"users"</span>)],
+<a href=#5791 id=5791 data-nosnippet>5791</a>        );
+<a href=#5792 id=5792 data-nosnippet>5792</a>        <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>library), <span class="kw-2">&amp;</span>conversion());
+<a href=#5793 id=5793 data-nosnippet>5793</a>
+<a href=#5794 id=5794 data-nosnippet>5794</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"otel.library.name"</span>), <span class="prelude-val">Some</span>(<span class="string">"ddtracer"</span>));
+<a href=#5795 id=5795 data-nosnippet>5795</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"otel.library.version"</span>), <span class="prelude-val">Some</span>(<span class="string">"v2"</span>));
+<a href=#5796 id=5796 data-nosnippet>5796</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"otel.scope.name"</span>), <span class="prelude-val">None</span>);
+<a href=#5797 id=5797 data-nosnippet>5797</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"otel.scope.version"</span>), <span class="prelude-val">None</span>);
+<a href=#5798 id=5798 data-nosnippet>5798</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"scope.attribute"</span>), <span class="prelude-val">None</span>);
+<a href=#5799 id=5799 data-nosnippet>5799</a>        <span class="comment">// `datadog.*` attributes are ordinary tags on this path.
+<a href=#5800 id=5800 data-nosnippet>5800</a>        </span><span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"datadog.service"</span>), <span class="prelude-val">Some</span>(<span class="string">"dd-service"</span>));
+<a href=#5801 id=5801 data-nosnippet>5801</a>        <span class="macro">assert_eq!</span>(dd_span.service(), <span class="string">"otlpresourcenoservicename"</span>);
+<a href=#5802 id=5802 data-nosnippet>5802</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"db.name"</span>), <span class="prelude-val">Some</span>(<span class="string">"users"</span>));
+<a href=#5803 id=5803 data-nosnippet>5803</a>    }
+<a href=#5804 id=5804 data-nosnippet>5804</a>
+<a href=#5805 id=5805 data-nosnippet>5805</a>    <span class="attr">#[test]
+<a href=#5806 id=5806 data-nosnippet>5806</a>    </span><span class="kw">fn </span>v1_receive_path_marks_top_level_and_measured_by_span_kind() {
+<a href=#5807 id=5807 data-nosnippet>5807</a>        <span class="kw">let </span>parent = [<span class="number">9u8</span>; <span class="number">8</span>];
+<a href=#5808 id=5808 data-nosnippet>5808</a>        <span class="kw">for </span>(kind, has_parent, compute, top_level, measured) <span class="kw">in </span>[
+<a href=#5809 id=5809 data-nosnippet>5809</a>            (SpanKind::Internal, <span class="bool-val">false</span>, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>),
+<a href=#5810 id=5810 data-nosnippet>5810</a>            (SpanKind::Server, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>),
+<a href=#5811 id=5811 data-nosnippet>5811</a>            (SpanKind::Consumer, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>),
+<a href=#5812 id=5812 data-nosnippet>5812</a>            (SpanKind::Client, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>, <span class="bool-val">true</span>),
+<a href=#5813 id=5813 data-nosnippet>5813</a>            (SpanKind::Producer, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>, <span class="bool-val">true</span>),
+<a href=#5814 id=5814 data-nosnippet>5814</a>            (SpanKind::Internal, <span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="bool-val">false</span>, <span class="bool-val">false</span>),
+<a href=#5815 id=5815 data-nosnippet>5815</a>            (SpanKind::Server, <span class="bool-val">false</span>, <span class="bool-val">false</span>, <span class="bool-val">false</span>, <span class="bool-val">false</span>),
+<a href=#5816 id=5816 data-nosnippet>5816</a>        ] {
+<a href=#5817 id=5817 data-nosnippet>5817</a>            <span class="kw">let </span><span class="kw-2">mut </span>span = fixture_span(<span class="string">"span"</span>, kind, <span class="macro">vec!</span>[]);
+<a href=#5818 id=5818 data-nosnippet>5818</a>            <span class="kw">if </span>has_parent {
+<a href=#5819 id=5819 data-nosnippet>5819</a>                span.parent_span_id = parent.to_vec();
+<a href=#5820 id=5820 data-nosnippet>5820</a>            }
+<a href=#5821 id=5821 data-nosnippet>5821</a>            <span class="kw">let </span>conversion = SpanConversion {
+<a href=#5822 id=5822 data-nosnippet>5822</a>                compute_top_level_by_span_kind: compute,
+<a href=#5823 id=5823 data-nosnippet>5823</a>                ..conversion()
+<a href=#5824 id=5824 data-nosnippet>5824</a>            };
+<a href=#5825 id=5825 data-nosnippet>5825</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion);
+<a href=#5826 id=5826 data-nosnippet>5826</a>            <span class="kw">let </span>case = <span class="macro">format!</span>(<span class="string">"{kind:?} parent={has_parent} compute={compute}"</span>);
+<a href=#5827 id=5827 data-nosnippet>5827</a>            <span class="macro">assert_eq!</span>(dd_span.attributes.contains_key(<span class="string">"_top_level"</span>), top_level, <span class="string">"{case}"</span>);
+<a href=#5828 id=5828 data-nosnippet>5828</a>            <span class="macro">assert_eq!</span>(dd_span.attributes.contains_key(<span class="string">"_dd.measured"</span>), measured, <span class="string">"{case}"</span>);
+<a href=#5829 id=5829 data-nosnippet>5829</a>        }
+<a href=#5830 id=5830 data-nosnippet>5830</a>    }
+<a href=#5831 id=5831 data-nosnippet>5831</a>
+<a href=#5832 id=5832 data-nosnippet>5832</a>    <span class="attr">#[test]
+<a href=#5833 id=5833 data-nosnippet>5833</a>    </span><span class="kw">fn </span>v1_receive_path_keeps_numbers_over_string_tags_of_the_same_key() {
+<a href=#5834 id=5834 data-nosnippet>5834</a>        <span class="kw">for </span>kind <span class="kw">in </span>[SpanKind::Server, SpanKind::Client] {
+<a href=#5835 id=5835 data-nosnippet>5835</a>            <span class="kw">let </span>span = fixture_span(
+<a href=#5836 id=5836 data-nosnippet>5836</a>                <span class="string">"span"</span>,
+<a href=#5837 id=5837 data-nosnippet>5837</a>                kind,
+<a href=#5838 id=5838 data-nosnippet>5838</a>                <span class="macro">vec!</span>[kv_str(<span class="string">"_top_level"</span>, <span class="string">"0"</span>), kv_str(<span class="string">"_dd.measured"</span>, <span class="string">"0"</span>)],
+<a href=#5839 id=5839 data-nosnippet>5839</a>            );
+<a href=#5840 id=5840 data-nosnippet>5840</a>            <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion());
+<a href=#5841 id=5841 data-nosnippet>5841</a>
+<a href=#5842 id=5842 data-nosnippet>5842</a>            <span class="kw">let </span>marker = <span class="kw">if </span>kind == SpanKind::Server {
+<a href=#5843 id=5843 data-nosnippet>5843</a>                <span class="string">"_top_level"
+<a href=#5844 id=5844 data-nosnippet>5844</a>            </span>} <span class="kw">else </span>{
+<a href=#5845 id=5845 data-nosnippet>5845</a>                <span class="string">"_dd.measured"
+<a href=#5846 id=5846 data-nosnippet>5846</a>            </span>};
+<a href=#5847 id=5847 data-nosnippet>5847</a>            <span class="macro">assert_eq!</span>(
+<a href=#5848 id=5848 data-nosnippet>5848</a>                dd_span.attributes.get(marker),
+<a href=#5849 id=5849 data-nosnippet>5849</a>                <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>AttributeValue::Float(<span class="number">1.0</span>)),
+<a href=#5850 id=5850 data-nosnippet>5850</a>                <span class="string">"{kind:?}"
+<a href=#5851 id=5851 data-nosnippet>5851</a>            </span>);
+<a href=#5852 id=5852 data-nosnippet>5852</a>        }
+<a href=#5853 id=5853 data-nosnippet>5853</a>
+<a href=#5854 id=5854 data-nosnippet>5854</a>        <span class="comment">// Without a computed marker, the attribute is an ordinary string tag.
+<a href=#5855 id=5855 data-nosnippet>5855</a>        </span><span class="kw">let </span>span = fixture_span(<span class="string">"span"</span>, SpanKind::Internal, <span class="macro">vec!</span>[kv_str(<span class="string">"_dd.measured"</span>, <span class="string">"0"</span>)]);
+<a href=#5856 id=5856 data-nosnippet>5856</a>        <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion());
+<a href=#5857 id=5857 data-nosnippet>5857</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"_dd.measured"</span>), <span class="prelude-val">Some</span>(<span class="string">"0"</span>));
+<a href=#5858 id=5858 data-nosnippet>5858</a>    }
+<a href=#5859 id=5859 data-nosnippet>5859</a>
+<a href=#5860 id=5860 data-nosnippet>5860</a>    <span class="attr">#[test]
+<a href=#5861 id=5861 data-nosnippet>5861</a>    </span><span class="kw">fn </span>v1_receive_path_follows_the_legacy_tags_gate_and_takes_no_error_fields_from_events() {
+<a href=#5862 id=5862 data-nosnippet>5862</a>        <span class="kw">let </span><span class="kw-2">mut </span>span = span_with_links_and_events();
+<a href=#5863 id=5863 data-nosnippet>5863</a>        span.events[<span class="number">0</span>].attributes = <span class="macro">vec!</span>[
+<a href=#5864 id=5864 data-nosnippet>5864</a>            kv_str(<span class="string">"exception.message"</span>, <span class="string">"Out of memory"</span>),
+<a href=#5865 id=5865 data-nosnippet>5865</a>            kv_str(<span class="string">"exception.type"</span>, <span class="string">"mem"</span>),
+<a href=#5866 id=5866 data-nosnippet>5866</a>        ];
+<a href=#5867 id=5867 data-nosnippet>5867</a>        span.status = <span class="prelude-val">Some</span>(OtlpStatus {
+<a href=#5868 id=5868 data-nosnippet>5868</a>            code: StatusCode::Error <span class="kw">as </span>i32,
+<a href=#5869 id=5869 data-nosnippet>5869</a>            message: <span class="string">"boom"</span>.to_string(),
+<a href=#5870 id=5870 data-nosnippet>5870</a>        });
+<a href=#5871 id=5871 data-nosnippet>5871</a>        <span class="kw">let </span>dd_span = convert_v1(<span class="kw-2">&amp;</span>span, <span class="kw-2">&amp;</span>resource(<span class="macro">vec!</span>[]), <span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>conversion());
+<a href=#5872 id=5872 data-nosnippet>5872</a>
+<a href=#5873 id=5873 data-nosnippet>5873</a>        <span class="macro">assert_eq!</span>(!dd_span.span_links().is_empty(), !LEGACY_TAG_LINKS_AND_EVENTS);
+<a href=#5874 id=5874 data-nosnippet>5874</a>        <span class="macro">assert_eq!</span>(!dd_span.span_events().is_empty(), !LEGACY_TAG_LINKS_AND_EVENTS);
+<a href=#5875 id=5875 data-nosnippet>5875</a>        <span class="macro">assert_eq!</span>(
+<a href=#5876 id=5876 data-nosnippet>5876</a>            dd_span.attributes.contains_key(<span class="string">"_dd.span_links"</span>),
+<a href=#5877 id=5877 data-nosnippet>5877</a>            LEGACY_TAG_LINKS_AND_EVENTS
+<a href=#5878 id=5878 data-nosnippet>5878</a>        );
+<a href=#5879 id=5879 data-nosnippet>5879</a>        <span class="macro">assert_eq!</span>(dd_span.attributes.contains_key(<span class="string">"events"</span>), LEGACY_TAG_LINKS_AND_EVENTS);
+<a href=#5880 id=5880 data-nosnippet>5880</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"_dd.span_events.has_exception"</span>), <span class="prelude-val">Some</span>(<span class="string">"true"</span>));
+<a href=#5881 id=5881 data-nosnippet>5881</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"error.msg"</span>), <span class="prelude-val">Some</span>(<span class="string">"boom"</span>));
+<a href=#5882 id=5882 data-nosnippet>5882</a>        <span class="macro">assert_eq!</span>(meta_str(<span class="kw-2">&amp;</span>dd_span, <span class="string">"error.type"</span>), <span class="prelude-val">None</span>);
+<a href=#5883 id=5883 data-nosnippet>5883</a>        <span class="macro">assert_eq!</span>(dd_span.error(), <span class="number">1</span>);
+<a href=#5884 id=5884 data-nosnippet>5884</a>    }
+<a href=#5885 id=5885 data-nosnippet>5885</a>}
 </code></pre></div></section></main></body></html>
