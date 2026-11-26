@@ -724,8 +724,9 @@ the entire span is on one side. For example, the Agent keeps `otlpprobe.conv.hig
 case, but ADP drops it. There is no ADP span whose fields `compare` could check.
 
 The entry for [this gap](https://github.com/DataDog/saluki/issues/3445) sets `kinds: [missing]` and lists the affected
-resources in `when`. Use `extra` for a span only ADP sends. A whole-span entry must set `kinds` and select by `name`
-or `resource`; `service` alone is too broad. Panoramic matches `when` against the span on the side that has it.
-If ADP sends the span too, the `missing` path goes stale for that resource and `compare` checks the paired spans.
+resources in `when`. Use `extra` for a span only ADP sends. A whole-span entry must set `kinds` to `[missing]` or
+`[extra]` and select by `name` or `resource`; `service` alone is too broad. Panoramic matches `when` against the span on
+the side that has it. If ADP sends the span too, the `missing` path goes stale for that resource and `compare` checks
+the paired spans.
 
 [status-issue]: https://github.com/DataDog/saluki/issues/3433

@@ -147,10 +147,11 @@ impl TracesOptions {
     ///
     /// If an entry names no issue, has a path outside the trace statistics, the span fields and the spans on one side
     /// only, has a path that covers the trace ID of a span, or has a span path and doesn't scope itself to spans by
-    /// service, name or resource, or covers whole spans without `kinds` or without a `name` or `resource` in `when`, or
-    /// if an `absent` entry has a service that no `spans` entry has, or if `otlp_direct_analysis_mode` skips the statistics comparison that an option or an
-    /// entry's path applies to, or if a step that compares stats sets expectations or turns off `require_ssi` and sets
-    /// no `min_stats_groups`, an error is returned.
+    /// service, name or resource, or covers whole spans without exactly one of the `missing` and `extra` kinds or
+    /// without a `name` or `resource` in `when`, or if an `absent` entry has a service that no `spans` entry has, or if
+    /// `otlp_direct_analysis_mode` skips the statistics comparison that an option or an entry's path applies to, or if
+    /// a step that compares stats sets expectations or turns off `require_ssi` and sets no `min_stats_groups`, an error
+    /// is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
         if otlp_direct_analysis_mode {
             let compares_nothing = "which compares no stats";
@@ -230,12 +231,13 @@ impl TracesOptions {
             }
             // A span on one side only is excused as a whole, with all of its fields. The entry must not excuse every
             // span of a service, nor both a lost span ID's `missing` copy and its `extra` copy.
+            let one_side = matches!(entry.kinds.as_slice(), [DiffKind::Missing] | [DiffKind::Extra]);
             if entry.paths.iter().any(|path| path.as_str() == SPANS_PATH)
-                && (entry.kinds.is_empty() || !(entry.when.contains_key("name") || entry.when.contains_key("resource")))
+                && (!one_side || !(entry.when.contains_key("name") || entry.when.contains_key("resource")))
             {
                 return Err(format!(
-                    "known difference '{}' covers whole spans, so it must set `kinds` and its `when` must name the \
-                     spans by `name` or `resource`",
+                    "known difference '{}' covers whole spans, so it must set `kinds` to `[missing]` or `[extra]` and \
+                     its `when` must name the spans by `name` or `resource`",
                     entry.gap
                 ));
             }

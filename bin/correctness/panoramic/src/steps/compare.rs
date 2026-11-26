@@ -390,10 +390,13 @@ mod tests {
             );
         }
 
-        // A known difference that covers whole spans names them by `name` or `resource`, and sets `kinds`.
+        // A known difference that covers whole spans names them by `name` or `resource`, and sets one of `missing`
+        // and `extra`.
         for loose in [
             "{gap: gap/a, issue: 1, paths: [spans], when: {resource: [r]}, reason: r}",
             "{gap: gap/a, issue: 1, paths: [spans], kinds: [], when: {resource: [r]}, reason: r}",
+            "{gap: gap/a, issue: 1, paths: [spans], kinds: [missing, extra], when: {resource: [r]}, reason: r}",
+            "{gap: gap/a, issue: 1, paths: [spans], kinds: [value], when: {resource: [r]}, reason: r}",
             "{gap: gap/a, issue: 1, paths: [spans], kinds: [missing], when: {service: [s]}, reason: r}",
         ] {
             let error = build("", loose).unwrap_err();
