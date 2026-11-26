@@ -2091,8 +2091,8 @@ Why this order:
   - `agent-adp` in a Windows container runs a new entrypoint,
     `ci/tooling/windows-adp-entrypoint-panoramic.ps1`, as its `command`, with ADP's arguments as
     `args`. It writes `adp.log`, `agent.log` and the `data-plane` and `agent` records, restarts
-    nothing, and keeps the container up after both programs exit. The spec adds the nested
-    `DD_DATA_PLANE__*` names and `DD_DATA_PLANE_FORCE_ENABLE`, and has no `consumes` and no OTLP
+    nothing, and keeps the container up after both programs exit. The spec adds
+    `DD_DATA_PLANE_FORCE_ENABLE` when the case enables the data plane, and has no `consumes` and no OTLP
     override.
   - `with.own_ip` is a script the participant type places: an s6 init script on Linux and a script the
     entrypoint runs on Windows. A name it sets may not be in the case's `env`, and `agent` rejects it.
