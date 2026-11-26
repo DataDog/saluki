@@ -1,0 +1,19 @@
+# ADP and the Agent read this file, and each of them connects its own intakes to the names below.
+
+# The metrics go here, with the API key `api_key` of the case.
+dd_url: "{{ self.connections.main.url }}"
+
+apm_config:
+  # The traces and the APM statistics go here, with the API key `api_key`. The trace-agent does not read `dd_url` for
+  # them.
+  apm_dd_url: "{{ self.connections.main.url }}"
+
+# The failover region. With these settings the Agent sends its metrics, its traces and its APM statistics here, with
+# the key of this section. `failover_metrics` is the setting for the metrics, and `failover_apm` is the setting for the
+# traces and the statistics. The key is a synthetic one.
+multi_region_failover:
+  enabled: true
+  dd_url: "{{ self.connections.mrf.url }}"
+  api_key: "44444444444444444444444444444444"
+  failover_metrics: true
+  failover_apm: true

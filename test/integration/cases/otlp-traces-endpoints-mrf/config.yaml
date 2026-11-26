@@ -1,0 +1,187 @@
+description: >-
+  With multi-region failover on for metrics and for APM, the Agent sends the traces and the APM statistics that it
+  builds from OTLP to the failover region, as well as to the main intake. ADP does not yet: it sends them to the main
+  intake alone, and sends only the metrics to the failover region. The Agent side shows that the case turns the
+  failover on, so the missing delivery of ADP is not a fault of the case.
+timeout: 5m
+subject_os: [linux]
+
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-traces-endpoints-mrf-adp"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read this. The endpoint is the harness's, not the default one. ADP handles OTLP traces and
+      # metrics itself, because it proxies none of them to the Agent by default.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    # Not the `intake` connection: it sets `DD_DD_URL` and `DD_APM_DD_URL`, which mask the intake URLs of
+    # `datadog.yaml`. Each connection here is only a name for the template to refer to.
+    connect: {main: intake-adp-main.api, mrf: intake-adp-mrf.api}
+  # The Agent alone, with its own OTLP receiver. Its trace-agent sends the traces and the statistics.
+  agent:
+    type: agent
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-traces-endpoints-mrf-agent"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {main: intake-agent-main.api, mrf: intake-agent-mrf.api}
+  intake-adp-main: {type: datadog-intake}
+  intake-adp-mrf: {type: datadog-intake}
+  intake-agent-main: {type: datadog-intake}
+  intake-agent-mrf: {type: datadog-intake}
+  # The sender waits idle. The procedure runs millstone in it once the receivers of ADP and of the Agent listen.
+  sender:
+    image: saluki-images/correctness-tools:latest
+    command: [sleep, infinity]
+    files:
+      /etc/millstone/metrics-adp.yaml: {from: millstone-metrics-adp.yaml, template: true}
+      /etc/millstone/traces-adp.yaml: {from: millstone-traces-adp.yaml, template: true}
+      /etc/millstone/metrics-agent.yaml: {from: millstone-metrics-agent.yaml, template: true}
+      /etc/millstone/traces-agent.yaml: {from: millstone-traces-agent.yaml, template: true}
+    connect: {adp: adp.otlp_http, agent: agent.agent_otlp_http}
+
+procedure:
+  # ADP listens, and its Agent leaves OTLP to ADP. The independent Agent starts its own OTLP pipeline.
+  - parallel:
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp.endpoints.otlp_http.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: "Not starting the OTLP ingest pipeline because the data plane handles OTLP ingest"
+        timeout: 60s
+      - step: log_contains
+        on: agent
+        process: agent
+        pattern: "Everything is ready. Begin running and processing data."
+        timeout: 60s
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/metrics-adp.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/traces-adp.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/metrics-agent.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/traces-agent.yaml], timeout: 2m}
+  - parallel:
+      # The Agent sends each signal to the main intake with the main key, and to the failover intake with the failover
+      # key. The core Agent sends the metrics, and its trace-agent sends the traces and the statistics. These steps show
+      # that the case turns the failover on for APM.
+      - step: intake_from
+        on: intake-agent-main
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-mrf-agent.http."}
+        sender: agent
+        api_key: "00000000000000000000000000000000"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent-main
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-mrf-agent-http}
+        sender: trace-agent
+        path: /api/v0.2/traces
+        api_key: "00000000000000000000000000000000"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent-main
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-mrf-agent-http}
+        sender: trace-agent
+        path: /api/v0.2/stats
+        api_key: "00000000000000000000000000000000"
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent-mrf
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-mrf-agent.http."}
+        sender: agent
+        api_key: "44444444444444444444444444444444"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent-mrf
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-mrf-agent-http}
+        sender: trace-agent
+        path: /api/v0.2/traces
+        api_key: "44444444444444444444444444444444"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent-mrf
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-mrf-agent-http}
+        sender: trace-agent
+        path: /api/v0.2/stats
+        api_key: "44444444444444444444444444444444"
+        timeout: 2m
+      # ADP sends each signal to the main intake with the main key, and the metrics to the failover intake with the
+      # failover key. The metrics at the failover intake show that the failover intake is reachable from ADP.
+      - step: intake_from
+        on: intake-adp-main
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-mrf-adp.http."}
+        sender: adp
+        api_key: "00000000000000000000000000000000"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp-main
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-mrf-adp-http}
+        sender: adp
+        path: /api/v0.2/traces
+        api_key: "00000000000000000000000000000000"
+        count: 3
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp-main
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-mrf-adp-http}
+        sender: adp
+        path: /api/v0.2/stats
+        api_key: "00000000000000000000000000000000"
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp-mrf
+        telemetry: metrics
+        select: {name_prefix: "otlp.routing.endpoints-mrf-adp.http."}
+        sender: adp
+        api_key: "44444444444444444444444444444444"
+        count: 3
+        timeout: 2m
+  # ADP does not fail over APM data: its failover covers metrics only and ignores `multi_region_failover.failover_apm`.
+  # The failover intake of ADP gets the metrics above, and no traces and no statistics, although the trace-agent of the
+  # Agent sends both there. This is DataDog/saluki#2429. When ADP fails over APM data, these two steps fail. Then
+  # replace them with the steps that the Agent side has for `intake-agent-mrf`.
+  - parallel:
+      # DataDog/saluki#2429: ADP sends no spans to the failover region.
+      - step: intake_from
+        on: intake-adp-mrf
+        telemetry: spans
+        select: {service: otlp-routing-endpoints-mrf-adp-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+      # DataDog/saluki#2429: ADP sends no APM statistics to the failover region.
+      - step: intake_from
+        on: intake-adp-mrf
+        telemetry: trace_stats
+        select: {service: otlp-routing-endpoints-mrf-adp-http}
+        count: 0
+        settle: 30s
+        timeout: 1m
+  - parallel:
+      - {step: process_stable_for, on: adp, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
+      - {step: process_stable_for, on: agent, duration: 10s}
+      - {step: log_not_contains, on: agent, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
