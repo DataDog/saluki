@@ -782,9 +782,9 @@ impl SharedState {
 /// that can hold the string.
 ///
 /// Adjacent reclaimed entries in the same chunk merge. This reduces fragmentation, although not as well as re-packing
-/// the entries. Free regions cannot merge across chunk or shard boundaries. When a chunk becomes empty, it stays
-/// allocated until the interner needs capacity for a new chunk. At that time, any shard can free its empty chunks and
-/// return their capacity to the shared budget.
+/// the entries. Free regions cannot merge across chunk or shard boundaries. When the interner needs capacity for a new
+/// chunk, only completely empty chunks (`offset == 0`) return capacity to the shared budget (`unallocated`). A
+/// long-lived entry can pin a chunk in one shard and prevent another shard from allocating a new chunk.
 #[derive(Clone, Debug)]
 pub struct GenericMapInterner {
     state: Arc<SharedState>,
