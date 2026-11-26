@@ -95,8 +95,8 @@ const MIN_FILTER_REFRESH_REMOVALS: usize = 64;
 static NEXT_TABLE: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
-    /// The witness slots of the current thread, shared by all tables.
-    static WITNESSES: RefCell<[Witness; WITNESS_COUNT]> = const { RefCell::new([Witness::EMPTY; WITNESS_COUNT]) };
+    /// The witness slots of the current thread, shared by all tables and allocated on first use.
+    static WITNESSES: RefCell<Box<[Witness]>> = RefCell::new(vec![Witness::EMPTY; WITNESS_COUNT].into_boxed_slice());
 }
 
 /// A record of one first sighting of a string in the current thread.
@@ -441,8 +441,8 @@ impl Drop for Shard {
 /// it another way. A string that alternates between threads, or that shares a slot with another string, can need
 /// more sightings.
 ///
-/// Each thread that interns keeps 256 witness slots of 280 bytes, that is 70 KiB. A first sighting checks the
-/// `resident` filter and the witness without a shard lock.
+/// A thread allocates its 256 witness slots on first use and frees them on exit. The slots use 70 KiB per thread.
+/// A first sighting checks the `resident` filter and the witness without a shard lock.
 ///
 /// ## Memory
 ///
@@ -451,7 +451,7 @@ impl Drop for Shard {
 ///
 /// ## Thread safety
 ///
-/// `SymbolTable` is `Send` and `Sync` through its fields, with no unsafe impl. The shard locks guard all index and
+/// `SymbolTable` is `Send` and `Sync` through its fields, with no `unsafe impl`. The shard locks guard all index and
 /// free-list changes. Record headers use atomic reference counts, and chunk pointers are atomics.
 pub struct SymbolTable {
     /// The unique ID of this table in witness slots.
@@ -734,7 +734,7 @@ impl Drop for Symbol<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
+    use std::{sync::Barrier, thread};
 
     use super::*;
 
@@ -831,5 +831,59 @@ mod tests {
         let next = table.try_intern(value).unwrap();
         assert_eq!(next.id(), id);
         assert_eq!(table.len_bytes(), bytes);
+    }
+
+    #[test]
+    fn concurrent_intern_and_final_drop_reclaim_the_record() {
+        let value = "deployment:shared-during-churn";
+        let table = SymbolTable::new(64 * 1024);
+        let start = Barrier::new(4);
+        thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    start.wait();
+                    for _ in 0..10_000 {
+                        let symbol = table.try_intern(value).or_else(|| table.try_intern(value)).unwrap();
+                        assert_eq!(&*symbol, value);
+                    }
+                });
+            }
+        });
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.len_bytes(), 0);
+    }
+
+    #[test]
+    fn reserve_reuses_and_splits_chunk_tail_before_reporting_full() {
+        let shard = Shard::new(CHUNK_BYTES + 32);
+        let mut state = shard.state.write().unwrap();
+        let tail = CHUNK_BYTES - 16;
+
+        assert_eq!(shard.reserve(&mut state, tail), Some(0));
+        assert_eq!(shard.reserve(&mut state, 32), Some(CHUNK_STRIDE));
+        assert_eq!(shard.reserve(&mut state, 8), Some(tail));
+        assert_eq!(shard.reserve(&mut state, 8), Some(tail + 8));
+        assert_eq!(shard.reserve(&mut state, 8), None);
+    }
+
+    #[test]
+    fn full_shard_refuses_a_repeat_sighting() {
+        let value = "tag:one";
+        let size = Record::allocation_size(value.len());
+        let table = SymbolTable::new(size * SHARD_COUNT);
+        let shard = table.hasher.hash_one(value) >> (64 - SHARD_BITS);
+        let other = (0..=0xfff)
+            .map(|n| format!("tag:{n:03x}"))
+            .find(|text| table.hasher.hash_one(text.as_str()) >> (64 - SHARD_BITS) == shard)
+            .unwrap();
+
+        assert!(table.try_intern(value).is_none());
+        let live = table.try_intern(value).unwrap();
+        assert!(table.try_intern(&other).is_none());
+        assert!(table.try_intern(&other).is_none());
+        assert_eq!(table.len(), 1);
+        assert_eq!(table.len_bytes(), size);
+        drop(live);
+        assert_eq!(&*table.try_intern(&other).unwrap(), other);
     }
 }
