@@ -6,7 +6,7 @@ use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder},
     data_model::{
-        origin::{OriginTagCardinality, RawOrigin},
+        origin::{OriginTagCardinality, RawExternalData, RawOrigin},
         tags::SharedTagSet,
     },
     health::{Health, HealthRegistry},
@@ -26,7 +26,7 @@ use saluki_env::{
         collectors::MetadataCollectorWorker,
         entity::EntityId,
         origin::{OriginResolver, ResolvedOrigin},
-        stores::{ExternalDataStore, TagStore, TagStoreQuerier},
+        stores::{ExternalDataStore, ExternalDataStoreResolver, TagStore, TagStoreQuerier},
         OnDemandPIDResolver,
     },
     CaptureEntityResolver, WorkloadProvider,
@@ -66,6 +66,7 @@ const DEFAULT_EXTERNAL_DATA_STORE_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
     tags_querier: TagStoreQuerier,
+    external_data_resolver: ExternalDataStoreResolver,
     origin_resolver: OriginResolver,
     on_demand_pid_resolver: OnDemandPIDResolver,
 }
@@ -213,6 +214,7 @@ impl RemoteAgentWorkloadProvider {
 
         let provider = Self {
             tags_querier,
+            external_data_resolver: eds_resolver,
             origin_resolver,
             on_demand_pid_resolver,
         };
@@ -249,6 +251,20 @@ impl WorkloadProvider for RemoteAgentWorkloadProvider {
 
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         self.origin_resolver.get_resolved_origin(origin)
+    }
+
+    fn get_container_entity_for_external_data(&self, external_data: &RawExternalData<'_>) -> Option<EntityId> {
+        // Read the store's current snapshot, not the origin cache, so new and replaced containers show up at once.
+        self.external_data_resolver
+            .resolve(external_data)
+            .map(|resolved| resolved.container_entity_id().clone())
+    }
+
+    fn get_aliased_container_entity(&self, entity_id: &EntityId) -> Option<EntityId> {
+        // The containerd collector aliases container process IDs, and the cgroups collector aliases cgroup inodes.
+        self.tags_querier
+            .get_entity_alias(entity_id)
+            .filter(|entity_id| matches!(entity_id, EntityId::Container(_)))
     }
 }
 

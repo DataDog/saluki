@@ -4,6 +4,7 @@
 
 pub mod attributes;
 pub mod client_spans;
+pub mod container_id;
 pub mod origin;
 pub mod proxy;
 pub mod receiver;

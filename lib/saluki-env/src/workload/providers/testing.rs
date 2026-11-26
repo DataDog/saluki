@@ -7,13 +7,18 @@
 
 use std::collections::HashMap;
 
+use saluki_common::collections::FastIndexMap;
 use saluki_core::data_model::{
-    origin::{OriginTagCardinality, RawOrigin},
+    origin::{ExternalData, OriginTagCardinality, RawExternalData, RawOrigin},
     tags::{SharedTagSet, Tag, TagSet},
 };
+use stringtheory::MetaString;
 
 use crate::{
-    workload::{origin::ResolvedOrigin, EntityId},
+    workload::{
+        origin::{ResolvedExternalData, ResolvedOrigin},
+        CaptureEntityResolver, EntityId,
+    },
     WorkloadProvider,
 };
 
@@ -49,12 +54,23 @@ impl EntityTags {
 /// A configurable, in-memory [`WorkloadProvider`] for use in tests.
 ///
 /// Entities are seeded with per-cardinality tags and looked up cumulatively, matching the behavior of the live
-/// workload provider. [`get_resolved_origin`][WorkloadProvider::get_resolved_origin] resolves the raw origin's process
-/// ID, Local Data, and pod UID into entity IDs using the same rules as the production resolver; External Data is not
-/// modeled (it requires the live external-data store) and always resolves to `None`.
+/// workload provider. Entity aliases work as in the live tag store: a tag lookup for an aliased entity reads the tags of
+/// its target, and an alias to a container resolves through
+/// [`get_aliased_container_entity`][WorkloadProvider::get_aliased_container_entity].
+///
+/// [`get_resolved_origin`][WorkloadProvider::get_resolved_origin] resolves the raw origin's process ID, Local Data, and
+/// pod UID into entity IDs with the rules of the production resolver. It resolves External Data, there and in
+/// [`get_container_entity_for_external_data`][WorkloadProvider::get_container_entity_for_external_data], from the
+/// entries that [`add_external_data`][Self::add_external_data] adds.
+///
+/// The provider also implements [`CaptureEntityResolver`], for the process IDs that
+/// [`add_live_process`][Self::add_live_process] adds.
 #[derive(Default)]
 pub struct TestWorkloadProvider {
     entities: HashMap<EntityId, EntityTags>,
+    aliases: HashMap<EntityId, EntityId>,
+    external_data: FastIndexMap<ExternalData, ResolvedExternalData>,
+    live_processes: HashMap<u32, EntityId>,
 }
 
 impl TestWorkloadProvider {
@@ -108,10 +124,37 @@ impl TestWorkloadProvider {
         );
         self
     }
+
+    /// Adds an alias from `source` to `target`.
+    pub fn add_entity_alias(&mut self, source: EntityId, target: EntityId) -> &mut Self {
+        self.aliases.insert(source, target);
+        self
+    }
+
+    /// Adds an External Data entry that resolves to the container `container_entity_id`.
+    pub fn add_external_data(
+        &mut self, pod_uid: &str, container_name: &str, init_container: bool, container_entity_id: EntityId,
+    ) -> &mut Self {
+        let external_data = ExternalData::new(
+            MetaString::from(pod_uid),
+            MetaString::from(container_name),
+            init_container,
+        );
+        let resolved = ResolvedExternalData::new(EntityId::PodUid(pod_uid.into()), container_entity_id);
+        self.external_data.insert(external_data, resolved);
+        self
+    }
+
+    /// Adds a live process that runs in the container `container_entity_id`.
+    pub fn add_live_process(&mut self, process_id: u32, container_entity_id: EntityId) -> &mut Self {
+        self.live_processes.insert(process_id, container_entity_id);
+        self
+    }
 }
 
 impl WorkloadProvider for TestWorkloadProvider {
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
+        let entity_id = self.aliases.get(entity_id).unwrap_or(entity_id);
         self.entities
             .get(entity_id)
             .and_then(|tags| tags.for_cardinality(cardinality))
@@ -119,7 +162,7 @@ impl WorkloadProvider for TestWorkloadProvider {
 
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         // Mirror the production resolver: an empty origin resolves to nothing, and each populated component maps to its
-        // corresponding entity ID. External Data resolution needs the live external-data store, so it's left unset.
+        // corresponding entity ID.
         if origin.is_empty() {
             return None;
         }
@@ -129,8 +172,29 @@ impl WorkloadProvider for TestWorkloadProvider {
             origin.process_id().map(EntityId::ContainerPid),
             origin.local_data().and_then(EntityId::from_local_data),
             origin.pod_uid().and_then(EntityId::from_pod_uid),
-            None,
+            origin
+                .external_data()
+                .and_then(|raw| self.external_data.get(raw).cloned()),
         ))
+    }
+
+    fn get_container_entity_for_external_data(&self, external_data: &RawExternalData<'_>) -> Option<EntityId> {
+        self.external_data
+            .get(external_data)
+            .map(|resolved| resolved.container_entity_id().clone())
+    }
+
+    fn get_aliased_container_entity(&self, entity_id: &EntityId) -> Option<EntityId> {
+        self.aliases
+            .get(entity_id)
+            .filter(|entity_id| matches!(entity_id, EntityId::Container(_)))
+            .cloned()
+    }
+}
+
+impl CaptureEntityResolver for TestWorkloadProvider {
+    fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
+        self.live_processes.get(&process_id).cloned()
     }
 }
 

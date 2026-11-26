@@ -25,7 +25,7 @@ use saluki_core::{
     runtime,
     topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
 };
-use saluki_env::WorkloadProvider;
+use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{server::http::Http2Config, ListenAddress};
@@ -61,6 +61,7 @@ pub use self::metrics::config::{
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
 pub use self::resolver::OtlpContextSettings;
+use crate::common::otlp::container_id::ContainerIdResolver;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
@@ -132,6 +133,11 @@ pub struct OtlpConfiguration {
 
     /// Workload provider to utilize for origin detection/enrichment.
     pub workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
+
+    /// Resolves the process ID of an OTLP resource to its container through procfs.
+    ///
+    /// Container ID detection asks the workload provider first. Without a resolver, it skips only the procfs fallback.
+    pub capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
 }
 
 impl OtlpConfiguration {
@@ -221,8 +227,13 @@ impl SourceBuilder for OtlpConfiguration {
         } else {
             None
         };
-        let logs_translator =
-            (self.routes.logs == OtlpRoute::Internal).then(|| OtlpLogsTranslator::new(origin_tag_resolver.clone()));
+        let logs_translator = (self.routes.logs == OtlpRoute::Internal).then(|| {
+            let container_id_resolver = ContainerIdResolver::new(
+                self.capture_entity_resolver.clone(),
+                Arc::clone(&self.workload_provider),
+            );
+            OtlpLogsTranslator::new(origin_tag_resolver.clone(), container_id_resolver)
+        });
         let traces_translator =
             (self.routes.traces == OtlpRoute::Internal).then(|| self.traces_translator(origin_tag_resolver.clone()));
 
@@ -675,6 +686,7 @@ mod tests {
             max_resource_len: usize::MAX,
             semantic_registry: SemanticRegistryProvider::default(),
             workload_provider: Arc::new(saluki_env::workload::providers::NoopWorkloadProvider),
+            capture_entity_resolver: None,
         }
     }
 

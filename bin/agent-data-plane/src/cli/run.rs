@@ -1073,6 +1073,7 @@ async fn add_otlp_pipeline_to_blueprint(
         &config.shared.tags,
         features::is_ecs_fargate(),
     );
+    let workload_provider = Arc::new(env_provider.workload().clone());
     let otlp_config = OtlpConfiguration {
         default_hostname: default_hostname.into(),
         receiver: otlp_receiver(&otlp.receiver),
@@ -1084,7 +1085,8 @@ async fn add_otlp_pipeline_to_blueprint(
         debug_verbosity: otlp_debug_verbosity(&otlp.debug),
         max_resource_len: config.domains.traces.max_resource_len,
         semantic_registry,
-        workload_provider: Arc::new(env_provider.workload().clone()),
+        workload_provider: workload_provider.clone(),
+        capture_entity_resolver: Some(workload_provider),
     }
     .with_static_metric_tags(static_tags);
 

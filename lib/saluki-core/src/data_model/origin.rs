@@ -351,6 +351,15 @@ pub struct RawExternalData<'a> {
 }
 
 impl<'a> RawExternalData<'a> {
+    /// Creates a new `RawExternalData` from its fields.
+    pub fn new(pod_uid: &'a str, container_name: &'a str, init_container: bool) -> Self {
+        Self {
+            pod_uid,
+            container_name,
+            init_container,
+        }
+    }
+
     /// Creates a new `RawExternalData` from a raw string.
     ///
     /// If the external data isn't valid, `None` is returned.

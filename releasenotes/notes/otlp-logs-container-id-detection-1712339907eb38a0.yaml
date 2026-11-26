@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    OTLP logs handled natively now get a ``container.id`` resource attribute when the resource has none and origin
+    detection finds the container from ``process.pid``, ``datadog.container.cgroup_inode``, or ``k8s.pod.uid`` with
+    ``k8s.container.name``, as the Datadog Agent does. The logs then carry the ``container_id`` tag, even when the
+    container has no tags of its own.
