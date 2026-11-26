@@ -1,0 +1,12 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "{{ self.connections.split.url }}/v1/metrics"
+# Millstone cannot tell that a static payload is OTLP, and the Agent answers 415 to an OTLP/HTTP body that is not
+# labeled as protobuf.
+content_type: "application/x-protobuf"
+volume: 1
+corpus:
+  size: 1
+  payload:
+    # ExportMetricsServiceRequest with three gauges, built by bin/correctness/otlp-fixtures.
+    # Regenerate it with `make generate-correctness-fixtures` rather than editing it here.
+    static_base64: "CvEBCjUKMwoMc2VydmljZS5uYW1lEiMKIW90bHAtcm91dGluZy1lbmRwb2ludHMtc3BsaXQtaHR0cBK3ARI7CiNvdGxwLnJvdXRpbmcuZW5kcG9pbnRzLXNwbGl0Lmh0dHAuYSoUChIZAAAqNv6clxchAAAAAAAA8D8SOwojb3RscC5yb3V0aW5nLmVuZHBvaW50cy1zcGxpdC5odHRwLmIqFAoSGQAAKjb+nJcXIQAAAAAAAABAEjsKI290bHAucm91dGluZy5lbmRwb2ludHMtc3BsaXQuaHR0cC5jKhQKEhkAACo2/pyXFyEAAAAAAAAIQA=="

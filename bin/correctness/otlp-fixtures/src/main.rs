@@ -240,6 +240,46 @@ fn main() -> ExitCode {
             "test/integration/cases/otlp-routing-internal/millstone-logs-http.yaml",
             || routing::logs_fixture("internal", "http"),
         ),
+        (
+            "test/integration/cases/otlp-traces-endpoints/millstone-metrics-split.yaml",
+            || routing::metrics_fixture("endpoints-split", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints/millstone-traces-split.yaml",
+            || routing::traces_fixture("endpoints-split", "http", 5),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints/millstone-metrics-skipmain.yaml",
+            || routing::metrics_fixture("endpoints-skipmain", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints/millstone-traces-skipmain.yaml",
+            || routing::traces_fixture("endpoints-skipmain", "http", 6),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints/millstone-metrics-opw.yaml",
+            || routing::metrics_fixture("endpoints-opw", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints/millstone-traces-opw.yaml",
+            || routing::traces_fixture("endpoints-opw", "http", 7),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints-mrf/millstone-metrics-adp.yaml",
+            || routing::metrics_fixture("endpoints-mrf-adp", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints-mrf/millstone-traces-adp.yaml",
+            || routing::traces_fixture("endpoints-mrf-adp", "http", 8),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints-mrf/millstone-metrics-agent.yaml",
+            || routing::metrics_fixture("endpoints-mrf-agent", "http"),
+        ),
+        (
+            "test/integration/cases/otlp-traces-endpoints-mrf/millstone-traces-agent.yaml",
+            || routing::traces_fixture("endpoints-mrf-agent", "http", 9),
+        ),
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
