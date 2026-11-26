@@ -224,14 +224,13 @@ mod tests {
             assert_eq!(span.resource(), "SELECT ?", "{statement:?}");
         }
 
-        // The Agent tokenizes `#` as an operator character when the DBMS is PostgreSQL, so its resource can keep the
-        // `#`. This check does not claim parity with the Agent. It checks that ADP does not panic, and that the literal
-        // is gone.
+        // The Agent tokenizes `#` as an operator character when the DBMS is PostgreSQL. A real run of the Agent gives
+        // `SELECT ?` for all three statements, and ADP must give the same resource, not `Non-parsable SQL query`.
         let span = Span::new("svc", "db.query", "#c\nSELECT 2", "sql", 1, 0, 0, 0, 0)
             .with_attributes(attributes(&[("db.system", "postgresql")]));
         let span = obfuscate(ObfuscationConfig::default(), span);
 
-        assert!(!span.resource().contains('2'), "{:?}", span.resource());
+        assert_eq!(span.resource(), "SELECT ?");
     }
 
     #[test]
