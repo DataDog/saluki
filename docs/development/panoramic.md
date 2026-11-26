@@ -483,11 +483,12 @@ case from `test/integration/cases` that uses the same steps.
   of your own, such as `main` or `extra`, and refer to its `url` from a template of `datadog.yaml`. See
   [References](#references). Panoramic accepts a connection that a template refers to. `otlp-traces-endpoints` does
   this.
-- When several API keys deliver to one intake, `intake_from` takes `api_key` to count only the requests with that key.
-  The step ignores the other requests. Add a step without `api_key` whose `count` bounds the total, so that a key that
-  no step names cannot deliver more. The reports, the kept files and the `Debug` form of the step never show the value
-  of `api_key`. The case file, the output of `panoramic plan` and the `plan.json` of a failed case do show it, so use
-  only synthetic keys.
+- When several API keys deliver to one intake, `intake_from` takes `api_keys`. It lists every key that may deliver
+  selected items, and a request with any other key, or with no key, fails the step. A map gives the exact number of
+  items of each key. A list expects at least one item of each key, and suits `trace_stats`, which takes no count. Give
+  every step that expects an item the keys of its intake, so that a key that the case does not name cannot deliver. The
+  reports, the kept files and the `Debug` form of the step never show the value of a key. The case file, the output of
+  `panoramic plan` and the `plan.json` of a failed case do show it, so use only synthetic keys.
 - To check that telemetry does not reach an intake, use `intake_from` with `count: 0` and an explicit `settle`. Put it
   after the steps that saw the same payload arrive at its right intake, and let `settle` cover the time that a wrong
   delivery needs to arrive. An absence step with no such delivery before it also passes when the payload went nowhere.

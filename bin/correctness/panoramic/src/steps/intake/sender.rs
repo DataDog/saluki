@@ -47,12 +47,15 @@
 //!   timeout: 1m
 //! ```
 //!
-//! An intake that several keys deliver to can tell the deliveries apart by the `DD-API-KEY` header. With `api_key`,
-//! only the requests that carry that key count. The step ignores the other requests, so it does not fail on a delivery
-//! with another key. Pair it with a step without `api_key` whose `count` bounds the total, so that a key that no
-//! step names cannot deliver more. The reports, the kept files and the `Debug` form of the step never show the value of
-//! `api_key`. The case file, the output of `panoramic plan` and the `plan.json` that a failed case keeps do show it, so
-//! use only synthetic keys:
+//! An intake that several keys deliver to can tell the deliveries apart by the `DD-API-KEY` header. With `api_keys`,
+//! the step lists every key that may deliver selected items. A request with any other key, or with no key, fails the
+//! step, just like a request of another sender. Give a map from each key to its exact number of items. Or give a list of
+//! keys, which expects at least one item of each. Use a list for `trace_stats`, which takes no count. A step without
+//! `api_keys` accepts any key.
+//!
+//! The reports, the kept files and the `Debug` form of the step never show the value of a key. A report names a key by
+//! its place in the sorted keys of the step, such as `key 2`. The case file, the output of `panoramic plan` and the
+//! `plan.json` that a failed case keeps do show the keys, so use only synthetic keys:
 //!
 //! ```yaml
 //! - step: intake_from
@@ -60,8 +63,7 @@
 //!   telemetry: spans
 //!   select: {service: otlp-routing-endpoints-split-http}
 //!   sender: adp
-//!   api_key: "11111111111111111111111111111111"
-//!   count: 3
+//!   api_keys: {"11111111111111111111111111111111": 3, "22222222222222222222222222222222": 3}
 //!   timeout: 2m
 //! ```
 //!
@@ -89,8 +91,10 @@
 //! - `sender`: `adp`, `agent` or `trace-agent`. Required, except with `count: 0`, where it is not allowed.
 //! - `path`: the path of the requests that carry the selected items, such as `/api/intake/metrics/v3/series`. It starts
 //!   with `/`. Without it, the path does not matter. Not allowed with `count: 0`.
-//! - `api_key`: the value of the `DD-API-KEY` header. Only the requests with exactly this value count. Without it, the
-//!   key does not matter.
+//! - `api_keys`: every value of the `DD-API-KEY` header that may deliver selected items. A list expects at least one
+//!   item of each key. A map gives the exact number of items of each key, and is not allowed for `trace_stats`. A
+//!   request with another key, or with no key, fails the step. Without `api_keys`, the key does not matter. Not allowed
+//!   with `count`, which counts the items of every key together. Not allowed with `count: 0`, which allows no key.
 //! - `count`: the exact number of items. Not allowed for `trace_stats`, whose buckets vary, so the step only checks
 //!   that statistics arrived from the sender. `0` is allowed for every telemetry, and means that no item arrives.
 //! - `settle`: how long to keep watching after the result first holds. Defaults to `20s`, and is required with
@@ -98,7 +102,7 @@
 //! - `timeout`: how long to wait for the result to first hold. With `count: 0` the result holds at the first read, so
 //!   `timeout` only bounds a read that fails.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::future::Future;
 use std::time::Duration;
@@ -168,7 +172,7 @@ struct Fields {
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
-    api_key: Option<String>,
+    api_keys: Option<ApiKeys>,
     #[serde(default)]
     count: Option<u64>,
     #[serde(default)]
@@ -250,7 +254,18 @@ impl Sender {
     }
 }
 
-/// The API key that selected requests carry. Nothing that the step reports or keeps shows its value, and its `Debug`
+/// The `api_keys` field as the case writes it: a list of keys, or a map from each key to its number of items.
+#[derive(Deserialize)]
+#[serde(
+    untagged,
+    expecting = "a list of API keys, or a map from each API key to its number of items"
+)]
+enum ApiKeys {
+    Listed(Vec<String>),
+    Counted(BTreeMap<String, u64>),
+}
+
+/// An API key that selected requests carry. Nothing that the step reports or keeps shows its value, and its `Debug`
 /// form does not either. The fields of the step in the plan do show it, because they hold what the case wrote.
 struct ApiKey(String);
 
@@ -266,6 +281,75 @@ impl ApiKey {
 impl fmt::Debug for ApiKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ApiKey({})", REDACTED)
+    }
+}
+
+/// What the step expects of the selected items that carry one API key. A step without `api_keys` has one bound, for any
+/// key.
+#[derive(Debug)]
+struct KeyBound {
+    /// The key that the requests carry, or `None` for any key.
+    key: Option<ApiKey>,
+    /// The exact number of items from the expected sender, or `None` for at least one.
+    count: Option<u64>,
+}
+
+impl KeyBound {
+    /// How the step describes the expectation, such as `exactly 3`.
+    fn expected(&self) -> String {
+        match self.count {
+            Some(count) => format!("exactly {}", count),
+            None => "at least 1".to_string(),
+        }
+    }
+}
+
+/// Which bound of the step the API key of a request falls under.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum KeyMatch {
+    /// The step names no key, so every request falls under its one bound.
+    Any,
+    /// The key is the one of the bound at this index.
+    Listed(usize),
+    /// The request carries a key that no bound names.
+    Unlisted,
+    /// The request carries no key.
+    Missing,
+}
+
+impl KeyMatch {
+    /// Finds the bound that the key in `headers` falls under.
+    fn of(bounds: &[KeyBound], headers: &BTreeMap<String, String>) -> Self {
+        if let [KeyBound { key: None, .. }] = bounds {
+            return Self::Any;
+        }
+        let position = bounds
+            .iter()
+            .position(|bound| bound.key.as_ref().is_some_and(|key| key.is_in(headers)));
+        match position {
+            Some(index) => Self::Listed(index),
+            None if headers.keys().any(|name| name.eq_ignore_ascii_case(DD_API_KEY)) => Self::Unlisted,
+            None => Self::Missing,
+        }
+    }
+
+    /// The index of the bound that the request falls under, or `None` if no bound names its key.
+    fn bound(self) -> Option<usize> {
+        match self {
+            Self::Any => Some(0),
+            Self::Listed(index) => Some(index),
+            Self::Unlisted | Self::Missing => None,
+        }
+    }
+
+    /// What a report calls the key. It never shows the value: a listed key is its place among the keys of the step.
+    fn label(self) -> String {
+        match self {
+            Self::Any => "any".to_string(),
+            Self::Listed(index) => format!("key {}", index + 1),
+            Self::Unlisted => "unlisted".to_string(),
+            Self::Missing => "none".to_string(),
+        }
     }
 }
 
@@ -327,12 +411,12 @@ impl Target {
     }
 
     /// Decodes the answer of the intake at the route of the telemetry, and keeps the requests that carried selected
-    /// items. With `api_key`, it keeps only the requests that carried that key.
+    /// items, each with the bound of `bounds` that its API key falls under.
     ///
     /// # Errors
     ///
     /// Returns an error if the answer does not decode as the records of the telemetry.
-    fn selected(&self, body: &[u8], api_key: Option<&ApiKey>) -> Result<Tally, String> {
+    fn selected(&self, body: &[u8], bounds: &[KeyBound]) -> Result<Tally, String> {
         fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, String> {
             serde_json::from_slice(body).map_err(|e| {
                 if body.is_empty() {
@@ -348,7 +432,7 @@ impl Target {
             Telemetry::Metrics => {
                 let requests: Vec<IntakeRequest<Vec<Metric>>> = decode(body)?;
                 Tally::of(
-                    api_key,
+                    bounds,
                     requests.iter().map(|request| {
                         let points = request
                             .items()
@@ -363,7 +447,7 @@ impl Target {
             Telemetry::Spans => {
                 let requests: Vec<IntakeRequest<Vec<Span>>> = decode(body)?;
                 Tally::of(
-                    api_key,
+                    bounds,
                     requests.iter().map(|request| {
                         let spans = request.items().iter().filter(|span| span.service() == selector).count();
                         (request.path(), request.headers(), spans as u64)
@@ -373,7 +457,7 @@ impl Target {
             Telemetry::TraceStats => {
                 let requests: Vec<IntakeRequest<ClientStatisticsAggregator>> = decode(body)?;
                 Tally::of(
-                    api_key,
+                    bounds,
                     requests.iter().map(|request| {
                         let groups = request
                             .items()
@@ -389,7 +473,7 @@ impl Target {
             Telemetry::Logs => {
                 let requests: Vec<LogsRequest> = decode(body)?;
                 Tally::of(
-                    api_key,
+                    bounds,
                     requests.iter().map(|request| {
                         let logs = request
                             .logs()
@@ -408,6 +492,8 @@ impl Target {
 #[derive(Debug)]
 struct Selected {
     path: String,
+    /// Which bound of the step the key of the request falls under.
+    key: KeyMatch,
     /// The headers of the request, with the value of each secret header replaced.
     headers: BTreeMap<String, String>,
     items: u64,
@@ -426,7 +512,8 @@ impl Selected {
         self.sender().map_or(UNATTRIBUTABLE, Sender::name)
     }
 
-    /// One line for a failure message: the sender, the path, the `User-Agent` and every other header.
+    /// One line for a failure message: the sender, the path, the `User-Agent`, the key if the step names keys, and every
+    /// other header.
     fn line(&self) -> String {
         let headers: Vec<String> = self
             .headers
@@ -434,13 +521,18 @@ impl Selected {
             .filter(|(name, _)| name.as_str() != USER_AGENT)
             .map(|(name, value)| format!("{}: {}", name, value))
             .collect();
+        let key = match self.key {
+            KeyMatch::Any => String::new(),
+            key => format!("; API key: {}", key.label()),
+        };
         format!(
-            "{} {}: {} item(s), user-agent {}; headers: {}",
+            "{} {}: {} item(s), user-agent {}{}; headers: {}",
             self.sender_name(),
             self.path,
             self.items,
             self.user_agent()
                 .map_or("none".to_string(), |agent| format!("'{}'", agent)),
+            key,
             headers.join(", ")
         )
     }
@@ -451,19 +543,19 @@ impl Selected {
 struct Tally(Vec<Selected>);
 
 impl Tally {
-    /// Keeps the requests that carried items, from each request's path, headers, and number of selected items. With
-    /// `api_key`, it drops each request that does not carry that key. The value of each secret header is replaced
-    /// here, after the filter, so nothing that the step reports can show it.
+    /// Keeps the requests that carried items, from each request's path, headers, and number of selected items. It finds
+    /// the bound of `bounds` that the API key of each request falls under, and then replaces the value of each secret
+    /// header, so nothing that the step reports can show it.
     fn of<'a>(
-        api_key: Option<&ApiKey>, requests: impl IntoIterator<Item = (&'a str, &'a BTreeMap<String, String>, u64)>,
+        bounds: &[KeyBound], requests: impl IntoIterator<Item = (&'a str, &'a BTreeMap<String, String>, u64)>,
     ) -> Self {
         Self(
             requests
                 .into_iter()
                 .filter(|(_, _, items)| *items > 0)
-                .filter(|(_, headers, _)| api_key.is_none_or(|key| key.is_in(headers)))
                 .map(|(path, headers, items)| Selected {
                     path: path.to_string(),
+                    key: KeyMatch::of(bounds, headers),
                     headers: headers
                         .iter()
                         .map(|(name, value)| {
@@ -484,6 +576,20 @@ impl Tally {
             .filter(|request| request.sender() == Some(sender))
             .map(|request| request.items)
             .sum()
+    }
+
+    /// The items that requests of `sender` carried under the bound at `index`.
+    fn items_from_under(&self, sender: Sender, index: usize) -> u64 {
+        self.0
+            .iter()
+            .filter(|request| request.sender() == Some(sender) && request.key.bound() == Some(index))
+            .map(|request| request.items)
+            .sum()
+    }
+
+    /// Whether a request carried a key that no bound names, or no key.
+    fn has_stray_key(&self) -> bool {
+        self.0.iter().any(|request| request.key.bound().is_none())
     }
 
     fn total(&self) -> u64 {
@@ -510,29 +616,47 @@ impl Tally {
             .collect::<Vec<_>>()
             .join(", ")
     }
+
+    /// The items of each key, such as `key 1 3, unlisted 3`.
+    fn key_counts(&self) -> String {
+        let mut counts: BTreeMap<KeyMatch, u64> = BTreeMap::new();
+        for request in &self.0 {
+            *counts.entry(request.key).or_default() += request.items;
+        }
+        if counts.is_empty() {
+            return "none".to_string();
+        }
+        counts
+            .iter()
+            .map(|(key, items)| format!("{} {}", key.label(), items))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// How the items that arrived compare with what the step expects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Check {
-    /// Fewer items than expected arrived from the sender.
-    Short,
+    /// Fewer items than expected arrived from the sender under the bound at this index.
+    Short(usize),
     /// The expected sender delivered the expected number of items, and nobody else delivered any.
     Met,
     /// Another sender, or an unattributable request, delivered selected items. For a step that expects no item, every
     /// sender is another sender.
     Foreign,
+    /// A request carried an API key that the step does not list, or no key.
+    Stray,
     /// The expected sender delivered selected items on a path other than `path`.
     Misrouted,
-    /// The expected sender delivered more items than `count`.
-    Duplicate,
+    /// The expected sender delivered more items than the bound at this index allows.
+    Duplicate(usize),
 }
 
 /// What the step expects of the selected items.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Expect {
-    /// Items from `sender` and from no other sender: `count` of them, or at least one without `count`.
-    From { sender: Sender, count: Option<u64> },
+    /// Items from `sender` and from no other sender. Each bound of the step says how many.
+    From { sender: Sender },
     /// No item, from any sender.
     Nothing,
 }
@@ -565,8 +689,8 @@ struct IntakeFrom {
     expect: Expect,
     /// The path of the requests that carry the selected items, or `None` for any path.
     path: Option<String>,
-    /// The key that a request must carry to count, or `None` for any key.
-    api_key: Option<ApiKey>,
+    /// The keys that the requests may carry, each with its count. One bound for any key if the step names none.
+    bounds: Vec<KeyBound>,
     settle: Timeout,
     timeout: Timeout,
 }
@@ -577,7 +701,8 @@ impl IntakeFrom {
     /// # Errors
     ///
     /// Returns an error if the selection does not suit the telemetry, `count` is not `0` for `trace_stats`, `path` does
-    /// not start with `/`, `api_key` is empty, `sender` is missing or given with `count: 0`, or `path` is given or
+    /// not start with `/`, `api_keys` is empty, holds an empty or repeated key, gives a count of `0` or a count for
+    /// `trace_stats`, or comes with `count`, `sender` is missing or given with `count: 0`, or `path` is given or
     /// `settle` is missing with `count: 0`.
     fn new(fields: Fields) -> Result<Self, String> {
         let Fields {
@@ -586,7 +711,7 @@ impl IntakeFrom {
             select,
             sender,
             path,
-            api_key,
+            api_keys,
             count,
             settle,
             timeout,
@@ -601,9 +726,7 @@ impl IntakeFrom {
         if let Some(path) = path.as_deref().filter(|path| !path.starts_with('/')) {
             return Err(format!("'path' must start with '/', and '{}' does not", path));
         }
-        if api_key.as_deref() == Some("") {
-            return Err("'api_key' is empty, so it selects no request".to_string());
-        }
+        let bounds = Self::bounds(api_keys, telemetry, count)?;
         let expect = match (sender, count) {
             (None, Some(0)) => Expect::Nothing,
             (Some(_), Some(0)) => {
@@ -612,7 +735,7 @@ impl IntakeFrom {
                 )
             }
             (None, _) => return Err("'sender' is required, except with 'count: 0'".to_string()),
-            (Some(sender), count) => Expect::From { sender, count },
+            (Some(sender), _) => Expect::From { sender },
         };
         if expect == Expect::Nothing && path.is_some() {
             return Err("'path' is not an option with 'count: 0': no selected item may arrive on any path".to_string());
@@ -632,28 +755,93 @@ impl IntakeFrom {
             target: Target::new(telemetry, select)?,
             expect,
             path,
-            api_key: api_key.map(ApiKey),
+            bounds,
             settle,
             timeout,
         })
     }
 
+    /// The bounds of the step: one for each key of `api_keys`, in sorted order, or one for any key without `api_keys`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `api_keys` does not suit `telemetry` and `count`, or does not name a key, or names one twice
+    /// or with a count of `0`.
+    fn bounds(api_keys: Option<ApiKeys>, telemetry: Telemetry, count: Option<u64>) -> Result<Vec<KeyBound>, String> {
+        let Some(api_keys) = api_keys else {
+            return Ok(vec![KeyBound { key: None, count }]);
+        };
+        match count {
+            Some(0) => {
+                return Err("'api_keys' is not an option with 'count: 0': no item may arrive with any key".to_string())
+            }
+            Some(_) => return Err(
+                "'api_keys' is not an option with 'count': a map gives the count of each key, and a list expects at \
+                     least one item of each key"
+                    .to_string(),
+            ),
+            None => {}
+        }
+        let keys: BTreeMap<String, Option<u64>> =
+            match api_keys {
+                ApiKeys::Listed(keys) => {
+                    let distinct: BTreeSet<&String> = keys.iter().collect();
+                    if distinct.len() != keys.len() {
+                        return Err("'api_keys' lists a key twice".to_string());
+                    }
+                    keys.into_iter().map(|key| (key, None)).collect()
+                }
+                ApiKeys::Counted(_) if telemetry == Telemetry::TraceStats => return Err(
+                    "'api_keys' is a list for trace_stats: the buckets of statistics vary, so the step has no count \
+                     for a key"
+                        .to_string(),
+                ),
+                ApiKeys::Counted(keys) => keys.into_iter().map(|(key, count)| (key, Some(count))).collect(),
+            };
+        if keys.is_empty() {
+            return Err("'api_keys' is empty, so it names no key, and every request fails the step".to_string());
+        }
+        if keys.contains_key("") {
+            return Err("'api_keys' holds an empty key, which no request carries".to_string());
+        }
+        if keys.values().any(|count| *count == Some(0)) {
+            return Err(
+                "'api_keys' gives a key a count of 0: leave the key out, because a request with a key that the list \
+                 does not name fails the step"
+                    .to_string(),
+            );
+        }
+        Ok(keys
+            .into_iter()
+            .map(|(key, count)| KeyBound {
+                key: Some(ApiKey(key)),
+                count,
+            })
+            .collect())
+    }
+
     fn check(&self, tally: &Tally) -> Check {
-        let Expect::From { sender, count } = self.expect else {
+        let Expect::From { sender } = self.expect else {
             return if tally.total() == 0 { Check::Met } else { Check::Foreign };
         };
-        let have = tally.items_from(sender);
-        if tally.total() > have {
+        if tally.total() > tally.items_from(sender) {
             return Check::Foreign;
+        }
+        if tally.has_stray_key() {
+            return Check::Stray;
         }
         if self.path.as_deref().is_some_and(|path| tally.reached_other_than(path)) {
             return Check::Misrouted;
         }
-        match count {
-            Some(count) if have > count => Check::Duplicate,
-            Some(count) if have < count => Check::Short,
-            None if have == 0 => Check::Short,
-            _ => Check::Met,
+        let have = |index: usize| tally.items_from_under(sender, index);
+        let bounds = || self.bounds.iter().enumerate();
+        if let Some((index, _)) = bounds().find(|(index, bound)| bound.count.is_some_and(|count| have(*index) > count))
+        {
+            return Check::Duplicate(index);
+        }
+        match bounds().find(|(index, bound)| have(*index) < bound.count.unwrap_or(1)) {
+            Some((index, _)) => Check::Short(index),
+            None => Check::Met,
         }
     }
 
@@ -688,7 +876,7 @@ impl IntakeFrom {
             }
             let read = match fetch(limit).await {
                 Ok(body) => {
-                    let tally = self.target.selected(&body, self.api_key.as_ref()).map_err(|why| {
+                    let tally = self.target.selected(&body, &self.bounds).map_err(|why| {
                         HandleError::Harness(format!(
                             "the records that '{}' answers at {} do not decode: {}",
                             self.on,
@@ -698,11 +886,13 @@ impl IntakeFrom {
                     })?;
                     let check = self.check(&tally);
                     match check {
-                        Check::Foreign | Check::Misrouted | Check::Duplicate => break Ok((check, tally)),
+                        Check::Foreign | Check::Stray | Check::Misrouted | Check::Duplicate(_) => {
+                            break Ok((check, tally))
+                        }
                         Check::Met => {
                             held_since.get_or_insert_with(Instant::now);
                         }
-                        Check::Short => {}
+                        Check::Short(_) => {}
                     }
                     Ok((check, tally))
                 }
@@ -764,14 +954,20 @@ impl IntakeFrom {
                 self.settle.text
             );
         }
-        let _ = write!(message, "\nSelection: {}.", self.selection());
-        if let Expect::From { sender, .. } = self.expect {
+        let _ = write!(message, "\nSelection: {}.", self.target.describe());
+        if let Expect::From { sender } = self.expect {
             let _ = write!(message, " Expected sender: {}.", sender.name());
         }
         if let Some(path) = &self.path {
             let _ = write!(message, " Expected path: {}.", path);
         }
+        if self.is_keyed() {
+            let _ = write!(message, " Expected API keys: {}.", self.expected_keys());
+        }
         let _ = write!(message, "\nItems by sender: {}.", tally.counts());
+        if self.is_keyed() {
+            let _ = write!(message, "\nItems by API key: {}.", tally.key_counts());
+        }
         let lines: Vec<String> = tally.0.iter().map(Selected::line).collect();
         if !lines.is_empty() {
             let file = self.target.file_name(self.expect.sender_name());
@@ -795,48 +991,59 @@ impl IntakeFrom {
         }
     }
 
-    /// The items that the step selects, and the key of their requests if the step names one.
-    fn selection(&self) -> String {
-        let selection = self.target.describe();
-        if self.api_key.is_some() {
-            format!("{} with the expected API key", selection)
+    /// Whether the step names the API keys that may deliver.
+    fn is_keyed(&self) -> bool {
+        self.bounds.iter().any(|bound| bound.key.is_some())
+    }
+
+    /// What the step expects of each key, such as `key 1 exactly 3, key 2 at least 1`.
+    fn expected_keys(&self) -> String {
+        self.bounds
+            .iter()
+            .enumerate()
+            .map(|(index, bound)| format!("{} {}", KeyMatch::Listed(index).label(), bound.expected()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// What a message says of the key that the items of the bound at `index` carry, or nothing if the step names no key.
+    fn with_key(&self, index: usize) -> String {
+        if self.is_keyed() {
+            format!(" with {}", KeyMatch::Listed(index).label())
         } else {
-            selection
+            String::new()
         }
     }
 
     /// The message of a step that passed.
     fn success(&self, tally: &Tally) -> String {
         let (on, settle) = (&self.on, &self.settle.text);
-        let key = if self.api_key.is_some() {
-            " with the expected API key"
-        } else {
-            ""
-        };
         match self.expect {
-            Expect::From { sender, .. } => {
+            Expect::From { sender } => {
                 let path = self.path.as_ref().map_or(String::new(), |path| format!(" on {}", path));
+                let keys = if self.is_keyed() {
+                    " with the listed API keys"
+                } else {
+                    ""
+                };
                 format!(
                     "{} selected item(s) reached '{}' from {}{}{} and from no other sender, and the result held for {}.",
                     tally.total(),
                     on,
                     sender.name(),
                     path,
-                    key,
+                    keys,
                     settle
                 )
             }
-            Expect::Nothing => format!(
-                "No selected item{} reached '{}' within the settle of {}.",
-                key, on, settle
-            ),
+            Expect::Nothing => format!("No selected item reached '{}' within the settle of {}.", on, settle),
         }
     }
 
     /// The first sentence of the message for a check that failed, or `None` if the check held.
     fn failure(&self, check: Check, tally: &Tally) -> Option<String> {
         let on = &self.on;
-        let Expect::From { sender, count } = self.expect else {
+        let Expect::From { sender } = self.expect else {
             return (check != Check::Met).then(|| {
                 format!(
                     "{} selected item(s) reached '{}', and the step expects none.",
@@ -845,26 +1052,35 @@ impl IntakeFrom {
                 )
             });
         };
-        let (have, sender) = (tally.items_from(sender), sender.name());
-        let expected = match count {
-            Some(count) => format!("exactly {}", count),
-            None => "at least 1".to_string(),
-        };
+        let (have, sender) = (|index| tally.items_from_under(sender, index), sender.name());
         Some(match check {
             Check::Met => return None,
             Check::Foreign => format!("Selected items reached '{}' from a sender other than {}.", on, sender),
+            Check::Stray => format!(
+                "Selected items reached '{}' with an API key that the step does not list, or with no key.",
+                on
+            ),
             Check::Misrouted => format!(
                 "Selected items reached '{}' on a path other than '{}'.",
                 on,
                 self.path.as_deref().unwrap_or_default()
             ),
-            Check::Duplicate => format!(
-                "{} selected item(s) reached '{}' from {}, and the step expects {}.",
-                have, on, sender, expected
+            Check::Duplicate(index) => format!(
+                "{} selected item(s) reached '{}' from {}{}, and the step expects {}.",
+                have(index),
+                on,
+                sender,
+                self.with_key(index),
+                self.bounds[index].expected()
             ),
-            Check::Short => format!(
-                "{} selected item(s) reached '{}' from {} within {}, and the step expects {}.",
-                have, on, sender, self.timeout.text, expected
+            Check::Short(index) => format!(
+                "{} selected item(s) reached '{}' from {}{} within {}, and the step expects {}.",
+                have(index),
+                on,
+                sender,
+                self.with_key(index),
+                self.timeout.text,
+                self.bounds[index].expected()
             ),
         })
     }
@@ -1088,12 +1304,14 @@ mod tests {
         ))
     }
 
-    /// The step on spans that expects `count` of them from ADP, in the requests with `key`.
-    fn keyed_step(key: &str, count: u64) -> IntakeFrom {
+    /// The step that selects the fixtures of `telemetry` and expects them from ADP, with the keys `api_keys`, a list or
+    /// a map in YAML.
+    fn keyed_step(telemetry: Telemetry, api_keys: &str) -> IntakeFrom {
         step(&format!(
-            "{{on: intake, telemetry: spans, select: {{service: fx}}, sender: adp, api_key: '{}', count: {}, settle: 2s, \
-             timeout: 10s}}",
-            key, count
+            "{{on: intake, telemetry: {}, select: {}, sender: adp, api_keys: {}, settle: 2s, timeout: 10s}}",
+            telemetry.name(),
+            selection(telemetry),
+            api_keys
         ))
     }
 
@@ -1485,7 +1703,7 @@ mod tests {
         for honors_limit in [true, false] {
             let (watched, reads) = watch_slow_read(honors_limit, late).await;
             let watched = watched.unwrap();
-            assert_eq!(watched.check, Check::Duplicate, "honors_limit: {}", honors_limit);
+            assert_eq!(watched.check, Check::Duplicate(0), "honors_limit: {}", honors_limit);
             assert!(watched.settling);
             // The last read starts after the settle ends, so it sees the duplicate.
             let (offset, _) = *reads.last().unwrap();
@@ -1710,57 +1928,172 @@ mod tests {
         );
     }
 
+    /// The `api_keys` of a step that lists `KEY_ONE`, which is the first of its keys, and expects `count` items of it.
+    fn counted_keys(count: u64) -> String {
+        format!("{{'{}': {}}}", KEY_ONE, count)
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn each_api_key_counts_only_the_requests_that_carry_it() {
-        let answer = records(vec![
-            keyed(request(Telemetry::Spans, Some(ADP), 3, 1), KEY_ONE),
-            keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_TWO),
-            request(Telemetry::Spans, Some(ADP), 0, 2),
-        ]);
-        for key in [KEY_ONE, KEY_TWO] {
-            let outcome = watch(&keyed_step(key, 3), vec![answer.clone()]).await;
+    async fn each_listed_api_key_has_its_own_count_for_every_telemetry() {
+        for telemetry in [Telemetry::Metrics, Telemetry::Spans, Telemetry::Logs] {
+            // The request without a key holds no selected item, so the step ignores it.
+            let answer = records(vec![
+                keyed(request(telemetry, Some(ADP), 3, 1), KEY_ONE),
+                keyed(request(telemetry, Some(ADP), 2, 0), KEY_TWO),
+                request(telemetry, Some(ADP), 0, 2),
+            ]);
+            let keys = format!("{{'{}': 3, '{}': 2}}", KEY_ONE, KEY_TWO);
+            let outcome = watch(&keyed_step(telemetry, &keys), vec![answer]).await;
             assert_status(&outcome, StepStatus::Passed);
             assert_mentions(
                 &outcome,
-                &["3 selected item(s) reached 'intake' from adp with the expected API key and from no other sender"],
+                &["5 selected item(s) reached 'intake' from adp with the listed API keys and from no other sender"],
             );
-            assert_eq!(outcome.elapsed, Duration::from_secs(2));
+            assert_eq!(outcome.elapsed, Duration::from_secs(2), "{}", telemetry.name());
         }
+    }
 
-        // A step without a key counts the requests of both, so it bounds what the keys deliver together.
-        let both = step(
-            "{on: intake, telemetry: spans, select: {service: fx}, sender: adp, count: 6, settle: 2s, timeout: 10s}",
-        );
-        assert_status(&watch(&both, vec![answer.clone()]).await, StepStatus::Passed);
-        let outcome = watch(&adp_step(Telemetry::Spans), vec![answer]).await;
+    #[tokio::test(start_paused = true)]
+    async fn a_listed_api_key_with_more_or_fewer_items_than_its_count_fails() {
+        let answer = records(vec![
+            keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_ONE),
+            keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_TWO),
+        ]);
+        let keys = |second| format!("{{'{}': 3, '{}': {}}}", KEY_ONE, KEY_TWO, second);
+
+        let outcome = watch(&keyed_step(Telemetry::Spans, &keys(2)), vec![answer.clone()]).await;
         assert_status(&outcome, StepStatus::Failed);
         assert_mentions(
             &outcome,
-            &["6 selected item(s) reached 'intake' from adp", "expects exactly 3"],
+            &[
+                "3 selected item(s) reached 'intake' from adp with key 2, and the step expects exactly 2.",
+                "Expected API keys: key 1 exactly 3, key 2 exactly 2.",
+                "Items by API key: key 1 3, key 2 3.",
+            ],
+        );
+        assert_eq!(outcome.elapsed, Duration::ZERO);
+
+        let outcome = watch(&keyed_step(Telemetry::Spans, &keys(4)), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &["3 selected item(s) reached 'intake' from adp with key 2 within 10s, and the step expects exactly 4."],
+        );
+        assert_eq!(outcome.elapsed, Duration::from_secs(10));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_list_of_api_keys_expects_at_least_one_item_of_each_for_every_telemetry() {
+        let keys = format!("['{}', '{}']", KEY_ONE, KEY_TWO);
+        for telemetry in TELEMETRIES {
+            let both = records(vec![
+                keyed(request(telemetry, Some(ADP), 2, 0), KEY_ONE),
+                keyed(request(telemetry, Some(ADP), 1, 0), KEY_TWO),
+            ]);
+            let outcome = watch(&keyed_step(telemetry, &keys), vec![both]).await;
+            assert_status(&outcome, StepStatus::Passed);
+            assert_eq!(outcome.elapsed, Duration::from_secs(2), "{}", telemetry.name());
+
+            let first = records(vec![keyed(request(telemetry, Some(ADP), 2, 0), KEY_ONE)]);
+            let outcome = watch(&keyed_step(telemetry, &keys), vec![first]).await;
+            assert_status(&outcome, StepStatus::Failed);
+            assert_mentions(
+                &outcome,
+                &["0 selected item(s) reached 'intake' from adp with key 2 within 10s, and the step expects at least 1."],
+            );
+            assert_eq!(outcome.elapsed, Duration::from_secs(10), "{}", telemetry.name());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_item_with_an_unlisted_api_key_fails_at_once_for_every_telemetry() {
+        for telemetry in TELEMETRIES {
+            // The step lists the first key, which delivers what it expects. A second key delivers one more item.
+            let answer = records(vec![
+                keyed(request(telemetry, Some(ADP), 3, 0), KEY_ONE),
+                keyed(request(telemetry, Some(ADP), 1, 0), KEY_TWO),
+            ]);
+            // Statistics take no count, so a list stands for them.
+            let keys = if telemetry == Telemetry::TraceStats {
+                format!("['{}']", KEY_ONE)
+            } else {
+                counted_keys(3)
+            };
+            let outcome = watch(&keyed_step(telemetry, &keys), vec![answer]).await;
+            assert_status(&outcome, StepStatus::Failed);
+            assert_mentions(
+                &outcome,
+                &[
+                    "with an API key that the step does not list, or with no key.",
+                    "Items by API key: key 1 3, unlisted 1.",
+                    "; API key: key 1;",
+                    "; API key: unlisted;",
+                ],
+            );
+            assert_eq!(outcome.elapsed, Duration::ZERO, "{}", telemetry.name());
+            assert_eq!(outcome.reads, 1, "{}", telemetry.name());
+            let [(_, kept)] = &outcome.kept[..] else {
+                panic!("{:?}", outcome.kept)
+            };
+            assert!(kept.contains("; API key: unlisted;"), "{}", kept);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_without_an_api_key_fails_a_step_that_lists_keys() {
+        let answer = records(vec![
+            keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_ONE),
+            request(Telemetry::Spans, Some(ADP), 1, 0),
+        ]);
+        let outcome = watch(&keyed_step(Telemetry::Spans, &counted_keys(3)), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &["does not list, or with no key", "Items by API key: key 1 3, none 1."],
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_request_with_another_key_does_not_fail_a_step_with_an_api_key() {
-        // The step narrows the selection, so a delivery with another key, even from another sender, is not its concern.
+    async fn an_item_with_an_unlisted_api_key_that_arrives_during_the_settle_fails() {
+        let held = || records(vec![keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_ONE)]);
+        let stray = records(vec![
+            keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_ONE),
+            keyed(request(Telemetry::Spans, Some(ADP), 1, 0), KEY_TWO),
+        ]);
+        let outcome = watch(
+            &keyed_step(Telemetry::Spans, &counted_keys(3)),
+            vec![held(), held(), stray],
+        )
+        .await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &["does not list", "after the result first held, within the settle of 2s"],
+        );
+        assert!(outcome.elapsed < Duration::from_secs(2), "{:?}", outcome.elapsed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_listed_api_key_does_not_excuse_another_sender() {
         let answer = records(vec![
             keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_ONE),
-            keyed(request(Telemetry::Spans, Some(AGENT), 2, 0), KEY_TWO),
-            keyed(
-                request(Telemetry::Spans, None, 1, 0),
-                "33333333333333333333333333333333",
-            ),
+            keyed(request(Telemetry::Spans, Some(AGENT), 1, 0), KEY_ONE),
         ]);
-        let outcome = watch(&keyed_step(KEY_ONE, 3), vec![answer]).await;
-        assert_status(&outcome, StepStatus::Passed);
+        let outcome = watch(&keyed_step(Telemetry::Spans, &counted_keys(3)), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &["from a sender other than adp", "Items by sender: adp 3, agent 1."],
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn the_key_of_a_request_is_matched_exactly_and_by_a_header_name_in_any_case() {
         let key = "abababababababababababababababab";
+        let keys = format!("{{'{}': 3}}", key);
         let mut upper = request(Telemetry::Spans, Some(ADP), 3, 0);
         upper["headers"]["DD-API-KEY"] = json!(key);
-        let outcome = watch(&keyed_step(key, 3), vec![records(vec![upper])]).await;
+        let outcome = watch(&keyed_step(Telemetry::Spans, &keys), vec![records(vec![upper])]).await;
         assert_status(&outcome, StepStatus::Passed);
 
         for near in [
@@ -1770,59 +2103,56 @@ mod tests {
             format!("{}b", key),
         ] {
             let answer = records(vec![keyed(request(Telemetry::Spans, Some(ADP), 3, 0), &near)]);
-            let outcome = watch(&keyed_step(key, 3), vec![answer]).await;
+            let outcome = watch(&keyed_step(Telemetry::Spans, &keys), vec![answer]).await;
             assert_status(&outcome, StepStatus::Failed);
-            assert_mentions(&outcome, &["0 selected item(s) reached 'intake' from adp within 10s"]);
+            assert_mentions(&outcome, &["Items by API key: unlisted 3."]);
         }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_step_that_expects_none_with_an_api_key_ignores_the_other_keys() {
-        let absent = |key: &str| {
-            step(&format!(
-                "{{on: intake, telemetry: spans, select: {{service: fx}}, api_key: '{}', count: 0, settle: 2s, \
-                 timeout: 10s}}",
-                key
-            ))
-        };
-        let answer = records(vec![keyed(request(Telemetry::Spans, Some(ADP), 3, 0), KEY_TWO)]);
-        let outcome = watch(&absent(KEY_ONE), vec![answer.clone()]).await;
+    async fn a_step_without_api_keys_accepts_every_key_and_no_key() {
+        let answer = records(vec![
+            keyed(request(Telemetry::Spans, Some(ADP), 1, 0), KEY_ONE),
+            keyed(request(Telemetry::Spans, Some(ADP), 1, 0), KEY_TWO),
+            request(Telemetry::Spans, Some(ADP), 1, 0),
+        ]);
+        let outcome = watch(&adp_step(Telemetry::Spans), vec![answer]).await;
         assert_status(&outcome, StepStatus::Passed);
-        assert_mentions(
-            &outcome,
-            &["No selected item with the expected API key reached 'intake' within the settle of 2s."],
-        );
-
-        let outcome = watch(&absent(KEY_TWO), vec![answer]).await;
-        assert_status(&outcome, StepStatus::Failed);
-        assert_mentions(
-            &outcome,
-            &[
-                "3 selected item(s) reached 'intake', and the step expects none.",
-                "Selection: spans of service 'fx' with the expected API key.",
-            ],
+        assert!(
+            !outcome.report.message.contains("API key"),
+            "{}",
+            outcome.report.message
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn an_api_key_is_in_no_message_kept_file_or_debug_form() {
-        let answer = records(vec![keyed(request(Telemetry::Spans, Some(ADP), 4, 0), KEY_ONE)]);
-        let steps = [keyed_step(KEY_ONE, 3), {
-            step(&format!(
-                "{{on: intake, telemetry: spans, select: {{service: fx}}, api_key: '{}', count: 0, settle: 2s, timeout: 10s}}",
-                KEY_ONE
-            ))
-        }];
-        for step in steps {
-            let outcome = watch(&step, vec![answer.clone()]).await;
+        let one = |telemetry| records(vec![keyed(request(telemetry, Some(ADP), 4, 0), KEY_ONE)]);
+        let both = |telemetry| {
+            records(vec![
+                keyed(request(telemetry, Some(ADP), 3, 0), KEY_ONE),
+                keyed(request(telemetry, Some(ADP), 1, 0), KEY_TWO),
+            ])
+        };
+        let counted = keyed_step(Telemetry::Spans, &counted_keys(3));
+        let listed = keyed_step(Telemetry::TraceStats, &format!("['{}']", KEY_ONE));
+        let runs = [
+            (&counted, one(Telemetry::Spans)),
+            (&counted, both(Telemetry::Spans)),
+            (&listed, both(Telemetry::TraceStats)),
+        ];
+        for (step, answer) in runs {
+            let outcome = watch(step, vec![answer]).await;
             assert_status(&outcome, StepStatus::Failed);
-            assert_mentions(&outcome, &["with the expected API key.", "dd-api-key: <redacted>"]);
+            assert_mentions(&outcome, &["Expected API keys: key 1", "dd-api-key: <redacted>"]);
             let [(_, kept)] = &outcome.kept[..] else {
                 panic!("{:?}", outcome.kept)
             };
             assert!(kept.contains("dd-api-key: <redacted>"), "{}", kept);
-            for shown in [&outcome.report.message, kept, &format!("{:?}", step)] {
-                assert!(!shown.contains(KEY_ONE), "the key is in: {}", shown);
+            for key in [KEY_ONE, KEY_TWO] {
+                for shown in [&outcome.report.message, kept, &format!("{:?}", step)] {
+                    assert!(!shown.contains(key), "the key is in: {}", shown);
+                }
             }
         }
     }
@@ -1861,8 +2191,53 @@ mod tests {
                 "'path' is not an option with 'count: 0'",
             ),
             (
-                format!("on: i, telemetry: logs, api_key: '', {}", select),
-                "'api_key' is empty",
+                format!("on: i, telemetry: logs, api_key: k, {}", select),
+                "unknown field `api_key`",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: k, {}", select),
+                "a list of API keys, or a map from each API key to its number of items",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: [], {}", select),
+                "'api_keys' is empty",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: {{}}, {}", select),
+                "'api_keys' is empty",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: [''], {}", select),
+                "'api_keys' holds an empty key",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: {{'': 1}}, {}", select),
+                "'api_keys' holds an empty key",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: [k, k], {}", select),
+                "'api_keys' lists a key twice",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: {{k: 0}}, {}", select),
+                "'api_keys' gives a key a count of 0",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: {{k: 1}}, count: 1, {}", select),
+                "'api_keys' is not an option with 'count'",
+            ),
+            (
+                format!("on: i, telemetry: logs, api_keys: [k], count: 1, {}", select),
+                "'api_keys' is not an option with 'count'",
+            ),
+            (
+                "on: i, telemetry: logs, select: {service: fx}, api_keys: [k], count: 0, settle: 1s, timeout: 1m"
+                    .to_string(),
+                "'api_keys' is not an option with 'count: 0'",
+            ),
+            (
+                format!("on: i, telemetry: trace_stats, api_keys: {{k: 1}}, {}", select),
+                "'api_keys' is a list for trace_stats",
             ),
             (
                 format!("on: i, telemetry: logs, settle: 0s, {}", select),

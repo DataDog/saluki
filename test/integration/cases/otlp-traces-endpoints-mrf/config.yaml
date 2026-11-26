@@ -70,6 +70,9 @@ procedure:
   - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/traces-adp.yaml], timeout: 2m}
   - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/metrics-agent.yaml], timeout: 2m}
   - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/traces-agent.yaml], timeout: 2m}
+  # Each step lists every key that may deliver to its intake, so a request with another key fails the step. A map gives
+  # the exact number of items of each key. A list expects at least one item of each key, because `trace_stats` takes no
+  # count.
   - parallel:
       # The Agent sends each signal to the main intake with the main key, and to the failover intake with the failover
       # key. The core Agent sends the metrics, and its trace-agent sends the traces and the statistics. These steps show
@@ -79,8 +82,7 @@ procedure:
         telemetry: metrics
         select: {name_prefix: "otlp.routing.endpoints-mrf-agent.http."}
         sender: agent
-        api_key: "00000000000000000000000000000000"
-        count: 3
+        api_keys: {"00000000000000000000000000000000": 3}
         timeout: 2m
       - step: intake_from
         on: intake-agent-main
@@ -88,8 +90,7 @@ procedure:
         select: {service: otlp-routing-endpoints-mrf-agent-http}
         sender: trace-agent
         path: /api/v0.2/traces
-        api_key: "00000000000000000000000000000000"
-        count: 3
+        api_keys: {"00000000000000000000000000000000": 3}
         timeout: 2m
       - step: intake_from
         on: intake-agent-main
@@ -97,15 +98,14 @@ procedure:
         select: {service: otlp-routing-endpoints-mrf-agent-http}
         sender: trace-agent
         path: /api/v0.2/stats
-        api_key: "00000000000000000000000000000000"
+        api_keys: ["00000000000000000000000000000000"]
         timeout: 2m
       - step: intake_from
         on: intake-agent-mrf
         telemetry: metrics
         select: {name_prefix: "otlp.routing.endpoints-mrf-agent.http."}
         sender: agent
-        api_key: "44444444444444444444444444444444"
-        count: 3
+        api_keys: {"44444444444444444444444444444444": 3}
         timeout: 2m
       - step: intake_from
         on: intake-agent-mrf
@@ -113,8 +113,7 @@ procedure:
         select: {service: otlp-routing-endpoints-mrf-agent-http}
         sender: trace-agent
         path: /api/v0.2/traces
-        api_key: "44444444444444444444444444444444"
-        count: 3
+        api_keys: {"44444444444444444444444444444444": 3}
         timeout: 2m
       - step: intake_from
         on: intake-agent-mrf
@@ -122,7 +121,7 @@ procedure:
         select: {service: otlp-routing-endpoints-mrf-agent-http}
         sender: trace-agent
         path: /api/v0.2/stats
-        api_key: "44444444444444444444444444444444"
+        api_keys: ["44444444444444444444444444444444"]
         timeout: 2m
       # ADP sends each signal to the main intake with the main key, and the metrics to the failover intake with the
       # failover key. The metrics at the failover intake show that the failover intake is reachable from ADP.
@@ -131,8 +130,7 @@ procedure:
         telemetry: metrics
         select: {name_prefix: "otlp.routing.endpoints-mrf-adp.http."}
         sender: adp
-        api_key: "00000000000000000000000000000000"
-        count: 3
+        api_keys: {"00000000000000000000000000000000": 3}
         timeout: 2m
       - step: intake_from
         on: intake-adp-main
@@ -140,8 +138,7 @@ procedure:
         select: {service: otlp-routing-endpoints-mrf-adp-http}
         sender: adp
         path: /api/v0.2/traces
-        api_key: "00000000000000000000000000000000"
-        count: 3
+        api_keys: {"00000000000000000000000000000000": 3}
         timeout: 2m
       - step: intake_from
         on: intake-adp-main
@@ -149,15 +146,14 @@ procedure:
         select: {service: otlp-routing-endpoints-mrf-adp-http}
         sender: adp
         path: /api/v0.2/stats
-        api_key: "00000000000000000000000000000000"
+        api_keys: ["00000000000000000000000000000000"]
         timeout: 2m
       - step: intake_from
         on: intake-adp-mrf
         telemetry: metrics
         select: {name_prefix: "otlp.routing.endpoints-mrf-adp.http."}
         sender: adp
-        api_key: "44444444444444444444444444444444"
-        count: 3
+        api_keys: {"44444444444444444444444444444444": 3}
         timeout: 2m
   # ADP does not fail over APM data: its failover covers metrics only and ignores `multi_region_failover.failover_apm`.
   # The failover intake of ADP gets the metrics above, and no traces and no statistics, although the trace-agent of the
