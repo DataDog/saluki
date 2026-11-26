@@ -21,9 +21,10 @@ pub use self::otlp::{
     OtlpDebugVerbosity, OtlpMetricsSettings, SummaryMode,
 };
 pub use crate::common::otlp::{
+    infra_attributes::ContainerTagPromotion,
     proxy::OtlpProxyDestinations,
     receiver::{GrpcTransport, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive, OtlpReceiver, OtlpReceiverTls},
-    traces::translator::{ContainerTagPromotion, OtlpTracesSettings},
+    traces::translator::OtlpTracesSettings,
     CorsConfiguration, OtlpRoute, OtlpRoutes,
 };
 pub use crate::common::proxy::{listener_reached_by, Destination as ProxyDestination};

@@ -18,6 +18,7 @@ use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
+use crate::common::otlp::infra_attributes::ContainerTagPromotion;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::resolve_source_from_attributes;
 use crate::common::otlp::traces::transform::{
@@ -252,20 +253,6 @@ pub struct OtlpTracesSettings {
 
     /// Whether the `otel.scope.*` tags are left off spans.
     pub disable_otel_scope_convention: bool,
-}
-
-/// How custom infrastructure tags are promoted into container tags on OTLP traces.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ContainerTagPromotion {
-    /// Writes tags as-is. Only convention keys reach container tags; custom keys remain plain resource attributes.
-    #[default]
-    Off,
-
-    /// Writes both the original key and a `datadog.container.tag.` prefixed copy.
-    Duplicate,
-
-    /// Writes only the `datadog.container.tag.` form.
-    Rename,
 }
 
 /// Returns trace translation settings carrying the configuration defaults.

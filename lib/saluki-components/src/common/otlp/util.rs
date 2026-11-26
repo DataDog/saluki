@@ -12,7 +12,7 @@ use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, 
 use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
-use crate::common::otlp::traces::translator::ContainerTagPromotion;
+use crate::common::otlp::infra_attributes::ContainerTagPromotion;
 use crate::common::otlp::value::{otlp_value_as_string, otlp_value_to_string};
 
 // ============================================================================
@@ -83,7 +83,7 @@ impl SourceKind {
     }
 }
 
-const CUSTOM_CONTAINER_TAG_PREFIX: &str = "datadog.container.tag.";
+pub(crate) const CUSTOM_CONTAINER_TAG_PREFIX: &str = "datadog.container.tag.";
 
 static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = FastHashMap::default();
@@ -451,6 +451,20 @@ fn write_prefixed_if_absent<I: Interner>(
 
 fn is_recognized_tag_key(key: &str) -> bool {
     CONTAINER_MAPPINGS.contains_key(key) || CONTAINER_DD_TAG_KEYS.contains(key)
+}
+
+/// Returns `true` if `key` is one of the Agent's `knownConventionKeys`: a key or a Datadog name of its
+/// `ContainerMappings`.
+///
+/// The Agent's mappings also have `container.image.tags` and `aws.eks.cluster.arn` (`eks_cluster_arn`), which
+/// `CONTAINER_MAPPINGS` handles separately or doesn't have.
+pub fn is_known_convention_key(key: &str) -> bool {
+    is_recognized_tag_key(key) || matches!(key, CONTAINER_IMAGE_TAGS | "aws.eks.cluster.arn" | "eks_cluster_arn")
+}
+
+/// Returns `true` if `key` starts with the `datadog.container.tag.` prefix of custom container tags.
+pub fn is_custom_container_tag_key(key: &str) -> bool {
+    key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX)
 }
 
 /// Returns whether `attribute` is a non-empty, string-valued Datadog-convention container tag, such as

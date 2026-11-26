@@ -1,22 +1,28 @@
 //! Infra attributes: entity and global tags written into OTLP resource attributes.
 //!
-//! This matches `ProcessTags` in the Datadog Agent's infra attributes processor
-//! (<https://github.com/DataDog/datadog-agent/blob/d22eedcd06ef9fcedad3d43bcab45795068b8ecc/comp/otelcol/otlp/components/processor/infraattributesprocessor/common.go#L87-L156>),
-//! with container tag promotion off, as the Agent's logs pipeline uses it:
+//! [`process_tags`] matches `ProcessTags` in the Datadog Agent's infra attributes processor
+//! (<https://github.com/DataDog/datadog-agent/blob/d22eedcd06ef9fcedad3d43bcab45795068b8ecc/comp/otelcol/otlp/components/processor/infraattributesprocessor/common.go#L87-L206>),
+//! which the Agent runs on the resources of OTLP metrics, traces, and logs:
 //!
 //! 1. The resource attributes give an ordered list of entities, as `entityIDsFromAttributes` does.
 //! 2. The tags of each entity, and then the global tags, give one value for each tag key. The first value wins.
 //! 3. Each unified service tag (`service`, `env`, `version`) fills its OpenTelemetry attribute only when the resource
-//!    has none of the attributes for that tag. Every other tag overwrites the resource attribute with its key.
+//!    has none of the attributes for that tag.
+//! 4. Every other tag goes where [`CustomTags`] says, as `writeTagAttribute` does. A key with the
+//!    `datadog.container.tag.` prefix, or a known convention key, always overwrites the resource attribute with
+//!    that key.
 //!
-//! The translator then turns known keys into tags, as it does for any resource attribute.
+//! Each signal's translator then turns the resource attributes into tags, as it does for any resource attribute.
 
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
 use saluki_core::data_model::origin::OriginTagCardinality;
 use saluki_env::workload::EntityId;
 
 use super::origin::OtlpOriginTagResolver;
-use super::util::{first_attribute, put_str_attribute};
+use super::util::{
+    first_attribute, is_custom_container_tag_key, is_known_convention_key, put_str_attribute,
+    CUSTOM_CONTAINER_TAG_PREFIX,
+};
 use super::value::otlp_value_as_string;
 
 const CONTAINER_ID: &str = "container.id";
@@ -37,25 +43,48 @@ const UNIFIED_SERVICE_TAGS: [(&str, &[&str]); 3] = [
     ("version", &["service.version"]),
 ];
 
-/// Writes the entity and global tags of an OTLP resource into its attributes.
-///
-/// The tags use low cardinality: the Agent's logs pipeline never sets the processor's cardinality, and its default
-/// is low (`factory.go`).
+/// How custom infrastructure tags are promoted into container tags (`ContainerTagPromotionMode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContainerTagPromotion {
+    /// Writes tags as-is. Only convention keys reach container tags; custom keys remain plain resource attributes.
+    #[default]
+    Off,
+
+    /// Writes both the original key and a `datadog.container.tag.` prefixed copy.
+    Duplicate,
+
+    /// Writes only the `datadog.container.tag.` form.
+    Rename,
+}
+
+/// Where [`process_tags`] puts a custom tag: a tag that isn't a unified service tag, has no `datadog.container.tag.`
+/// prefix, and isn't a known convention key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CustomTags {
+    /// Writes custom tags into the resource attributes, promoted as the mode says. A prefixed copy never replaces an
+    /// attribute that the resource already has.
+    Attributes(ContainerTagPromotion),
+}
+
+/// Writes the entity and global tags of an OTLP resource into its attributes, as `ProcessTags` does.
 ///
 /// When the resource has no `container.id`, the container found from the origin attributes comes first in the entity
 /// list. The Agent instead detects the container ID, writes it into `container.id`, and so also sends it as a tag.
 /// ADP doesn't write `container.id` yet (`gap/origin-detection`). The lookup also reads the origin attributes as the
 /// metrics path does, not as the Agent's `originInfoFromAttributes` does: it uses the last valid attribute with a key,
 /// reads the pod UID and the container name only as strings, and skips a process ID that doesn't fit a `u32`.
-pub fn apply_infra_attributes(attributes: &mut Vec<KeyValue>, resolver: &OtlpOriginTagResolver) {
+pub fn process_tags(
+    attributes: &mut Vec<KeyValue>, resolver: &OtlpOriginTagResolver, cardinality: OriginTagCardinality,
+    custom_tags: CustomTags,
+) {
     let origin_container = match first_attribute(attributes, CONTAINER_ID) {
         Some(_) => None,
-        None => resolver.container_entity_from_origin_attributes(attributes, OriginTagCardinality::Low),
+        None => resolver.container_entity_from_origin_attributes(attributes, cardinality),
     };
     let entity_ids = origin_container
         .into_iter()
         .chain(entity_ids_from_attributes(attributes));
-    let tags = resolver.resolve_ordered_tags(entity_ids, OriginTagCardinality::Low);
+    let tags = resolver.resolve_ordered_tags(entity_ids, cardinality);
 
     for tag in &tags {
         let Some((key, value)) = tag.as_str().split_once(':') else {
@@ -70,8 +99,32 @@ pub fn apply_infra_attributes(attributes: &mut Vec<KeyValue>, resolver: &OtlpOri
                     put_str_attribute(attributes, otel_keys[0], value);
                 }
             }
-            None => put_str_attribute(attributes, key, value),
+            None => write_tag_attribute(attributes, key, value, custom_tags),
         }
+    }
+}
+
+/// Writes a tag that isn't a unified service tag, as `writeTagAttribute` does.
+fn write_tag_attribute(attributes: &mut Vec<KeyValue>, key: &str, value: &str, custom_tags: CustomTags) {
+    if is_custom_container_tag_key(key) || is_known_convention_key(key) {
+        put_str_attribute(attributes, key, value);
+        return;
+    }
+    match custom_tags {
+        CustomTags::Attributes(ContainerTagPromotion::Off) => put_str_attribute(attributes, key, value),
+        CustomTags::Attributes(ContainerTagPromotion::Duplicate) => {
+            put_str_attribute(attributes, key, value);
+            put_prefixed_str_if_absent(attributes, key, value);
+        }
+        CustomTags::Attributes(ContainerTagPromotion::Rename) => put_prefixed_str_if_absent(attributes, key, value),
+    }
+}
+
+/// Writes the `datadog.container.tag.` copy of a tag unless the resource has that attribute (`putStrIfAbsent`).
+fn put_prefixed_str_if_absent(attributes: &mut Vec<KeyValue>, key: &str, value: &str) {
+    let prefixed = format!("{CUSTOM_CONTAINER_TAG_PREFIX}{key}");
+    if first_attribute(attributes, &prefixed).is_none() {
+        put_str_attribute(attributes, &prefixed, value);
     }
 }
 
@@ -127,7 +180,13 @@ mod tests {
     }
 
     fn apply(provider: TestWorkloadProvider, mut attributes: Vec<KeyValue>) -> Vec<KeyValue> {
-        apply_infra_attributes(&mut attributes, &OtlpOriginTagResolver::new(Arc::new(provider)));
+        let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
+        process_tags(
+            &mut attributes,
+            &resolver,
+            OriginTagCardinality::Low,
+            CustomTags::Attributes(ContainerTagPromotion::Off),
+        );
         attributes
     }
 
@@ -221,7 +280,12 @@ mod tests {
         ];
 
         for (name, mut attributes, expected) in cases {
-            apply_infra_attributes(&mut attributes, &origin_tag_resolver);
+            process_tags(
+                &mut attributes,
+                &origin_tag_resolver,
+                OriginTagCardinality::Low,
+                CustomTags::Attributes(ContainerTagPromotion::Off),
+            );
             assert_eq!(as_map(&attributes), as_map(&expected), "case: {name}");
         }
     }
@@ -469,6 +533,62 @@ mod tests {
                 Some(&Some(Value::StringValue("yes".into()))),
                 "case: {name}"
             );
+        }
+    }
+
+    /// Each promotion mode writes a custom tag as `writeTagAttribute` does. Prefixed and known convention keys keep
+    /// their key in every mode, and a prefixed copy doesn't replace an attribute that the resource already has.
+    #[test]
+    fn custom_tags_follow_each_promotion_mode() {
+        let tagger_tags = [
+            "team:platform",
+            "owner:infra",
+            "kube_namespace:ns",
+            "datadog.container.tag.zone:a",
+        ];
+        let existing = || strings(&[("datadog.container.tag.owner", "sender")]);
+        let cases = [
+            (
+                ContainerTagPromotion::Off,
+                vec![
+                    ("datadog.container.tag.owner", "sender"),
+                    ("team", "platform"),
+                    ("owner", "infra"),
+                    ("kube_namespace", "ns"),
+                    ("datadog.container.tag.zone", "a"),
+                ],
+            ),
+            (
+                ContainerTagPromotion::Duplicate,
+                vec![
+                    ("datadog.container.tag.owner", "sender"),
+                    ("team", "platform"),
+                    ("datadog.container.tag.team", "platform"),
+                    ("owner", "infra"),
+                    ("kube_namespace", "ns"),
+                    ("datadog.container.tag.zone", "a"),
+                ],
+            ),
+            (
+                ContainerTagPromotion::Rename,
+                vec![
+                    ("datadog.container.tag.owner", "sender"),
+                    ("datadog.container.tag.team", "platform"),
+                    ("kube_namespace", "ns"),
+                    ("datadog.container.tag.zone", "a"),
+                ],
+            ),
+        ];
+        for (promotion, expected) in cases {
+            let provider = TestWorkloadProvider::with_entity(EntityId::Global, &tagger_tags);
+            let mut attributes = existing();
+            process_tags(
+                &mut attributes,
+                &OtlpOriginTagResolver::new(Arc::new(provider)),
+                OriginTagCardinality::Low,
+                CustomTags::Attributes(promotion),
+            );
+            assert_eq!(as_map(&attributes), string_map(&expected), "promotion: {promotion:?}");
         }
     }
 

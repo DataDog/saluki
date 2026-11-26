@@ -7,13 +7,14 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_core::data_model::{
     event::log::Log,
+    origin::OriginTagCardinality,
     tags::{Tag, TagSet},
 };
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
-use crate::common::otlp::infra_attributes::apply_infra_attributes;
+use crate::common::otlp::infra_attributes::{process_tags, ContainerTagPromotion, CustomTags};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::hostname_from_source_attributes;
 use crate::common::otlp::util::first_attribute;
@@ -74,7 +75,14 @@ pub(super) struct ResourceLogsIter {
 impl ResourceLogsIter {
     pub(super) fn new(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
         let mut resource = resource_logs.resource.unwrap_or_default();
-        apply_infra_attributes(&mut resource.attributes, origin_tag_resolver);
+        // The Agent's logs pipeline never sets the processor's cardinality, and its default is low (`factory.go`).
+        // Container tag promotion only feeds the trace agent, so logs always turn it off.
+        process_tags(
+            &mut resource.attributes,
+            origin_tag_resolver,
+            OriginTagCardinality::Low,
+            CustomTags::Attributes(ContainerTagPromotion::Off),
+        );
         // An empty host or service counts as missing, so the record fallbacks still apply.
         let host = host_from_attributes(&resource.attributes);
 
