@@ -557,6 +557,17 @@ When comparing stats, set `min_stats_groups` if you set span or trace expectatio
 This minimum counts the groups each intake holds. In spans-only mode (`otlp_direct_analysis_mode: true`), omit
 `min_stats_groups` and `require_ssi`.
 
+### When the intakes hold different sets
+
+Suppose ADP drops a span and changes the resource on another. `compare` reports the missing span by service, name
+and resource. It still pairs the remaining spans by span ID and reports the changed resource. It also checks APM
+stats when enabled, and reports stale known differences. For metrics, it lists the series on one side only and
+compares the values of the series the intakes have in common.
+
+A split trace need not lose any spans. If ADP puts a span in a different trace, the span ID still pairs it with the
+Agent's span, but `trace_id` differs. Neither `additional_span_ignore_fields` nor a known difference can hide that
+field, even with a wildcard in the known difference path.
+
 ## Known differences
 
 A correctness case compares the Agent's intake (`baseline`) with ADP's intake (`comparison`). A **gap** is a
@@ -587,8 +598,12 @@ logs:
 - **Stale:** Suppose both logs have status `info`. The status entry no longer matches a difference, so the step
   fails. Remove the entry when the gap is fixed.
 
-Logs, metrics and traces use the same ratchet to enforce this last rule. Each path in each entry must match
-at least once. If a path covers several fixtures, a match on one keeps it from going stale. Keep entries narrow.
+Logs, metrics and traces use the same ratchet to enforce this last rule. Without `when`, each path in an
+entry must match at least one difference. With `when`, each listed value must match a difference at each path.
+
+For example, suppose two fixtures have a status gap. An entry covers `envelope.status` with
+`when: {fixture_id: [severity-0, severity-1]}`. If ADP fixes `severity-0`, the step reports that path as stale for
+`severity-0`, even though `severity-1` still differs. Remove the fixed fixture from `when`; keep the other one.
 
 See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching rules.
 
@@ -603,13 +618,6 @@ See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching r
 - `when` limits which records the entry covers. Each named field must match one of its listed values. For logs,
   `when` reads the baseline log's fields. A request header belongs to no log, so a rule with `when` cannot cover it.
   A log or stats entry without `when` applies to every record of that kind.
-
-- `known_differences`: series whose type differs between the sides because of an open gap. An entry has `gap`,
-  `issue`, `paths: [type]`, `when: {name: [...]}`, `kinds` (optional, only `value`) and `reason`. A series of a
-  listed name that each side holds with a different type is left out of the comparison on both sides, and the other
-  series are still compared by value. A series on one side only does not stop the comparison of the values of the
-  other series. A difference that no entry covers fails the step, and so does a name in `when` that has no type
-  difference.
 
 ### When a metric has a different type
 
@@ -634,23 +642,6 @@ out of the value comparison. A missing series or an extra type is not a type dif
 The fixture sends another sum, `otlp.cumulative.monotonic`. Its count must still match. To check the values of the
 pair that `compare` left out, the case uses `intake_has_metric` on each intake: count 30 on one, gauge 3 on the other.
 
-**Known differences of traces.** A traces `compare` reports every difference in the spans and the APM statistics,
-not only the first. A span or a statistics group on one side only does not stop the comparison of the spans and
-groups on both sides. A span on one side only fails the step. A split trace shows up as a different `trace_id` of
-the spans on both sides, so no known difference can cover `span.trace_id`, and `additional_span_ignore_fields` can't
-hold `trace_id`.
-`traces: {known_differences: [...]}` lists the differences that an open gap explains, as
-`logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
-`paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
-compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a
-statistics group on one side only, `stats.<field>`, for a field of a group on both sides, or `span.<field>`, such as
-`span.metrics._top_level`, for a field of a span on both sides. `stats.<field>` covers a difference anywhere inside
-the field, such as in a sketch. A kind is `missing` (only in the baseline), `extra` (only in the comparison) or
-`value`. `when` matches the fields of the group, for example `{service: [api-gateway]}`, or the `service`, `name` and
-`resource` of the span. An entry with a `span.` path must name its spans with `when`. A difference that no entry
-covers fails the step, and so does an entry path that matches no difference for one of the values in `when`, so that
-a fix removes its entries.
-
 ### APM stats in an OTLP trace case
 
 The `otlp-traces` fixture sends spans. ADP and the Agent each compute APM stats from those spans and send the stats
@@ -658,9 +649,8 @@ to their own intake. For example, a stats group can hold a hit count for a parti
 `compare` normally checks both outputs. The `otlp-traces-ottl-transform` case uses a collector as its baseline and
 sets `otlp_direct_analysis_mode: true`. That option checks spans only, so the step cannot declare a stats gap.
 
-If the trace counts or span IDs differ, the trace comparison stops before it checks stats. When it does compare
-stats, it checks every group, not just the first mismatch. Each entry under `traces.known_differences` needs an
-`issue`. Choose the path according to what differs:
+The stats comparison checks every group, not just the first mismatch. Each entry under `traces.known_differences`
+needs an `issue`. Choose the path according to what differs:
 
 - `stats.groups`: one intake has a group that the other lacks. Use `when` to identify the group by its fields, for
   example `{service: [api-gateway]}`.
