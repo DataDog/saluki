@@ -1623,9 +1623,27 @@ mod tests {
         let dropped = tracing(spans_in_chunk(11, 0, false, json!({})), &[]);
         let kept = tracing(spans_in_chunk(11, 1, false, json!({})), &[]);
         let fields = direct("spans: [{service: db, name: db.query, side: baseline, priority: 0}]");
+        let with_gap = direct(
+            "spans: [{service: db, name: db.query, side: baseline, priority: 0}], \
+             known_differences: [{gap: gap/priority, issue: 1, paths: [span.trace_chunk_metadata.priority], \
+             kinds: [value], when: {name: [db.query]}, reason: the sides keep the chunk at another priority}]",
+        );
 
-        // The baseline keeps the chunk at priority 0, and the comparison at priority 1, as a known difference says.
+        // The baseline keeps the chunk at priority 0, and the comparison at priority 1. A known difference covers the
+        // gap, so the entry for the baseline is the only check left.
+        let report = compare(&with_gap, &kept, &dropped).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // Without the known difference, the priority gap fails the step. The entry is not what fails it.
         let report = compare(&fields, &kept, &dropped).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains("trace_chunk_metadata.priority: baseline=0 comparison=1"),
+            "{}",
+            report.message
+        );
         assert!(!report.message.contains("holds no span"), "{}", report.message);
         assert!(!report.message.contains("Drop `side`"), "{}", report.message);
 
