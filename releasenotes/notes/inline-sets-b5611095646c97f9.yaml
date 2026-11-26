@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce allocation overhead for DogStatsD Set metrics with one distinct member.

@@ -1,6 +1,6 @@
 mod iter;
 
-use std::{collections::HashSet, fmt, num::NonZeroU64, time::Duration};
+use std::{fmt, num::NonZeroU64, time::Duration};
 
 use ddsketch::DDSketch;
 use ordered_float::OrderedFloat;
@@ -416,7 +416,9 @@ impl MetricValues {
                 .inner_mut()
                 .collapse_non_timestamped(timestamp, merge_scalar_latest),
             // Collapse by merging.
-            Self::Set(points) => points.inner_mut().collapse_non_timestamped(timestamp, merge_set),
+            Self::Set(points) => points.inner_mut().collapse_non_timestamped(timestamp, |dest, src| {
+                dest.merge(std::mem::take(src));
+            }),
             Self::Histogram(points) => points.inner_mut().collapse_non_timestamped(timestamp, merge_histogram),
             Self::Distribution(sketches) => sketches.inner_mut().collapse_non_timestamped(timestamp, merge_sketch),
         }
@@ -496,10 +498,6 @@ fn merge_scalar_sum(dest: &mut OrderedFloat<f64>, src: &mut OrderedFloat<f64>) {
 
 fn merge_scalar_latest(dest: &mut OrderedFloat<f64>, src: &mut OrderedFloat<f64>) {
     *dest = *src;
-}
-
-fn merge_set(dest: &mut HashSet<String>, src: &mut HashSet<String>) {
-    dest.extend(src.drain());
 }
 
 fn merge_histogram(dest: &mut Histogram, src: &mut Histogram) {

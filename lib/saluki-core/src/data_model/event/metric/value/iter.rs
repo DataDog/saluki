@@ -1,12 +1,12 @@
-use std::{collections::HashSet, num::NonZeroU64};
+use std::num::NonZeroU64;
 
 use ordered_float::OrderedFloat;
 
-use super::TimestampedValue;
+use super::{set::SetMembers, TimestampedValue};
 
 enum PointsIterInner {
     Scalar(smallvec::IntoIter<[TimestampedValue<OrderedFloat<f64>>; 4]>),
-    Set(smallvec::IntoIter<[TimestampedValue<HashSet<String>>; 1]>),
+    Set(smallvec::IntoIter<[TimestampedValue<SetMembers>; 1]>),
 }
 
 pub struct PointsIter {
@@ -20,7 +20,7 @@ impl PointsIter {
         }
     }
 
-    pub(super) fn set(values: smallvec::IntoIter<[TimestampedValue<HashSet<String>>; 1]>) -> Self {
+    pub(super) fn set(values: smallvec::IntoIter<[TimestampedValue<SetMembers>; 1]>) -> Self {
         Self {
             inner: PointsIterInner::Set(values),
         }
@@ -40,7 +40,7 @@ impl Iterator for PointsIter {
 
 enum PointsIterRefInner<'a> {
     Scalar(std::slice::Iter<'a, TimestampedValue<OrderedFloat<f64>>>),
-    Set(std::slice::Iter<'a, TimestampedValue<HashSet<String>>>),
+    Set(std::slice::Iter<'a, TimestampedValue<SetMembers>>),
 }
 
 pub struct PointsIterRef<'a> {
@@ -54,7 +54,7 @@ impl<'a> PointsIterRef<'a> {
         }
     }
 
-    pub(super) fn set(values: std::slice::Iter<'a, TimestampedValue<HashSet<String>>>) -> Self {
+    pub(super) fn set(values: std::slice::Iter<'a, TimestampedValue<SetMembers>>) -> Self {
         Self {
             inner: PointsIterRefInner::Set(values),
         }
