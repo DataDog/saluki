@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+pub mod agent_decode;
 pub mod control;
 pub mod defaults;
 pub mod domains;

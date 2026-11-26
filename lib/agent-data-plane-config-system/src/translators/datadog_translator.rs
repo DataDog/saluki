@@ -416,62 +416,20 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> Result<MetricTag
 /// Returns an error for the first field holding a value `mapstructure` cannot convert: a list or a map
 /// where a string is expected, or a non-empty map where a list is expected.
 fn parse_metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Value>]) -> Result<Vec<MetricPrefixRule>> {
-    fn field<'a>(entry: &'a serde_json::Map<String, serde_json::Value>, name: &str) -> &'a serde_json::Value {
-        entry
-            .get(name)
-            .or_else(|| {
-                entry
-                    .iter()
-                    .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value))
-            })
-            .unwrap_or(&serde_json::Value::Null)
-    }
+    use agent_data_plane_config::agent_decode::{field, string, string_list, DecodeError, Decoder};
 
-    fn string(path: &str, value: &serde_json::Value) -> Result<String> {
-        use serde_json::Value;
-        match value {
-            Value::Null => Ok(String::new()),
-            Value::String(value) => Ok(value.clone()),
-            Value::Bool(value) => Ok(if *value { "1" } else { "0" }.to_string()),
-            // Go's `FormatFloat(f, 'f', -1, 64)`, like Rust's `Display`, never uses an exponent.
-            Value::Number(value) if value.is_f64() => Ok(value.as_f64().unwrap_or_default().to_string()),
-            Value::Number(value) => Ok(value.to_string()),
-            Value::Array(_) => Err(TranslateError::new_with_message(
-                "metric_filterlist_prefix",
-                format!("`{path}` expected a string, got a list"),
-            )),
-            Value::Object(_) => Err(TranslateError::new_with_message(
-                "metric_filterlist_prefix",
-                format!("`{path}` expected a string, got a map"),
-            )),
-        }
-    }
-
-    fn string_list(path: &str, value: &serde_json::Value) -> Result<Vec<String>> {
-        use serde_json::Value;
-        match value {
-            Value::Null => Ok(Vec::new()),
-            Value::String(value) if value.is_empty() => Ok(Vec::new()),
-            Value::String(value) => Ok(value.split(',').map(str::to_string).collect()),
-            Value::Array(items) => items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| string(&format!("{path}[{index}]"), item))
-                .collect(),
-            Value::Object(map) if map.is_empty() => Ok(Vec::new()),
-            other => Ok(vec![string(&format!("{path}[0]"), other)?]),
-        }
-    }
-
+    let invalid = |error: DecodeError| TranslateError::new_with_message("metric_filterlist_prefix", error.to_string());
     entries
         .iter()
         .enumerate()
         .map(|(index, entry)| {
             let path = format!("metric_filterlist_prefix[{index}]");
+            let list = |name| string_list(&format!("{path}.{name}"), field(entry, name));
             Ok(MetricPrefixRule {
-                prefix: string(&format!("{path}.prefix"), field(entry, "prefix"))?,
-                except_prefix: string_list(&format!("{path}.except_prefix"), field(entry, "except_prefix"))?,
-                except_exact: string_list(&format!("{path}.except_exact"), field(entry, "except_exact"))?,
+                prefix: string(&format!("{path}.prefix"), field(entry, "prefix"), Decoder::Mapstructure)
+                    .map_err(invalid)?,
+                except_prefix: list("except_prefix").map_err(invalid)?,
+                except_exact: list("except_exact").map_err(invalid)?,
             })
         })
         .collect()

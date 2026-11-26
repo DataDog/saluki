@@ -8,6 +8,7 @@ repository = { workspace = true }
 # Keep runtime infrastructure out of this data-model crate.
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
