@@ -1237,6 +1237,210 @@ mod tests {
         assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
     }
 
+    /// The fixture spans with `meta` on the span `span_id`.
+    fn spans_with_meta(span_id: u64, meta: Value) -> Vec<Value> {
+        let mut spans = fixture_spans(false);
+        for span in spans.iter_mut().filter(|span| span["span_id"] == span_id) {
+            span["meta"] = meta.clone();
+        }
+        spans
+    }
+
+    #[tokio::test]
+    async fn a_meta_tag_that_each_side_holds_as_expected_passes() {
+        let scrubbed = tracing(spans_with_meta(11, json!({"sql.query": "SELECT ?"})), &[]);
+
+        let fields = direct(
+            "spans: [{service: db, name: db.query, meta: {sql.query: 'SELECT ?'}}, \
+             {service: db, meta: {sql.query: {equals: 'SELECT ?', not_contains: canary}}}, \
+             {service: api, name: web.request}]",
+        );
+        let report = compare(&fields, &scrubbed, &scrubbed).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_meta_tag_that_a_side_leaks_fails_the_spans_check_and_shows_the_value_of_each_side() {
+        let scrubbed = tracing(spans_with_meta(11, json!({"sql.query": "SELECT ?"})), &[]);
+        let leaked = tracing(spans_with_meta(11, json!({"sql.query": "SELECT 'canary'"})), &[]);
+        let fields = direct("spans: [{service: db, name: db.query, meta: {sql.query: 'SELECT ?'}}]");
+
+        // One side leaks: only that side is named, with the value that it holds and the value that it must hold.
+        let report = compare(&fields, &leaked, &scrubbed).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "The comparison holds no span that meets `spans[0]` (service=db, name=db.query, meta.sql.query = \
+                 SELECT ?): 1 span(s) have that service, name and resource, and 1 fail `meta`: span 11 has \
+                 `meta.sql.query` is `SELECT 'canary'`, not `SELECT ?`."
+            ),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+
+        // Both sides leak the same value: the equality of the sides does not excuse it, and both are named.
+        let report = compare(&fields, &leaked, &leaked).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        for side in ["baseline", "comparison"] {
+            assert!(
+                report
+                    .message
+                    .contains(&format!("The {} holds no span that meets `spans[0]`", side)),
+                "{}: {}",
+                side,
+                report.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_meta_tag_that_holds_a_forbidden_part_or_is_missing_fails() {
+        let leaked = tracing(spans_with_meta(11, json!({"url": "https://user:canary@host/"})), &[]);
+        let fields = direct("spans: [{service: db, meta: {url: {not_contains: canary}}}]");
+        let report = compare(&fields, &leaked, &leaked).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains("`meta.url` is `https://user:canary@host/`, and holds `canary`"),
+            "{}",
+            report.message
+        );
+
+        // A tag that a side drops fails too, so a misspelled key does not pass for a scrubbed one.
+        let dropped = tracing(fixture_spans(false), &[]);
+        let report = compare(&fields, &dropped, &dropped).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains("span 11 has `meta.url` is missing"),
+            "{}",
+            report.message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_meta_value_is_cut_in_the_failure() {
+        let long = "x".repeat(500);
+        let held = tracing(spans_with_meta(11, json!({"body": long})), &[]);
+        let fields = direct("spans: [{service: db, meta: {body: short}}]");
+        let report = compare(&fields, &held, &held).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains(&format!("is `{}...`, not `short`", "x".repeat(160))),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains(&"x".repeat(161)), "{}", report.message);
+
+        // A value of several lines stays on one line.
+        let held = tracing(spans_with_meta(11, json!({"body": "GET a\nDEL a"})), &[]);
+        let report = compare(&fields, &held, &held).await;
+        assert!(
+            report.message.contains("is `GET a\\nDEL a`, not `short`"),
+            "{}",
+            report.message
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_with_a_side_holds_only_that_side() {
+        let scrubbed = tracing(spans_with_meta(11, json!({"db.statement": "SELECT ?"})), &[]);
+        let leaked = tracing(spans_with_meta(11, json!({"db.statement": "SELECT 'canary'"})), &[]);
+
+        // The baseline holds the scrubbed value, and the comparison leaks it, as a known difference says.
+        let baseline_only = direct("spans: [{service: db, side: baseline, meta: {db.statement: 'SELECT ?'}}]");
+        let report = compare(&baseline_only, &leaked, &scrubbed).await;
+        assert!(
+            !report.message.contains("The comparison holds no span"),
+            "{}",
+            report.message
+        );
+        assert!(
+            !report.message.contains("The baseline holds no span"),
+            "{}",
+            report.message
+        );
+
+        // The same entry fails when the baseline is the side that leaks.
+        let report = compare(&baseline_only, &scrubbed, &leaked).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "The baseline holds no span that meets `spans[0]` (service=db, meta.db.statement = SELECT ?)"
+            ),
+            "{}",
+            report.message
+        );
+        assert!(
+            !report.message.contains("The comparison holds no span"),
+            "{}",
+            report.message
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_for_one_side_fails_once_the_other_side_meets_it_too() {
+        let scrubbed = tracing(spans_with_meta(11, json!({"db.statement": "SELECT ?"})), &[]);
+        let leaked = tracing(spans_with_meta(11, json!({"db.statement": "SELECT 'canary'"})), &[]);
+        let fields = direct("spans: [{service: db, side: baseline, meta: {db.statement: 'SELECT ?'}}]");
+
+        // The comparison leaks, so the entry still sets the sides apart. Only the difference between the sides fails.
+        let report = compare(&fields, &leaked, &scrubbed).await;
+        assert!(!report.message.contains("Drop `side`"), "{}", report.message);
+        assert!(!report.message.contains("holds no span"), "{}", report.message);
+
+        // The comparison scrubs too, so the entry no longer needs `side`.
+        let report = compare(&fields, &scrubbed, &scrubbed).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "The comparison meets `spans[0]` (service=db, meta.db.statement = SELECT ?) too, but the entry is \
+                 `side: baseline`. Drop `side`"
+            ),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline"), "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_meta_expectation_holds_every_span_that_it_selects() {
+        let scrub = |extra: Option<&str>| {
+            let mut spans = spans_with_meta(11, json!({"sql.query": "SELECT ?"}));
+            if let Some(query) = extra {
+                // A duplicate of the span, in the same service with the same name and resource.
+                let mut duplicate = span_json("db", "db.query", "SELECT 1", 1, 12, false);
+                duplicate["meta"] = json!({"sql.query": query});
+                spans.push(duplicate);
+            }
+            tracing(spans, &[])
+        };
+        let fields = direct("spans: [{service: db, name: db.query, meta: {sql.query: {not_contains: canary}}}]");
+
+        let report = compare(&fields, &scrub(Some("SELECT ?")), &scrub(Some("SELECT ?"))).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // One scrubbed span doesn't excuse a duplicate that leaks, and the failure names the leaking span.
+        let report = compare(&fields, &scrub(Some("SELECT 'canary'")), &scrub(None)).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains("The comparison holds no span that meets `spans[0]`")
+                && report
+                    .message
+                    .contains("2 span(s) have that service, name and resource, and 1 fail `meta`")
+                && report.message.contains("span 12 has `meta.sql.query`")
+                && !report.message.contains("span 11 has"),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+    }
+
     #[tokio::test]
     async fn a_known_span_difference_covers_a_span_on_one_side_only_by_name() {
         let entry = |kind: &str, resources: &str| {
@@ -1359,7 +1563,27 @@ mod tests {
             (
                 "{telemetry: traces, comparison: app, baseline: peer, \
                  traces: {min_stats_groups: 1, spans: [{service: api}]}}",
-                "a span of service 'api' needs a `name` or a `resource`",
+                "a span of service 'api' needs a `name`, a `resource` or a `meta` tag",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, meta: {}}]}}",
+                "a span of service 'api' needs a `name`, a `resource` or a `meta` tag",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, meta: {k: {}}}]}}",
+                "a `meta` expectation needs `equals` or `not_contains`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, meta: {k: {equal: x}}}]}}",
+                "unknown field `equal`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x, side: both}]}}",
+                "unknown variant `both`",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, \
@@ -1378,7 +1602,25 @@ mod tests {
             (
                 "{telemetry: traces, comparison: app, baseline: peer, \
                  traces: {min_stats_groups: 1, absent: [{service: api}]}}",
-                "a span of service 'api' needs a `name` or a `resource`",
+                "an `absent` span of service 'api' needs a `name` or a `resource`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
+                 absent: [{service: api, name: x, meta: {k: {not_contains: c}}}]}}",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta` and no `side`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
+                 absent: [{service: api, name: x, side: baseline}]}}",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta` and no `side`",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x, side: baseline}], \
+                 absent: [{service: api, name: gone}]}}",
+                "`absent` names a span of service 'api', but `spans` holds no span of that service for both sides",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, traces: {min_traces: 0}}",

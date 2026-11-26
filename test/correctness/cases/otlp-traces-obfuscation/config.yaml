@@ -1,0 +1,223 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive the same fixed OTLP traces over gRPC, with the default obfuscation on
+  both sides. Each probe has a service of its own, and holds a synthetic secret or a number that looks like a card
+  number, in the attributes of a database, a URL or a plain attribute. Each side must hold the scrubbed value of every
+  field that a probe scrubs, so that two sides that leak the same value fail, and the two intakes must hold the same
+  spans, apart from the known differences. The Agent and ADP both leave the `db.statement` of a Redis or a memcached span
+  as it was sent, and the resource of a memcached span with it, so the case expects no scrubbed value there.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up.
+  - {step: process_stable_for, on: load, duration: 32s}
+  # ADP sends the spans itself, and does not proxy the traces to the Agent.
+  - parallel:
+      - step: compare
+        telemetry: traces
+        comparison: intake-adp
+        baseline: intake-agent
+        otlp_direct_analysis_mode: true
+        traces:
+          # The fixture holds 42 spans, one in each trace and each service. Both sides keep all of them.
+          min_traces: 42
+          min_spans: 42
+          # What each side holds in the fields that a probe scrubs, or leaves as they are. An entry with a `side` holds
+          # one side to a value that the other side does not yet send, and a known difference covers the gap. The
+          # probes that the Agent and ADP both leave unscrubbed have no expectation: see the description of the case.
+          spans:
+            # SQL with `db.system` and `db.statement`. Both sides send the obfuscated resource. The core agent obfuscates
+            # `db.statement` as well, and ADP leaves it as it was sent, and adds `sql.query`.
+            - {service: probe-obf-sql-simple, name: postgresql.query, resource: "SELECT id FROM obf_simple WHERE token = ? AND n = ?"}
+            - {side: baseline, service: probe-obf-sql-simple, meta: {db.statement: "SELECT id FROM obf_simple WHERE token = ? AND n = ?"}}
+            - {side: comparison, service: probe-obf-sql-simple, meta: {sql.query: "SELECT id FROM obf_simple WHERE token = ? AND n = ?"}}
+            - {service: probe-obf-sql-in-list, name: postgresql.query, resource: "SELECT id FROM obf_in_list WHERE id IN ( ? ) AND tag IN ( ? )"}
+            - {side: baseline, service: probe-obf-sql-in-list, meta: {db.statement: "SELECT id FROM obf_in_list WHERE id IN ( ? ) AND tag IN ( ? )"}}
+            - {side: comparison, service: probe-obf-sql-in-list, meta: {sql.query: "SELECT id FROM obf_in_list WHERE id IN ( ? ) AND tag IN ( ? )"}}
+            - {service: probe-obf-sql-comment, name: postgresql.query, resource: "SELECT id FROM obf_comment WHERE n = ?"}
+            - {side: baseline, service: probe-obf-sql-comment, meta: {db.statement: "SELECT id FROM obf_comment WHERE n = ?"}}
+            - {side: comparison, service: probe-obf-sql-comment, meta: {sql.query: "SELECT id FROM obf_comment WHERE n = ?"}}
+            - {service: probe-obf-sql-dollar, name: postgresql.query, resource: "SELECT ? FROM obf_dollar"}
+            - {side: baseline, service: probe-obf-sql-dollar, meta: {db.statement: "SELECT ? FROM obf_dollar"}}
+            - {side: comparison, service: probe-obf-sql-dollar, meta: {sql.query: "SELECT ? FROM obf_dollar"}}
+            - {service: probe-obf-sql-insert, name: postgresql.query, resource: "INSERT INTO obf_insert ( id, token ) VALUES ( ? )"}
+            - {side: baseline, service: probe-obf-sql-insert, meta: {db.statement: "INSERT INTO obf_insert ( id, token ) VALUES ( ? )"}}
+            - {side: comparison, service: probe-obf-sql-insert, meta: {sql.query: "INSERT INTO obf_insert ( id, token ) VALUES ( ? )"}}
+            - {service: probe-obf-sql-mysql, name: mysql.query, resource: "SELECT id FROM obf_mysql WHERE token = ? AND n = ?"}
+            - {side: baseline, service: probe-obf-sql-mysql, meta: {db.statement: "SELECT id FROM obf_mysql WHERE token = ? AND n = ?"}}
+            - {side: comparison, service: probe-obf-sql-mysql, meta: {sql.query: "SELECT id FROM obf_mysql WHERE token = ? AND n = ?"}}
+            # A string with no end: the core agent writes a fixed text, and ADP keeps the part that it read.
+            - {service: probe-obf-sql-unterminated, name: postgresql.query}
+            - {side: baseline, service: probe-obf-sql-unterminated, resource: "Non-parsable SQL query", meta: {db.statement: "Non-parsable SQL query"}}
+            - {side: comparison, service: probe-obf-sql-unterminated, resource: "SELECT ?", meta: {sql.query: {not_contains: canary-7f3a}}}
+            # Legacy `db.system` with the current `db.query.text`, and both attributes with different queries.
+            - {service: probe-obf-sql-mixed-legacy-system, name: postgresql.query, resource: "SELECT id FROM obf_mixed_legacy_system WHERE token = ?"}
+            - {side: baseline, service: probe-obf-sql-mixed-legacy-system, meta: {db.query.text: "SELECT id FROM obf_mixed_legacy_system WHERE token = ?"}}
+            - {side: comparison, service: probe-obf-sql-mixed-legacy-system, meta: {sql.query: "SELECT id FROM obf_mixed_legacy_system WHERE token = ?"}}
+            - {service: probe-obf-sql-both-attributes, name: postgresql.query, resource: "SELECT id FROM obf_both_attributes WHERE token = ?"}
+            - {side: baseline, service: probe-obf-sql-both-attributes, meta: {db.statement: "SELECT id FROM obf_both_attributes WHERE token = ?", db.query.text: "SELECT id FROM obf_both_attributes_text WHERE token = ?"}}
+            - {side: comparison, service: probe-obf-sql-both-attributes, meta: {sql.query: "SELECT id FROM obf_both_attributes WHERE token = ?"}}
+            # A tracer that sends `sql.query` too: both sides send it obfuscated.
+            - {service: probe-obf-sql-query-tag, name: postgresql.query, resource: "SELECT id FROM obf_query_tag WHERE token = ?", meta: {sql.query: "SELECT id FROM obf_query_tag WHERE token = ?"}}
+            - {side: baseline, service: probe-obf-sql-query-tag, meta: {db.statement: "SELECT id FROM obf_query_tag WHERE token = ?"}}
+            # The current convention, with `db.system.name`. ADP does not name the span, give it a type or take its resource from the query. The
+            # entries for the comparison pin the name and the resource that ADP gives today, so that the known difference of #3442 can't hide
+            # a query in the resource.
+            - {service: probe-obf-sql-current-simple, meta: {db.system.name: postgresql}}
+            - {side: baseline, service: probe-obf-sql-current-simple, name: postgresql.query, resource: "SELECT id FROM obf_current_simple WHERE token = ? AND n = ?", meta: {db.query.text: "SELECT id FROM obf_current_simple WHERE token = ? AND n = ?"}}
+            - {service: probe-obf-sql-current-in-list, meta: {db.system.name: postgresql}}
+            - {side: baseline, service: probe-obf-sql-current-in-list, name: postgresql.query, resource: "SELECT id FROM obf_current_in_list WHERE id IN ( ? ) AND tag IN ( ? )", meta: {db.query.text: "SELECT id FROM obf_current_in_list WHERE id IN ( ? ) AND tag IN ( ? )"}}
+            - {service: probe-obf-sql-mixed-current-system, meta: {db.system.name: postgresql}}
+            - {side: comparison, service: probe-obf-sql-current-simple, name: client.request, resource: otlpprobe.obf.database}
+            - {side: comparison, service: probe-obf-sql-current-in-list, name: client.request, resource: otlpprobe.obf.database}
+            - {side: comparison, service: probe-obf-sql-mixed-current-system, name: client.request, resource: otlpprobe.obf.database}
+            - {side: comparison, service: probe-obf-redis-query-text, name: client.request, resource: otlpprobe.obf.database}
+            - {side: baseline, service: probe-obf-sql-mixed-current-system, name: postgresql.query, resource: "SELECT id FROM obf_mixed_current_system WHERE token = ?", meta: {db.statement: "SELECT id FROM obf_mixed_current_system WHERE token = ?"}}
+
+            # Cache commands. Both sides keep only the commands of a Redis resource, and obfuscate `redis.raw_command`, `valkey.raw_command`
+            # and `memcached.command`. A span of the OTLP conventions has none of them, only `db.statement`, which neither side obfuscates.
+            - {service: probe-obf-redis-raw-command, name: redis.query, resource: SET, meta: {redis.raw_command: "SET obf_key ?"}}
+            - {service: probe-obf-redis-many-commands, name: redis.query, resource: "SET GET DEL ...", meta: {redis.raw_command: "SET obf_a ?\nGET obf_a\nDEL obf_a\nGET obf_b"}}
+            - {service: probe-obf-valkey-raw-command, name: valkey.query, resource: SET, meta: {valkey.raw_command: "SET obf_key ?"}}
+            - {service: probe-obf-memcached-command, name: memcached.query, meta: {memcached.command: ""}}
+            # TODO(#3451): both sides keep the raw command of these probes in `db.statement`, in `db.query.text` and in the memcached
+            # resource, so the entries below pin the raw command that both sides send today. This records the shared leak: the case
+            # does not call it correct. When either side scrubs the command, an entry fails, and it must be replaced with the scrubbed value.
+            - {service: probe-obf-redis-statement, name: redis.query, resource: SET, meta: {db.statement: "SET obf_key canary-7f3a"}}
+            - {service: probe-obf-redis-query-text, meta: {db.system.name: redis, db.query.text: "SET obf_key canary-7f3a"}}
+            - {side: baseline, service: probe-obf-redis-query-text, name: redis.query, resource: SET}
+            - {service: probe-obf-redis-many-commands, meta: {db.statement: "SET obf_a canary-7f3a\nGET obf_a\nDEL obf_a\nGET obf_b"}}
+            - {service: probe-obf-memcached-command, resource: "set obf_key 0 0 canary-7f3a", meta: {db.statement: "set obf_key 0 0 canary-7f3a"}}
+
+            # JSON bodies, well formed and not. Both sides write `?` for each value, and mark where they stopped reading a body that is not JSON.
+            - {service: probe-obf-mongodb-query, name: mongodb.query, meta: {mongodb.query: '{"find":"?","filter":{"token":"?","n":"?"}}'}}
+            - {service: probe-obf-mongodb-malformed, name: mongodb.query, meta: {mongodb.query: '{"find":"?","filter":{"token":"?"...'}}
+            - {service: probe-obf-elasticsearch-body, name: elasticsearch.query, meta: {elasticsearch.body: '{"query":{"match":{"token":"?","n":"?"}}}'}}
+            - {service: probe-obf-elasticsearch-malformed, name: elasticsearch.query, meta: {elasticsearch.body: '{"query":{"match":{"token":"?"...'}}
+            - {service: probe-obf-opensearch-body, name: opensearch.query, meta: {opensearch.body: '{"query":{"match":{"token":"?","n":"?"}}}'}}
+            - {service: probe-obf-opensearch-malformed, name: opensearch.query, meta: {opensearch.body: '{"query":{"match":{"token":"?"...'}}
+
+            # URLs. Both sides remove the userinfo. They keep the query string and the digits of the path, which only
+            # `http.remove_query_string` and `http.remove_paths_with_digits` remove.
+            - {service: probe-obf-url-full-userinfo, name: client.request, meta: {http.url: "https://example.com/obf/full?page=2"}}
+            - {service: probe-obf-url-legacy-userinfo, name: client.request, meta: {http.url: "https://example.com/obf/legacy?page=2"}}
+            - {service: probe-obf-url-query-string, name: client.request, meta: {http.url: "https://example.com/obf/query?page=2&sort=name"}}
+            - {service: probe-obf-url-path-digits, name: client.request, meta: {http.url: "https://example.com/obf/path/42/items"}}
+
+            # Values that look like a card number. Both sides write `?` for twelve to sixteen digits, with spaces or dashes, and
+            # keep a shorter or a longer number, a number inside a text, and a value under a key that a scan skips.
+            - {service: probe-obf-card-sixteen, name: Internal, meta: {payment.card: "?"}}
+            - {service: probe-obf-card-spaced, name: Internal, meta: {payment.card: "?"}}
+            - {service: probe-obf-card-dashed, name: Internal, meta: {payment.card: "?"}}
+            - {service: probe-obf-card-invalid-luhn, name: Internal, meta: {payment.card: "?"}}
+            - {service: probe-obf-card-twelve, name: Internal, meta: {payment.card: "?"}}
+            - {service: probe-obf-card-eleven, name: Internal, meta: {payment.card: "41111111111"}}
+            - {service: probe-obf-card-seventeen, name: Internal, meta: {payment.card: "41111111111111111"}}
+            - {service: probe-obf-card-nineteen, name: Internal, meta: {payment.card: "4111111111111111111"}}
+            - {service: probe-obf-card-in-text, name: Internal, meta: {payment.note: "card 4111111111111111 declined"}}
+            # TODO: the card in the event of `probe-obf-card-event` is not asserted. `meta` does not reach `span_events`, so a regression
+            # of the scrub of an event attribute passes, on one side or on both. It takes an expectation on `span_events` in panoramic.
+            - {service: probe-obf-card-event, name: Internal}
+            # A number: the core agent keeps it in `metrics`, and ADP writes `?`.
+            - {service: probe-obf-card-integer, name: Internal}
+            - {side: comparison, service: probe-obf-card-integer, meta: {payment.card: "?"}}
+            - {service: probe-obf-card-double, name: Internal}
+            - {side: comparison, service: probe-obf-card-double, meta: {payment.card: "?"}}
+            - {service: probe-obf-card-integer, meta: {payment.valid: "true"}}
+            # The core agent skips the keys of an account ID, and ADP skips two of the five.
+            - {service: probe-obf-card-exempt-keys, name: Internal, meta: {account_id: "411111111111"}}
+            - {service: probe-obf-card-exempt-keys, meta: {_obf_hidden: "4111111111111111"}}
+            - {side: baseline, service: probe-obf-card-exempt-keys, meta: {aws.account.id: "411111111111", aws.target.account.id: "411111111111", cloud.account.id: "411111111111"}}
+          # The baseline is the Agent, and the comparison is ADP. One entry for each kind of difference of a span, so
+          # that each side's part of a difference goes stale on its own.
+          known_differences:
+            # The SQL query attributes. ADP adds `sql.query`, and leaves `db.statement` and `db.query.text` as the
+            # tracer sent them, with the literals that the core agent removes.
+            - gap: gap/otlp-sql-query-tag
+              issue: 3388
+              paths: [span.meta.sql.query]
+              kinds: [extra]
+              when: {service: [probe-obf-sql-simple, probe-obf-sql-in-list, probe-obf-sql-comment, probe-obf-sql-dollar, probe-obf-sql-insert, probe-obf-sql-unterminated, probe-obf-sql-mysql, probe-obf-sql-mixed-legacy-system, probe-obf-sql-both-attributes]}
+              reason: ADP adds `sql.query` to a span that the tracer sent no `sql.query` for. The Agent does not.
+            - gap: gap/otlp-sql-query-attributes
+              issue: 3388
+              paths: [span.meta.db.statement]
+              kinds: [value]
+              when: {service: [probe-obf-sql-simple, probe-obf-sql-in-list, probe-obf-sql-comment, probe-obf-sql-dollar, probe-obf-sql-insert, probe-obf-sql-unterminated, probe-obf-sql-mysql, probe-obf-sql-mixed-current-system, probe-obf-sql-both-attributes, probe-obf-sql-query-tag]}
+              reason: ADP keeps `db.statement` as the tracer sent it, with its literals. The Agent obfuscates it.
+            - gap: gap/otlp-sql-query-attributes
+              issue: 3388
+              paths: [span.meta.db.query.text]
+              kinds: [value]
+              when: {service: [probe-obf-sql-current-simple, probe-obf-sql-current-in-list, probe-obf-sql-mixed-legacy-system, probe-obf-sql-both-attributes]}
+              reason: ADP keeps `db.query.text` as the tracer sent it, with its literals. The Agent obfuscates it.
+            # The span of a database that has `db.system.name` and no `db.system`.
+            - gap: gap/otlp-span-naming
+              issue: 3442
+              paths: [span.name, span.resource, span.type_]
+              kinds: [value]
+              when: {service: [probe-obf-sql-current-simple, probe-obf-sql-current-in-list, probe-obf-sql-mixed-current-system, probe-obf-redis-query-text]}
+              reason: The Agent names a span with `db.system.name` after its database, and gives it the type of the database and the query as its resource. ADP reads `db.system` only.
+            # A string that has no end.
+            - gap: gap/otlp-sql-unterminated-string
+              issue: 3448
+              paths: [span.resource]
+              kinds: [value]
+              when: {service: [probe-obf-sql-unterminated]}
+              reason: The Agent writes the text `Non-parsable SQL query` for a query with a string that has no end. ADP keeps the part that it read.
+            # A number that looks like a card number.
+            - gap: gap/otlp-card-numeric-attributes
+              issue: 3449
+              paths: [span.metrics.payment.card]
+              kinds: [missing]
+              when: {service: [probe-obf-card-integer, probe-obf-card-double]}
+              reason: The Agent sends a number in `metrics` and does not scan it. ADP does not send the number.
+            - gap: gap/otlp-card-numeric-attributes
+              issue: 3449
+              paths: [span.meta.payment.card]
+              kinds: [extra]
+              when: {service: [probe-obf-card-integer, probe-obf-card-double]}
+              reason: ADP scans a number as text, and writes `?` in `meta` when it looks like a card number. The Agent sends no such tag.
+            # The keys of an account ID.
+            - gap: gap/otlp-card-account-keys
+              issue: 3450
+              paths: [span.meta.aws.account.id, span.meta.aws.target.account.id, span.meta.cloud.account.id]
+              kinds: [value]
+              when: {service: [probe-obf-card-exempt-keys]}
+              reason: The Agent does not scan `aws.account.id`, `aws.target.account.id` and `cloud.account.id`, because an account ID can look like a card number. ADP does.
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: probe-obf-sql-simple}
+        sender: adp
+        timeout: 1m

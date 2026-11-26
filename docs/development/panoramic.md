@@ -533,8 +533,8 @@ For logs, `logs.min_count` sets the minimum number of records per intake. If you
 For traces, set expectations under `traces`:
 
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
-- `spans`: a list of spans that each side must hold. An entry has a `service` and a `name` or a `resource`, and a span
-  of the side must match every field that the entry sets. The `name` is the operation name.
+- `spans`: select spans by `service` and optionally by `name` (the operation name) or `resource`. Each entry needs
+  at least one of `name`, `resource` or `meta`. See [Check span tags at each intake](#check-span-tags-at-each-intake).
 - `absent`: spans that neither intake may hold. See [Check that both sides drop a span](#check-that-both-sides-drop-a-span).
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
@@ -562,6 +562,47 @@ For example, `test/correctness/cases/otlp-traces-stats/config.yaml` requires at 
 Its `spans` entries also check that the named probe spans arrived. Neither check proves that a span counted toward
 the right group. The [group comparison](#why-one-span-can-produce-two-group-differences) tests that separately.
 
+#### Check span tags at each intake
+
+If ADP and the Agent both leave a password in a URL, their spans can match.
+`test/correctness/cases/otlp-traces-obfuscation/config.yaml` checks the scrubbed URL itself, not just whether the
+intakes agree:
+
+```yaml
+spans:
+  - service: probe-obf-url-full-userinfo
+    name: client.request
+    meta: {http.url: "https://example.com/obf/full?page=2"}
+```
+
+The service and operation name select the spans. Each intake must hold at least one, and **every** selected span
+must have that `http.url`. One clean span cannot hide a second span with the password. A failure names the intake
+and the entry, and shows which tags are missing or have a wrong value.
+
+A string in `meta` means exact equality. A map can set `equals`, `not_contains` or both. For example,
+`{not_contains: canary-7f3a}` rejects a tag that contains the fixture's secret. A missing tag fails this check too.
+
+#### When only one side meets an expectation
+
+The same case sends a SQL statement with a literal. The Agent scrubs the `db.statement` tag; ADP keeps the literal.
+Here the case requires the scrubbed text on the Agent's intake:
+
+```yaml
+spans:
+  - side: baseline
+    service: probe-obf-sql-simple
+    meta: {db.statement: "SELECT id FROM obf_simple WHERE token = ? AND n = ?"}
+```
+
+`side` belongs to the expectation. Use `baseline` for the Agent, `comparison` for ADP, or omit it to require both.
+It does not excuse a difference between the intakes. A separate [known difference](#known-differences) covers
+`span.meta.db.statement` for the affected services. If ADP starts meeting the expectation too, the step fails and
+tells you to remove `side`. Both intakes must then keep sending the scrubbed value.
+
+If both sides leak the same value, there is no difference for a `known_differences` entry to match. For example,
+the case records the raw command both send under [issue #3451](https://github.com/DataDog/saluki/issues/3451).
+That expectation records the defect, not a successful scrub. When either side fixes it, the expectation must change.
+
 #### Check that both sides drop a span
 
 In `test/correctness/cases/otlp-traces-conversion/config.yaml`, the fixture sends a span with a zero trace ID.
@@ -575,8 +616,9 @@ absent:
 ```
 
 `absent` selects by `service` and at least one of `name` or `resource`. If either intake has a matching span, the
-failure names that side. Panoramic requires a `spans` entry for the same service: if the fixture sends nothing,
-the absent span alone would look like a successful drop. This is an expectation on each intake, not a known difference.
+failure names that side. An `absent` entry takes neither `meta` nor `side`: there should be no span to inspect on
+*either* side. Its control must be a `spans` entry for the same service without `side`. Otherwise a fixture that
+sends nothing to one intake could look like a successful drop.
 
 ### When the intakes hold different sets
 

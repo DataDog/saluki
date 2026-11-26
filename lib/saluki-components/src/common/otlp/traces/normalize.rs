@@ -820,6 +820,70 @@ mod tests {
         assert_eq!(validate_and_fix_duration(start, u64::MAX), 0);
     }
 
+    /// The reference zeroes a duration only when `start + duration` exceeds `math.MaxInt64` (`FixDuration`,
+    /// `pkg/trace/traceutil/normalize/duration.go`), so a span that ends exactly there keeps it.
+    #[test]
+    fn validate_and_fix_duration_keeps_a_duration_that_ends_at_i64_max() {
+        let start = YEAR_2000_NANOSEC_TS;
+        let headroom = i64::MAX as u64 - start;
+
+        assert_eq!(validate_and_fix_duration(start, headroom), headroom);
+        assert_eq!(validate_and_fix_duration(start, headroom + 1), 0);
+
+        // At the largest start that does not wrap, the headroom is zero: a span with no duration keeps it, and any other
+        // duration overflows.
+        let start = i64::MAX as u64;
+        assert_eq!(validate_and_fix_duration(start, 0), 0);
+        assert_eq!(validate_and_fix_duration(start, 1), 0);
+        assert_eq!(validate_and_fix_duration(0, i64::MAX as u64), i64::MAX as u64);
+    }
+
+    /// The limit is in bytes, and a cut never splits a character.
+    #[test]
+    fn truncate_utf8_cuts_a_span_type_at_the_byte_limit_on_a_character_boundary() {
+        let exact = MetaString::from("t".repeat(MAX_TYPE_LEN));
+        assert_eq!(truncate_utf8(&exact, MAX_TYPE_LEN), exact.as_ref());
+
+        let over = MetaString::from("t".repeat(MAX_TYPE_LEN + 1));
+        assert_eq!(truncate_utf8(&over, MAX_TYPE_LEN), "t".repeat(MAX_TYPE_LEN));
+
+        // A two-byte character that ends at byte 100 stays. One that ends at byte 101 goes, and the cut falls at byte 99.
+        let ends_at_limit = MetaString::from(format!("{}é", "t".repeat(MAX_TYPE_LEN - 2)));
+        assert_eq!(ends_at_limit.len(), MAX_TYPE_LEN);
+        assert_eq!(truncate_utf8(&ends_at_limit, MAX_TYPE_LEN), ends_at_limit.as_ref());
+
+        let straddles_limit = MetaString::from(format!("{}é", "t".repeat(MAX_TYPE_LEN - 1)));
+        assert_eq!(straddles_limit.len(), MAX_TYPE_LEN + 1);
+        assert_eq!(
+            truncate_utf8(&straddles_limit, MAX_TYPE_LEN),
+            "t".repeat(MAX_TYPE_LEN - 1)
+        );
+    }
+
+    /// An attribute key or value at its limit is not cut, one byte over is, and the ellipsis comes after the cut
+    /// (`Truncate`, `pkg/trace/agent/truncator.go`).
+    #[test]
+    fn truncate_with_ellipses_keeps_a_key_and_a_value_at_their_limits() {
+        for limit in [MAX_META_KEY_LEN, MAX_META_VAL_LEN] {
+            let exact = "k".repeat(limit);
+            assert!(matches!(truncate_with_ellipses(&exact, limit), Cow::Borrowed(_)));
+
+            let over = "k".repeat(limit + 1);
+            assert_eq!(
+                truncate_with_ellipses(&over, limit).as_ref(),
+                format!("{}...", "k".repeat(limit))
+            );
+        }
+
+        // The cut comes before the character that straddles the limit, so the result is shorter than limit + 3.
+        let key = format!("{}é", "k".repeat(MAX_META_KEY_LEN - 1));
+        assert_eq!(key.len(), MAX_META_KEY_LEN + 1);
+        assert_eq!(
+            truncate_with_ellipses(&key, MAX_META_KEY_LEN).as_ref(),
+            format!("{}...", "k".repeat(MAX_META_KEY_LEN - 1))
+        );
+    }
+
     #[test]
     fn validate_and_fix_start_time_leaves_valid_start_untouched() {
         let start = YEAR_2000_NANOSEC_TS + 1_000_000_000;

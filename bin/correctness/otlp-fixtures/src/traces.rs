@@ -15,8 +15,10 @@ use prost::Message as _;
 use crate::common::{double, int, kv, string};
 
 mod conversion;
+mod obfuscation;
 
 pub use self::conversion::conversion_fixture;
+pub use self::obfuscation::obfuscation_fixture;
 
 /// 2023-11-14T22:13:20Z, in nanoseconds.
 const BASE_TIME_NANOS: u64 = 1_700_000_000_000_000_000;
