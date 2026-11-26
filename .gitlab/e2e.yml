@@ -158,13 +158,14 @@ run-correctness-tests:
     - bash ci/tooling/report-panoramic-results.sh convert integration
     - bash ci/tooling/report-panoramic-results.sh upload
 
-# Every Linux integration case except the OTLP receiver cases.
+# Every Linux integration case except the ones that check the answers of the OTLP/HTTP receivers.
 test-integration:
   extends: .test-integration-linux
   variables:
     INTEGRATION_CASE_GROUP: shared
 
-# The OTLP receiver cases, which run in a job of their own. Add such a case to `ci/tooling/integration-cases.sh`.
+# The cases that check the answers of the OTLP/HTTP receivers, in a job of their own. `ci/tooling/integration-cases.sh`
+# lists them and says which cases belong.
 test-integration-otlp:
   extends: .test-integration-linux
   variables:
