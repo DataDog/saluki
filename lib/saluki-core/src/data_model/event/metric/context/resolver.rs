@@ -1365,6 +1365,26 @@ mod tests {
     }
 
     #[test]
+    fn unique_context_rewrite_preserves_active_context_count() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let mut context = metrics::with_local_recorder(&recorder, || {
+            let mut resolver = ContextResolverBuilder::for_tests().without_caching().build();
+            resolver.resolve("name", &["tag"][..], None).unwrap()
+        });
+        let active_contexts = || get_gauge_value(&snapshotter.snapshot().into_vec(), Telemetry::active_contexts_name());
+        assert_eq!(active_contexts(), 1.0);
+
+        context.mutate_tags(|tags| tags.insert_tag("added:yes"));
+        assert_eq!(context.tags().get_single_tag("added").unwrap().value(), Some("yes"));
+        // Each snapshot reports the gauge change since the preceding snapshot.
+        assert_eq!(active_contexts(), 0.0);
+
+        drop(context);
+        assert_eq!(active_contexts(), -1.0);
+    }
+
+    #[test]
     fn duplicate_tags() {
         let mut resolver = ContextResolverBuilder::for_tests().build();
 
