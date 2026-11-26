@@ -1,4 +1,7 @@
-use std::hash::{Hash as _, Hasher as _};
+use std::{
+    hash::{Hash as _, Hasher as _},
+    iter::once,
+};
 
 use saluki_common::{
     collections::PrehashedHashSet,
@@ -9,10 +12,8 @@ const MEDIUM_TAG_CAPACITY: usize = 64;
 
 /// Returns hash keys for the metric context and its non-origin tag set.
 ///
-/// Tag order and duplicate tags do not affect either key. Tags and origin tags deduplicate separately.
+/// Tag order and duplicate tags do not affect either key. Tags and origin tags are deduplicated separately.
 /// Tag values remain case-sensitive and whitespace-sensitive. The hash keys can collide.
-///
-/// Small and medium tag sets use stack storage. Large sets can allocate temporary storage for deduplication.
 pub fn hash_context<I, I2, T, T2>(name: &str, tags: I, origin_tags: I2) -> (ContextKey, TagSetKey)
 where
     I: IntoIterator<Item = T>,
@@ -28,7 +29,7 @@ where
 /// Returns hash keys for the metric context with a host and for its non-origin tag set.
 ///
 /// The metric name and host affect only the context key. An unset host and an explicitly empty host are distinct.
-/// Tag order and duplicate tags do not affect either key. Tags and origin tags deduplicate separately.
+/// Tag order and duplicate tags do not affect either key. Tags and origin tags are deduplicated separately.
 pub fn hash_context_with_host<I, I2, T, T2>(
     name: &str, host: Option<&str>, tags: I, origin_tags: I2,
 ) -> (ContextKey, TagSetKey)
@@ -76,10 +77,10 @@ where
     (context_key, tagset_key, tags_may_repeat)
 }
 
-/// XORs each distinct tag hash once so tag order does not matter and duplicates cannot cancel a hash.
+/// Combines each distinct tag hash once with XOR. Tag order does not matter, and duplicates cannot cancel a hash.
 ///
 /// An array scans up to 16 distinct hashes. A stack table handles up to 64 distinct nonzero hashes.
-/// The iterator's lower bound can skip a small path. Unknown-length iterators promote as needed.
+/// The lower bound of the iterator can skip a small path. Iterators of unknown length use larger storage as needed.
 /// The heap fallback reuses the caller's set and inserts the hashes directly without hashing the strings again.
 #[inline]
 fn hash_tags<I, T>(tags: I, seen: &mut PrehashedHashSet<u64>) -> (u64, bool)
@@ -103,8 +104,7 @@ where
                 continue;
             }
             if len == INLINE_CAPACITY {
-                let (combined, repeats) =
-                    hash_medium_tags(inline.into_iter().chain(std::iter::once(hash)).chain(hashes), seen);
+                let (combined, repeats) = hash_medium_tags(inline.into_iter().chain(once(hash)).chain(hashes), seen);
                 return (combined, may_repeat || repeats);
             }
             combined ^= hash;
@@ -157,7 +157,7 @@ fn hash_medium_tags(mut hashes: impl Iterator<Item = u64>, seen: &mut PrehashedH
                 // Transfer the hashes already counted so the remaining tags cannot XOR them in again.
                 seen.clear();
                 seen.extend(slots.into_iter().filter(|&slot| slot != 0));
-                for hash in std::iter::once(next).chain(hashes) {
+                for hash in once(next).chain(hashes) {
                     if seen.insert(hash) {
                         combined ^= hash;
                     } else {
