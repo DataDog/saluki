@@ -7,14 +7,14 @@ use protobuf::{rt::WireType, CodedOutputStream, Enum};
 use saluki_common::iter::ReusableDeduplicator;
 use saluki_core::data_model::{
     event::metric::{Metric, MetricOrigin, MetricValues},
-    tags::{SharedTagSet, Tag},
+    tags::{SharedTagSet, TagStr},
 };
 use saluki_error::GenericError;
 use tracing::warn;
 
 use super::{
     endpoint::{EndpointConfiguration, MetricsEndpoint},
-    metric_has_emittable_values, sketch_has_emittable_values, v1,
+    metric_has_emittable_values, metric_tags, sketch_has_emittable_values, v1,
 };
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -57,7 +57,7 @@ pub struct MetricsEndpointEncoder {
     secondary_scratch_buf: Vec<u8>,
     packed_scratch_buf: Vec<u8>,
     additional_tags: SharedTagSet,
-    tags_deduplicator: ReusableDeduplicator<Tag>,
+    tags_deduplicator: ReusableDeduplicator<TagStr>,
 }
 
 impl MetricsEndpointEncoder {
@@ -254,7 +254,7 @@ fn get_message_size_from_buffer(buf: &[u8]) -> Result<u32, protobuf::Error> {
 fn encode_single_metric(
     metric: &Metric, additional_tags: &SharedTagSet, output_buf: &mut Vec<u8>, primary_scratch_buf: &mut Vec<u8>,
     secondary_scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
-    tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+    tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
 ) -> Result<(), protobuf::Error> {
     let mut output_stream = CodedOutputStream::vec(output_buf);
     let field_number = field_number_for_metric_type(metric);
@@ -279,12 +279,12 @@ fn encode_single_metric(
 
 fn encode_series_metric(
     metric: &Metric, additional_tags: &SharedTagSet, output_stream: &mut CodedOutputStream<'_>,
-    scratch_buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+    scratch_buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
 ) -> Result<(), protobuf::Error> {
     // Write the metric name and tags.
     output_stream.write_string(constants::SERIES_METRIC_FIELD_NUMBER, metric.context().name())?;
 
-    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags, tags_deduplicator);
+    let deduplicated_tags = tags_deduplicator.deduplicated(metric_tags(metric, additional_tags));
     write_series_tags(deduplicated_tags, output_stream, scratch_buf)?;
 
     // Set the host resource.
@@ -363,12 +363,12 @@ fn emittable(point: f64) -> bool {
 
 fn encode_sketch_metric(
     metric: &Metric, additional_tags: &SharedTagSet, output_stream: &mut CodedOutputStream<'_>,
-    scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+    scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
 ) -> Result<(), protobuf::Error> {
     // Write the metric name and tags.
     output_stream.write_string(constants::SKETCH_METRIC_FIELD_NUMBER, metric.context().name())?;
 
-    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags, tags_deduplicator);
+    let deduplicated_tags = tags_deduplicator.deduplicated(metric_tags(metric, additional_tags));
     write_sketch_tags(deduplicated_tags, output_stream, scratch_buf)?;
 
     // Write the host.
@@ -530,25 +530,12 @@ fn write_dogsketch(
     )
 }
 
-fn get_deduplicated_tags<'a>(
-    metric: &'a Metric, additional_tags: &'a SharedTagSet, tags_deduplicator: &'a mut ReusableDeduplicator<Tag>,
-) -> impl Iterator<Item = &'a Tag> {
-    let chained_tags = metric
-        .context()
-        .tags()
-        .into_iter()
-        .chain(additional_tags)
-        .chain(metric.context().origin_tags());
-
-    tags_deduplicator.deduplicated(chained_tags)
-}
-
 fn write_tags<'a, I, F>(
     tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, tag_encoder: F,
 ) -> Result<(), protobuf::Error>
 where
-    I: Iterator<Item = &'a Tag>,
-    F: Fn(&Tag, &mut CodedOutputStream<'_>, &mut Vec<u8>) -> Result<(), protobuf::Error>,
+    I: Iterator<Item = &'a TagStr>,
+    F: Fn(&TagStr, &mut CodedOutputStream<'_>, &mut Vec<u8>) -> Result<(), protobuf::Error>,
 {
     for tag in tags {
         tag_encoder(tag, output_stream, scratch_buf)?;
@@ -561,19 +548,20 @@ fn write_series_tags<'a, I>(
     tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error>
 where
-    I: Iterator<Item = &'a Tag>,
+    I: Iterator<Item = &'a TagStr>,
 {
     write_tags(tags, output_stream, scratch_buf, |tag, os, buf| {
         // If this is a resource tag, we'll convert it directly to a resource entry.
-        if tag.name() == "dd.internal.resource" {
-            if let Some((resource_type, resource_name)) = tag.value().and_then(|s| s.split_once(':')) {
-                write_resource(os, buf, resource_type, resource_name)
-            } else {
-                Ok(())
+        match tag.name_and_value() {
+            ("dd.internal.resource", value) => {
+                if let Some((resource_type, resource_name)) = value.and_then(|value| value.split_once(':')) {
+                    write_resource(os, buf, resource_type, resource_name)
+                } else {
+                    Ok(())
+                }
             }
-        } else {
             // We're dealing with a normal tag.
-            os.write_string(constants::SERIES_TAGS_FIELD_NUMBER, tag.as_str())
+            _ => os.write_string(constants::SERIES_TAGS_FIELD_NUMBER, tag.as_str()),
         }
     })
 }
@@ -582,7 +570,7 @@ fn write_sketch_tags<'a, I>(
     tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error>
 where
-    I: Iterator<Item = &'a Tag>,
+    I: Iterator<Item = &'a TagStr>,
 {
     write_tags(tags, output_stream, scratch_buf, |tag, os, _buf| {
         // We always write the tags as-is, without any special handling for resource tags.

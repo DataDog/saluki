@@ -459,6 +459,7 @@ impl<'a> IntoIterator for &'a TagSet {
 }
 
 /// Borrowing iterator over a `TagSet`.
+#[derive(Clone)]
 pub struct TagSetIter<'a> {
     base_iter: super::SharedTagSetIterator<'a>,
     base_index: usize,

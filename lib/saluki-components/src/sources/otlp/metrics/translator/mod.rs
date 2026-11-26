@@ -503,7 +503,7 @@ mod tests {
         number_data_point::Value as OtlpNumberDataPointValue, Gauge, HistogramDataPoint as OtlpHistogramDataPoint,
         NumberDataPoint as OtlpNumberDataPoint, ScopeMetrics, Sum,
     };
-    use saluki_core::data_model::tags::Tag;
+    use saluki_core::data_model::tags::TagStr;
 
     use super::*;
     use crate::sources::otlp::metrics::config::HistogramMode;
@@ -974,7 +974,7 @@ mod tests {
         let tags = events[0].try_as_metric().expect("metric event").context().tags();
 
         // The semantic-convention mapping is always applied.
-        assert_eq!(tags.get_single_tag("service"), Some(&Tag::from("service:otlp-test")));
+        assert_eq!(tags.get_single_tag("service"), Some(TagStr::new("service:otlp-test")));
 
         // The raw resource attributes are not added when the flag is disabled.
         assert_eq!(tags.get_single_tag("service.name"), None);
@@ -1007,16 +1007,16 @@ mod tests {
         let tags = events[0].try_as_metric().expect("metric event").context().tags();
 
         // The semantic-convention mapping remains intact.
-        assert_eq!(tags.get_single_tag("service"), Some(&Tag::from("service:otlp-test")));
+        assert_eq!(tags.get_single_tag("service"), Some(TagStr::new("service:otlp-test")));
 
         // Every resource attribute is also emitted as a raw tag.
         assert_eq!(
             tags.get_single_tag("service.name"),
-            Some(&Tag::from("service.name:otlp-test"))
+            Some(TagStr::new("service.name:otlp-test"))
         );
         assert_eq!(
             tags.get_single_tag("custom.resource.attribute"),
-            Some(&Tag::from("custom.resource.attribute:present"))
+            Some(TagStr::new("custom.resource.attribute:present"))
         );
         assert_eq!(tags.into_iter().filter(|tag| tag.name() == "service").count(), 1);
         assert_eq!(
@@ -1044,7 +1044,7 @@ mod tests {
         let tags = events[0].try_as_metric().expect("metric event").context().tags();
         assert_eq!(
             tags.get_single_tag("correctness"),
-            Some(&Tag::from("correctness:configured"))
+            Some(TagStr::new("correctness:configured"))
         );
     }
 
@@ -1081,7 +1081,7 @@ mod tests {
         // The raw resource attribute is also present under its original key.
         assert_eq!(
             tags.get_single_tag("service.name"),
-            Some(&Tag::from("service.name:resource"))
+            Some(TagStr::new("service.name:resource"))
         );
     }
 

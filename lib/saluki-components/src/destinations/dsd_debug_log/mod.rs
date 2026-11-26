@@ -13,7 +13,7 @@ use saluki_core::{
     },
     data_model::{
         event::{metric::Metric, EventType},
-        tags::TagSet,
+        tags::{TagSet, TagStr},
     },
 };
 use saluki_error::{generic_error, GenericError};
@@ -99,8 +99,8 @@ impl DogStatsDDebugLog {
 
         let context = metric.context();
         let metric_context = ContextNoOrigin {
-            name: context.name().clone(),
-            tags: context.tags().clone(),
+            name: context.name().into(),
+            tags: context.tags().to_mutable(),
         };
 
         let timestamp = saluki_common::time::get_coarse_unix_timestamp();
@@ -197,7 +197,7 @@ impl MemoryBounds for DogStatsDDebugLogConfiguration {
     }
 }
 
-fn format_tags(tags: &TagSet) -> String {
+fn format_tags<'a>(tags: impl IntoIterator<Item = &'a TagStr>) -> String {
     let mut formatted = String::new();
 
     for tag in tags {

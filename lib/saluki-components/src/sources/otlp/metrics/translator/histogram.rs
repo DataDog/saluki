@@ -332,7 +332,7 @@ impl OtlpMetricsTranslator {
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::{event::metric::MetricValues, tags::Tag};
+    use saluki_core::data_model::{event::metric::MetricValues, tags::TagStr};
 
     use super::super::tests::{distribution_sketch, nanos_from_seconds};
     use super::*;
@@ -610,11 +610,11 @@ mod tests {
             assert_eq!(metric.context().name(), "otlp.histogram.bucket");
             assert_eq!(
                 metric.context().tags().get_single_tag("lower_bound"),
-                Some(&Tag::from(format!("lower_bound:{lower}").as_str()))
+                Some(TagStr::new(format!("lower_bound:{lower}").as_str()))
             );
             assert_eq!(
                 metric.context().tags().get_single_tag("upper_bound"),
-                Some(&Tag::from(format!("upper_bound:{upper}").as_str()))
+                Some(TagStr::new(format!("upper_bound:{upper}").as_str()))
             );
             assert_eq!(metric.values(), &MetricValues::counter((1, value)));
         }

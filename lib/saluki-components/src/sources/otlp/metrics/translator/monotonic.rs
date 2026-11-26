@@ -126,7 +126,7 @@ impl OtlpMetricsTranslator {
 mod tests {
     use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
     use otlp_protos::opentelemetry::proto::metrics::v1::number_data_point::Value as OtlpNumberDataPointValue;
-    use saluki_core::data_model::{event::metric::MetricValues, tags::Tag};
+    use saluki_core::data_model::{event::metric::MetricValues, tags::TagStr};
 
     use super::super::tests::nanos_from_seconds;
     use super::*;
@@ -605,13 +605,13 @@ mod tests {
         let metric2 = events[1].try_as_metric().unwrap();
         assert_eq!(
             metric2.context().tags().get_single_tag("key1"),
-            Some(&Tag::from("key1:valA"))
+            Some(TagStr::new("key1:valA"))
         );
         assert_eq!(metric2.values(), &MetricValues::counter((1, 30.0)));
         let metric3 = events[2].try_as_metric().unwrap();
         assert_eq!(
             metric3.context().tags().get_single_tag("key1"),
-            Some(&Tag::from("key1:valB"))
+            Some(TagStr::new("key1:valB"))
         );
         assert_eq!(metric3.values(), &MetricValues::counter((1, 40.0)));
     }
@@ -784,13 +784,13 @@ mod tests {
         let metric2 = events[1].try_as_metric().unwrap();
         assert_eq!(
             metric2.context().tags().get_single_tag("key1"),
-            Some(&Tag::from("key1:valA"))
+            Some(TagStr::new("key1:valA"))
         );
         assert_eq!(metric2.values(), &MetricValues::counter((1, 30.0)));
         let metric3 = events[2].try_as_metric().unwrap();
         assert_eq!(
             metric3.context().tags().get_single_tag("key1"),
-            Some(&Tag::from("key1:valB"))
+            Some(TagStr::new("key1:valB"))
         );
         assert_eq!(metric3.values(), &MetricValues::counter((1, 40.0)));
     }

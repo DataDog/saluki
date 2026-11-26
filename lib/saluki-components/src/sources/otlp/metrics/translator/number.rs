@@ -91,7 +91,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::metrics::v1::number_data_point::Value as OtlpNumberDataPointValue;
     use saluki_core::data_model::{
         event::metric::MetricValues,
-        tags::{Tag, TagSet},
+        tags::{TagSet, TagStr},
     };
 
     use super::*;
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(metric.values(), &MetricValues::gauge((ts_s, 17.0)));
         assert_eq!(
             metric.context().tags().get_single_tag("attribute_tag"),
-            Some(&Tag::from("attribute_tag:attribute_value"))
+            Some(TagStr::new("attribute_tag:attribute_value"))
         );
     }
 
@@ -266,7 +266,7 @@ mod tests {
         let metric = events[0].try_as_metric().unwrap();
         assert_eq!(
             metric.context().tags().get_single_tag("attribute_tag"),
-            Some(&Tag::from("attribute_tag:attribute_value"))
+            Some(TagStr::new("attribute_tag:attribute_value"))
         );
         assert_eq!(metric.values(), &MetricValues::gauge((ts_s, std::f64::consts::PI)));
     }

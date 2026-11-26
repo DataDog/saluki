@@ -3,12 +3,14 @@
 use std::{
     fmt,
     hash::{Hash, Hasher},
+    ops::Deref,
     sync::Arc,
 };
 
 use metrics::Gauge;
 use saluki_common::collections::{ContiguousBitSet, PrehashedHashSet};
-use stringtheory::MetaString;
+use serde::{Serialize, Serializer};
+use stringtheory::{CheapMetaString, MetaString};
 
 mod context_cache;
 
@@ -18,9 +20,64 @@ pub use self::hash::{hash_context_with_host, ContextKey};
 
 mod resolver;
 pub use self::resolver::{ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder};
-use crate::data_model::tags::{Tag, TagSet};
+use crate::data_model::tags::{Tag, TagSet, TagSetIter, TagStr};
 
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
+
+/// A metric name borrowed from a context.
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct ContextName(str);
+
+impl ContextName {
+    fn from_str(name: &str) -> &Self {
+        // SAFETY: ContextName has the same representation as str.
+        unsafe { &*(name as *const str as *const Self) }
+    }
+}
+
+impl AsRef<str> for ContextName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl CheapMetaString for ContextName {
+    fn try_cheap_clone(&self) -> Option<MetaString> {
+        MetaString::try_inline(&self.0)
+    }
+}
+
+impl From<&ContextName> for MetaString {
+    fn from(name: &ContextName) -> Self {
+        name.as_ref().into()
+    }
+}
+
+impl Deref for ContextName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for ContextName {
+    fn eq(&self, other: &str) -> bool {
+        &self.0 == other
+    }
+}
+
+impl PartialEq<MetaString> for ContextName {
+    fn eq(&self, other: &MetaString) -> bool {
+        &self.0 == other.as_ref()
+    }
+}
+
+impl fmt::Display for ContextName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// A metric context.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -185,8 +242,8 @@ impl Context {
     }
 
     /// Returns the name of this context.
-    pub fn name(&self) -> &MetaString {
-        &self.inner.name
+    pub fn name(&self) -> &ContextName {
+        ContextName::from_str(&self.inner.name)
     }
 
     /// Returns the host of this context, if one has been set.
@@ -214,9 +271,9 @@ impl Context {
         }
     }
 
-    /// Returns the instrumented tags of this context.
-    pub fn tags(&self) -> &TagSet {
-        &self.inner.tags
+    /// Returns a borrowed view of the instrumented tags.
+    pub fn tags(&self) -> ContextTags<'_> {
+        ContextTags(&self.inner.tags)
     }
 
     /// Returns the origin tags of this context.
@@ -340,6 +397,89 @@ impl fmt::Display for Context {
     }
 }
 
+/// The instrumented tags of a context, in insertion order.
+#[derive(Clone, Copy)]
+pub struct ContextTags<'a>(&'a TagSet);
+
+impl<'a> ContextTags<'a> {
+    /// Returns the number of tags.
+    pub fn len(self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns whether the context has no instrumented tags.
+    pub fn is_empty(self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns whether the tag set has an overlay change.
+    pub fn is_modified(self) -> bool {
+        self.0.is_modified()
+    }
+
+    /// Matches a complete tag, including its value if present.
+    pub fn has_tag(self, text: impl AsRef<str>) -> bool {
+        self.0.has_tag(text)
+    }
+
+    /// Returns the first matching tag by key, checking additions before base tags.
+    pub fn get_single_tag(self, name: impl AsRef<str>) -> Option<&'a TagStr> {
+        self.0.get_single_tag(name).map(Tag::as_tag_str)
+    }
+
+    /// Creates an owned mutable tag set in the same order.
+    pub fn to_mutable(self) -> TagSet {
+        self.0.clone()
+    }
+}
+
+impl fmt::Debug for ContextTags<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.into_iter().map(TagStr::as_str)).finish()
+    }
+}
+
+impl Serialize for ContextTags<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(*self)
+    }
+}
+
+impl<'a> IntoIterator for ContextTags<'a> {
+    type Item = &'a TagStr;
+    type IntoIter = ContextTagsIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ContextTagsIter {
+            tags: self.0.into_iter(),
+            remaining: self.len(),
+        }
+    }
+}
+
+/// An iterator over the borrowed instrumented tags of a context.
+#[derive(Clone)]
+pub struct ContextTagsIter<'a> {
+    tags: TagSetIter<'a>,
+    remaining: usize,
+}
+
+impl<'a> Iterator for ContextTagsIter<'a> {
+    type Item = &'a TagStr;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let tag = self.tags.next()?;
+        self.remaining -= 1;
+        Some(tag.as_tag_str())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for ContextTagsIter<'_> {}
+
 /// Reusable scratch space for [`TagSetMutView`] operations.
 ///
 /// Holding a long-lived instance across calls amortizes bitset allocations. The bitsets are
@@ -382,9 +522,9 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
     ///
     /// Tags for which `f` returns `false` are flagged for removal. This is a read-only scan;
     /// no mutation occurs until [`finish`][Self::finish] is called.
-    pub fn retain_tags(&mut self, f: impl FnMut(&Tag) -> bool) {
+    pub fn retain_tags(&mut self, mut f: impl FnMut(&TagStr) -> bool) {
         self.context.inner.tags.collect_removals(
-            f,
+            |tag: &Tag| f(tag.as_tag_str()),
             &mut self.state.tag_base_removals,
             &mut self.state.tag_addition_removals,
         );
@@ -394,9 +534,9 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
     ///
     /// Tags for which `f` returns `false` are flagged for removal. This is a read-only scan;
     /// no mutation occurs until [`finish`][Self::finish] is called.
-    pub fn retain_origin_tags(&mut self, f: impl FnMut(&Tag) -> bool) {
+    pub fn retain_origin_tags(&mut self, mut f: impl FnMut(&TagStr) -> bool) {
         self.context.inner.origin_tags.collect_removals(
-            f,
+            |tag: &Tag| f(tag.as_tag_str()),
             &mut self.state.origin_base_removals,
             &mut self.state.origin_addition_removals,
         );
@@ -915,7 +1055,7 @@ mod tests {
         let mut via_view = base.clone();
         let mut state = TagSetMutViewState::new();
         let mut view = via_view.tags_mut_view(&mut state);
-        view.retain_tags(predicate);
+        view.retain_tags(|tag| tag.name() == "env");
         view.finish();
 
         assert_eq!(direct, via_view);
@@ -927,11 +1067,11 @@ mod tests {
     #[test]
     fn mut_view_equivalent_to_direct_mutate_origin_tags() {
         let base = context_with_origin("metric", &["env:prod"], &["origin:a", "origin:b", "origin:c"]);
-        let predicate = |tag: &Tag| tag.as_str() == "origin:a";
+        let predicate = |tag: &TagStr| tag == "origin:a";
 
         // Path A: direct mutation.
         let mut direct = base.clone();
-        direct.mutate_origin_tags(|tags| tags.retain(predicate));
+        direct.mutate_origin_tags(|tags| tags.retain(|tag| predicate(tag)));
 
         // Path B: mut view.
         let mut via_view = base.clone();
