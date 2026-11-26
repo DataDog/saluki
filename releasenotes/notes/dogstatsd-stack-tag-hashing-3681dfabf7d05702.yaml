@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce allocation overhead when DogStatsD classifies and deduplicates common tag sets.
