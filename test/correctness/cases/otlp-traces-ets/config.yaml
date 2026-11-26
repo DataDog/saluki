@@ -54,8 +54,8 @@ procedure:
           min_spans: 14
           max_spans: 14
           spans:
-            # TSAMP-016, TSAMP-019: an error trace is kept, whatever the receiver decides, and its chunk keeps the
-            # priority that the receiver gave it.
+            # An error trace is kept, whatever the receiver decides, and its chunk keeps the priority that the receiver
+            # gave it.
             - service: probe-ets
               name: otlpprobe.ets.016.error_keep
               priority: 1
@@ -67,7 +67,7 @@ procedure:
               priority: 0
               dropped_trace: false
               chunk_tags: {_dd.error_tracking_standalone.error: "true"}
-            # TSAMP-017: a trace without an error is forwarded with every span, marked as dropped.
+            # A trace without an error is forwarded with every span, marked as dropped.
             - service: probe-ets
               name: otlpprobe.ets.017.plain_keep
               priority: 1
@@ -87,8 +87,7 @@ procedure:
             - {service: probe-ets, name: otlpprobe.ets.017.plain_drop, priority: 0, dropped_trace: true}
             - {service: probe-ets, name: otlpprobe.ets.017.plain_drop_first, priority: 0, dropped_trace: true}
             - {service: probe-ets, name: otlpprobe.ets.017.plain_drop_second, priority: 0, dropped_trace: true}
-            # TSAMP-021: an exception event on any span makes the whole trace an error trace, and another event does
-            # not.
+            # An exception event on any span makes the whole trace an error trace, and another event does not.
             - service: probe-ets
               name: otlpprobe.ets.021.exception_root
               dropped_trace: false
@@ -104,8 +103,8 @@ procedure:
               meta: {_dd.span_events.has_exception: "true"}
               chunk_tags: {_dd.error_tracking_standalone.error: "true"}
             - {service: probe-ets, name: otlpprobe.ets.021.other_event, priority: 0, dropped_trace: true}
-            # TSAMP-019: a user keep sets the priority and the decision maker of a trace that is forwarded as dropped,
-            # and a user drop of an error trace keeps its priority.
+            # A user keep sets the priority and the decision maker of a trace that is forwarded as dropped, and a user
+            # drop of an error trace keeps its priority.
             - service: probe-ets
               name: otlpprobe.ets.019.user_keep
               priority: 2

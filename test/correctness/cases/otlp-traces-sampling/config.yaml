@@ -64,31 +64,31 @@ procedure:
           min_spans: 23
           max_spans: 24
           spans:
-            # TSAMP-001, TSAMP-002: the receiver keeps the traces in its keep range, with its decision maker and rate.
+            # The receiver keeps the traces in its keep range, with its decision maker and rate.
             - service: probe-sampling
               name: otlpprobe.tsamp.002.keep
               priority: 1
               dropped_trace: false
               meta: {_dd.p.dm: "-9"}
               chunk_tags: {_dd.otlp_sr: "0.50"}
-            # TSAMP-004: the last priority of a trace wins, and a user keep beats the drop of the receiver.
+            # The last priority of a trace wins, and a user keep beats the drop of the receiver.
             - {service: probe-sampling, name: otlpprobe.tsamp.004.last, priority: 2, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.004.last_child, priority: 2, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.005.user, priority: 1, dropped_trace: false}
-            # TSAMP-006: the Agent keeps a trace with the priority -128 as a trace without a priority, and ADP drops it.
+            # The Agent keeps a trace with the priority -128 as a trace without a priority, and ADP drops it.
             - service: probe-sampling
               name: otlpprobe.tsamp.006.none
               side: baseline
               priority: -128
               dropped_trace: false
-            # TSAMP-011, TSAMP-012, TSAMP-013: the error sampler keeps an error trace that another sampler dropped. The
-            # priority that it leaves differs, so no entry sets it.
+            # The error sampler keeps an error trace that another sampler dropped. The priority that it leaves differs,
+            # so no entry sets it.
             - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.012.user_zero, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.013.rescued, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr, priority: 1, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr_rescue, dropped_trace: false}
-            # TSAMP-035, TSAMP-037: single span sampling keeps the span that asks for it, with the priority 2.
+            # Single span sampling keeps the span that asks for it, with the priority 2.
             - {service: probe-sampling, name: otlpprobe.tsamp.035.sss, priority: 2, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.037.int, priority: 2, dropped_trace: false}
             - service: probe-sampling
@@ -96,8 +96,8 @@ procedure:
               side: comparison
               priority: 2
               dropped_trace: false
-            # TSAMP-038, TSAMP-039, TSAMP-040: a dropped trace sends its events alone, marked as dropped, and a kept
-            # trace sends them with the other spans.
+            # A dropped trace sends its events alone, marked as dropped, and a kept trace sends them with the other
+            # spans.
             - {service: probe-sampling, name: otlpprobe.tsamp.038.metric, priority: 0, dropped_trace: true}
             - {service: probe-analytics, name: otlpprobe.tsamp.038.fixed, priority: 0, dropped_trace: true}
             - {service: probe-sampling, name: otlpprobe.tsamp.039.kept_root, priority: 1, dropped_trace: false}
@@ -107,7 +107,8 @@ procedure:
               side: comparison
               priority: 0
               dropped_trace: true
-            # TSAMP-003, TSAMP-045, TSTAT-009: the kept traces of the probes of the decision maker and of the stats.
+            # The kept traces of the probes of the decision maker, of the stats of one name, and of a trace with two
+            # roots.
             - {service: probe-sampling, name: otlpprobe.tsamp.003.child_first, priority: 1, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.003.child_first_child, priority: 1, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.045.mixed, priority: 1, dropped_trace: false}

@@ -6,10 +6,10 @@
 //! range is one that it drops. A probe of a user decision, or of a sampler that runs after the receiver, sits in the
 //! range that makes its decision the most telling.
 //!
-//! Each probe has a span name of its own, `otlpprobe.tsamp.<id>.<arm>`, so that a decision shows as one named span, one
-//! group of stats, or both. A span that a trace keeps beside the probe has the name of the probe with a suffix. Spans
-//! are `SERVER` roots, or `INTERNAL` children of a root, and each one has an `operation.name` that matches its name.
-//! The spans of a probe start and end at fixed times in the past.
+//! Each probe has a span name of its own, `otlpprobe.tsamp.<number>.<arm>`, so that a decision shows as one named
+//! span, one group of stats, or both. A span that a trace keeps beside the probe has the name of the probe with a
+//! suffix. Spans are `SERVER` roots, or `INTERNAL` children of a root, and each one has an `operation.name` that
+//! matches its name. The spans of a probe start and end at fixed times in the past.
 
 use otlp_protos::opentelemetry::proto::{
     common::v1::KeyValue,
@@ -19,8 +19,8 @@ use otlp_protos::opentelemetry::proto::{
 use super::{probe_request_with_seeds, ProbeResource, ProbeSpan, BASE_TIME_NANOS};
 use crate::common::{boolean, double, int, kv, string};
 
-/// The first seed of the traces of `sampling_fixture`. A trace has the seed of the first one that follows the seed of the
-/// trace before it, and that has the decision of the receiver that the probe needs.
+/// The first seed of the traces of `sampling_fixture`. A trace has the seed of the first one that follows the seed of
+/// the trace before it, and that has the decision of the receiver that the probe needs.
 const SAMPLING_SEED: u32 = 0x0d00;
 
 /// The first seed of the traces of `ets_fixture`, picked as the seeds of `sampling_fixture` are.
@@ -160,8 +160,8 @@ fn exception() -> Event {
 fn sampling_probes() -> Probes {
     let mut probes = Probes::new(SAMPLING_SEED);
 
-    // TSAMP-001, TSAMP-002: the receiver keeps a trace in the keep range, and drops a trace in the drop range. Two
-    // traces share each name, so that a side that decides by the span count and not by the trace ID fails.
+    // The receiver keeps a trace in the keep range, and drops a trace in the drop range. Two traces share each name, so
+    // that a side that decides by the span count and not by the trace ID fails.
     for _ in 0..2 {
         probes.in_keep_range(vec![root("otlpprobe.tsamp.002.keep")]);
     }
@@ -169,38 +169,38 @@ fn sampling_probes() -> Probes {
         probes.in_drop_range(vec![root("otlpprobe.tsamp.002.drop")]);
     }
 
-    // TSAMP-004: the last span with a priority gives the priority of the trace.
+    // The last span with a priority gives the priority of the trace.
     probes.in_drop_range(vec![
         with_priority(root("otlpprobe.tsamp.004.last"), 0),
         with_priority(child("otlpprobe.tsamp.004.last_child"), 2),
     ]);
 
-    // TSAMP-005: a user keep beats the drop of the receiver.
+    // A user keep beats the drop of the receiver.
     probes.in_drop_range(vec![with_priority(root("otlpprobe.tsamp.005.user"), 1)]);
 
-    // TSAMP-006: the priority -128 is no priority. The Agent keeps the trace as a trace without a priority.
+    // The priority -128 is no priority. The Agent keeps the trace as a trace without a priority.
     probes.in_drop_range(vec![with_priority(root("otlpprobe.tsamp.006.none"), -128)]);
 
-    // TSAMP-035: a user drop of a trace in the keep range skips the rescue of an error and the extraction of an event.
+    // A user drop of a trace in the keep range skips the rescue of an error and the extraction of an event.
     probes.in_keep_range(vec![with_analytics_event(with_priority(
         root("otlpprobe.tsamp.035.drop").failed(),
         -1,
     ))]);
 
-    // TSAMP-035: a user drop does not skip single span sampling, which keeps the span that asks for it.
+    // A user drop does not skip single span sampling, which keeps the span that asks for it.
     probes.in_keep_range(vec![
         with_priority(root("otlpprobe.tsamp.035.sss_root"), -1),
         child("otlpprobe.tsamp.035.sss").with_attribute(SPAN_SAMPLING_MECHANISM, int(8)),
     ]);
 
-    // TSAMP-011: the error sampler keeps an error trace that the receiver dropped.
+    // The error sampler keeps an error trace that the receiver dropped.
     probes.in_drop_range(vec![root("otlpprobe.tsamp.011.rescue").failed()]);
 
-    // TSAMP-012: a priority of 0 is a user decision, and the error sampler keeps the error trace still.
+    // A priority of 0 is a user decision, and the error sampler keeps the error trace still.
     probes.in_drop_range(vec![with_priority(root("otlpprobe.tsamp.012.user_zero").failed(), 0)]);
 
-    // TSAMP-013: the error sampler applies the `_sample_rate` of the root to the hash of the trace ID. A hash below
-    // that rate keeps the trace. The receiver is out of play, because the user priority 0 drops both traces.
+    // The error sampler applies the `_sample_rate` of the root to the hash of the trace ID. A hash below that rate
+    // keeps the trace. The receiver is out of play, because the user priority 0 drops both traces.
     probes.add(
         RESCUE_RATE,
         true,
@@ -220,11 +220,11 @@ fn sampling_probes() -> Probes {
         .failed()],
     );
 
-    // TSAMP-021: an exception event does not make the trace an error trace, unless error tracking standalone is on.
+    // An exception event does not make the trace an error trace, unless error tracking standalone is on.
     probes.in_drop_range(vec![root("otlpprobe.tsamp.021.exception").with_event(exception())]);
 
-    // TSAMP-028: the receiver removes the rate that a probabilistic sampler upstream put on a trace that it keeps, and
-    // the rescue of the error sampler leaves it.
+    // The receiver removes the rate that a probabilistic sampler upstream put on a trace that it keeps, and the rescue
+    // of the error sampler leaves it.
     probes.in_keep_range(vec![
         root("otlpprobe.tsamp.028.prob_sr").with_attribute("_dd.prob_sr", double(0.3))
     ]);
@@ -232,8 +232,8 @@ fn sampling_probes() -> Probes {
         .with_attribute("_dd.prob_sr", double(0.3))
         .failed()]);
 
-    // TSAMP-037: single span sampling keeps the span with the mechanism as a number. A mechanism that is a string is
-    // not one, to the Agent.
+    // Single span sampling keeps the span with the mechanism as a number. A mechanism that is a string is not one, to
+    // the Agent.
     probes.in_drop_range(vec![
         root("otlpprobe.tsamp.037.root"),
         child("otlpprobe.tsamp.037.int").with_attribute(SPAN_SAMPLING_MECHANISM, int(8)),
@@ -243,33 +243,33 @@ fn sampling_probes() -> Probes {
         child("otlpprobe.tsamp.037.string").with_attribute(SPAN_SAMPLING_MECHANISM, string("8")),
     ]);
 
-    // TSAMP-038: a span with `analytics.event` is an event, and a dropped trace sends it alone, marked as dropped.
+    // A span with `analytics.event` is an event, and a dropped trace sends it alone, marked as dropped.
     probes.in_drop_range(vec![
         root("otlpprobe.tsamp.038.metric_root"),
         with_analytics_event(child("otlpprobe.tsamp.038.metric")),
     ]);
 
-    // TSAMP-038: the configured rate for the service and name of a span makes it an event. This is the only name with
-    // a configured rate.
+    // The configured rate for the service and name of a span makes it an event. This is the only name with a configured
+    // rate.
     probes.in_drop_range(vec![
         span_in(ANALYTICS_SERVICE, "otlpprobe.tsamp.038.fixed", SpanKind::Server),
         span_in(ANALYTICS_SERVICE, "otlpprobe.tsamp.038.fixed", SpanKind::Internal).child_of(1),
     ]);
 
-    // TSAMP-039: a kept trace keeps its events with the other spans, not marked as dropped.
+    // A kept trace keeps its events with the other spans, not marked as dropped.
     probes.in_keep_range(vec![
         root("otlpprobe.tsamp.039.kept_root"),
         with_analytics_event(child("otlpprobe.tsamp.039.kept_event")),
     ]);
 
-    // TSAMP-040: a client that marks a span with `_dd.analyzed` does not make it an event.
+    // A client that marks a span with `_dd.analyzed` does not make it an event.
     probes.in_drop_range(vec![
         root("otlpprobe.tsamp.040.client_root"),
         child("otlpprobe.tsamp.040.client").with_attribute("_dd.analyzed", int(1)),
     ]);
 
-    // TSAMP-003: a kept trace holds its decision maker in the first span that it lists. The Agent and ADP differ when
-    // that span is not the root.
+    // A kept trace holds its decision maker in the first span that it lists. The Agent and ADP differ when that span is
+    // not the root.
     probes.in_keep_range(vec![
         span_in(
             SAMPLING_SERVICE,
@@ -280,12 +280,12 @@ fn sampling_probes() -> Probes {
         root("otlpprobe.tsamp.003.child_first"),
     ]);
 
-    // TSAMP-045: the stats count a trace that the sampler drops, and one that it keeps, with one name.
+    // The stats count a trace that the sampler drops, and one that it keeps, with one name.
     probes.in_keep_range(vec![root("otlpprobe.tsamp.045.mixed")]);
     probes.in_drop_range(vec![root("otlpprobe.tsamp.045.mixed")]);
 
-    // TSTAT-009: a trace with two roots. The weight of the stats comes from the root of the trace, which is the first
-    // root to one side and the last to the other.
+    // A trace with two roots. The weight of the stats comes from the root of the trace, which is the first root to one
+    // side and the last to the other.
     probes.in_keep_range(vec![
         root("otlpprobe.tsamp.tstat009.first"),
         root("otlpprobe.tsamp.tstat009.second").with_attribute("_sample_rate", double(0.5)),
@@ -298,8 +298,8 @@ fn sampling_probes() -> Probes {
 /// receiver and the samplers of the trace agent make.
 ///
 /// The cases that use it set the sampling percentage of the receiver to 50. The trace of each probe has a trace ID that
-/// the receiver keeps or drops at that percentage, and the traces of TSAMP-013 have trace IDs that the error sampler
-/// keeps or drops at a rate of 0.1.
+/// the receiver keeps or drops at that percentage, and the two `otlpprobe.tsamp.013` traces have trace IDs that the
+/// error sampler keeps or drops at a rate of 0.1.
 pub fn sampling_fixture() -> Vec<u8> {
     sampling_probes().request(&[SAMPLING_SERVICE, ANALYTICS_SERVICE])
 }
@@ -318,12 +318,12 @@ fn ets_child(name: &'static str) -> ProbeSpan {
 fn ets_probes() -> Probes {
     let mut probes = Probes::new(ETS_SEED);
 
-    // TSAMP-016, TSAMP-019: error tracking standalone keeps an error trace, whatever the receiver decides, and the
-    // chunk keeps the priority that the receiver gave it.
+    // Error tracking standalone keeps an error trace, whatever the receiver decides, and the chunk keeps the priority
+    // that the receiver gave it.
     probes.in_keep_range(vec![ets_root("otlpprobe.ets.016.error_keep").failed()]);
     probes.in_drop_range(vec![ets_root("otlpprobe.ets.019.error_drop").failed()]);
 
-    // TSAMP-017: a trace without an error is not kept, but forwarded with every span, marked as dropped.
+    // A trace without an error is not kept, but forwarded with every span, marked as dropped.
     probes.in_keep_range(vec![
         ets_root("otlpprobe.ets.017.plain_keep"),
         ets_child("otlpprobe.ets.017.plain_keep_first"),
@@ -335,7 +335,7 @@ fn ets_probes() -> Probes {
         ets_child("otlpprobe.ets.017.plain_drop_second"),
     ]);
 
-    // TSAMP-021: an exception event makes the trace an error trace, on any span of the trace. Another event does not.
+    // An exception event makes the trace an error trace, on any span of the trace. Another event does not.
     probes.in_drop_range(vec![
         ets_root("otlpprobe.ets.021.exception_root").with_event(exception())
     ]);
@@ -347,8 +347,8 @@ fn ets_probes() -> Probes {
         .in_drop_range(vec![ets_root("otlpprobe.ets.021.other_event")
             .with_event(event("log", vec![kv("log.message", string("probe"))]))]);
 
-    // TSAMP-019: a user keep sets the priority and the decision maker of a trace that error tracking standalone mode
-    // does not keep, and a user drop of an error trace keeps its priority too.
+    // A user keep sets the priority and the decision maker of a trace that error tracking standalone mode does not
+    // keep, and a user drop of an error trace keeps its priority too.
     probes.in_drop_range(vec![with_priority(ets_root("otlpprobe.ets.019.user_keep"), 2)]);
     probes.in_keep_range(vec![with_priority(
         ets_root("otlpprobe.ets.019.user_drop_error").failed(),
@@ -569,7 +569,7 @@ mod tests {
             attribute(&span("otlpprobe.tsamp.013.rescued"), "_sample_rate"),
             Some(Value::DoubleValue(RESCUE_RATE))
         );
-        // Only the probes of TSAMP-028 carry `_dd.prob_sr`.
+        // Only the `otlpprobe.tsamp.028` probes carry `_dd.prob_sr`.
         for (_, span) in &spans {
             let carries = attribute(span, "_dd.prob_sr").is_some();
             assert_eq!(carries, span.name.starts_with("otlpprobe.tsamp.028."), "{}", span.name);
