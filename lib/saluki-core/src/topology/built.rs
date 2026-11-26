@@ -13,6 +13,17 @@ use crate::accounting::{ComponentRegistry, MemoryLimiter};
 /// down on the first occurrence; the period only needs to be a sane non-zero value.
 const TOPOLOGY_RESTART_PERIOD: Duration = Duration::from_secs(5);
 
+const MIN_DEDICATED_WORKER_THREADS: usize = 2;
+const MAX_DEDICATED_WORKER_THREADS: usize = 8;
+
+fn dedicated_worker_threads() -> usize {
+    // On Linux, available_parallelism already accounts for CPU affinity and cgroup quotas.
+    std::thread::available_parallelism()
+        .map(NonZeroUsize::get)
+        .unwrap_or(MAX_DEDICATED_WORKER_THREADS)
+        .clamp(MIN_DEDICATED_WORKER_THREADS, MAX_DEDICATED_WORKER_THREADS)
+}
+
 /// Configuration for the worker pool used by the topology.
 ///
 /// This controls where tasks spawned by components themselves are executed. When components
@@ -26,9 +37,10 @@ pub enum WorkerPoolConfiguration {
     /// manages its own runtime, such as a Lambda extension.
     Ambient,
 
-    /// Create a dedicated, multi-threaded Tokio runtime with 8 worker threads.
+    /// Creates a dedicated Tokio runtime sized to the available parallelism.
     ///
-    /// This is the default behavior.
+    /// Limits the worker count to two through eight and uses eight if the system cannot report available parallelism.
+    /// This is the default worker pool.
     Dedicated,
 
     /// Use an externally provided runtime.
@@ -134,7 +146,7 @@ impl BuiltTopology {
             WorkerPoolConfiguration::Ambient => Ok(Handle::current()),
             WorkerPoolConfiguration::Dedicated => {
                 let thread_pool = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(8)
+                    .worker_threads(dedicated_worker_threads())
                     .enable_all()
                     .build()
                     .error_context("Failed to build asynchronous thread pool runtime.")?;
@@ -156,9 +168,8 @@ impl BuiltTopology {
     /// component holds everything that the component spawns. This function configures that supervisor and returns it,
     /// but does not run it. The caller runs the supervisor to start the topology.
     ///
-    /// The worker pool used by components to spawn compute-heavy subtasks is determined by the
-    /// [`WorkerPoolConfiguration`] carried over from the blueprint (defaulting to a dedicated,
-    /// multi-threaded Tokio runtime with 8 threads).
+    /// Compute-heavy subtasks use the blueprint's [`WorkerPoolConfiguration`]. The default is a dedicated Tokio
+    /// runtime with a worker count based on available parallelism and limited to two through eight.
     ///
     /// `shutdown_timeout` bounds how long each component is given to stop gracefully before it is aborted.
     ///
@@ -902,6 +913,7 @@ mod tests {
             let resolved = built
                 .resolve_worker_pool_handle()
                 .expect("dedicated handle should resolve");
+            assert_eq!(resolved.metrics().num_workers(), dedicated_worker_threads());
             spawned_task_thread_name(resolved).await
         });
 
