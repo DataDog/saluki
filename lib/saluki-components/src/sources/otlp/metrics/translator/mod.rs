@@ -499,6 +499,8 @@ impl OtlpMetricsTranslator {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
     use otlp_protos::opentelemetry::proto::metrics::v1::{
         number_data_point::Value as OtlpNumberDataPointValue, Gauge, HistogramDataPoint as OtlpHistogramDataPoint,
         NumberDataPoint as OtlpNumberDataPoint, ScopeMetrics, Sum,
@@ -631,6 +633,67 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), Some("resource-host"));
+    }
+
+    #[test]
+    fn translate_metrics_truncates_nanosecond_timestamps_to_whole_seconds() {
+        // One nanosecond below the next second. Rounding would give 1_700_000_001.
+        const TIME_UNIX_NANO: u64 = 1_700_000_000_999_999_999;
+        const TIMESTAMP: u64 = 1_700_000_000;
+
+        let gauge = OtlpMetric {
+            name: "otlp.truncated.gauge".to_string(),
+            data: Some(OtlpMetricData::Gauge(Gauge {
+                data_points: vec![OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
+                    time_unix_nano: TIME_UNIX_NANO,
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+        let histogram = OtlpMetric {
+            name: "otlp.truncated.histogram".to_string(),
+            data: Some(OtlpMetricData::Histogram(
+                otlp_protos::opentelemetry::proto::metrics::v1::Histogram {
+                    aggregation_temporality: AggregationTemporality::Delta as i32,
+                    data_points: vec![OtlpHistogramDataPoint {
+                        count: 6,
+                        sum: Some(23.5),
+                        bucket_counts: vec![1, 2, 3],
+                        explicit_bounds: vec![1.0, 10.0],
+                        time_unix_nano: TIME_UNIX_NANO,
+                        ..Default::default()
+                    }],
+                },
+            )),
+            ..Default::default()
+        };
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let resource_metrics = OtlpResourceMetrics {
+            resource: None,
+            scope_metrics: vec![ScopeMetrics {
+                metrics: vec![gauge, histogram],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let (events_iter, _) = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed");
+        let events = events_iter.collect::<Vec<_>>();
+
+        assert_eq!(
+            metric_by_name(&events, "otlp.truncated.gauge").values(),
+            &MetricValues::gauge((TIMESTAMP, 1.0))
+        );
+        let MetricValues::Distribution(points) = metric_by_name(&events, "otlp.truncated.histogram").values() else {
+            panic!("a histogram should produce a distribution");
+        };
+        let timestamps: Vec<_> = points.into_iter().map(|(timestamp, _)| timestamp).collect();
+        assert_eq!(timestamps, [NonZeroU64::new(TIMESTAMP)]);
     }
 
     /// A named host resolution case: the resource attributes and the expected metric host.
