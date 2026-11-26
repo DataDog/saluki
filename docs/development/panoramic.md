@@ -535,7 +535,8 @@ For traces, set expectations under `traces`:
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
 - `max_traces` and `max_spans`: the most traces and spans that each side holds. Use them when a sampler drops part of
   the fixture. If both sides keep every trace, the sides still match, but each side fails its limit. A limit can't be
-  below the minimum of the same name.
+  below the minimum of the same name. `test/correctness/cases/otlp-traces-sampling/config.yaml` sets each limit from
+  the count of the side that keeps more.
 - `spans`: select spans by `service` and optionally by `name` (the operation name) or `resource`. Each entry needs
   at least one of `name`, `resource` or `meta`. See [Check span tags at each intake](#check-span-tags-at-each-intake).
   An entry can also check the trace chunk that holds each span. See
@@ -590,8 +591,9 @@ A string in `meta` means exact equality. A map can set `equals`, `not_contains` 
 #### Check the sampling decision of a span
 
 An intake receives each span in a trace chunk. The chunk has a sampling `priority`, a `dropped_trace` mark and tags. A
-sampler that keeps every trace on both sides sends equal spans, so a comparison cannot see it. A `spans` entry can set
-these fields of the chunk:
+sampler that keeps every trace on both sides sends equal spans, so a comparison cannot see it.
+`test/correctness/cases/otlp-traces-sampling/config.yaml` checks the decision for each probe span. A `spans` entry can
+set these fields of the chunk:
 
 ```yaml
 spans:
@@ -599,6 +601,7 @@ spans:
     name: otlpprobe.tsamp.002.keep
     priority: 1
     dropped_trace: false
+    meta: {_dd.p.dm: "-9"}
     chunk_tags: {_dd.otlp_sr: "0.50"}
 ```
 
