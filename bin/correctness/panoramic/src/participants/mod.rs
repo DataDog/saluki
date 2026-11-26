@@ -7,6 +7,8 @@ mod agent_adp;
 mod datadog_agent;
 mod datadog_intake;
 mod millstone;
+mod millstone_sender;
+mod tools;
 
 /// Registers every participant type.
 pub(crate) fn register(registry: &mut Registry) {
@@ -14,4 +16,5 @@ pub(crate) fn register(registry: &mut Registry) {
     registry.add_participant_type(Box::new(agent_adp::AgentAdp));
     registry.add_participant_type(Box::new(datadog_intake::DatadogIntake));
     registry.add_participant_type(Box::new(millstone::Millstone));
+    registry.add_participant_type(Box::new(millstone_sender::MillstoneSender));
 }

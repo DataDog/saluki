@@ -190,12 +190,15 @@ test-integration:
     #     $CI_PROJECT_DIR/target/<profile>/, holds UDP 48125 / TCP 45100–45102 etc. across runs).
     #     Both profiles are swept because BUILD_PROFILE flows from .gitlab-ci.yml workflow
     #     rules: `release` on dev pipelines, `optimized-release` on tagged release pipelines.
+    #   - a stranded datadog-intake process (built into $CI_PROJECT_DIR/target/release/), which holds TCP 2049 and
+    #     UDP 9125 across runs.
     #   - stale Datadog Agent DMG mounts from interrupted installs; these runners persist across jobs.
     #   - the state directory of participant cases, which panoramic refuses to start with while it exists.
     - sudo pkill -9 -f /tmp/saluki-dda/ || true
     - bash ci/tooling/cleanup-macos-dda-mounts.sh || true
     - sudo pkill -9 -f /target/release/agent-data-plane || true
     - sudo pkill -9 -f /target/optimized-release/agent-data-plane || true
+    - sudo pkill -9 -f /target/release/datadog-intake || true
     - sudo rm -rf /tmp/panoramic
   script:
     - make test-integration-macos-ci

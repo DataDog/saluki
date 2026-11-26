@@ -10,15 +10,13 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use super::tools;
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
 use crate::core::spec::{
     CollectFile, Consumed, ExitChannel, FileSource, FileSpec, Keep, OutputChannel, ParticipantSpec, ProcessSpec,
     Protocol,
 };
 use crate::core::template::Template;
-
-/// The tools image the `Makefile` builds.
-const IMAGE: &str = "saluki-images/correctness-tools:latest";
 
 /// The name a case writes for the comparison sender's file, and its destination.
 const MILLSTONE_YAML: &str = "millstone.yaml";
@@ -34,8 +32,8 @@ pub(crate) const SENDERS_SCRIPT: &[u8] = include_bytes!("millstone/senders.sh");
 const CAPTURE_DIR: &str = "/var/lib/millstone/baseline";
 const CAPTURE_FILES: [&str; 2] = ["input.jsonl.zst", "input-manifest.json"];
 
-/// The two senders' connections. A sender's file refers to its own, so neither delivers anything.
-const TARGET: Consumed = Consumed {
+/// A sender's connection. A sender's file refers to it, so it delivers nothing.
+pub(super) const TARGET: Consumed = Consumed {
     accepts: &[
         Protocol::Tcp,
         Protocol::Udp,
@@ -120,7 +118,7 @@ impl ParticipantType for Millstone {
             )
         };
         Ok(ParticipantSpec {
-            image: Some(IMAGE.to_string()),
+            image: Some(tools::LINUX_IMAGE.to_string()),
             command: Some(vec![Template::parse("/bin/sh")?, Template::parse(SENDERS)?]),
             files: BTreeMap::from([(BASELINE_YAML.to_string(), baseline), (SENDERS.to_string(), senders)]),
             processes: Some(vec![sender("comparison")?, sender("baseline")?]),

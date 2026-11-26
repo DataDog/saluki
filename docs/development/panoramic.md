@@ -32,8 +32,8 @@ in either. The directory says what a case is for.
   `self`, `localhost`, names of only digits and `0x` numbers are errors. The names of endpoints, processes, commands
   and connections start with a lowercase letter and hold lowercase letters, digits and `_`.
 - **Participant types.** `type:` names a piece of software that panoramic knows: `agent-adp`, `agent`,
-  `datadog-intake` or `millstone`. The type fills in the image, the command, the environment, the endpoints and
-  the checks of the software. A participant with no type writes all of that itself.
+  `datadog-intake`, `millstone` or `millstone-sender`. The type fills in the image, the command, the environment, the
+  endpoints and the checks of the software. A participant with no type writes all of that itself.
 - **Realization.** A realization is how a participant runs: a Linux container, a Windows container, a pod, or host
   processes. The subject runs in the default of the subject OS: a Linux container on Linux, host processes on macOS,
   and a Windows container on Windows. Every other participant follows the subject. A case sets `realization` only
@@ -273,8 +273,9 @@ listeners. Those fail at start, in `exec`, or at a readiness timeout, with the o
 | --- | --- | --- |
 | `agent-adp` | The Datadog Agent with ADP. | Linux container, pod, macOS host processes, Windows container |
 | `agent` | The Datadog Agent alone, as the baseline of a comparison. | Linux container, pod |
-| `datadog-intake` | The mock intake. It records what it receives. | Linux container, pod |
-| `millstone` | The load generator. | Linux container, pod |
+| `datadog-intake` | The mock intake. It records what it receives. | Linux container, pod, macOS host process, Windows container |
+| `millstone` | The load generator, as a comparison sender and a baseline sender. | Linux container, pod |
+| `millstone-sender` | The load generator, as one sender with one target. | Linux container, pod, macOS host process, Windows container |
 
 **`agent-adp` and `agent`.** The default image is `saluki-images/datadog-agent:testing-devel`, and a case writes
 another image with `image:`. Both take the default environment from `DEFAULT_ENV` in
@@ -310,29 +311,44 @@ case sets `ADP_DD_<NAME>` for `DD_<NAME>`, or another name that the software rea
   exit records, and restarts nothing. It keeps the container up after both exit, so panoramic can read what they left.
 
 **`datadog-intake`.** It takes no `with`. It has the endpoints `api` (HTTP) and `dogstatsd_forward` (UDP), and the
-operation `dump`. It runs from `saluki-images/correctness-tools:latest`. Connect an `agent-adp` or `agent` participant
-to its `api` endpoint as `intake`.
+operation `dump`. Connect an `agent-adp` or `agent` participant to its `api` endpoint as `intake`. On macOS and Windows,
+only `agent-adp` takes `intake`.
 
 **`millstone`.** It runs two senders in one container with the same seed, so each sends the same payloads. The case
 supplies `millstone.yaml` with `template: true`, and its target is a field of the `comparison_target` connection.
 Panoramic derives the file of the baseline sender from it. The processes are `comparison` and `baseline`. In a
 container, the participant also collects the input capture of the baseline sender.
 
+**`millstone-sender`.** It runs one `millstone` that sends to one target and exits. Use it when a case checks that
+traffic reaches the product, and not that two products agree. The case supplies `millstone.yaml` with `template: true`.
+The case writes the target as a field of the `target` connection, and sets the payload and the `volume` in the file. The
+participant has one process, `main`, so `exits_with` on `main` checks that the sender finished. The `millstone`
+type does not fit such a case: it starts a comparison sender and a baseline sender, and needs two targets.
+
+**Where the tools run.** `datadog-intake` and `millstone` are the same executables on every OS, and a case names none of
+them. Each participant type picks them for the realization:
+
+| Realization | The tools are |
+| --- | --- |
+| Linux container, pod | `/usr/local/bin/datadog-intake` and `/usr/local/bin/millstone` in `saluki-images/correctness-tools:latest`, which `make build-correctness-tools-image` builds. |
+| macOS host process | `target/release/datadog-intake` and `target/release/millstone`, which `make build-correctness-tools-host` builds. Each runs as its own participant. `--set` replaces each path. |
+| Windows container | `C:\tools\datadog-intake.exe` and `C:\tools\millstone.exe` in `saluki-images/correctness-tools:testing-windows`, which `ci/tooling/windows-integration-tests.ps1` builds. One image holds both, and each participant runs in its own container. |
+
 ## Steps
 
 A case's `procedure` tells panoramic what to do after the participants start. Each `step` names either an **action**
 that changes something or an **assertion** that checks a condition. The other fields are arguments to that step.
 
-For example, `test/integration/cases/dogstatsd-intake-metric/config.yaml` waits for ADP's UDP listener to start,
-then runs these two steps:
+For example, `test/integration/cases/dogstatsd-intake-metric/config.yaml` runs a `millstone-sender` participant named
+`sender`. It starts once ADP's UDP listener is bound, because it connects to that endpoint. The case then runs these
+two steps:
 
 ```yaml
-- step: send
-  on: adp
-  endpoint: dogstatsd_udp
-  payload: "integration.intake.counter:3|c|#source:integration-test"
-  repeat: 2
-  timeout: 10s
+- step: exits_with
+  on: sender
+  process: main
+  code: 0
+  timeout: 60s
 - step: intake_has_metric
   on: intake
   name: integration.intake.counter
@@ -342,9 +358,10 @@ then runs these two steps:
   timeout: 120s
 ```
 
-The action sends two counts of 3 to the participant named `adp`. ADP exports the total as a rate: 6 counts in
-10 seconds, or 0.6 per second. The assertion polls the `intake` participant's `dump` operation until it finds the
-matching series or its time runs out. Neither step needs to know how its participant runs.
+The sender sends two counts of 3 and exits. ADP exports the total as a rate: 6 counts in 10 seconds, or 0.6 per second.
+The assertion polls the `intake` participant's `dump` operation until it finds the matching series or its time runs
+out. A sender that exits with code 0 shows that it reached ADP's listener. Only the intake shows that the metric
+arrived. Neither step needs to know how its participant runs.
 
 Panoramic runs steps in order. A `parallel` block runs assertions together and waits for them all. It cannot contain
 actions or another block. If a step does not pass, panoramic leaves later procedure entries `not_run`.

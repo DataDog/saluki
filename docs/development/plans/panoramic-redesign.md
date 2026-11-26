@@ -1674,7 +1674,7 @@ apart. The last column names what the migration rule sends to each PR.
 | 13b | `replay` | `dogstatsd_replay`; migrate `dogstatsd-replay-unix` | 13 | 0.39k / 0.07k as built | Cases on macOS that replay DogStatsD |
 | 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13, 13b | 0.8k / 0.05k as built, and 42 case files | Cases on Windows, alone or with Linux; cases on all three OSes |
 | 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above; no legacy case file is left | 18.8k deleted; 0.19k / 0.40k as built, and 0.49k of docs | none |
-| 16 | `followups` | The os overlay, the intake on macOS and Windows, a case-supplied helper | 15 | 0.55k / 0.1k | Cases that differ only by OS merge; the intake cases gain macOS and Windows; one new case |
+| 16 | `followups` | The os overlay, the intake on macOS and Windows, a case-supplied helper | 15 | 0.55k / 0.1k | Cases that differ only by OS merge; one intake case gains macOS and Windows; one new case |
 
 The stages are foundations (1–2), the Linux slice (3–8), comparison cases (9–11), Linux-only cases
 (12), other platforms and the deletion (13–15, 13b being the second half of 13), and after the migration
@@ -2177,9 +2177,9 @@ Why this order:
   - The one `os:` overlay on participants and steps. Merges the cases that exist once per OS only
     because a command or a path differs by OS, such as the `dogstatsd-top`, `dogstatsd-replay` and
     `adp-logging` families.
-  - `datadog-intake` as host processes and in a Windows container. The intake cases, such as
-    `dogstatsd-host-tag` and `dogstatsd-intake-metric`, gain macOS and Windows rows. This is the
-    first added coverage.
+  - `datadog-intake` as host processes and in a Windows container, with a `millstone-sender`
+    participant that sends to it. One intake case, `dogstatsd-intake-metric`, gains macOS and Windows
+    rows. This is the first added coverage. `dogstatsd-host-tag` stays on Linux.
   - One small case that runs a script it supplies, as its own participant and as a step, on Linux,
     macOS and Windows. It is the first case to write `programs`, and the first participant with no
     participant type in a Windows container.

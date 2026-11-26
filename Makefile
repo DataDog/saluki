@@ -703,6 +703,12 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_BUILD_TIME="$(APP_BUILD_TIME)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
+.PHONY: build-correctness-tools-host
+build-correctness-tools-host: check-rust-build-tools
+build-correctness-tools-host: ## Builds datadog-intake and millstone for the current host, where the macOS integration cases run them
+	@echo "[*] Building datadog-intake and millstone (release, host target)..."
+	@cargo build --profile release --bin datadog-intake --bin millstone
+
 .PHONY: build-adp-aix
 build-adp-aix: BUILD_PROFILE ?= aix-optimized-release
 build-adp-aix: ## Builds a release agent-data-plane binary natively on AIX (optimized settings without LTO)
@@ -730,7 +736,7 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 # build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
 # Cases take the two binaries with --set.
 test-integration-macos-run: BUILD_PROFILE ?= release
-test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all macOS integration cases (host processes); narrow with CASE=<name>.
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane, target/release/datadog-intake, target/release/millstone and target/release/panoramic exist). Defaults to all macOS integration cases (host processes); narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
 	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		--set "target/release/agent-data-plane=$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
@@ -778,7 +784,7 @@ provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
 .PHONY: test-integration-macos-ci
-test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the macOS integration cases (host processes)
+test-integration-macos-ci: build-panoramic build-adp-host build-correctness-tools-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the macOS integration cases (host processes)
 
 .PHONY: ensure-rust-nightly
 ensure-rust-nightly:

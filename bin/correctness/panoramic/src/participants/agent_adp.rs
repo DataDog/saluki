@@ -294,6 +294,7 @@ fn host_processes(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             },
         )]),
         ready: BTreeMap::from([("dogstatsd_udp".to_string(), ready)]),
+        consumes: BTreeMap::from([("intake", INTAKE)]),
         commands: BTreeMap::from([
             (
                 "adp".to_string(),

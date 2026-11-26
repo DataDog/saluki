@@ -35,6 +35,33 @@ COPY ipc_cert.pem C:\ProgramData\Datadog\ipc_cert.pem
     Invoke-Native docker build --tag $ImageTag $ContextDir
 }
 
+# Packages datadog-intake and millstone in one image. Each runs in its own container of a case, from this image. The base
+# is the one the ADP image uses, so the image adds two layers to what the runner already holds.
+function Build-WindowsToolsImage {
+    param([string]$ImageTag, [string]$BaseImage)
+    $Tools = foreach ($Name in "datadog-intake", "millstone") {
+        $Binary = Join-Path $env:CARGO_TARGET_DIR "release\$Name.exe"
+        Assert-NoDynamicVCRuntimeImports -BinaryPath $Binary
+        $Binary
+    }
+    $ContextDir = Join-Path $env:TEMP "saluki-windows-tools-image"
+
+    Remove-Item -Recurse -Force $ContextDir -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $ContextDir | Out-Null
+    $Tools | ForEach-Object { Copy-Item -Force $_ $ContextDir }
+
+    $Dockerfile = @"
+# escape=``
+FROM ${BaseImage}
+WORKDIR C:\tools
+COPY datadog-intake.exe millstone.exe C:\tools\
+"@
+    Set-Content -Path (Join-Path $ContextDir "Dockerfile") -Value $Dockerfile -Encoding ASCII
+
+    Write-Host "[*] Building Windows tools image ${ImageTag} from ${BaseImage}..."
+    Invoke-Native docker build --tag $ImageTag $ContextDir
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
@@ -77,6 +104,15 @@ Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plan
 
 $ImageTag = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
 Build-WindowsAdpImage -ImageTag $ImageTag
+
+# The tools image has the tag the participant types name, so no --set is needed.
+$ToolsBaseImage = if ($env:WINDOWS_ADP_BASE_IMAGE) { $env:WINDOWS_ADP_BASE_IMAGE } else { "mcr.microsoft.com/windows/servercore:ltsc2022" }
+$ToolsTimer = [System.Diagnostics.Stopwatch]::StartNew()
+Invoke-Native cargo build --release --bin datadog-intake --bin millstone
+$ToolsBuildTime = $ToolsTimer.Elapsed
+$ToolsTimer.Restart()
+Build-WindowsToolsImage -ImageTag "saluki-images/correctness-tools:testing-windows" -BaseImage $ToolsBaseImage
+Write-Host ("[*] Windows tools image: cargo build {0:N1}s, docker build {1:N1}s" -f $ToolsBuildTime.TotalSeconds, $ToolsTimer.Elapsed.TotalSeconds)
 
 if (-not $env:PANORAMIC_LOG_DIR) {
     $env:PANORAMIC_LOG_DIR = "integration-logs"

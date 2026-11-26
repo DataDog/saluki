@@ -8,15 +8,15 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::time::Instant;
 
+use super::tools;
 use crate::core::handle::{Handle, HandleError};
-use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
+use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{Address, EndpointSpec, Evidence, ParticipantSpec, Protocol, DEFAULT_PROCESS};
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
 
-/// The tools image the `Makefile` builds, and the intake's path in it.
-const IMAGE: &str = "saluki-images/correctness-tools:latest";
-const PROGRAM: &str = "/usr/local/bin/datadog-intake";
+/// The intake's executable, in the tools image or built for the host.
+const BINARY: &str = "datadog-intake";
 
 /// How much of an error answer's body a failed dump quotes, so a large error page does not flood the case record.
 const MAX_ERROR_BODY_BYTES: usize = 512;
@@ -37,7 +37,12 @@ impl ParticipantType for DatadogIntake {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        LINUX_CONTAINER_OR_POD
+        &[
+            (Os::Linux, Enclosure::LinuxContainer),
+            (Os::Linux, Enclosure::KubernetesPod),
+            (Os::Macos, Enclosure::HostProcessGroup),
+            (Os::Windows, Enclosure::WindowsContainer),
+        ]
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
@@ -48,8 +53,6 @@ impl ParticipantType for DatadogIntake {
             tls: false,
         };
         Ok(ParticipantSpec {
-            image: Some(IMAGE.to_string()),
-            command: Some(vec![Template::parse(PROGRAM)?]),
             env: BTreeMap::from([
                 (
                     "INTAKE_HTTP_LISTEN_ADDR".to_string(),
@@ -80,7 +83,7 @@ impl ParticipantType for DatadogIntake {
                 ),
             ]),
             operations: &[&Dump],
-            ..ParticipantSpec::default()
+            ..tools::launch(cx, BINARY, &[])?
         })
     }
 }
