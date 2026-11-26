@@ -47,7 +47,6 @@ struct EntityInformation<'a> {
 struct ExternalDataInformation<'a> {
     pod_uid: &'a str,
     container_name: &'a str,
-    init_container: bool,
     container_id: &'a EntityId,
 }
 
@@ -251,7 +250,6 @@ impl<'a> Serialize for ExternalDataSerializer<'a> {
             let eds_info = ExternalDataInformation {
                 pod_uid: ed.pod_uid(),
                 container_name: ed.container_name(),
-                init_container: ed.is_init_container(),
                 container_id: cid,
             };
 

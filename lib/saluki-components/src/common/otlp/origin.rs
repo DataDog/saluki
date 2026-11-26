@@ -260,10 +260,14 @@ fn entity_ids_from_attributes(attributes: &OtlpResourceAttributes<'_>) -> Vec<En
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{num::NonZeroUsize, sync::Arc};
 
     use otlp_common::{any_value::Value, AnyValue, KeyValue};
-    use saluki_env::workload::providers::TestWorkloadProvider;
+    use saluki_core::data_model::origin::ExternalData;
+    use saluki_env::workload::{
+        aggregator::MetadataStore as _, origin::OriginResolver, providers::TestWorkloadProvider,
+        stores::ExternalDataStore, MetadataOperation,
+    };
 
     use super::*;
 
@@ -457,6 +461,71 @@ mod tests {
             tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),
             vec!["container:present", "service:container"]
         );
+    }
+
+    /// A workload provider that resolves External Data through a real `ExternalDataStore`.
+    struct ExternalDataStoreWorkloadProvider {
+        tags: TestWorkloadProvider,
+        origin_resolver: OriginResolver,
+    }
+
+    impl WorkloadProvider for ExternalDataStoreWorkloadProvider {
+        fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
+            self.tags.get_tags_for_entity(entity_id, cardinality)
+        }
+
+        fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<saluki_env::workload::origin::ResolvedOrigin> {
+            self.origin_resolver.get_resolved_origin(origin)
+        }
+    }
+
+    #[tokio::test]
+    async fn resolves_pod_uid_and_container_name_regardless_of_init_flag() {
+        // `app` is a regular container and `sidecar` is a native sidecar, an init container that keeps running.
+        let app_eid = EntityId::Container("app-id".into());
+        let sidecar_eid = EntityId::Container("sidecar-id".into());
+
+        let mut store = ExternalDataStore::with_entity_limit(NonZeroUsize::new(10).unwrap());
+        for (container_name, entity_id) in [("app", &app_eid), ("sidecar", &sidecar_eid)] {
+            let external_data = ExternalData::new("pod-1".into(), container_name.into());
+            store.process_operation(MetadataOperation::attach_external_data(
+                entity_id.clone(),
+                external_data,
+            ));
+        }
+
+        let mut tags_provider = TestWorkloadProvider::new();
+        tags_provider
+            .add_entity(app_eid, &["container:app"])
+            .add_entity(sidecar_eid, &["container:sidecar"]);
+        let provider = ExternalDataStoreWorkloadProvider {
+            tags: tags_provider,
+            origin_resolver: OriginResolver::new(store.resolver()),
+        };
+        let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
+
+        let cases = [
+            // A native sidecar doesn't usually know that it's an init container, so it sends no init flag.
+            ("sidecar", None, "container:sidecar"),
+            ("sidecar", Some(false), "container:sidecar"),
+            ("app", Some(true), "container:app"),
+            ("app", None, "container:app"),
+        ];
+        for (container_name, init_container, expected) in cases {
+            let mut resource = vec![
+                attribute(K8S_POD_UID, Value::StringValue("pod-1".into())),
+                attribute(K8S_CONTAINER_NAME, Value::StringValue(container_name.into())),
+            ];
+            if let Some(init_container) = init_container {
+                resource.push(attribute(INIT_CONTAINER, Value::BoolValue(init_container)));
+            }
+
+            assert_eq!(
+                tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),
+                vec![expected],
+                "container: {container_name}, init flag: {init_container:?}"
+            );
+        }
     }
 
     #[test]

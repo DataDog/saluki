@@ -125,7 +125,7 @@ impl EventHandler {
         &self, operations_tx: &mut mpsc::Sender<MetadataOperation>, pod_uid: MetaString, kubernetes_pod: KubernetesPod,
     ) -> Result<(), GenericError> {
         // When a pod is created/updated, generate External Data entries for every container within the pod.
-        for (container, is_init) in pod_containers(&kubernetes_pod) {
+        for container in pod_containers(&kubernetes_pod) {
             let container_name = match self.try_intern(&container.name) {
                 Some(container_name) => container_name,
                 None => {
@@ -142,7 +142,7 @@ impl EventHandler {
                 }
             };
 
-            let external_data = ExternalData::new(pod_uid.clone(), container_name, is_init);
+            let external_data = ExternalData::new(pod_uid.clone(), container_name);
             let operation = MetadataOperation::attach_external_data(entity_id, external_data);
             send_metadata_operation(operations_tx, operation).await;
         }
@@ -157,7 +157,7 @@ impl EventHandler {
         let operation = MetadataOperation::delete(EntityId::PodUid(pod_uid));
         send_metadata_operation(operations_tx, operation).await;
 
-        for (container, _) in pod_containers(&kubernetes_pod) {
+        for container in pod_containers(&kubernetes_pod) {
             let container_entity_id = match self.try_intern(&container.id) {
                 Some(entity_id) => EntityId::Container(entity_id),
                 None => {
@@ -287,18 +287,15 @@ impl MemoryBounds for RemoteAgentWorkloadMetadataCollector {
     }
 }
 
-/// Returns every container in the pod, with a flag that is `true` for init containers.
+/// Returns every container in the pod: init, regular, and ephemeral containers.
 ///
-/// Ephemeral containers aren't init containers. The Agent resolves External Data against all three lists.
-fn pod_containers(kubernetes_pod: &KubernetesPod) -> impl Iterator<Item = (&OrchestratorContainer, bool)> {
-    let init_containers = kubernetes_pod.init_containers.iter().map(|container| (container, true));
-    let containers = kubernetes_pod.containers.iter().map(|container| (container, false));
-    let ephemeral_containers = kubernetes_pod
-        .ephemeral_containers
+/// The Agent resolves External Data against all three lists.
+fn pod_containers(kubernetes_pod: &KubernetesPod) -> impl Iterator<Item = &OrchestratorContainer> {
+    kubernetes_pod
+        .init_containers
         .iter()
-        .map(|container| (container, false));
-
-    init_containers.chain(containers).chain(ephemeral_containers)
+        .chain(&kubernetes_pod.containers)
+        .chain(&kubernetes_pod.ephemeral_containers)
 }
 
 async fn send_metadata_operation(operations_tx: &mut mpsc::Sender<MetadataOperation>, operation: MetadataOperation) {
@@ -386,8 +383,8 @@ mod tests {
         EntityId::Container(id.into())
     }
 
-    fn external_data(container_name: &str, is_init: bool) -> ExternalData {
-        ExternalData::new(POD_UID.into(), container_name.into(), is_init)
+    fn external_data(container_name: &str) -> ExternalData {
+        ExternalData::new(POD_UID.into(), container_name.into())
     }
 
     #[tokio::test]
@@ -399,9 +396,9 @@ mod tests {
         assert_eq!(
             summarize(&operations),
             vec![
-                Op::Attach(container("init-id"), external_data("init", true)),
-                Op::Attach(container("app-id"), external_data("app", false)),
-                Op::Attach(container("debugger-id"), external_data("debugger", false)),
+                Op::Attach(container("init-id"), external_data("init")),
+                Op::Attach(container("app-id"), external_data("app")),
+                Op::Attach(container("debugger-id"), external_data("debugger")),
             ]
         );
     }

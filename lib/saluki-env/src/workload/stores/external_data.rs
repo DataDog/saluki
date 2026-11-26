@@ -228,7 +228,7 @@ mod tests {
         let raw_external_data = format!("pu-{},cn-{},it-{}", pod_uid, container_name, init_container);
         let pod_entity_id = EntityId::from_pod_uid(pod_uid).unwrap();
 
-        let external_data = ExternalData::new(pod_uid.into(), container_name.into(), init_container);
+        let external_data = ExternalData::new(pod_uid.into(), container_name.into());
         let resolved_external_data = ResolvedExternalData::new(pod_entity_id.clone(), container_id.clone());
         (raw_external_data, external_data, resolved_external_data)
     }
@@ -255,6 +255,33 @@ mod tests {
         store.process_operation(MetadataOperation::delete(container_eid));
 
         assert_eq!(resolver.resolve(&ed_ref), None);
+    }
+
+    #[test]
+    fn resolves_regardless_of_init_flag() {
+        let mut store = ExternalDataStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        let resolver = store.resolver();
+
+        // `app` is a regular container and `sidecar` is an init container (a native sidecar).
+        let app_eid = entity_id_container("abcdef");
+        let sidecar_eid = entity_id_container("bcdefg");
+        let (_, app_ed, app_resolved) = build_external_data("1234", "app", &app_eid, false);
+        let (_, sidecar_ed, sidecar_resolved) = build_external_data("1234", "sidecar", &sidecar_eid, true);
+        store.process_operation(MetadataOperation::attach_external_data(app_eid, app_ed));
+        store.process_operation(MetadataOperation::attach_external_data(sidecar_eid, sidecar_ed));
+
+        let cases = [
+            ("pu-1234,cn-app,it-false", &app_resolved),
+            ("pu-1234,cn-app,it-true", &app_resolved),
+            ("pu-1234,cn-app", &app_resolved),
+            ("pu-1234,cn-sidecar,it-true", &sidecar_resolved),
+            ("pu-1234,cn-sidecar,it-false", &sidecar_resolved),
+            ("pu-1234,cn-sidecar", &sidecar_resolved),
+        ];
+        for (raw_ed, expected) in cases {
+            let ed_ref = RawExternalData::try_from_str(raw_ed).unwrap();
+            assert_eq!(resolver.resolve(&ed_ref).as_ref(), Some(expected), "input: {raw_ed:?}");
+        }
     }
 
     #[test]
