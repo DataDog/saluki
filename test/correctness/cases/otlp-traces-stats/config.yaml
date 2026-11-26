@@ -1,0 +1,246 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive the same fixed OTLP traces over gRPC, and their intakes must hold the
+  same spans and the same named APM stats groups. Each stats dimension has a span name of its own.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up. The span that ends in the year 2100 goes into the
+  # current bucket, which each side flushes after two more buckets.
+  - {step: process_stable_for, on: load, duration: 45s}
+  # ADP sends the spans and their statistics itself, and does not proxy the traces to the Agent.
+  - parallel:
+      - step: compare
+        telemetry: traces
+        comparison: intake-adp
+        baseline: intake-agent
+        # The fixture holds 37 traces and 48 spans. Its spans have 35 groups that both sides compute. The Agent computes
+        # two more, and ADP three more.
+        traces:
+          min_traces: 37
+          min_spans: 48
+          spans:
+            - {service: probe-stats, name: otlpprobe.tstat.http_status}
+            - {service: probe-stats, name: otlpprobe.tstat.http_split}
+            - {service: probe-stats, name: otlpprobe.tstat.grpc}
+            - {service: probe-stats, name: otlpprobe.tstat.db_type}
+            - {service: probe-stats, name: otlpprobe.tstat.kind}
+            - {service: probe-stats, name: otlpprobe.tstat.children}
+            - {service: probe-stats, name: otlpprobe.tstat.internal_child}
+            - {service: probe-stats, name: otlpprobe.tstat.partial}
+            - {service: probe-stats, name: otlpprobe.tstat.partial_control}
+            - {service: probe-stats, name: otlpprobe.tstat.measured_string}
+            - {service: probe-stats, name: otlpprobe.tstat.measured_int}
+            - {service: probe-stats, name: otlpprobe.tstat.top_level_attribute}
+            - {service: probe-stats, name: otlpprobe.tstat.synthetics}
+            - {service: probe-stats, name: otlpprobe.tstat.synthetics_off}
+            - {service: probe-stats, name: otlpprobe.tstat.synthetics_first}
+            - {service: probe-stats, name: otlpprobe.tstat.synthetics_root}
+            - {service: probe-stats, name: otlpprobe.tstat.is_trace_root}
+            - {service: probe-stats, name: otlpprobe.tstat.self_parent}
+            - {service: probe-stats, name: otlpprobe.tstat.peer}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_address}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_service}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_order}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_base_service}
+            - {service: probe-stats, name: otlpprobe.tstat.peer_server}
+            - {service: probe-stats, name: otlpprobe.tstat.weight}
+            - {service: probe-stats, name: otlpprobe.tstat.weight_child}
+            - {service: probe-stats, name: otlpprobe.tstat.weight_tracestate}
+            - {service: probe-stats, name: otlpprobe.tstat.override}
+            - {service: probe-stats, name: otlpprobe.tstat.future}
+            - {service: probe-stats-measured, name: otlpprobe.tstat.measured_resource_root}
+            - {service: probe-stats-measured, name: otlpprobe.tstat.measured_resource}
+            - {service: probe-stats-client, name: otlpprobe.tstat.client_computed}
+            - {service: probe-stats-client, name: otlpprobe.tstat.client_computed_child}
+          # The Agent computes 37 of the groups, and ADP 38.
+          min_stats_groups: 37
+          # The baseline is the Agent, and the comparison is ADP. One entry for each kind of difference of a probe, so
+          # that each side's part of a difference goes stale on its own. An entry for a group names the field of the
+          # group that differs.
+          known_differences:
+            - gap: gap/otlp-stats-computed-resource
+              issue: 3412
+              paths: [stats.groups]
+              kinds: [extra]
+              when: {name: [otlpprobe.tstat.client_computed, otlpprobe.tstat.client_computed_child]}
+              reason: The Agent computes no stats for a resource with `_dd.stats_computed`. ADP computes them.
+            - gap: gap/otlp-measured-top-level-attributes
+              issue: 3413
+              paths: [stats.groups, span.metrics._dd.measured]
+              kinds: [extra]
+              when: {name: [otlpprobe.tstat.measured_string]}
+              reason: The Agent ignores a string `_dd.measured`. ADP measures the span, and writes it as a metric.
+            - gap: gap/otlp-measured-top-level-attributes
+              issue: 3413
+              paths: [span.meta._dd.measured]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.measured_string]}
+              reason: The Agent keeps a string `_dd.measured` as a tag. ADP does not.
+            - gap: gap/otlp-measured-top-level-attributes
+              issue: 3413
+              paths: [stats.groups]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.measured_resource]}
+              reason: The Agent measures the spans of a resource with an integer `_dd.measured`. ADP does not.
+            - gap: gap/otlp-measured-top-level-attributes
+              issue: 3413
+              paths: [span.metrics._dd.measured]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.measured_resource_root, otlpprobe.tstat.measured_resource]}
+              reason: The Agent writes an integer `_dd.measured` of a resource as a metric. ADP does not.
+            - gap: gap/otlp-measured-top-level-attributes
+              issue: 3413
+              paths: [span.meta._dd.measured]
+              kinds: [extra]
+              when: {name: [otlpprobe.tstat.measured_resource_root, otlpprobe.tstat.measured_resource]}
+              reason: ADP writes an integer `_dd.measured` of a resource as a string tag. The Agent does not.
+            - gap: gap/otlp-measured-top-level-attributes
+              issue: 3413
+              paths: [stats.groups, span.metrics._top_level]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.top_level_attribute]}
+              reason: The Agent marks a span with `_dd.top_level` top-level, and computes its stats. ADP does not.
+            - gap: gap/otlp-self-parent
+              issue: 3414
+              paths: [stats.groups]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.self_parent], is_trace_root: [false]}
+              reason: The Agent keeps a span that is its own parent as a child.
+            - gap: gap/otlp-self-parent
+              issue: 3414
+              paths: [stats.groups]
+              kinds: [extra]
+              when: {name: [otlpprobe.tstat.self_parent], is_trace_root: [true]}
+              reason: ADP makes a span that is its own parent a root.
+            - gap: gap/otlp-self-parent
+              issue: 3414
+              paths: [span.parent_id]
+              kinds: [value]
+              when: {name: [otlpprobe.tstat.self_parent]}
+              reason: The Agent keeps the parent ID of a span that is its own parent. ADP sets it to 0.
+            - gap: gap/otlp-stats-origin-first-span
+              issue: 3415
+              paths: [stats.groups]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.synthetics_root], synthetics: [true]}
+              reason: The Agent reads the origin from the root span, and flags the group as synthetics.
+            - gap: gap/otlp-stats-origin-first-span
+              issue: 3415
+              paths: [stats.groups]
+              kinds: [extra]
+              when: {name: [otlpprobe.tstat.synthetics_root], synthetics: [false]}
+              reason: ADP reads the origin from the first span, which has none.
+            - gap: gap/otlp-peer-tags-order
+              issue: 3416
+              paths: [stats.groups]
+              kinds: [missing]
+              when:
+                name: [otlpprobe.tstat.peer_order]
+                peer_tags: [["messaging.destination.name:probe-queue", "messaging.destination:probe-queue"]]
+              reason: The Agent sorts the peer tags as strings.
+            - gap: gap/otlp-peer-tags-order
+              issue: 3416
+              paths: [stats.groups]
+              kinds: [extra]
+              when:
+                name: [otlpprobe.tstat.peer_order]
+                peer_tags: [["messaging.destination:probe-queue", "messaging.destination.name:probe-queue"]]
+              reason: ADP sorts the peer tags by key.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [stats.groups]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.override], resource: [otlpprobe.tstat.override]}
+              reason: The Agent keeps the resource that it derives, and `datadog.resource` as a tag.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [stats.groups]
+              kinds: [extra]
+              when: {name: [otlpprobe.tstat.override], resource: [otlpprobe.override.resource]}
+              reason: ADP uses `datadog.resource` as the resource.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.resource]
+              kinds: [value]
+              when: {name: [otlpprobe.tstat.override]}
+              reason: ADP uses `datadog.resource` as the resource. The Agent keeps the resource that it derives.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.datadog.resource]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.override]}
+              reason: The Agent keeps `datadog.resource` as a tag. ADP does not.
+            - gap: gap/otlp-grpc-status-code-tag
+              issue: 3418
+              paths: [span.meta.rpc.grpc.status_code]
+              kinds: [value]
+              when: {name: [otlpprobe.tstat.grpc]}
+              reason: ADP writes the gRPC status code as a name. The Agent keeps it as sent.
+            - gap: gap/otlp-grpc-status-code-tag
+              issue: 3418
+              paths: [span.metrics.rpc.grpc.status_code]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.grpc]}
+              reason: ADP drops the number of a gRPC status code that it writes as a name. The Agent keeps it.
+            - gap: gap/otlp-sampling-span-tags
+              issue: 3419
+              paths: [span.metrics._dd1.sr.rcusr]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.weight, otlpprobe.tstat.weight_tracestate]}
+              reason: The Agent writes the client sample rate of the root span. ADP does not.
+            - gap: gap/otlp-sampling-span-tags
+              issue: 3419
+              paths: [span.meta._dd.p.dm]
+              kinds: [missing]
+              when: {name: [otlpprobe.tstat.synthetics_first]}
+              reason: The Agent writes the decision maker on the first span.
+            - gap: gap/otlp-sampling-span-tags
+              issue: 3419
+              paths: [span.meta._dd.p.dm]
+              kinds: [extra]
+              when: {name: [otlpprobe.tstat.synthetics_root]}
+              reason: ADP writes the decision maker on the root span.
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: probe-stats}
+        sender: adp
+        count: 44
+        timeout: 1m
+      - step: intake_from
+        on: intake-adp
+        telemetry: trace_stats
+        select: {service: probe-stats}
+        sender: adp
+        timeout: 1m

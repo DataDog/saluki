@@ -557,6 +557,10 @@ When comparing stats, set `min_stats_groups` if you set span or trace expectatio
 This minimum counts the groups each intake holds. In spans-only mode (`otlp_direct_analysis_mode: true`), omit
 `min_stats_groups` and `require_ssi`.
 
+For example, `test/correctness/cases/otlp-traces-stats/config.yaml` requires at least 37 stats groups in each intake.
+Its `spans` entries also check that the named probe spans arrived. Neither check proves that a span counted toward
+the right group. The [group comparison](#why-one-span-can-produce-two-group-differences) tests that separately.
+
 ### When the intakes hold different sets
 
 Suppose ADP drops a span and changes the resource on another. `compare` reports the missing span by service, name
@@ -655,6 +659,22 @@ needs an `issue`. Choose the path according to what differs:
   example `{service: [api-gateway]}`.
 - `stats.<field>`: both intakes have the group, but a field differs. For example, `stats.hits` covers a difference
   in the hit count. A field path also covers differences inside that field, such as a value inside a sketch.
+
+#### Why one span can produce two group differences
+
+The `otlp-traces-stats` fixture gives each behavior it tests a distinct operation name. This makes a group easy to
+find in a failure, but the name alone does not identify the group. `compare` pairs groups by their full aggregation
+key. For each pair it compares hits, errors, duration and the duration sketches after merging time buckets.
+
+For example, `otlpprobe.tstat.self_parent` names a span whose parent ID is its own span ID. The Agent counts it as a
+child; ADP counts it as a root. Because `is_trace_root` is part of the key, neither group pairs with the other.
+The case uses two `stats.groups` entries for [the same gap](https://github.com/DataDog/saluki/issues/3414):
+
+- `missing`: only the Agent has the group with this name and `is_trace_root: false`.
+- `extra`: only ADP has the group with this name and `is_trace_root: true`.
+
+Each entry's `when` names the operation and its root flag. If ADP starts counting the child but still counts the root,
+only the `missing` entry goes stale. A separate `span.parent_id` entry covers the field on the span itself.
 
 ### A span field or an ignored field?
 
