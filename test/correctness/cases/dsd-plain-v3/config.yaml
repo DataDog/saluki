@@ -31,10 +31,49 @@ participants:
     files:
       millstone.yaml: {from: millstone.yaml, template: true}
     connect: {comparison_target: adp.dogstatsd_uds, baseline_target: agent.dogstatsd_uds}
+  # A few metrics with fixed names. The names of `load` are random, so a step cannot tell its series from its sketches.
+  probe:
+    type: millstone
+    files:
+      millstone.yaml: {from: probe.yaml, template: true}
+    connect: {comparison_target: adp.dogstatsd_uds, baseline_target: agent.dogstatsd_uds}
 procedure:
   - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
   - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  - {step: log_contains, on: probe, process: comparison, pattern: Millstone finished sending, timeout: 1m}
+  - {step: log_contains, on: probe, process: baseline, pattern: Millstone finished sending, timeout: 1m}
   # Both sides flush what they aggregated. Waiting slightly longer than an aggregation bucket, with the load running,
   # lets the Agent and ADP resolve the senders while they flush.
   - {step: process_stable_for, on: load, duration: 32s}
-  - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+  # A side that falls back to V2 sends the same series and sketches, so `compare` passes it. Only the path steps catch
+  # the fallback. Each step needs one item at least, because the load decides how many reach each intake.
+  - parallel:
+      - {step: compare, telemetry: metrics, comparison: intake-adp, baseline: intake-agent}
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "dsdv3.series."}
+        sender: adp
+        path: /api/intake/metrics/v3/series
+        timeout: 1m
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "dsdv3.sketch."}
+        sender: adp
+        path: /api/intake/metrics/v3/sketches
+        timeout: 1m
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "dsdv3.series."}
+        sender: agent
+        path: /api/intake/metrics/v3/series
+        timeout: 1m
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "dsdv3.sketch."}
+        sender: agent
+        path: /api/intake/metrics/v3/sketches
+        timeout: 1m
