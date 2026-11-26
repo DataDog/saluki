@@ -278,8 +278,8 @@ mod tests {
         } else {
             "1234567890123456"
         };
-        let mut points = SetPoints::from(member);
-        points.merge(SetPoints::from(member.to_owned()));
+        let mut points = SetPoints::from(member.to_owned());
+        points.merge(SetPoints::from(member));
         let SetMembers::One(value) = &points.inner().values[0].value else {
             panic!("expected one member without a backing set");
         };
