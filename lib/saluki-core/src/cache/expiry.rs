@@ -190,6 +190,11 @@ where
         Self { state: Some(state) }
     }
 
+    /// Returns `true` if entries expire after an idle period.
+    pub fn is_enabled(&self) -> bool {
+        self.state.is_some()
+    }
+
     pub fn mark_entry_accessed(&self, key: K) {
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_accessed(key);

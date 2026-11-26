@@ -7,7 +7,7 @@
 
 use stringtheory::MetaString;
 
-use crate::data_model::{event::metric::context::Context, tags::TagSet};
+use crate::data_model::event::metric::context::{Context, ContextTags};
 
 /// A metric remapping rule.
 ///
@@ -254,14 +254,14 @@ impl RemapperRule {
     }
 
     /// Builds the remapped tags for a matched metric.
-    fn build_remapped_tags(&self, metric_tags: &TagSet) -> Vec<MetaString> {
+    fn build_remapped_tags(&self, metric_tags: ContextTags<'_>) -> Vec<MetaString> {
         let mut new_tags = vec![];
 
         for (original_tag_name, new_tag_name) in &self.remapped_tags {
             if let Some(tag) = metric_tags.get_single_tag(original_tag_name) {
                 if original_tag_name == new_tag_name {
-                    // Just clone the tag since the name isn't changing.
-                    new_tags.push(tag.clone().into_inner());
+                    // Copy the whole tag since the name isn't changing.
+                    new_tags.push(MetaString::from(tag));
                 } else {
                     // Build our new tag if this one has a value.
                     match tag.value() {
@@ -294,7 +294,7 @@ impl RemapperRule {
                     continue;
                 }
                 copied_names.push(name);
-                new_tags.push(tag.clone().into_inner());
+                new_tags.push(MetaString::from(tag));
             }
         }
 

@@ -83,7 +83,7 @@ impl OtlpMetricsTranslator {
 #[cfg(test)]
 mod tests {
     use otlp_protos::opentelemetry::proto::metrics::v1::summary_data_point::ValueAtQuantile;
-    use saluki_core::data_model::{event::metric::MetricValues, tags::Tag};
+    use saluki_core::data_model::{event::metric::MetricValues, tags::TagStr};
 
     use super::super::tests::nanos_from_seconds;
     use super::*;
@@ -151,14 +151,14 @@ mod tests {
         assert_eq!(q50.context().name(), "otlp.summary.quantile");
         assert_eq!(
             q50.context().tags().get_single_tag("quantile"),
-            Some(&Tag::from("quantile:0.5"))
+            Some(TagStr::new("quantile:0.5"))
         );
         assert_eq!(q50.values(), &MetricValues::gauge((1, 1.0)));
 
         let q99 = events[1].try_as_metric().unwrap();
         assert_eq!(
             q99.context().tags().get_single_tag("quantile"),
-            Some(&Tag::from("quantile:0.99"))
+            Some(TagStr::new("quantile:0.99"))
         );
         assert_eq!(q99.values(), &MetricValues::gauge((1, 9.0)));
     }

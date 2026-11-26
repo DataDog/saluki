@@ -1,6 +1,6 @@
 //! A concurrent cache with optional expiration and telemetry.
 
-use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{borrow::Borrow, marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use saluki_common::{hash::FastBuildHasher, sync::shutdown::ShutdownHandle};
@@ -338,13 +338,22 @@ where
         self.telemetry.items_inserted_total().increment(1);
     }
 
-    /// Gets an item from the cache by its key.
+    /// Gets an item from the cache by its key, or by any borrowed form of the key.
     ///
     /// If the item is found, it's cloned and `Some(value)` is returned. Otherwise, `None` is returned.
-    pub fn get(&self, key: &K) -> Option<V> {
+    ///
+    /// The borrowed key is only converted to an owned key on a hit when idle expiration is enabled.
+    pub fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + std::hash::Hash + ToOwned + ?Sized,
+        Q::Owned: Into<K>,
+    {
         let value = self.inner.cache.get(key);
         if value.is_some() {
-            self.expiration.mark_entry_accessed(key.clone());
+            if self.expiration.is_enabled() {
+                self.expiration.mark_entry_accessed(key.to_owned().into());
+            }
             self.telemetry.hits_total().increment(1);
         } else {
             self.telemetry.misses_total().increment(1);
@@ -519,6 +528,18 @@ mod tests {
         cache.remove(&CACHE_KEY);
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.weight(), 0);
+    }
+
+    #[test]
+    fn get_by_borrowed_key() {
+        const LONG_NAME: &str = "a.metric.name.longer.than.the.inline.limit";
+
+        let cache = CacheBuilder::for_tests().build();
+        cache.insert(stringtheory::MetaString::from(LONG_NAME), 7usize);
+
+        assert_eq!(cache.get(LONG_NAME), Some(7));
+        assert_eq!(cache.get(&stringtheory::MetaString::from(LONG_NAME)), Some(7));
+        assert_eq!(cache.get("missing"), None);
     }
 
     #[test]

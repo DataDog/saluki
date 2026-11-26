@@ -17,7 +17,7 @@ use saluki_core::{
             EventType,
         },
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
-        tags::{SharedTagSet, Tag},
+        tags::{SharedTagSet, Tag, TagStr},
     },
     observability::ComponentMetricsExt as _,
     runtime,
@@ -1684,7 +1684,7 @@ pub(super) fn metric_has_emittable_values(metric: &Metric) -> bool {
 
 fn write_metric_to_v3(
     writer: &mut V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
-    tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+    tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
 ) {
     if !metric_has_emittable_values(metric) {
         debug!(metric_name = %metric.context().name(), "Dropping metric with no emittable values.");
@@ -1701,17 +1701,10 @@ fn write_metric_to_v3(
 
     let mut builder = writer.write(metric_type, metric.context().name());
 
-    // Tags - chain instrumented + additional + origin tags
-    let chained_tags = metric
-        .context()
-        .tags()
-        .into_iter()
-        .chain(additional_tags)
-        .chain(metric.context().origin_tags());
     let all_tags = tags_deduplicator
-        .deduplicated(chained_tags)
-        .filter(|t| is_sketch || !is_v3_series_resource_tag(t) && !is_v3_series_device_tag(t))
-        .map(|t| t.as_str());
+        .deduplicated(metric_tags(metric, additional_tags))
+        .filter(|tag| is_sketch || !is_v3_series_resource_tag(tag) && !is_v3_series_device_tag(tag))
+        .map(TagStr::as_str);
     builder.set_tags(all_tags);
 
     // Resources - extract host and, for series, promoted resource tags.
@@ -1725,13 +1718,14 @@ fn write_metric_to_v3(
             .context()
             .origin_tags()
             .into_iter()
+            .map(Tag::as_tag_str)
             .chain(metric.context().tags())
-            .chain(additional_tags);
+            .chain(additional_tags.into_iter().map(Tag::as_tag_str));
         for tag in tags_deduplicator.deduplicated(chained_tags) {
-            if is_v3_series_device_tag(tag) {
-                device_resource = tag.value().filter(|device| !device.is_empty());
-            } else if is_v3_series_resource_tag(tag) {
-                if let Some((rtype, rname)) = tag.value().and_then(|value| value.split_once(':')) {
+            if let Some(device) = tag.value_if_named("device") {
+                device_resource = Some(device).filter(|device| !device.is_empty());
+            } else if let Some(resource) = tag.value_if_named("dd.internal.resource") {
+                if let Some((rtype, rname)) = resource.split_once(':') {
                     if !rtype.is_empty() && !rname.is_empty() {
                         resources.push((rtype, rname));
                     }
@@ -1855,12 +1849,33 @@ fn emittable_scalar_point(point: f64) -> bool {
     point.is_finite()
 }
 
-fn is_v3_series_device_tag(tag: &Tag) -> bool {
-    tag.name() == "device" && tag.value().is_some()
+/// Returns `true` if `tag` is a `device:<value>` tag.
+///
+/// V3 series promote this tag to a `device` resource and remove it from the tag list. An empty value adds no resource.
+fn is_v3_series_device_tag(tag: &TagStr) -> bool {
+    tag.value_if_named("device").is_some()
 }
 
-fn is_v3_series_resource_tag(tag: &Tag) -> bool {
-    tag.name() == "dd.internal.resource" && tag.value().is_some()
+/// Returns `true` if `tag` is a `dd.internal.resource:<type>:<name>` tag.
+///
+/// V3 series promote this tag to a resource and remove it from the tag list. A value without both a type and a name
+/// adds no resource.
+fn is_v3_series_resource_tag(tag: &TagStr) -> bool {
+    tag.value_if_named("dd.internal.resource").is_some()
+}
+
+/// Returns every tag of `metric` for the V1 and V2 encoders, in chain order.
+///
+/// The chain order is the instrumented tags of the context, then `additional_tags`, then the origin tags of the
+/// context. Callers pass the result through a `ReusableDeduplicator`, which keeps the first copy of each tag. Thus, a
+/// duplicate keeps the position of its first source in that order: instrumented, then additional, then origin.
+fn metric_tags<'a>(metric: &'a Metric, additional_tags: &'a SharedTagSet) -> impl Iterator<Item = &'a TagStr> {
+    metric
+        .context()
+        .tags()
+        .into_iter()
+        .chain(additional_tags.into_iter().map(Tag::as_tag_str))
+        .chain(metric.context().origin_tags().into_iter().map(Tag::as_tag_str))
 }
 
 /// Creates a V3 HTTP request from encoded payload data.
