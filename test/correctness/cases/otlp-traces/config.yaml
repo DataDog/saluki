@@ -54,11 +54,14 @@ procedure:
             - {service: product-service, resource: ProductService/GetProduct}
             - {service: product-service, resource: ProductService/ListProducts}
           min_stats_groups: 4
-        # TODO(#3433): for a string HTTP status code, the Agent sends `meta.http.status_code` next to
-        # `metrics.http.status_code`, and ADP sends the number only. Remove this ignore once the gap is fixed,
-        # or once a known difference scoped to the HTTP spans replaces it.
-        additional_span_ignore_fields:
-          - meta.http.status_code
+          known_differences:
+            # Only `api-gateway` sends HTTP spans, and the load gives their status code as a string.
+            - gap: gap/otlp-http-status-code-string
+              issue: 3433
+              paths: [span.meta.http.status_code]
+              kinds: [missing]
+              when: {service: [api-gateway]}
+              reason: The Agent sends a string HTTP status code in `meta` next to the number. ADP sends the number only.
       - step: intake_from
         on: intake-adp
         telemetry: spans

@@ -1,6 +1,6 @@
 description: >-
   ADP's OTLP receiver and the Agent's each receive cumulative monotonic OTLP sums over gRPC, and their intakes must hold
-  the same metrics.
+  the same metrics. One sum differs in type, and the other sum is still compared by value.
 timeout: 8m
 subject_os: [linux]
 participants:
@@ -45,11 +45,33 @@ procedure:
         telemetry: metrics
         comparison: intake-adp
         baseline: intake-agent
-        # The first point of the series is dropped, so the value is the difference of the two points.
+        # The first point of each sum is dropped, so `otlp.cumulative.monotonic` counts the difference of its two
+        # points.
         metrics:
-          min_series: 1
+          min_series: 2
           series:
             - {name: otlp.cumulative.monotonic, metric_type: count, value: 15}
+            - {name: raymond.test.cumulative.as.gauge}
+          known_differences:
+            - gap: gap/otlp-rate-as-gauge-test-name
+              issue: 3406
+              paths: [type]
+              when: {name: [raymond.test.cumulative.as.gauge]}
+              reason: ADP reports this sum as a gauge of its rate, and the Agent reports it as a count
+      # The known difference takes the gauge sum out of the comparison, so each side's value is checked here. The
+      # Agent counts the difference of the two points, and ADP reports its rate over the ten seconds between them.
+      - step: intake_has_metric
+        on: intake-agent
+        name: raymond.test.cumulative.as.gauge
+        metric_type: count
+        value: 30
+        timeout: 1m
+      - step: intake_has_metric
+        on: intake-adp
+        name: raymond.test.cumulative.as.gauge
+        metric_type: gauge
+        value: 3
+        timeout: 1m
       - step: intake_from
         on: intake-adp
         telemetry: metrics

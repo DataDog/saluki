@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tokio::time::Instant;
 
 use super::analysis::{
-    AnalysisMode, AnalysisRunner, LogsAnalysisOptions, MetricsExpectations, TracesAnalysisOptions, TracesOptions,
+    AnalysisMode, AnalysisRunner, LogsAnalysisOptions, MetricsOptions, TracesAnalysisOptions, TracesOptions,
 };
 use super::intake::CollectedData;
 use super::stopped;
@@ -123,8 +123,9 @@ struct Fields {
     traces: Option<TracesOptions>,
     /// Logs only: how logs are paired and counted, and the differences expected.
     logs: Option<LogsAnalysisOptions>,
-    /// Metrics only: what each side must hold, checked before the sides are compared.
-    metrics: Option<MetricsExpectations>,
+    /// Metrics only: what each side must hold, checked before the sides are compared, and the series whose type is
+    /// expected to differ, each with the gap and the issue that explain it.
+    metrics: Option<MetricsOptions>,
 }
 
 /// The telemetry compared.
@@ -182,7 +183,7 @@ struct Compare {
     additional_span_ignore_fields: Vec<String>,
     traces: TracesOptions,
     logs: LogsAnalysisOptions,
-    metrics: Option<MetricsExpectations>,
+    metrics: Option<MetricsOptions>,
 }
 
 #[async_trait]
@@ -216,7 +217,7 @@ impl Step for Compare {
             };
             let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, Some(traces))
                 .with_logs_options(self.logs.clone())
-                .with_metrics_expectations(self.metrics.clone())
+                .with_metrics_options(self.metrics.clone())
                 .with_dogstatsd_forwarding_requirement(self.require_dogstatsd_forwarded_packets);
             let report = match runner.run_analysis() {
                 Ok(()) => StepReport {
@@ -331,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn a_traces_known_difference_names_an_issue_and_covers_only_stats() {
+    fn a_traces_known_difference_names_an_issue_and_covers_stats_and_named_spans() {
         let build = |options: &str, entry: &str| {
             let fields = format!(
                 "{{telemetry: traces, comparison: app, baseline: peer, {} traces: {{known_differences: [{}]}}}}",
@@ -346,15 +347,30 @@ mod tests {
         assert_eq!(error, "known difference 'gap/a' names no 'issue'");
 
         let error = build("", "{gap: gap/a, issue: 1, paths: [meta.foo], reason: r}").unwrap_err();
-        assert!(error.contains("only 'stats.*' paths"), "{}", error);
+        assert!(error.contains("only 'stats.*' and 'span.*' paths"), "{}", error);
 
-        // The mode skips the stats comparison, so every entry would be stale.
+        let span_entry = "{gap: gap/a, issue: 1, paths: [span.metrics._top_level], when: {resource: [r]}, reason: r}";
+        assert!(build("", span_entry).is_ok());
+        for unscoped in [
+            "{gap: gap/a, issue: 1, paths: [span.metrics._top_level], reason: r}",
+            "{gap: gap/a, issue: 1, paths: [span.metrics._top_level], when: {hits: [1]}, reason: r}",
+        ] {
+            let error = build("", unscoped).unwrap_err();
+            assert!(
+                error.contains("must name the spans by service, name, resource"),
+                "{}",
+                error
+            );
+        }
+
+        // The mode skips the stats comparison, so a stats entry would be stale. It still compares spans.
         let error = build(
             "otlp_direct_analysis_mode: true,",
             "{gap: gap/a, issue: 1, paths: [stats.hits], reason: r}",
         )
         .unwrap_err();
-        assert!(error.contains("takes no 'known_differences'"), "{}", error);
+        assert!(error.contains("can't cover a 'stats.*' path"), "{}", error);
+        assert!(build("otlp_direct_analysis_mode: true,", span_entry).is_ok());
 
         let fields = "{telemetry: metrics, comparison: app, baseline: peer, traces: {}}";
         let error = CompareFactory
@@ -919,6 +935,66 @@ mod tests {
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
         assert!(report.message.contains("gap/no-stats"), "{}", report.message);
         assert!(!report.message.contains("`min_stats_groups`"), "{}", report.message);
+    }
+
+    /// The fixture spans, with the `metrics` of the span `span_id` set to `metrics`.
+    fn spans_with_metrics(span_id: u64, metrics: Value) -> Vec<Value> {
+        let mut spans = fixture_spans(false);
+        for span in &mut spans {
+            if span["span_id"] == span_id {
+                span["metrics"] = metrics.clone();
+            }
+        }
+        spans
+    }
+
+    #[tokio::test]
+    async fn a_known_span_difference_covers_only_its_field_on_the_named_spans() {
+        let fields = "{telemetry: traces, comparison: app, baseline: peer, traces: {require_ssi: false, \
+            min_stats_groups: 2, known_differences: [{gap: gap/top-level, issue: 1, paths: [span.metrics._top_level], \
+            kinds: [missing], when: {resource: [SELECT 1]}, reason: no top-level mark}]}}";
+        let baseline = tracing(spans_with_metrics(11, json!({"_top_level": 1.0})), &fixture_groups());
+
+        // The comparison lacks the mark on the named span, as the entry says.
+        let report = compare(fields, &fixture_traces(), &baseline).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // Another field of the same span still fails, and the failure names the span.
+        let comparison = tracing(spans_with_metrics(11, json!({"_dd.measured": 1.0})), &fixture_groups());
+        let report = compare(fields, &comparison, &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report
+                .message
+                .contains("span 11 (service=\"db\" name=\"db.query\" resource=\"SELECT 1\")"),
+            "{}",
+            report.message
+        );
+        assert!(report.message.contains("metrics._dd.measured"), "{}", report.message);
+        assert!(!report.message.contains("metrics._top_level"), "{}", report.message);
+
+        // The same field on a span the entry does not name fails.
+        let baseline = tracing(spans_with_metrics(10, json!({"_top_level": 1.0})), &fixture_groups());
+        let report = compare(fields, &fixture_traces(), &baseline).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains("span 10 (service=\"api\""),
+            "{}",
+            report.message
+        );
+        // The entry matched nothing, so it is stale too.
+        assert!(report.message.contains("gap/top-level (#1)"), "{}", report.message);
+
+        // Once the difference is gone, the entry is stale, and the failure lists it under its own heading.
+        let report = compare(fields, &fixture_traces(), &fixture_traces()).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains("(1 known difference path(s) no longer occur)"),
+            "{}",
+            report.message
+        );
+        assert!(report.message.contains("no longer occurs"), "{}", report.message);
+        assert!(!report.message.contains("stats group(s))"), "{}", report.message);
     }
 
     #[tokio::test]
