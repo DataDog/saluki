@@ -46,13 +46,13 @@ procedure:
         telemetry: traces
         comparison: intake-adp
         baseline: intake-agent
-        # Error tracking standalone mode forwards every trace, so each side holds the 9 traces and 14 spans of the
-        # fixture, and a stats group for each of its 9 roots. The other spans are not top-level.
+        # Error tracking standalone mode forwards every trace, so each side holds the 10 traces and 16 spans of the
+        # fixture, and a stats group for each of its 10 roots. The other spans are not top-level.
         traces:
-          min_traces: 9
-          max_traces: 9
-          min_spans: 14
-          max_spans: 14
+          min_traces: 10
+          max_traces: 10
+          min_spans: 16
+          max_spans: 16
           spans:
             # An error trace is kept, whatever the receiver decides, and its chunk keeps the priority that the receiver
             # gave it.
@@ -64,6 +64,17 @@ procedure:
               chunk_tags: {_dd.error_tracking_standalone.error: "true"}
             - service: probe-ets
               name: otlpprobe.ets.019.error_drop
+              priority: 0
+              dropped_trace: false
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            # An error on a child span is enough, as the receiver drops the trace.
+            - service: probe-ets
+              name: otlpprobe.ets.016.error_child_root
+              priority: 0
+              dropped_trace: false
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            - service: probe-ets
+              name: otlpprobe.ets.016.error_child
               priority: 0
               dropped_trace: false
               chunk_tags: {_dd.error_tracking_standalone.error: "true"}
@@ -116,13 +127,13 @@ procedure:
               priority: -1
               dropped_trace: false
               chunk_tags: {_dd.error_tracking_standalone.error: "true"}
-          min_stats_groups: 9
+          min_stats_groups: 10
       - step: intake_from
         on: intake-adp
         telemetry: spans
         select: {service: probe-ets}
         sender: adp
-        count: 14
+        count: 16
         timeout: 1m
       - step: intake_from
         on: intake-adp

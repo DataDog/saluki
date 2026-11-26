@@ -330,6 +330,12 @@ fn ets_probes() -> Probes {
     probes.in_keep_range(vec![ets_root("otlpprobe.ets.016.error_keep").failed()]);
     probes.in_drop_range(vec![ets_root("otlpprobe.ets.019.error_drop").failed()]);
 
+    // An error on a child is enough to make the trace an error trace.
+    probes.in_drop_range(vec![
+        ets_root("otlpprobe.ets.016.error_child_root"),
+        ets_child("otlpprobe.ets.016.error_child").failed(),
+    ]);
+
     // A trace without an error is not kept, but forwarded with every span, marked as dropped.
     probes.in_keep_range(vec![
         ets_root("otlpprobe.ets.017.plain_keep"),
@@ -516,12 +522,12 @@ mod tests {
         // span that is top-level.
         let spans = spans_of(&ets_fixture());
         let traces: HashSet<Vec<u8>> = spans.iter().map(|(_, span)| span.trace_id.clone()).collect();
-        assert_eq!(traces.len(), 9);
-        assert_eq!(spans.len(), 14);
+        assert_eq!(traces.len(), 10);
+        assert_eq!(spans.len(), 16);
         assert!(spans.iter().all(|(service, _)| service == ETS_SERVICE));
         assert_eq!(
             spans.iter().filter(|(_, span)| span.parent_span_id.is_empty()).count(),
-            9
+            10
         );
     }
 
@@ -547,6 +553,8 @@ mod tests {
             Some(Value::IntValue(-1))
         );
         assert_eq!(span("otlpprobe.ets.016.error_keep").status.unwrap().code, 2);
+        assert_eq!(span("otlpprobe.ets.016.error_child").status.unwrap().code, 2);
+        assert!(span("otlpprobe.ets.016.error_child_root").status.is_none());
     }
 
     #[test]
