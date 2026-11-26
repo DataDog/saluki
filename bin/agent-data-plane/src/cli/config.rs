@@ -4,7 +4,20 @@ use saluki_common::scrubber;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
 
-use crate::cli::utils::get_api_client_or_exit;
+use crate::cli::utils::get_api_client;
+
+// Fixed messages that `config` writes to standard error when it fails. They hold no configuration values, so callers
+// can show them. Panoramic matches these lines in `bin/correctness/panoramic/src/participants/agent_adp.rs`.
+const CLIENT_FAILED: &str = "agent-data-plane config: cannot create the client for the secure API";
+const REQUEST_FAILED: &str = "agent-data-plane config: the request for the configuration failed";
+const SCRUB_FAILED: &str = "agent-data-plane config: cannot redact the configuration response safely";
+const FORMAT_FAILED: &str = "agent-data-plane config: cannot format the configuration response as JSON";
+
+/// Writes `message` to standard error and exits with a failure code.
+fn exit_with(message: &str) -> ! {
+    eprintln!("{message}");
+    std::process::exit(1);
+}
 
 /// Prints the current configuration.
 #[derive(FromArgs, Debug)]
@@ -30,7 +43,13 @@ fn parse_config_response(response_body: &[u8]) -> Result<serde_json::Value, Gene
 
 /// Entrypoint for the `config` command.
 pub async fn handle_config_command(local_config: LoadedConfiguration, command: ConfigCommand) {
-    let mut api_client = get_api_client_or_exit(&local_config).await;
+    let mut api_client = match get_api_client(local_config.local()).await {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to create data plane API client: {:#}", e);
+            exit_with(CLIENT_FAILED);
+        }
+    };
 
     let response_body = match if command.runtime {
         api_client.config_runtime().await
@@ -40,7 +59,7 @@ pub async fn handle_config_command(local_config: LoadedConfiguration, command: C
         Ok(body) => body,
         Err(e) => {
             error!("Failed to get configuration: {:#}.", e);
-            std::process::exit(1);
+            exit_with(REQUEST_FAILED);
         }
     };
 
@@ -53,7 +72,7 @@ pub async fn handle_config_command(local_config: LoadedConfiguration, command: C
                 "Failed to scrub configuration response safely; refusing to emit configuration: {:#}",
                 e
             );
-            std::process::exit(1);
+            exit_with(SCRUB_FAILED);
         }
     };
     let formatted = match if command.json {
@@ -64,7 +83,7 @@ pub async fn handle_config_command(local_config: LoadedConfiguration, command: C
         Ok(s) => s,
         Err(e) => {
             error!("Failed to format configuration response as JSON: {:#}", e);
-            std::process::exit(1);
+            exit_with(FORMAT_FAILED);
         }
     };
 
