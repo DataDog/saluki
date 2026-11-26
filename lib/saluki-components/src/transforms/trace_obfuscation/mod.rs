@@ -212,6 +212,29 @@ mod tests {
     }
 
     #[test]
+    fn sql_resource_with_leading_hash_comment_is_obfuscated() {
+        // A statement can start with a `#` line comment, and a bare `#` must not make the obfuscator panic. The Agent
+        // skips such a comment to the line break when the DBMS is not PostgreSQL: its tokenizer calls `scanCommentType1`
+        // in the default branch of `'#'` (`pkg/obfuscate/sql_tokenizer.go`).
+        for statement in ["#c\nSELECT 1", " #c\nSELECT 1"] {
+            let span = Span::new("svc", "db.query", statement, "sql", 1, 0, 0, 0, 0)
+                .with_attributes(attributes(&[("db.system", "mysql")]));
+            let span = obfuscate(ObfuscationConfig::default(), span);
+
+            assert_eq!(span.resource(), "SELECT ?", "{statement:?}");
+        }
+
+        // The Agent tokenizes `#` as an operator character when the DBMS is PostgreSQL, so its resource can keep the
+        // `#`. This check does not claim parity with the Agent. It checks that ADP does not panic, and that the literal
+        // is gone.
+        let span = Span::new("svc", "db.query", "#c\nSELECT 2", "sql", 1, 0, 0, 0, 0)
+            .with_attributes(attributes(&[("db.system", "postgresql")]));
+        let span = obfuscate(ObfuscationConfig::default(), span);
+
+        assert!(!span.resource().contains('2'), "{:?}", span.resource());
+    }
+
+    #[test]
     fn redis_resource_keeps_the_first_three_commands() {
         // At most three commands are kept, and a cut is marked with ` ...`.
         let span = Span::new("svc", "redis.command", "SET k v\nGET k\nDEL k", "redis", 1, 0, 0, 0, 0);
