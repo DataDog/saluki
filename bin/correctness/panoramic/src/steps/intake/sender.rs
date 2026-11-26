@@ -33,12 +33,28 @@
 //! file of the intake. The value of a `DD-API-KEY`, `DD-APPLICATION-KEY` or `Authorization` header is shown as
 //! `<redacted>`.
 //!
+//! Two encodings of the same metrics decode to the same items, and only the path of the request tells them apart. With
+//! `path`, the step also fails when any selected item came on another path, even if `count` items arrived on `path`:
+//!
+//! ```yaml
+//! - step: intake_from
+//!   on: intake-agent
+//!   telemetry: metrics
+//!   select: {name_prefix: "otlpprobe.v3.series."}
+//!   sender: agent
+//!   path: /api/intake/metrics/v3/series
+//!   count: 3
+//!   timeout: 1m
+//! ```
+//!
 //! The options of the step:
 //!
 //! - `on`: the intake participant.
 //! - `telemetry`: `metrics`, `spans`, `trace_stats` or `logs`.
 //! - `select`: `{name_prefix: <prefix>}` for `metrics`, and `{service: <name>}` for the others.
 //! - `sender`: `adp`, `agent` or `trace-agent`.
+//! - `path`: the path of the requests that carry the selected items, such as `/api/intake/metrics/v3/series`. It starts
+//!   with `/`. Without it, the path does not matter.
 //! - `count`: the exact number of items. Not allowed for `trace_stats`, whose buckets vary, so the step only checks that
 //!   statistics arrived from the sender.
 //! - `settle`: how long to keep watching after the result first holds. Defaults to `20s`.
@@ -108,6 +124,8 @@ struct Fields {
     telemetry: Telemetry,
     select: Select,
     sender: Sender,
+    #[serde(default)]
+    path: Option<String>,
     #[serde(default)]
     count: Option<NonZeroU64>,
     #[serde(default = "default_settle")]
@@ -398,6 +416,11 @@ impl Tally {
         self.0.iter().map(|request| request.items).sum()
     }
 
+    /// Whether a request that carried selected items arrived on a path other than `path`.
+    fn reached_other_than(&self, path: &str) -> bool {
+        self.0.iter().any(|request| request.path != path)
+    }
+
     /// The items of each sender, such as `adp 3, agent 1`.
     fn counts(&self) -> String {
         let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
@@ -424,6 +447,8 @@ enum Check {
     Met,
     /// Another sender, or an unattributable request, delivered selected items.
     Foreign,
+    /// The expected sender delivered selected items on a path other than `path`.
+    Misrouted,
     /// The expected sender delivered more items than `count`.
     Duplicate,
 }
@@ -443,6 +468,8 @@ struct IntakeFrom {
     on: String,
     target: Target,
     sender: Sender,
+    /// The path of the requests that carry the selected items, or `None` for any path.
+    path: Option<String>,
     /// The exact number of items, or `None` for at least one.
     count: Option<u64>,
     settle: Timeout,
@@ -454,13 +481,15 @@ impl IntakeFrom {
     ///
     /// # Errors
     ///
-    /// Returns an error if the selection does not suit the telemetry, or `count` is set for `trace_stats`.
+    /// Returns an error if the selection does not suit the telemetry, `count` is set for `trace_stats`, or `path` does
+    /// not start with `/`.
     fn new(fields: Fields) -> Result<Self, String> {
         let Fields {
             on,
             telemetry,
             select,
             sender,
+            path,
             count,
             settle,
             timeout,
@@ -472,10 +501,14 @@ impl IntakeFrom {
                     .to_string(),
             );
         }
+        if let Some(path) = path.as_deref().filter(|path| !path.starts_with('/')) {
+            return Err(format!("'path' must start with '/', and '{}' does not", path));
+        }
         Ok(Self {
             on,
             target: Target::new(telemetry, select)?,
             sender,
+            path,
             count: count.map(NonZeroU64::get),
             settle,
             timeout,
@@ -486,6 +519,9 @@ impl IntakeFrom {
         let have = tally.items_from(self.sender);
         if tally.total() > have {
             return Check::Foreign;
+        }
+        if self.path.as_deref().is_some_and(|path| tally.reached_other_than(path)) {
+            return Check::Misrouted;
         }
         match self.count {
             Some(count) if have > count => Check::Duplicate,
@@ -536,7 +572,7 @@ impl IntakeFrom {
                     })?;
                     let check = self.check(&tally);
                     match check {
-                        Check::Foreign | Check::Duplicate => break Ok((check, tally)),
+                        Check::Foreign | Check::Misrouted | Check::Duplicate => break Ok((check, tally)),
                         Check::Met => {
                             held_since.get_or_insert_with(Instant::now);
                         }
@@ -589,13 +625,15 @@ impl IntakeFrom {
             Err(e) => return stopped(e),
         };
         let Some(mut message) = self.failure(check, &tally) else {
+            let path = self.path.as_ref().map_or(String::new(), |path| format!(" on {}", path));
             return StepReport {
                 status: StepStatus::Passed,
                 message: format!(
-                    "{} selected item(s) reached '{}' from {} and from no other sender, and the result held for {}.",
+                    "{} selected item(s) reached '{}' from {}{} and from no other sender, and the result held for {}.",
                     tally.total(),
                     self.on,
                     self.sender.name(),
+                    path,
                     self.settle.text
                 ),
             };
@@ -610,11 +648,14 @@ impl IntakeFrom {
         }
         let _ = write!(
             message,
-            "\nSelection: {}. Expected sender: {}.\nItems by sender: {}.",
+            "\nSelection: {}. Expected sender: {}.",
             self.target.describe(),
-            self.sender.name(),
-            tally.counts()
+            self.sender.name()
         );
+        if let Some(path) = &self.path {
+            let _ = write!(message, " Expected path: {}.", path);
+        }
+        let _ = write!(message, "\nItems by sender: {}.", tally.counts());
         let lines: Vec<String> = tally.0.iter().map(Selected::line).collect();
         if !lines.is_empty() {
             let file = self.target.file_name(self.sender);
@@ -649,6 +690,11 @@ impl IntakeFrom {
         Some(match check {
             Check::Met => return None,
             Check::Foreign => format!("Selected items reached '{}' from a sender other than {}.", on, sender),
+            Check::Misrouted => format!(
+                "Selected items reached '{}' on a path other than '{}'.",
+                on,
+                self.path.as_deref().unwrap_or_default()
+            ),
             Check::Duplicate => format!(
                 "{} selected item(s) reached '{}' from {}, and the step expects {}.",
                 have, on, sender, expected
@@ -721,6 +767,9 @@ mod tests {
     const AGENT: &str = "datadog-agent/7.87.0";
     const TRACE_AGENT: &str = "Datadog Trace Agent/7.87.0/0123abc";
 
+    const V3_SERIES: &str = "/api/intake/metrics/v3/series";
+    const V2_SERIES: &str = "/api/v2/series";
+
     const TELEMETRIES: [Telemetry; 4] = [
         Telemetry::Metrics,
         Telemetry::Spans,
@@ -764,17 +813,31 @@ mod tests {
         })
     }
 
+    /// The path that a request of `telemetry` has unless a test gives another.
+    fn default_path(telemetry: Telemetry) -> &'static str {
+        match telemetry {
+            Telemetry::Metrics => "/api/v2/series",
+            Telemetry::Spans => "/api/v0.2/traces",
+            Telemetry::TraceStats => "/api/v0.2/stats",
+            Telemetry::Logs => "/api/v2/logs",
+        }
+    }
+
     /// A recorded request of `telemetry` from `user_agent`, with `selected` items of the fixtures that the steps below
     /// select, and `other` items that they do not.
     fn request(telemetry: Telemetry, user_agent: Option<&str>, selected: usize, other: usize) -> Value {
+        request_at(telemetry, default_path(telemetry), user_agent, selected, other)
+    }
+
+    /// As [`request`], with the request at `path`.
+    fn request_at(telemetry: Telemetry, path: &str, user_agent: Option<&str>, selected: usize, other: usize) -> Value {
         let mut headers = json!({"content-type": "application/x-protobuf"});
         if let Some(user_agent) = user_agent {
             headers["user-agent"] = json!(user_agent);
         }
         let point = json!([0, {"mtype": "Count", "value": 1.0}]);
-        let (path, key, items) = match telemetry {
+        let (key, items) = match telemetry {
             Telemetry::Metrics => (
-                "/api/v2/series",
                 "items",
                 json!([
                     {"context": {"name": "fx.count", "tags": []}, "values": vec![point.clone(); selected]},
@@ -782,7 +845,6 @@ mod tests {
                 ]),
             ),
             Telemetry::Spans => (
-                "/api/v0.2/traces",
                 "items",
                 json!((0..selected)
                     .map(|_| span("fx"))
@@ -795,12 +857,11 @@ mod tests {
                     .enumerate()
                     .map(|(key, service)| (key.to_string(), statistics(service)))
                     .collect();
-                ("/api/v0.2/stats", "items", json!({"groups": groups}))
+                ("items", json!({"groups": groups}))
             }
             Telemetry::Logs => {
                 let log = |service| json!({"service": service, "ddtags": [], "envelope_properties": {}});
                 (
-                    "/api/v2/logs",
                     "logs",
                     json!((0..selected)
                         .map(|_| log("fx"))
@@ -844,6 +905,15 @@ mod tests {
         step(&format!(
             "{{on: intake, telemetry: metrics, select: {{name_prefix: 'fx.'}}, sender: adp, settle: 2s, timeout: 10s{}}}",
             count
+        ))
+    }
+
+    /// The step on metrics that expects the three items of ADP on `path`.
+    fn path_step(path: &str) -> IntakeFrom {
+        step(&format!(
+            "{{on: intake, telemetry: metrics, select: {{name_prefix: 'fx.'}}, sender: adp, path: {}, count: 3, settle: 2s, \
+             timeout: 10s}}",
+            path
         ))
     }
 
@@ -935,6 +1005,98 @@ mod tests {
             assert_eq!(outcome.elapsed, Duration::from_secs(2), "{}", telemetry.name());
             assert!(outcome.kept.is_empty(), "{}", telemetry.name());
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_selected_items_on_the_path_pass_after_the_settle() {
+        let answer = records(vec![
+            request_at(Telemetry::Metrics, V3_SERIES, Some(ADP), 2, 1),
+            request_at(Telemetry::Metrics, V3_SERIES, Some(ADP), 1, 0),
+        ]);
+        let outcome = watch(&path_step(V3_SERIES), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Passed);
+        assert_eq!(outcome.elapsed, Duration::from_secs(2));
+        assert_mentions(
+            &outcome,
+            &["from adp on /api/intake/metrics/v3/series and from no other sender"],
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_selected_item_on_another_path_fails_at_once_although_the_path_holds_the_count() {
+        // A fallback that sends the same items again on the older path.
+        let answer = records(vec![
+            request_at(Telemetry::Metrics, V3_SERIES, Some(ADP), 3, 0),
+            request_at(Telemetry::Metrics, V2_SERIES, Some(ADP), 3, 0),
+        ]);
+        let outcome = watch(&path_step(V3_SERIES), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(
+            &outcome,
+            &[
+                "Selected items reached 'intake' on a path other than '/api/intake/metrics/v3/series'.",
+                "Expected path: /api/intake/metrics/v3/series.",
+                "Items by sender: adp 6.",
+                "adp /api/intake/metrics/v3/series: 3 item(s)",
+                "adp /api/v2/series: 3 item(s)",
+            ],
+        );
+        assert_eq!(outcome.elapsed, Duration::ZERO);
+        assert_eq!(outcome.reads, 1);
+        assert_eq!(outcome.kept.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn items_on_the_wrong_path_fail_when_none_arrive_on_the_right_one() {
+        let answer = records(vec![request_at(Telemetry::Metrics, V2_SERIES, Some(ADP), 3, 0)]);
+        let outcome = watch(&path_step(V3_SERIES), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(&outcome, &["on a path other than '/api/intake/metrics/v3/series'"]);
+        assert_eq!(outcome.elapsed, Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_late_selected_item_on_another_path_fails_during_the_settle() {
+        let held = || records(vec![request_at(Telemetry::Metrics, V3_SERIES, Some(ADP), 3, 0)]);
+        let fallback = records(vec![
+            request_at(Telemetry::Metrics, V3_SERIES, Some(ADP), 3, 0),
+            request_at(Telemetry::Metrics, V2_SERIES, Some(ADP), 1, 0),
+        ]);
+        let outcome = watch(&path_step(V3_SERIES), vec![held(), held(), fallback]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(&outcome, &["on a path other than", "after the result first held"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sender_other_than_the_expected_one_fails_before_the_path_is_checked() {
+        let answer = records(vec![
+            request_at(Telemetry::Metrics, V3_SERIES, Some(ADP), 3, 0),
+            request_at(Telemetry::Metrics, V2_SERIES, Some(AGENT), 1, 0),
+        ]);
+        let outcome = watch(&path_step(V3_SERIES), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Failed);
+        assert_mentions(&outcome, &["from a sender other than adp"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unselected_items_on_another_path_are_ignored() {
+        let answer = records(vec![
+            request_at(Telemetry::Metrics, V3_SERIES, Some(ADP), 3, 0),
+            request_at(Telemetry::Metrics, V2_SERIES, Some(ADP), 0, 4),
+            request_at(Telemetry::Metrics, V2_SERIES, Some(AGENT), 0, 4),
+        ]);
+        let outcome = watch(&path_step(V3_SERIES), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Passed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_path_does_not_matter_without_a_path() {
+        let answer = records(vec![
+            request_at(Telemetry::Metrics, V3_SERIES, Some(ADP), 2, 0),
+            request_at(Telemetry::Metrics, V2_SERIES, Some(ADP), 1, 0),
+        ]);
+        let outcome = watch(&adp_step(Telemetry::Metrics), vec![answer]).await;
+        assert_status(&outcome, StepStatus::Passed);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1316,6 +1478,10 @@ mod tests {
             (
                 "on: i, telemetry: logs, select: {service: fx}, sender: adp".to_string(),
                 "missing field `timeout`",
+            ),
+            (
+                format!("on: i, telemetry: logs, path: api/v2/series, {}", select),
+                "'path' must start with '/', and 'api/v2/series' does not",
             ),
         ];
         for (fields, error) in cases {
