@@ -557,9 +557,9 @@ When comparing stats, set `min_stats_groups` if you set span or trace expectatio
 This minimum counts the groups each intake holds. In spans-only mode (`otlp_direct_analysis_mode: true`), omit
 `min_stats_groups` and `require_ssi`.
 
-For example, `otlp-traces-stats` requires at least 37 stats groups in each intake. Its `spans` entries also check
-that the named probe spans arrived. Neither check proves that a span counted toward the right group. The
-[group comparison](#why-one-span-can-produce-two-group-differences) tests that separately.
+For example, `test/correctness/cases/otlp-traces-stats/config.yaml` requires at least 37 stats groups in each intake.
+Its `spans` entries also check that the named probe spans arrived. Neither check proves that a span counted toward
+the right group. The [group comparison](#why-one-span-can-produce-two-group-differences) tests that separately.
 
 ### When the intakes hold different sets
 
