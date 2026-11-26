@@ -280,6 +280,22 @@ fn main() -> ExitCode {
             "test/integration/cases/otlp-traces-endpoints-mrf/millstone-traces-agent.yaml",
             || routing::traces_fixture("endpoints-mrf-agent", "http", 9),
         ),
+        (
+            "test/integration/cases/otlp-traces-hazards/millstone-sql-adp.yaml",
+            traces::sql_fixture,
+        ),
+        (
+            "test/integration/cases/otlp-traces-hazards/millstone-sql-agent.yaml",
+            traces::sql_fixture,
+        ),
+        (
+            "test/integration/cases/otlp-traces-hazards/millstone-control-adp.yaml",
+            traces::control_fixture,
+        ),
+        (
+            "test/integration/cases/otlp-traces-hazards/millstone-control-agent.yaml",
+            traces::control_fixture,
+        ),
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");

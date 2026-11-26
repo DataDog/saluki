@@ -19,10 +19,12 @@ use prost::Message as _;
 use crate::common::{double, int, kv, string};
 
 mod conversion;
+mod hazards;
 mod obfuscation;
 mod sampling;
 
 pub use self::conversion::conversion_fixture;
+pub use self::hazards::{control_fixture, sql_fixture};
 pub use self::obfuscation::obfuscation_fixture;
 pub use self::sampling::{ets_fixture, sampling_fixture};
 
