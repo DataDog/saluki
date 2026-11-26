@@ -93,7 +93,7 @@ pub fn process_tags(
     let tags = resolver.resolve_ordered_tags(entity_ids, cardinality);
     let mut ddtags = Vec::new();
 
-    for tag in &tags {
+    for tag in tags {
         let Some((key, value)) = tag.as_str().split_once(':') else {
             continue;
         };
@@ -108,7 +108,7 @@ pub fn process_tags(
             }
             None => {
                 if write_tag_attribute(attributes, key, value, custom_tags) {
-                    ddtags.push(tag.clone());
+                    ddtags.push(tag);
                 }
             }
         }

@@ -20,7 +20,15 @@ pub(super) fn ddtags_value(mut tags: Vec<Tag>) -> Option<String> {
         return None;
     }
     tags.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
-    Some(tags.iter().map(Tag::as_str).collect::<Vec<_>>().join(","))
+    let len = tags.iter().map(|tag| tag.as_str().len() + 1).sum::<usize>() - 1;
+    let mut value = String::with_capacity(len);
+    for tag in &tags {
+        if !value.is_empty() {
+            value.push(',');
+        }
+        value.push_str(tag.as_str());
+    }
+    Some(value)
 }
 
 /// Adds `tags` to the `ddtags` attribute of a log record, as `writeDdtagsToLogRecords` does.
