@@ -1,3 +1,4 @@
 enhancements:
   - |
-    Reduce memory allocations when DogStatsD metrics do not match any ``tag_filterlist`` rule.
+    Reduce per-metric overhead in the ``tag_filterlist`` transform for DogStatsD counters and distributions that do
+    not match any rule.
