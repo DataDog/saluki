@@ -418,7 +418,6 @@ impl Header {
     fn symbols(&self) -> &SymbolTable {
         &self.domain.as_ref().expect("symbol has a resolver domain").symbols
     }
-
 }
 
 /// A strong reference to a packed context allocation.
