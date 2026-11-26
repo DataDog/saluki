@@ -320,57 +320,46 @@ container, the participant also collects the input capture of the baseline sende
 
 ## Steps
 
-A step is a map with a `step` key and the fields of the step. Every field is required unless the table says so.
-`on` names a participant. A duration has a unit: `500ms`, `30s`, `5m`. A step has a budget, which is its `timeout`,
-`duration` or `during`. A step that does not report within its budget and 10 seconds of slack is `errored`. The case
-timeout stops a step that is still running, and the step is `interrupted`. A step takes a reference only in its
-template fields: `pattern` of the two log steps, `path` of `file_contains`, and `command`, `args` and `env` of `exec`.
+A case's `procedure` tells panoramic what to do after the participants start. Each `step` names either an **action**
+that changes something or an **assertion** that checks a condition. The other fields are arguments to that step.
 
-| Step | Fields | What it checks or does |
-| --- | --- | --- |
-| `log_contains` | `on`, `process` (optional), `pattern`, `regex` (optional), `timeout` | A line of the process output holds the text. Without `process`, it searches every process and the container log. |
-| `log_not_contains` | `on`, `pattern`, `regex` (optional), `during` | Fails as soon as a line holds the text, whether the line is older than the step or arrives during `during`. Passes after `during` with no match. It searches every process and the container log. |
-| `process_stable_for` | `on`, `process` (optional), `duration` | The process, or every process, keeps running. |
-| `exits_with` | `on`, `process`, `code`, `timeout` | The process exits with the code. A death by signal has code 256. |
-| `port_listening` | `on`, `endpoint`, `timeout` | The endpoint accepts a connection. |
-| `http_check` | `on`, `endpoint`, `path`, `status`, `body` (optional), `insecure_skip_verify` (optional), `timeout` | A `GET` answers as expected. `status` is `{equal: n}` or `{not_equal: n}`, and `body` is `{equal: text}` or `{contains: text}`. It sends no client certificate, so it cannot reach the privileged routes of ADP. |
-| `file_contains` | `on`, `path`, `pattern`, `timeout` | A file in the participant holds the text. |
-| `config_key_equals` | `on`, `key`, `value`, `view`, `timeout` | A key of the ADP configuration has the value. `view` is `source` or `runtime`. |
-| `intake_has_metric` | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match` (all optional), `timeout` | An intake holds a metric that meets every criterion. |
-| `compare` | `telemetry`, `comparison`, `baseline`, and options | The intake participants `comparison` and `baseline` hold the same telemetry. `telemetry` is `metrics`, `traces`, `logs`, `events` or `service_checks`. The options are `require_dogstatsd_forwarded_packets`, `metrics` (metrics only), `otlp_direct_analysis_mode`, `additional_span_ignore_fields` and `traces` (traces only), and `logs` (logs only). See [What each side must hold](#what-each-side-must-hold). It has no budget of its own: it has the rest of the case timeout. |
-| `exec` | `on`, `command`, `args` (optional), `env` (optional), `output_contains` (optional), `timeout` | Action. Runs a command in a running participant. `command` is a list, or the name of a command of the participant. |
-| `send` | `on`, `endpoint`, `payload`, `repeat` (optional, default 1), `timeout` | Action. Writes the text of `payload` to an endpoint `repeat` times, one datagram or connection each. |
-| `config_set` | `on`, `key`, `value`, `timeout` | Action. Sets a key of the runtime configuration, with the text `value`. It retries until `timeout`. |
-| `dogstatsd_replay` | `on`, `endpoint`, `payloads`, `payload_interval` (optional), `capture_duration`, `stats_duration`, `expected_metrics`, `timeout` | Action. Sends payloads while a capture runs, then replays the capture until the statistics hold every expected metric. `stats_duration` is a whole number of seconds. |
+For example, the [DogStatsD intake case][intake-case] waits for ADP's UDP listener to start, then runs these two steps:
 
-An `exec` that fails quotes the output of the command. A step needs the participants, processes, endpoints, commands
-or operations that it names, and the plan checks each for every OS. Three steps need an operation of `agent-adp`:
-`config_key_equals`, `config_set` and `dogstatsd_replay`. `intake_has_metric` and `compare` need the `dump` operation
-of `datadog-intake`.
+```yaml
+- step: send
+  on: adp
+  endpoint: dogstatsd_udp
+  payload: "integration.intake.counter:3|c|#source:integration-test"
+  repeat: 2
+  timeout: 10s
+- step: intake_has_metric
+  on: intake
+  name: integration.intake.counter
+  metric_type: rate
+  value: 0.6
+  tags: [source:integration-test]
+  timeout: 120s
+```
 
-**`intake_has_metric`.** Each poll normalizes the metrics in the intake per context and type: a context is the
-name and the tags, with the host as a `host:<value>` tag. Counts and rates are summed, sketches are merged, and a
-gauge takes its latest value, so a value split across flushes is compared as its total. Expect totals: a partial sum can match an
-early poll. Contexts are never combined, and one context must meet every criterion. `value` uses approximate float
-equality, and is an error with `metric_type: sketch`. `tags_match` is `subset`, the default, or `exact`. Both sides
-of the tags are sorted and deduplicated first. Under `exact`, `tags: []` means no tags and no host. `exact` does not
-show that no other context arrived. A failure lists the contexts with the expected name, or the other names when
-none has it.
+The action sends two counts of 3 to the participant named `adp`. ADP exports the total as a rate: 6 counts in
+10 seconds, or 0.6 per second. The assertion polls the `intake` participant's `dump` operation until it finds the
+matching series or its time runs out. Neither step needs to know how its participant runs.
 
-**Known differences of traces.** A traces `compare` reports every difference in the APM statistics, not only the
-first. `traces: {known_differences: [...]}` lists the differences that an open gap explains, as
-`logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
-`paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
-compared, so the step takes no entries. A path is `stats.groups`, for a
-statistics group on one side only, or `stats.<field>`, for a field of a group on both sides. `stats.<field>`
-covers a difference anywhere inside the field, such as in a sketch. A kind is `missing`
-(only in the baseline), `extra` (only in the comparison) or `value`. `when` matches the fields of the group, for
-example `{service: [api-gateway]}`. A difference that no entry covers fails the step, and so does an entry path that
-matches no difference, so that a fix removes its entries.
+Panoramic runs steps in order. A `parallel` block runs assertions together and waits for them all. It cannot contain
+actions or another block. If a step does not pass, panoramic leaves later procedure entries `not_run`.
 
-Steps run in order. A step that does not pass stops the procedure, and the steps after it are `not_run`. A
-`parallel` block runs its members together, and holds assertions only. A step reaches a participant through its
-operations and endpoints, so it does not depend on the participant type.
+Give time limits a unit such as `30s`. Most steps take their budget from `timeout`, `duration` or `during`.
+The [`compare` step](#writing-a-comparison-case) uses the time left in the case. An unmet condition fails a step.
+If a step does not report within its budget plus 10 seconds, panoramic marks it `errored`.
+If the case timeout stops a running step, panoramic marks it `interrupted`.
+
+To find the available steps, start at [`register` in `steps/mod.rs`][step-registry]. Each step's implementation
+defines its YAML fields, which fields accept [references](#references), and what it needs from its participants.
+When it plans the case, panoramic checks those fields and needs for every OS in `subject_os`. For example, it rejects
+the procedure above if `adp` has no `dogstatsd_udp` endpoint or `intake` offers no `dump` operation.
+
+[intake-case]: https://github.com/DataDog/saluki/blob/main/test/integration/cases/dogstatsd-intake-metric/config.yaml
+[step-registry]: https://github.com/DataDog/saluki/blob/main/bin/correctness/panoramic/src/steps/mod.rs
 
 ## Observation
 
@@ -492,6 +481,17 @@ case from `test/integration/cases` that uses the same steps.
 - List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
   See [Files](#files).
 
+### Checking a metric at the intake
+
+In the [DogStatsD example](#steps), one metric series must match all the criteria. A series has a name, a set of tags
+(including `host:<value>` when present) and a type. On each poll, `intake_has_metric` sums counts and rates across
+flushes, merges sketches and takes the latest gauge value. Ask for the total: a partial sum can match an early poll.
+`value` uses approximate equality and is not valid for sketches.
+
+With the default `tags_match: subset`, the series can have more tags than the case names. Use `exact` to compare the
+full tag sets, without regard to order or duplicates. With `exact`, `tags: []` means no tags and no host. Even an
+exact match does not rule out other series. A mismatch message shows the series with that name, or other names it found.
+
 ## Writing a comparison case
 
 A comparison case runs the Agent and ADP on the same load and compares what each sends to its own intake. Copy
@@ -514,21 +514,24 @@ cluster, with one node.
 
 ### What each side must hold
 
-`compare` checks that the two intakes match. Two intakes that hold nothing, or the same unrelated records, match too.
-A case for metrics or traces says what each intake must hold, in the `metrics` or `traces` section of the step, as a
-case for logs does in `logs`. The step checks the baseline and the comparison one at a time, before it compares them.
-A failure names the side and the expectation that it leaves unmet. An unmet expectation does not stop the step from
-comparing the sides: the failure lists the unmet expectations first, and then the differences. A `metrics` section must
-set at least one field.
+A comparison answers two questions:
 
-For metrics, `metrics` takes these fields:
+1. Did the fixture's output reach each intake? Two empty intakes can look equal. So can two intakes that hold only
+   unrelated telemetry. Set expectations from the fixture, not from what ADP sends today. If the case samples or
+   drops telemetry, choose output that should survive.
+2. Does ADP's output match the Agent's? For metrics and traces, `compare` still compares the sides when an expectation
+   fails. The failure lists unmet expectations by side first, then differences from the comparison. A
+   [known difference](#known-differences) cannot excuse an unmet expectation.
 
-- `min_series`: the fewest series that each side holds after the filter that removes internal telemetry. A series is a
-  metric name, tags and type.
+For logs, `logs.min_count` sets the minimum number of records per intake. For metrics, set at least one field if you
+include a `metrics` section:
+
+- `min_series`: the fewest series that each side holds after the filter that removes internal telemetry.
 - `series`: a list of criteria. One series of each side must meet each criterion. A criterion has a `name`, and
-  optionally `tags`, `tags_match`, `metric_type` and `value`, as `intake_has_metric` does.
+  optionally `tags`, `tags_match`, `metric_type` and `value`. See
+  [Checking a metric at the intake](#checking-a-metric-at-the-intake).
 
-For traces, `traces` takes these fields, besides `known_differences`:
+For traces, set expectations under `traces`:
 
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
 - `spans`: a list of spans that each side must hold. An entry has a `service` and a `name` or a `resource`, and a span
@@ -551,15 +554,85 @@ For traces, `traces` takes these fields, besides `known_differences`:
     min_stats_groups: 3
 ```
 
-A traces `compare` compares APM stats unless it sets `otlp_direct_analysis_mode`, which compares spans only. It
-also requires a span with Single Step Instrumentation metadata on each side, so two sides with no spans do not match.
-A case whose output carries no such metadata sets `require_ssi: false` to compare stats anyway. A `traces` section that
-sets expectations or `require_ssi: false`, on a step that compares stats, must set `min_stats_groups`. A step with
-`otlp_direct_analysis_mode` compares no stats, so it takes no `min_stats_groups`, no `require_ssi` and no
-`known_differences`.
+When comparing stats, set `min_stats_groups` if you set span or trace expectations or turn off `require_ssi`.
+This minimum counts the groups each intake holds. In spans-only mode (`otlp_direct_analysis_mode: true`), omit
+`min_stats_groups` and `require_ssi`.
 
-A known difference never excuses an unmet expectation. The step checks the expectations first, and it counts the groups
-that each side holds, whatever `known_differences` covers.
+## Known differences
 
-Choose each expectation from what the fixture produces, not from what ADP sends now. In a case that drops or samples
-telemetry, name a series or span that survives. Never name one that the case drops.
+A correctness case compares the Agent's intake (`baseline`) with ADP's intake (`comparison`). A **gap** is a
+difference between their outputs that we intend to fix. Instead of disabling the case, describe the mismatch in a
+`known_differences` entry on its `compare` step. The case can then pass with that difference and still catch others.
+Logs and APM stats support these entries; spans and metrics do not.
+
+### Read a known difference
+
+In the [log severity and body case][logs-case], the fixture sends a log with an empty body. The Agent sends an empty
+string to its intake. ADP sends the text `"null"` to its intake. Here is the entry for that gap, under `logs` in the
+`compare` step:
+
+```yaml
+logs:
+  identity_fields: [fixture_id]
+  known_differences:
+    - gap: gap/as-string-coercion
+      paths: [content.message]
+      kinds: [value]
+      when: {fixture_id: [body-empty]}
+      reason: ADP renders an empty body as "null" instead of "".
+```
+
+`compare` pairs the logs by `fixture_id`, so a different message does not prevent a match. The entry describes a
+mismatch, not an expected value: `reason` explains the gap to the reader. Consider three outcomes:
+
+- The messages differ for `body-empty`. The entry covers this difference. The rest of the checks still have to pass.
+- The status differs too. The entry covers only `content.message`, so the status difference fails the step unless
+  another entry explains it.
+- ADP sends the empty string. The path no longer matches a difference, so the step fails and names the **stale**
+  path. Remove it in the change that fixes the gap.
+
+Logs and trace stats use the same [ratchet][ratchet] to enforce this last rule. Each path in each entry must match
+at least once. If a path covers several fixtures, a match on one keeps it from going stale. Keep entries narrow.
+
+[logs-case]: https://github.com/DataDog/saluki/blob/main/test/correctness/cases/otlp-logs-severity-body/config.yaml
+[ratchet]: https://github.com/DataDog/saluki/blob/main/bin/correctness/panoramic/src/steps/analysis/ratchet.rs
+
+### Choose what the entry covers
+
+- `gap` names the defect and `reason` explains it. `issue` is its GitHub issue number: optional for logs, required for
+  trace stats.
+- `paths` names the fields to match. For logs, `content.message` names the message inside the log content;
+  `envelope.status` names the status on the envelope. In a dotted path, `*` matches one segment and `**` matches zero
+  or more.
+- `kinds` limits the kind of difference: `value` (the values differ), `missing` (baseline only) or `extra`
+  (comparison only). Logs also support `location` for a field that moved. Without `kinds`, any kind matches.
+- `when` limits which records the entry covers. Each named field must match one of its listed values. For logs,
+  `when` reads the baseline log's fields. A request header belongs to no log, so a rule with `when` cannot cover it.
+  Without `when`, the entry applies to every record.
+
+### APM stats in an OTLP trace case
+
+The `otlp-traces` fixture sends spans. ADP and the Agent each compute APM stats from those spans and send the stats
+to their own intake. For example, a stats group can hold a hit count for a particular service and resource.
+`compare` normally checks both outputs. The `otlp-traces-ottl-transform` case uses a collector as its baseline and
+sets `otlp_direct_analysis_mode: true`. That option checks spans only, so the step cannot declare a stats gap.
+
+If the trace counts or span IDs differ, the trace comparison stops before it checks stats. When it does compare
+stats, it checks every group, not just the first mismatch. Use these paths under `traces.known_differences`:
+
+- `stats.groups`: one intake has a group that the other lacks. Use `when` to identify the group by its fields, for
+  example `{service: [api-gateway]}`.
+- `stats.<field>`: both intakes have the group, but a field differs. For example, `stats.hits` covers a difference
+  in the hit count. A field path also covers differences inside that field, such as a value inside a sketch.
+
+### A gap, an ignored field, or a difference by design?
+
+For a string HTTP status code, the Agent sends both the text and the number. ADP sends only the number. While
+[this gap][status-issue] is open, `otlp-traces` lists `meta.http.status_code` in `additional_span_ignore_fields`.
+That skips the field on every span. Unlike a known difference, it gives no signal when the field starts matching.
+
+If the outputs differ by design, compare what should agree. For example, the Agent and ADP each set a log timestamp
+when they encode the log. Panoramic checks that the timestamps are within a minute of each other rather than treating
+their difference as a defect.
+
+[status-issue]: https://github.com/DataDog/saluki/issues/3433
