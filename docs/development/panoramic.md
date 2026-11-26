@@ -533,14 +533,9 @@ For logs, `logs.min_count` sets the minimum number of records per intake. If you
 For traces, set expectations under `traces`:
 
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
-- `spans`: a list of spans that each side must hold. An entry has a `service` and a `name`, a `resource` or `meta`
-  tags, and a side must hold a span that matches every field that the entry sets. The `name` is the operation name. See
-  [Assert the tags of a span](#assert-the-tags-of-a-span).
-- `absent`: a list of spans that neither side may hold. An entry has a `service`, and a `name`, a `resource` or both. It
-  takes no `meta` and no `side`: the step rejects them, since a span that must not exist has no tags to check, and both
-  sides must drop it. A failure names the side that holds a span that meets an entry. Name a span that both sides drop,
-  and name a span of the same service in `spans`, one that both sides hold, so that the check can't pass because the
-  whole service is missing. The step rejects an `absent` entry whose service has no entry in `spans` without `side`.
+- `spans`: select spans by `service` and optionally by `name` (the operation name) or `resource`. Each entry needs
+  at least one of `name`, `resource` or `meta`. See [Check span tags at each intake](#check-span-tags-at-each-intake).
+- `absent`: spans that neither intake may hold. See [Check that both sides drop a span](#check-that-both-sides-drop-a-span).
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
   The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
@@ -567,37 +562,45 @@ For example, `test/correctness/cases/otlp-traces-stats/config.yaml` requires at 
 Its `spans` entries also check that the named probe spans arrived. Neither check proves that a span counted toward
 the right group. The [group comparison](#why-one-span-can-produce-two-group-differences) tests that separately.
 
-#### Assert the tags of a span
+#### Check span tags at each intake
 
-Two sides that both leak a secret are equal, so a case that must show a scrubbed value sets `meta` on an entry of
-`spans`. `meta` maps the key of a tag to what its value must be:
-
-- a string: the value must equal it.
-- a map of `equals`, `not_contains` or both: the value must equal `equals`, and must not hold `not_contains`.
-
-A tag that the span lacks fails every expectation. The `service`, the `name` and the `resource` select the spans that
-must hold the tags, and a side meets the entry only if it holds at least one selected span and every selected span holds
-the tags. A second span that leaks what the first one scrubs fails the entry. Give a probe a service of its own anyway,
-so that a field that a side should scrub can't hide the probe. A failure names the side, the entry and the tags that the
-selected spans hold wrong, with their values.
+If ADP and the Agent both leave a password in a URL, their spans can match. The `otlp-traces-obfuscation` case
+checks the scrubbed URL itself, not just whether the intakes agree:
 
 ```yaml
 spans:
-  - service: probe-obf-sql-simple
-    name: postgresql.query
-    resource: SELECT id FROM obf_simple WHERE token = ?
-    meta:
-      db.system: postgresql
-      db.statement: {equals: "SELECT id FROM obf_simple WHERE token = ?", not_contains: canary-7f3a}
+  - service: probe-obf-url-full-userinfo
+    name: client.request
+    meta: {http.url: "https://example.com/obf/full?page=2"}
 ```
 
-An entry applies to both sides. Set `side: baseline` or `side: comparison` to hold one side to a value that the other
-side does not yet produce, and cover the difference with a known difference that names the issue. The step also checks
-an entry with `side` against the other side, and fails if that side meets it too: the entry then needs no `side`. So the
-one-sided entry goes stale with the known difference when the issue is fixed, and the step tells you to drop `side`.
+The service and operation name select the spans. Each intake must hold at least one, and **every** selected span
+must have that `http.url`. One clean span cannot hide a second span with the password. A failure names the intake
+and the entry, and shows which tags are missing or have a wrong value.
 
-To record a gap that both sides share, such as a leak that an issue tracks, pin the value that both sides send today in
-an entry without `side`. A fix on either side fails the entry, and the entry must then take the scrubbed value.
+A string in `meta` means exact equality. A map can set `equals`, `not_contains` or both. For example,
+`{not_contains: canary-7f3a}` rejects a tag that contains the fixture's secret. A missing tag fails this check too.
+
+#### When only one side meets an expectation
+
+The same case sends a SQL statement with a literal. The Agent scrubs the `db.statement` tag; ADP keeps the literal.
+Here the case requires the scrubbed text on the Agent's intake:
+
+```yaml
+spans:
+  - side: baseline
+    service: probe-obf-sql-simple
+    meta: {db.statement: "SELECT id FROM obf_simple WHERE token = ? AND n = ?"}
+```
+
+`side` belongs to the expectation. Use `baseline` for the Agent, `comparison` for ADP, or omit it to require both.
+It does not excuse a difference between the intakes. A separate [known difference](#known-differences) covers
+`span.meta.db.statement` for the affected services. If ADP starts meeting the expectation too, the step fails and
+tells you to remove `side`. Both intakes must then keep sending the scrubbed value.
+
+If both sides leak the same value, there is no difference for a `known_differences` entry to match. For example,
+the case records the raw command both send under [issue #3451](https://github.com/DataDog/saluki/issues/3451).
+That expectation records the defect, not a successful scrub. When either side fixes it, the expectation must change.
 
 #### Check that both sides drop a span
 
@@ -612,8 +615,9 @@ absent:
 ```
 
 `absent` selects by `service` and at least one of `name` or `resource`. If either intake has a matching span, the
-failure names that side. Panoramic requires a `spans` entry for the same service: if the fixture sends nothing,
-the absent span alone would look like a successful drop. This is an expectation on each intake, not a known difference.
+failure names that side. An `absent` entry takes neither `meta` nor `side`: there should be no span to inspect on
+*either* side. Its control must be a `spans` entry for the same service without `side`. Otherwise a fixture that
+sends nothing to one intake could look like a successful drop.
 
 ### When the intakes hold different sets
 
