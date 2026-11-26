@@ -188,6 +188,24 @@ impl Span {
         self.meta.get(meta_key).map(|s| &**s)
     }
 
+    /// Returns the sampling priority of the trace chunk that holds this span.
+    pub fn priority(&self) -> i32 {
+        self.trace_chunk_metadata.priority
+    }
+
+    /// Returns whether the trace chunk that holds this span is marked as dropped.
+    ///
+    /// A chunk marked as dropped still reaches the intake when it holds only the spans of analytics events, or when
+    /// error tracking standalone mode forwards a trace without an error.
+    pub fn dropped_trace(&self) -> bool {
+        self.trace_chunk_metadata.dropped_trace
+    }
+
+    /// Returns the value of the tag of the given key on the trace chunk that holds this span, if it exists.
+    pub fn chunk_tag(&self, tag_key: &str) -> Option<&str> {
+        self.trace_chunk_metadata.tags.get(tag_key).map(|s| &**s)
+    }
+
     /// Gets all spans from the classic and indexed tracer payloads in the given `AgentPayload`.
     pub fn get_spans_from_agent_payload(payload: &proto::AgentPayload) -> Vec<Self> {
         let agent_metadata = AgentMetadata::from(payload);
@@ -588,9 +606,10 @@ fn etp_anyvalue_to_array_attr(v: &etp_proto::AnyValue, strings: &[String]) -> Op
 #[cfg(test)]
 mod tests {
     use saluki_common::collections::FastHashMap;
+    use serde_json::json;
     use stringtheory::MetaString;
 
-    use super::{normalize_tracer_tags, CONTAINER_TAGS_KEY};
+    use super::{normalize_tracer_tags, Span, CONTAINER_TAGS_KEY};
 
     fn tags(pairs: &[(&str, &str)]) -> FastHashMap<MetaString, MetaString> {
         pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
@@ -616,5 +635,36 @@ mod tests {
         let original = tags(&[("_dd.p.dm", "b,a")]);
 
         assert_eq!(normalize_tracer_tags(original.clone()), original);
+    }
+
+    fn span_in_chunk(priority: i32, dropped_trace: bool, tags: &serde_json::Value) -> Span {
+        serde_json::from_value(json!({
+            "agent_metadata": {
+                "hostname": "", "env": "", "tags": {}, "agent_version": "", "target_tps": 10.0, "error_tps": 10.0,
+                "rare_sampler_enabled": false,
+            },
+            "tracer_metadata": {
+                "container_id": "", "language_name": "", "language_version": "", "tracer_version": "",
+                "runtime_id": "", "tags": {}, "env": "", "hostname": "", "app_version": "",
+            },
+            "trace_chunk_metadata": {"priority": priority, "origin": "", "tags": tags, "dropped_trace": dropped_trace},
+            "service": "svc", "name": "op", "resource": "res", "trace_id": 1, "span_id": 2, "parent_id": 0,
+            "start": 0, "duration": 1, "error": 0, "meta": {}, "metrics": {}, "type_": "", "meta_struct": {},
+            "span_links": [], "span_events": [],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_span_reports_the_priority_the_drop_mark_and_the_tags_of_its_chunk() {
+        let span = span_in_chunk(-1, true, &json!({"_dd.p.dm": "-4", "_dd.otlp_sr": "0.50"}));
+
+        assert_eq!(span.priority(), -1);
+        assert!(span.dropped_trace());
+        assert_eq!(span.chunk_tag("_dd.p.dm"), Some("-4"));
+        assert_eq!(span.chunk_tag("_dd.otlp_sr"), Some("0.50"));
+        assert_eq!(span.chunk_tag("_dd.missing"), None);
+        // A chunk tag is not a tag of the span.
+        assert_eq!(span.get_meta_field("_dd.p.dm"), None);
     }
 }

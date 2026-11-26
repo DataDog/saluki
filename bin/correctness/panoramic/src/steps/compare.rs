@@ -1330,7 +1330,7 @@ mod tests {
         assert!(
             report.message.contains(
                 "The comparison holds no span that meets `spans[0]` (service=db, name=db.query, meta.sql.query = \
-                 SELECT ?): 1 span(s) have that service, name and resource, and 1 fail `meta`: span 11 has \
+                 SELECT ?): 1 span(s) have that service, name and resource, and 1 hold a field wrong: span 11 has \
                  `meta.sql.query` is `SELECT 'canary'`, not `SELECT ?`."
             ),
             "{}",
@@ -1491,13 +1491,155 @@ mod tests {
                 .contains("The comparison holds no span that meets `spans[0]`")
                 && report
                     .message
-                    .contains("2 span(s) have that service, name and resource, and 1 fail `meta`")
+                    .contains("2 span(s) have that service, name and resource, and 1 hold a field wrong")
                 && report.message.contains("span 12 has `meta.sql.query`")
                 && !report.message.contains("span 11 has"),
             "{}",
             report.message
         );
         assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+    }
+
+    /// The fixture spans with the chunk of the span `span_id` set to `priority`, the drop mark `dropped_trace` and
+    /// `tags`.
+    fn spans_in_chunk(span_id: u64, priority: i32, dropped_trace: bool, tags: Value) -> Vec<Value> {
+        let mut spans = fixture_spans(false);
+        for span in spans.iter_mut().filter(|span| span["span_id"] == span_id) {
+            span["trace_chunk_metadata"] = json!({
+                "priority": priority, "origin": "", "tags": tags, "dropped_trace": dropped_trace,
+            });
+        }
+        spans
+    }
+
+    #[tokio::test]
+    async fn a_chunk_that_each_side_holds_as_expected_passes() {
+        let kept = tracing(spans_in_chunk(11, 2, true, json!({"_dd.p.dm": "-4"})), &[]);
+
+        let fields = direct(
+            "spans: [{service: db, name: db.query, priority: 2, dropped_trace: true, \
+             chunk_tags: {_dd.p.dm: '-4'}}, {service: api, name: web.request, priority: 1, dropped_trace: false}]",
+        );
+        let report = compare(&fields, &kept, &kept).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // A chunk tag takes the same checks as a `meta` tag.
+        let fields = direct(
+            "spans: [{service: db, name: db.query, chunk_tags: {_dd.p.dm: {equals: '-4', not_contains: '-9'}}}]",
+        );
+        let report = compare(&fields, &kept, &kept).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn a_chunk_that_a_side_holds_wrong_fails_the_spans_check_and_shows_each_field() {
+        let dropped = tracing(spans_in_chunk(11, 0, true, json!({"_dd.p.dm": "-9"})), &[]);
+        let kept = tracing(spans_in_chunk(11, 1, false, json!({"_dd.p.dm": "-9"})), &[]);
+        let fields = direct(
+            "spans: [{service: db, name: db.query, priority: 1, dropped_trace: false, chunk_tags: {_dd.p.dm: '-9'}}]",
+        );
+
+        // One side holds the chunk wrong: only that side is named, with each field that it holds wrong.
+        let report = compare(&fields, &dropped, &kept).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "The comparison holds no span that meets `spans[0]` (service=db, name=db.query, priority=1, \
+                 dropped_trace=false, chunk_tags._dd.p.dm = -9): 1 span(s) have that service, name and resource, \
+                 and 1 hold a field wrong: span 11 has `priority` is `0`, not `1` and `dropped_trace` is `true`, not `false`."
+            ),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+
+        // Both sides hold it wrong: the equality of the sides does not excuse it.
+        let report = compare(&fields, &dropped, &dropped).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        for side in ["baseline", "comparison"] {
+            assert!(
+                report
+                    .message
+                    .contains(&format!("The {} holds no span that meets `spans[0]`", side)),
+                "{}: {}",
+                side,
+                report.message
+            );
+        }
+
+        // A tag that the chunk lacks, and one with another value, fail too.
+        let untagged = tracing(spans_in_chunk(11, 1, false, json!({"_dd.p.dm": "-4"})), &[]);
+        let bare = tracing(fixture_spans(false), &[]);
+        let fields =
+            direct("spans: [{service: db, name: db.query, chunk_tags: {_dd.p.dm: '-9', _dd.otlp_sr: '0.50'}}]");
+        let report = compare(&fields, &untagged, &bare).await;
+        assert!(
+            report.message.contains(
+                "span 11 has `chunk_tags._dd.otlp_sr` is missing and `chunk_tags._dd.p.dm` is `-4`, not `-9`"
+            ),
+            "{}",
+            report.message
+        );
+        assert!(
+            report
+                .message
+                .contains("span 11 has `chunk_tags._dd.otlp_sr` is missing and `chunk_tags._dd.p.dm` is missing"),
+            "{}",
+            report.message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chunk_expectation_holds_every_span_that_it_selects() {
+        // Two spans of the same service and name, in different chunks.
+        let both = |first: i32, second: i32| {
+            let mut spans = spans_in_chunk(10, first, false, json!({}));
+            spans.push({
+                let mut span = span_json("api", "web.request", "GET /y", 3, 30, false);
+                span["trace_chunk_metadata"]["priority"] = json!(second);
+                span
+            });
+            tracing(spans, &[])
+        };
+        let fields = direct("spans: [{service: api, name: web.request, priority: 1}]");
+
+        let report = compare(&fields, &both(1, 1), &both(1, 1)).await;
+        assert_eq!(report.status, StepStatus::Passed, "{}", report.message);
+
+        // One chunk of priority 1 does not excuse a chunk of priority 0 in the same service and name.
+        let report = compare(&fields, &both(1, 0), &both(1, 1)).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains("span 30 has `priority` is `0`, not `1`"),
+            "{}",
+            report.message
+        );
+        assert!(!report.message.contains("span 10 has"), "{}", report.message);
+        assert!(!report.message.contains("The baseline holds"), "{}", report.message);
+    }
+
+    #[tokio::test]
+    async fn an_entry_with_a_side_holds_the_chunk_of_that_side_only() {
+        let dropped = tracing(spans_in_chunk(11, 0, false, json!({})), &[]);
+        let kept = tracing(spans_in_chunk(11, 1, false, json!({})), &[]);
+        let fields = direct("spans: [{service: db, name: db.query, side: baseline, priority: 0}]");
+
+        // The baseline keeps the chunk at priority 0, and the comparison at priority 1, as a known difference says.
+        let report = compare(&fields, &kept, &dropped).await;
+        assert!(!report.message.contains("holds no span"), "{}", report.message);
+        assert!(!report.message.contains("Drop `side`"), "{}", report.message);
+
+        // Both sides hold priority 0, so the entry no longer needs `side`.
+        let report = compare(&fields, &dropped, &dropped).await;
+        assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
+        assert!(
+            report.message.contains(
+                "The comparison meets `spans[0]` (service=db, name=db.query, priority=0) too, but the entry is \
+                 `side: baseline`. Drop `side`"
+            ),
+            "{}",
+            report.message
+        );
     }
 
     #[tokio::test]
@@ -1667,13 +1809,41 @@ mod tests {
                 "{telemetry: traces, comparison: app, baseline: peer, \
                  traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
                  absent: [{service: api, name: x, meta: {k: {not_contains: c}}}]}}",
-                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta` and no `side`",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta`, no chunk check",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, \
                  traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
                  absent: [{service: api, name: x, side: baseline}]}}",
-                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta` and no `side`",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta`, no chunk check",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
+                 absent: [{service: api, name: x, priority: 0}]}}",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta`, no chunk check",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
+                 absent: [{service: api, name: x, dropped_trace: true}]}}",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta`, no chunk check",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x}], \
+                 absent: [{service: api, name: x, chunk_tags: {k: v}}]}}",
+                "an `absent` span of service 'api' takes a `name` and a `resource`, but no `meta`, no chunk check",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x, priority: high}]}}",
+                "invalid type: string \"high\", expected i32",
+            ),
+            (
+                "{telemetry: traces, comparison: app, baseline: peer, \
+                 traces: {min_stats_groups: 1, spans: [{service: api, name: x, chunk_tags: {k: {}}}]}}",
+                "a `meta` expectation needs `equals` or `not_contains`",
             ),
             (
                 "{telemetry: traces, comparison: app, baseline: peer, \

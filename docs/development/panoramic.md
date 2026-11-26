@@ -538,6 +538,8 @@ For traces, set expectations under `traces`:
   below the minimum of the same name.
 - `spans`: select spans by `service` and optionally by `name` (the operation name) or `resource`. Each entry needs
   at least one of `name`, `resource` or `meta`. See [Check span tags at each intake](#check-span-tags-at-each-intake).
+  An entry can also check the trace chunk that holds each span. See
+  [Check the sampling decision of a span](#check-the-sampling-decision-of-a-span).
 - `absent`: spans that neither intake may hold. See [Check that both sides drop a span](#check-that-both-sides-drop-a-span).
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
@@ -584,6 +586,30 @@ and the entry, and shows which tags are missing or have a wrong value.
 
 A string in `meta` means exact equality. A map can set `equals`, `not_contains` or both. For example,
 `{not_contains: canary-7f3a}` rejects a tag that contains the fixture's secret. A missing tag fails this check too.
+
+#### Check the sampling decision of a span
+
+An intake receives each span in a trace chunk. The chunk has a sampling `priority`, a `dropped_trace` mark and tags. A
+sampler that keeps every trace on both sides sends equal spans, so a comparison cannot see it. A `spans` entry can set
+these fields of the chunk:
+
+```yaml
+spans:
+  - service: probe-sampling
+    name: otlpprobe.tsamp.002.keep
+    priority: 1
+    dropped_trace: false
+    chunk_tags: {_dd.otlp_sr: "0.50"}
+```
+
+- `priority`: the sampling priority of the chunk, for example `1` for an automatic keep.
+- `dropped_trace`: whether the chunk is marked as dropped. A side still sends a dropped chunk when it holds the spans
+  of an analytics event, or when error tracking standalone mode forwards a trace without an error.
+- `chunk_tags`: the tags of the chunk, with the same values as `meta`: a string for an exact value, or a map of
+  `equals` and `not_contains`. A missing tag fails the entry.
+
+As for `meta`, every span that the entry selects must meet these fields. `side` applies to them too. An `absent` entry
+takes none of them.
 
 #### When only one side meets an expectation
 

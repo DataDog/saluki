@@ -130,13 +130,14 @@ pub struct TracesOptions {
 
     /// Spans that each side must hold, one entry for each. An entry has a `service`, and a `name`, a `resource`, `meta`
     /// tags or any of them, and a span of the side must match every field of the entry. A `meta` tag names its key, and
-    /// the value that it must equal or must not contain. An entry applies to both sides, unless it sets `side` to
-    /// `baseline` or `comparison`.
+    /// the value that it must equal or must not contain. An entry can also set the `priority`, the `dropped_trace` mark
+    /// and the `chunk_tags` of the trace chunk that holds each selected span. An entry applies to both sides, unless it
+    /// sets `side` to `baseline` or `comparison`.
     #[serde(default)]
     pub spans: Vec<ExpectedSpan>,
 
     /// Spans that neither side may hold, one entry for each. An entry has a `service`, and a `name`, a `resource` or
-    /// both. It takes no `meta` and no `side`: both sides must drop the span.
+    /// both. It takes no `meta`, no chunk field and no `side`: both sides must drop the span.
     ///
     /// Name a span that both sides drop, and name a span of the same service in `spans`, one that both sides hold, so
     /// that the check can't pass because the whole service is missing. The step rejects an entry whose service has no

@@ -220,12 +220,13 @@ impl TracesExpectations {
     }
 }
 
-/// A span that a side must hold, by its service, its operation name, its resource and its `meta` tags.
+/// A span that a side must hold, by its service, its operation name, its resource, its `meta` tags and its chunk.
 ///
-/// The service, the name and the resource select the spans of a side, and the `meta` expectations say what every
-/// selected span must hold. A side meets the entry when it selects at least one span and every selected span meets the
-/// `meta` expectations, so a second span that leaks what the first one scrubbed fails it. A failure names the tags that
-/// a selected span holds wrong, so a field that a side should have scrubbed shows its value.
+/// The service, the name and the resource select the spans of a side, and the other fields say what every selected
+/// span must hold: the `meta` tags of the span, and the `priority`, the `dropped_trace` mark and the `chunk_tags` of the
+/// trace chunk that holds it. A side meets the entry when it selects at least one span and every selected span meets
+/// every one of them, so a second span that leaks what the first one scrubbed fails it. A failure names the fields
+/// that a selected span holds wrong, so a field that a side should have scrubbed shows its value.
 ///
 /// An entry applies to both sides, unless it sets `side`. A side-specific entry holds one side to a value that the
 /// other side does not yet produce, while a known difference covers the gap between them. When the other side meets the
@@ -237,14 +238,17 @@ pub struct ExpectedSpan {
     name: Option<String>,
     resource: Option<String>,
     meta: BTreeMap<String, MetaExpectation>,
+    priority: Option<i32>,
+    dropped_trace: Option<bool>,
+    chunk_tags: BTreeMap<String, MetaExpectation>,
     side: Option<Side>,
 }
 
 /// A span that neither side may hold, by its service, its operation name and its resource.
 ///
 /// A span meets the entry when it has the service, and the name and the resource if the entry sets them. The entry
-/// takes no `meta` and no `side`: `not_contains` would turn around, since it holds a tag that is present and lacks the
-/// value, and a span that one side drops is one that both sides drop.
+/// takes no `meta`, no chunk field and no `side`: `not_contains` would turn around, since it holds a tag that is
+/// present and lacks the value, and a span that one side drops is one that both sides drop.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "ExpectedSpanFields")]
 pub struct AbsentSpan(ExpectedSpan);
@@ -253,10 +257,11 @@ impl TryFrom<ExpectedSpanFields> for AbsentSpan {
     type Error = String;
 
     fn try_from(fields: ExpectedSpanFields) -> Result<Self, Self::Error> {
-        if !fields.meta.is_empty() || fields.side.is_some() {
+        if !fields.meta.is_empty() || fields.has_chunk_checks() || fields.side.is_some() {
             return Err(format!(
-                "an `absent` span of service '{}' takes a `name` and a `resource`, but no `meta` and no `side`: a \
-                 span that must not exist has no tags to check, and both sides must drop it",
+                "an `absent` span of service '{}' takes a `name` and a `resource`, but no `meta`, no chunk check \
+                 (`priority`, `dropped_trace` or `chunk_tags`) and no `side`: a span that must not exist has no tags \
+                 to check, and both sides must drop it",
                 fields.service
             ));
         }
@@ -319,7 +324,20 @@ struct ExpectedSpanFields {
     #[serde(default)]
     meta: BTreeMap<String, MetaExpectation>,
     #[serde(default)]
+    priority: Option<i32>,
+    #[serde(default)]
+    dropped_trace: Option<bool>,
+    #[serde(default)]
+    chunk_tags: BTreeMap<String, MetaExpectation>,
+    #[serde(default)]
     side: Option<Side>,
+}
+
+impl ExpectedSpanFields {
+    /// Returns whether the entry checks the trace chunk of the span.
+    fn has_chunk_checks(&self) -> bool {
+        self.priority.is_some() || self.dropped_trace.is_some() || !self.chunk_tags.is_empty()
+    }
 }
 
 impl TryFrom<ExpectedSpanFields> for ExpectedSpan {
@@ -339,6 +357,9 @@ impl TryFrom<ExpectedSpanFields> for ExpectedSpan {
             name: fields.name,
             resource: fields.resource,
             meta: fields.meta,
+            priority: fields.priority,
+            dropped_trace: fields.dropped_trace,
+            chunk_tags: fields.chunk_tags,
             side: fields.side,
         })
     }
@@ -375,26 +396,39 @@ impl ExpectedSpan {
                 .is_none_or(|resource| span.resource() == resource)
     }
 
-    /// Returns a line for each `meta` tag of `span` that the expectation leaves unmet.
-    fn meta_mismatches(&self, span: &Span) -> Vec<String> {
-        self.meta
-            .iter()
-            .filter_map(|(key, expected)| {
+    /// Returns whether the entry checks more of a selected span than its service, name and resource.
+    fn checks_selected_spans(&self) -> bool {
+        !self.meta.is_empty() || self.priority.is_some() || self.dropped_trace.is_some() || !self.chunk_tags.is_empty()
+    }
+
+    /// Returns a line for each `meta` tag, and each field of the chunk, of `span` that the expectation leaves unmet.
+    fn mismatches(&self, span: &Span) -> Vec<String> {
+        let mut mismatches = tag_mismatches("meta", &self.meta, |key| span.get_meta_field(key));
+        if let Some(expected) = self.priority.filter(|expected| *expected != span.priority()) {
+            mismatches.push(format!("`priority` is `{}`, not `{}`", span.priority(), expected));
+        }
+        if let Some(expected) = self.dropped_trace.filter(|expected| *expected != span.dropped_trace()) {
+            mismatches.push(format!(
+                "`dropped_trace` is `{}`, not `{}`",
+                span.dropped_trace(),
                 expected
-                    .mismatch(span.get_meta_field(key))
-                    .map(|mismatch| format!("`meta.{}` {}", key, mismatch))
-            })
-            .collect()
+            ));
+        }
+        mismatches.extend(tag_mismatches("chunk_tags", &self.chunk_tags, |key| {
+            span.chunk_tag(key)
+        }));
+        mismatches
     }
 
     /// Returns whether the spans of one side meet the expectation: it selects a span, and every selected span meets
-    /// the `meta` expectations.
+    /// the `meta` and chunk expectations.
     fn is_met_by_side(&self, spans: &HashMap<u64, Span>) -> bool {
         let mut selected = spans.values().filter(|span| self.selects(span)).peekable();
-        selected.peek().is_some() && selected.all(|span| self.meta_mismatches(span).is_empty())
+        selected.peek().is_some() && selected.all(|span| self.mismatches(span).is_empty())
     }
 
-    /// Writes the expectation as `service=.., name=.., resource=.., meta.<key> ..`, leaving out what it doesn't set.
+    /// Writes the expectation as `service=.., name=.., resource=.., meta.<key> ..`, followed by the chunk fields as
+    /// `priority=..`, `dropped_trace=..` and `chunk_tags.<key> ..`, leaving out what it doesn't set.
     fn describe(&self) -> String {
         let mut parts = vec![format!("service={}", self.service)];
         if let Some(name) = &self.name {
@@ -406,25 +440,34 @@ impl ExpectedSpan {
         for (key, expected) in &self.meta {
             parts.push(format!("meta.{} {}", key, expected.describe()));
         }
+        if let Some(priority) = self.priority {
+            parts.push(format!("priority={}", priority));
+        }
+        if let Some(dropped_trace) = self.dropped_trace {
+            parts.push(format!("dropped_trace={}", dropped_trace));
+        }
+        for (key, expected) in &self.chunk_tags {
+            parts.push(format!("chunk_tags.{} {}", key, expected.describe()));
+        }
         parts.join(", ")
     }
 
     /// Says what the spans that the expectation selects hold, to show how close a side came.
     ///
-    /// If a span has the service, the name and the resource, it says which `meta` tags of each such span are wrong.
-    /// Otherwise it lists the fields that the expectation sets: the names, the resources, or both as `name/resource`
-    /// pairs.
+    /// If a span has the service, the name and the resource, it says which `meta` tags and chunk fields are wrong, for
+    /// each such span that holds one wrong. Otherwise it lists the fields that the expectation sets: the names, the
+    /// resources, or both as `name/resource` pairs.
     fn describe_held(&self, spans: &HashMap<u64, Span>) -> String {
         let selected = spans.iter().filter(|(_, span)| self.selects(span)).collect::<Vec<_>>();
-        if self.meta.is_empty() || selected.is_empty() {
+        if !self.checks_selected_spans() || selected.is_empty() {
             return self.describe_service(spans);
         }
 
-        // List only the spans that fail: a span that meets `meta` has nothing to show, and listing it could push the
-        // leaking span past `MAX_LISTED`.
+        // List only the spans that fail: a span that meets the entry has nothing to show, and listing it could push the
+        // span that fails past `MAX_LISTED`.
         let mut failing = selected
             .iter()
-            .map(|(span_id, span)| (**span_id, self.meta_mismatches(span)))
+            .map(|(span_id, span)| (**span_id, self.mismatches(span)))
             .filter(|(_, mismatches)| !mismatches.is_empty())
             .collect::<Vec<_>>();
         failing.sort_by_key(|(span_id, _)| *span_id);
@@ -434,7 +477,7 @@ impl ExpectedSpan {
             .map(|(span_id, mismatches)| format!("span {} has {}", span_id, mismatches.join(" and ")))
             .collect::<Vec<_>>();
         format!(
-            "{} span(s) have that service, name and resource, and {} fail `meta`: {}{}",
+            "{} span(s) have that service, name and resource, and {} hold a field wrong: {}{}",
             selected.len(),
             failing.len(),
             listed.join("; "),
@@ -478,7 +521,23 @@ impl ExpectedSpan {
     }
 }
 
-/// What a span must hold in one `meta` tag: the whole value, or a part that the value must not hold.
+/// Returns a line for each tag of `expected` whose value in `actual` leaves it unmet. `kind` names the map of tags in
+/// the line.
+fn tag_mismatches<'a>(
+    kind: &str, expected: &BTreeMap<String, MetaExpectation>, actual: impl Fn(&str) -> Option<&'a str>,
+) -> Vec<String> {
+    expected
+        .iter()
+        .filter_map(|(key, expected)| {
+            expected
+                .mismatch(actual(key))
+                .map(|mismatch| format!("`{}.{}` {}", kind, key, mismatch))
+        })
+        .collect()
+}
+
+/// What a span must hold in one `meta` tag, or in one tag of its trace chunk: the whole value, or a part that the value
+/// must not hold.
 ///
 /// A case writes a string for a value that the tag must equal, or a map of `equals` and `not_contains`, which can set
 /// both. The tag must be present. Use `not_contains` for a secret that a side must scrub, together with `equals` for the
