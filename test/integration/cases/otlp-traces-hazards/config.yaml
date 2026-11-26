@@ -110,32 +110,18 @@ procedure:
       - "--port"
       - "{{ agent.endpoints.agent_otlp_http.port }}"
     timeout: 2m
-  # The control goes last on each arm, after every hazard.
-  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/control-adp.yaml], timeout: 2m}
-  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/control-agent.yaml], timeout: 2m}
-  # Each receiver delivers the control, and the small trace that travels with the large one. The exact counts show that
-  # nothing else arrived. The Agent also delivers the large trace, which proves that the intake can decode it.
+  # The small trace of the oversized request must reach each intake before the control goes in, and so must the 301 spans
+  # that the Agent delivers. ADP's encoder drops the large trace, or splits it from the small one, before it sends the
+  # small trace, so the arrival of the small trace shows that the large one has left the encoder. The control then goes
+  # in a later batch, and cannot share one with the large trace. A control in the same batch could land on the side of
+  # the split that ADP drops, because the translator hands traces to the encoder in hash-map order.
   - parallel:
-      - step: intake_from
-        on: intake-adp
-        telemetry: spans
-        select: {service: otlp-traces-hazards-control}
-        sender: adp
-        count: 2
-        timeout: 2m
       - step: intake_from
         on: intake-adp
         telemetry: spans
         select: {service: otlp-traces-hazards-oversized-control}
         sender: adp
         count: 1
-        timeout: 2m
-      - step: intake_from
-        on: intake-agent
-        telemetry: spans
-        select: {service: otlp-traces-hazards-control}
-        sender: trace-agent
-        count: 2
         timeout: 2m
       - step: intake_from
         on: intake-agent
@@ -150,6 +136,27 @@ procedure:
         select: {service: otlp-traces-hazards-oversized}
         sender: trace-agent
         count: 301
+        timeout: 2m
+  # The control goes last on each arm, after every hazard.
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/control-adp.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/control-agent.yaml], timeout: 2m}
+  # Each receiver delivers the control. The exact counts show that nothing else arrived. The wait above has shown that
+  # each receiver delivers the small trace that travels with the large one, and that the Agent delivers the large trace,
+  # which proves that the intake can decode it.
+  - parallel:
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: otlp-traces-hazards-control}
+        sender: adp
+        count: 2
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-traces-hazards-control}
+        sender: trace-agent
+        count: 2
         timeout: 2m
   # ADP drops a trace that is too large for one request, and the case does not assert that it arrives or that it is
   # absent. The script reads the intake of ADP, requires the control to be there, and reports the known difference, or
