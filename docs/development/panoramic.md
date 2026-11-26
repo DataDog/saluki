@@ -564,8 +564,9 @@ the right group. The [group comparison](#why-one-span-can-produce-two-group-diff
 
 #### Check span tags at each intake
 
-If ADP and the Agent both leave a password in a URL, their spans can match. The `otlp-traces-obfuscation` case
-checks the scrubbed URL itself, not just whether the intakes agree:
+If ADP and the Agent both leave a password in a URL, their spans can match.
+`test/correctness/cases/otlp-traces-obfuscation/config.yaml` checks the scrubbed URL itself, not just whether the
+intakes agree:
 
 ```yaml
 spans:
