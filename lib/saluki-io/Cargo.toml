@@ -73,6 +73,7 @@ tracing = { workspace = true }
 # Adds support for `Arc::into_unique` to recover `UniqueArc` instances.
 triomphe = { workspace = true }
 url = { workspace = true, features = ["std"] }
+zstd-safe = { version = "8.3.0", default-features = false, features = ["std"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = { workspace = true }

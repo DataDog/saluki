@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce metric compression overhead by reusing compression state and measuring V3 column compression only when serializer profiling is active.

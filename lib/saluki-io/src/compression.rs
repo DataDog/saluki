@@ -71,6 +71,45 @@ impl CompressionScheme {
     }
 }
 
+/// Compresses complete zstd frames, reusing the compression context and output storage.
+#[derive(Default)]
+pub struct ZstdFrameCompressor {
+    context: Option<(zstd_safe::CCtx<'static>, i32)>,
+    output: Vec<u8>,
+}
+
+impl ZstdFrameCompressor {
+    /// Compresses `input` into one zstd frame that declares its exact uncompressed size.
+    pub fn compress(&mut self, input: &[u8], level: Level) -> io::Result<&[u8]> {
+        // Match async-compression's zstd quality mapping. Level zero selects libzstd's default.
+        let level = match level {
+            Level::Fastest => 1,
+            Level::Best => zstd_safe::max_c_level(),
+            Level::Precise(level) => level.clamp(zstd_safe::min_c_level(), zstd_safe::max_c_level()),
+            _ => 0,
+        };
+        if self.context.is_none() {
+            let context = zstd_safe::CCtx::try_create().ok_or(io::ErrorKind::OutOfMemory)?;
+            self.context = Some((context, 0));
+        }
+        let (context, current_level) = self.context.as_mut().unwrap();
+        if level != *current_level {
+            context
+                .set_parameter(zstd_safe::CParameter::CompressionLevel(level))
+                .map_err(|code| io::Error::other(zstd_safe::get_error_name(code)))?;
+            *current_level = level;
+        }
+
+        self.output.clear();
+        self.output.reserve(zstd_safe::compress_bound(input.len()));
+        if let Err(code) = context.compress2(&mut self.output, input) {
+            self.context = None;
+            return Err(io::Error::other(zstd_safe::get_error_name(code)));
+        }
+        Ok(&self.output)
+    }
+}
+
 #[pin_project]
 pub struct CountingWriter<W> {
     #[pin]
@@ -578,5 +617,27 @@ mod tests {
         compressor.write_all(b"1234567890").await.expect("write should succeed");
 
         assert_eq!(WriteStatistics::total_written(&compressor), 10);
+    }
+
+    #[test]
+    fn reusable_compressor_emits_one_sized_frame_per_input() {
+        let mut compressor = ZstdFrameCompressor::default();
+        let long_input = b"longer zstd frame".repeat(16_384);
+        for (input, level) in [
+            (long_input.as_slice(), Level::Precise(5)),
+            (b"short frame".as_slice(), Level::Fastest),
+            (b"".as_slice(), Level::Default),
+            (long_input.as_slice(), Level::Precise(5)),
+        ] {
+            let compressed = compressor.compress(input, level).unwrap();
+            assert_eq!(zstd_safe::find_frame_compressed_size(compressed), Ok(compressed.len()));
+            assert_eq!(
+                zstd_safe::get_frame_content_size(compressed).unwrap(),
+                Some(input.len() as u64)
+            );
+            let mut decoded = vec![0; input.len()];
+            assert_eq!(zstd_safe::decompress(&mut decoded, compressed), Ok(input.len()));
+            assert_eq!(decoded, input);
+        }
     }
 }

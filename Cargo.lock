@@ -6034,6 +6034,7 @@ dependencies = [
  "triomphe",
  "url",
  "windows-sys 0.61.2",
+ "zstd-safe",
 ]
 
 [[package]]
