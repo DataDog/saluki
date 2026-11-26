@@ -21,7 +21,6 @@ clap = { workspace = true, features = ["derive", "env", "error-context", "help",
 colored = { workspace = true }
 crossterm = { workspace = true, features = ["events", "windows"] }
 futures = { workspace = true }
-go-duration = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }
 panoramic-courier = { path = "../courier" }

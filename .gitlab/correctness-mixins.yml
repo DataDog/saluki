@@ -45,7 +45,9 @@
     # Log which Agent the bundled image was built on.
     - docker pull --quiet "${BUNDLED_IMAGE}"
     - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' "${BUNDLED_IMAGE}"
-    - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui
+    # The kind setup limit is under RUNNER_SCRIPT_TIMEOUT, so panoramic reports a stalled setup before the runner kills
+    # the script. It does not matter to jobs whose cases run no pods.
+    - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui --kind-setup-timeout 10m
   after_script:
     - bash ci/tooling/report-panoramic-results.sh convert correctness "$CORRECTNESS_TEST_CASE"
     - AGENT_NIGHTLY="$PARENT_AGENT_NIGHTLY" bash ci/tooling/report-panoramic-results.sh upload

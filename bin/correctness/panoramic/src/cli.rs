@@ -7,6 +7,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use saluki_common::time::{TimeZone, Timestamp, TimestampFormat};
 
+use crate::core::case::Timeout;
 use crate::core::participant::Os;
 use crate::participant_case::Replacement;
 use crate::reporter::OutputFormat;
@@ -202,19 +203,15 @@ pub struct RunCommand {
     pub no_delete_kind_cluster: bool,
 
     /// How long setting up the kind cluster may take before the first case:
-    /// creating it, pulling the images, and loading them. Written with a unit, as in
-    /// `30m` or `1h30m`
+    /// creating it, pulling the images, and loading them. Written as a case's
+    /// `timeout` is, with one whole number and a unit (ms, s, m or h), such as `90m`
     #[arg(long, default_value = "30m", value_parser = parse_kind_setup_timeout, verbatim_doc_comment)]
     pub kind_setup_timeout: Duration,
 }
 
-/// Parses `--kind-setup-timeout`, a duration above zero.
+/// Parses `--kind-setup-timeout` the way a case's `timeout` is parsed.
 fn parse_kind_setup_timeout(text: &str) -> Result<Duration, String> {
-    let timeout = go_duration::parse_duration(text).map_err(|e| e.to_string())?;
-    if timeout.is_zero() {
-        return Err("the timeout must be greater than zero".to_string());
-    }
-    Ok(timeout)
+    text.parse::<Timeout>().map(|timeout| timeout.duration)
 }
 
 impl RunCommand {
