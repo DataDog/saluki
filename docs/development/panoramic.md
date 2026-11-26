@@ -566,29 +566,25 @@ Only logs and APM stats support these entries.
 
 ### Read a known difference
 
-The fixture for `test/correctness/cases/otlp-logs-severity-body/config.yaml` sends a log with an empty body.
-Suppose the Agent sends an empty string to its intake and ADP sends the text `"null"`. To describe that gap, add an
-entry under `logs` in the `compare` step:
+The log comparison tests in `bin/correctness/panoramic/src/steps/analysis/logs/mod.rs` use two logs with the same
+message. In `known_differences_pass_and_unknown_ones_fail`, the baseline status is `info` and the comparison status
+is `Info`. These are test inputs, not an open ADP gap. Here is how a case could allow the status values to differ:
 
 ```yaml
 logs:
-  identity_fields: [fixture_id]
   known_differences:
-    - gap: gap/as-string-coercion
-      paths: [content.message]
+    - gap: gap/status-strings
+      paths: [envelope.status]
       kinds: [value]
-      when: {fixture_id: [body-empty]}
-      reason: ADP renders an empty body as "null" instead of "".
+      reason: The two logs use different capitalization for the status.
 ```
 
-`compare` pairs the logs by `fixture_id`, so a different message does not prevent a match. The entry describes a
-mismatch, not an expected value: `reason` explains the gap to the reader. Consider three outcomes:
-
-- The messages differ for `body-empty`. The entry covers this difference. The rest of the checks still have to pass.
-- The status differs too. The entry covers only `content.message`, so the status difference fails the step unless
-  another entry explains it.
-- ADP sends the empty string. The path no longer matches a difference, so the step fails and names the **stale**
-  path. Remove it in the change that fixes the gap.
+- **Covered:** `info` and `Info` differ at `envelope.status`. This entry allows the difference. The `reason` explains
+  it to the reader; it does not restrict the rule to those two strings.
+- **Unexpected:** The test logs also differ at `content.attr.k`: one holds `1`, the other `2`. The status entry does
+  not cover that path. Unless another entry covers it, the step fails and reports the attribute.
+- **Stale:** Suppose both logs have status `info`. The status entry no longer matches a difference, so the step
+  fails. Remove the entry when the gap is fixed.
 
 Logs and trace stats use the same ratchet to enforce this last rule. Each path in each entry must match at least
 once. If a path covers several fixtures, a match on one keeps it from going stale. Keep entries narrow.
