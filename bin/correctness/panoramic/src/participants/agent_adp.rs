@@ -357,11 +357,12 @@ struct ConfigDumpArgs {
 }
 
 /// The messages that `agent-data-plane config` writes to standard error when it fails; see `cli/config.rs` in
-/// `agent-data-plane`. They hold no configuration values. Nothing else from the command's output reaches a report.
+/// `agent-data-plane` (`CLIENT_FAILED` and the constants after it). They hold no configuration values. Change both
+/// together. When `config_dump` fails, nothing else from the command's output reaches a report.
 const CONFIG_FAILURES: [&str; 4] = [
     "agent-data-plane config: cannot create the client for the secure API",
     "agent-data-plane config: the request for the configuration failed",
-    "agent-data-plane config: cannot redact the configuration response safely",
+    "agent-data-plane config: the configuration response is not valid JSON after redaction",
     "agent-data-plane config: cannot format the configuration response as JSON",
 ];
 

@@ -1,3 +1,5 @@
+use std::io::Write as _;
+
 use agent_data_plane_config_system::LoadedConfiguration;
 use argh::FromArgs;
 use saluki_common::scrubber;
@@ -7,15 +9,17 @@ use tracing::{error, info};
 use crate::cli::utils::get_api_client;
 
 // Fixed messages that `config` writes to standard error when it fails. They hold no configuration values, so callers
-// can show them. Panoramic matches these lines in `bin/correctness/panoramic/src/participants/agent_adp.rs`.
+// can show them. Panoramic matches these lines in `bin/correctness/panoramic/src/participants/agent_adp.rs`
+// (`CONFIG_FAILURES`). Change both together.
 const CLIENT_FAILED: &str = "agent-data-plane config: cannot create the client for the secure API";
 const REQUEST_FAILED: &str = "agent-data-plane config: the request for the configuration failed";
-const SCRUB_FAILED: &str = "agent-data-plane config: cannot redact the configuration response safely";
+const SCRUB_FAILED: &str = "agent-data-plane config: the configuration response is not valid JSON after redaction";
 const FORMAT_FAILED: &str = "agent-data-plane config: cannot format the configuration response as JSON";
 
-/// Writes `message` to standard error and exits with a failure code.
+/// Writes `message` to standard error, if it can, and exits with a failure code.
 fn exit_with(message: &str) -> ! {
-    eprintln!("{message}");
+    // A failed write must not change the exit status, so it is ignored. `eprintln!` would panic instead.
+    let _ = writeln!(std::io::stderr(), "{message}");
     std::process::exit(1);
 }
 

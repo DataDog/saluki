@@ -313,13 +313,7 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn config(&mut self) -> Result<String, GenericError> {
-        let uri = self.build_uri("/config", None);
-        let req = Request::get(uri).body(String::new()).expect("valid request");
-        self.client
-            .send(req)
-            .and_then(process_response_body)
-            .await
-            .and_then(body_when_success)
+        self.get_configuration("/config").await
     }
 
     /// Retrieves the translated runtime configuration of the process.
@@ -333,13 +327,28 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn config_runtime(&mut self) -> Result<String, GenericError> {
-        let uri = self.build_uri("/config/runtime", None);
+        self.get_configuration("/config/runtime").await
+    }
+
+    /// Retrieves a configuration view from `route`.
+    ///
+    /// Unlike the other requests, a non-success response is reported by its status alone: the body of an error
+    /// response can hold configuration values, and the error ends up in logs.
+    async fn get_configuration(&mut self, route: &str) -> Result<String, GenericError> {
+        let uri = self.build_uri(route, None);
         let req = Request::get(uri).body(String::new()).expect("valid request");
-        self.client
-            .send(req)
-            .and_then(process_response_body)
+        let resp = self.client.send(req).await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(generic_error!("Received non-success response ({}).", status));
+        }
+        let body = resp
+            .into_body()
+            .collect()
             .await
-            .and_then(body_when_success)
+            .error_context("Failed to read the configuration response body.")?
+            .to_bytes();
+        String::from_utf8(body.into()).error_context("Configuration response body is not valid UTF-8.")
     }
 
     /// Retrieves the tags from the workload provider.
