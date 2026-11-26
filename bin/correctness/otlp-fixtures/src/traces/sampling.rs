@@ -1,4 +1,4 @@
-//! The fixture of the `otlp-traces-sampling` case: one probe for each sampling decision.
+//! The fixtures of the `otlp-traces-sampling` and `otlp-traces-ets` cases: one probe for each sampling decision.
 //!
 //! The OTLP receiver of the Agent and of ADP keeps a trace when a hash of the low 64 bits of its trace ID falls below
 //! the sampling rate of the receiver. A fixture picks the trace ID of each probe, so that the decision of the receiver
@@ -23,11 +23,17 @@ use crate::common::{boolean, double, int, kv, string};
 /// trace before it, and that has the decision of the receiver that the probe needs.
 const SAMPLING_SEED: u32 = 0x0d00;
 
+/// The first seed of the traces of `ets_fixture`, picked as the seeds of `sampling_fixture` are.
+const ETS_SEED: u32 = 0x0e00;
+
 /// The service of most spans of `sampling_fixture`.
 const SAMPLING_SERVICE: &str = "probe-sampling";
 
 /// The service of the spans that a configured rate of event extraction names.
 const ANALYTICS_SERVICE: &str = "probe-analytics";
+
+/// The service of the spans of `ets_fixture`.
+const ETS_SERVICE: &str = "probe-ets";
 
 /// The sampling rate of the OTLP receiver in both cases, which is a sampling percentage of 50.
 const RECEIVER_RATE: f64 = 0.5;
@@ -298,6 +304,68 @@ pub fn sampling_fixture() -> Vec<u8> {
     sampling_probes().request(&[SAMPLING_SERVICE, ANALYTICS_SERVICE])
 }
 
+/// A `SERVER` span of `ETS_SERVICE` with no parent.
+fn ets_root(name: &'static str) -> ProbeSpan {
+    span_in(ETS_SERVICE, name, SpanKind::Server)
+}
+
+/// An `INTERNAL` span of `ETS_SERVICE` that is a child of the first span of its trace.
+fn ets_child(name: &'static str) -> ProbeSpan {
+    span_in(ETS_SERVICE, name, SpanKind::Internal).child_of(1)
+}
+
+/// The probes of `ets_fixture`.
+fn ets_probes() -> Probes {
+    let mut probes = Probes::new(ETS_SEED);
+
+    // TSAMP-016, TSAMP-019: error tracking standalone keeps an error trace, whatever the receiver decides, and the
+    // chunk keeps the priority that the receiver gave it.
+    probes.in_keep_range(vec![ets_root("otlpprobe.ets.016.error_keep").failed()]);
+    probes.in_drop_range(vec![ets_root("otlpprobe.ets.019.error_drop").failed()]);
+
+    // TSAMP-017: a trace without an error is not kept, but forwarded with every span, marked as dropped.
+    probes.in_keep_range(vec![
+        ets_root("otlpprobe.ets.017.plain_keep"),
+        ets_child("otlpprobe.ets.017.plain_keep_first"),
+        ets_child("otlpprobe.ets.017.plain_keep_second"),
+    ]);
+    probes.in_drop_range(vec![
+        ets_root("otlpprobe.ets.017.plain_drop"),
+        ets_child("otlpprobe.ets.017.plain_drop_first"),
+        ets_child("otlpprobe.ets.017.plain_drop_second"),
+    ]);
+
+    // TSAMP-021: an exception event makes the trace an error trace, on any span of the trace. Another event does not.
+    probes.in_drop_range(vec![
+        ets_root("otlpprobe.ets.021.exception_root").with_event(exception())
+    ]);
+    probes.in_drop_range(vec![
+        ets_root("otlpprobe.ets.021.exception_child_root"),
+        ets_child("otlpprobe.ets.021.exception_child").with_event(exception()),
+    ]);
+    probes
+        .in_drop_range(vec![ets_root("otlpprobe.ets.021.other_event")
+            .with_event(event("log", vec![kv("log.message", string("probe"))]))]);
+
+    // TSAMP-019: a user keep sets the priority and the decision maker of a trace that error tracking standalone mode
+    // does not keep, and a user drop of an error trace keeps its priority too.
+    probes.in_drop_range(vec![with_priority(ets_root("otlpprobe.ets.019.user_keep"), 2)]);
+    probes.in_keep_range(vec![with_priority(
+        ets_root("otlpprobe.ets.019.user_drop_error").failed(),
+        -1,
+    )]);
+
+    probes
+}
+
+/// Spans of the service `probe-ets`, with one probe for each decision that error tracking standalone mode makes.
+///
+/// The case that uses it sets the sampling percentage of the receiver to 50, and picks the trace IDs as for
+/// `sampling_fixture`.
+pub fn ets_fixture() -> Vec<u8> {
+    ets_probes().request(&[ETS_SERVICE])
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashSet};
@@ -320,19 +388,20 @@ mod tests {
 
     #[test]
     fn every_seed_has_the_decision_that_its_probe_needs() {
-        let probes = sampling_probes();
-        assert_eq!(probes.seeds.len(), probes.traces.len());
-        assert_eq!(probes.seeds.len(), probes.decisions.len());
-        for (seed, (rate, keeps)) in probes.seeds.iter().zip(&probes.decisions) {
-            assert_eq!(
-                sample_by_rate(u64::from(*seed), *rate),
-                *keeps,
-                "seed {seed:#x} at {rate}"
-            );
-        }
+        for probes in [sampling_probes(), ets_probes()] {
+            assert_eq!(probes.seeds.len(), probes.traces.len());
+            assert_eq!(probes.seeds.len(), probes.decisions.len());
+            for (seed, (rate, keeps)) in probes.seeds.iter().zip(&probes.decisions) {
+                assert_eq!(
+                    sample_by_rate(u64::from(*seed), *rate),
+                    *keeps,
+                    "seed {seed:#x} at {rate}"
+                );
+            }
 
-        let distinct: HashSet<u32> = probes.seeds.iter().copied().collect();
-        assert_eq!(distinct.len(), probes.seeds.len(), "two traces share a seed");
+            let distinct: HashSet<u32> = probes.seeds.iter().copied().collect();
+            assert_eq!(distinct.len(), probes.seeds.len(), "two traces share a seed");
+        }
     }
 
     /// Returns the spans of `request` in order, with the `service.name` of the resource that holds each.
@@ -363,23 +432,20 @@ mod tests {
     }
 
     #[test]
-    fn the_request_carries_the_seeds_as_the_low_halves_of_the_trace_ids() {
-        let mut trace_ids: Vec<Vec<u8>> = Vec::new();
-        for (_, span) in spans_of(&sampling_fixture()) {
-            if !trace_ids.contains(&span.trace_id) {
-                trace_ids.push(span.trace_id);
+    fn the_requests_carry_the_seeds_as_the_low_halves_of_the_trace_ids() {
+        for (probes, request) in [(sampling_probes(), sampling_fixture()), (ets_probes(), ets_fixture())] {
+            let mut trace_ids: Vec<Vec<u8>> = Vec::new();
+            for (_, span) in spans_of(&request) {
+                if !trace_ids.contains(&span.trace_id) {
+                    trace_ids.push(span.trace_id);
+                }
             }
-        }
-        let expected: Vec<Vec<u8>> = sampling_probes()
-            .seeds
-            .iter()
-            .map(|&seed| super::super::trace_id(seed))
-            .collect();
+            let mut expected: Vec<Vec<u8>> = probes.seeds.iter().map(|&seed| super::super::trace_id(seed)).collect();
 
-        trace_ids.sort();
-        let mut expected = expected;
-        expected.sort();
-        assert_eq!(trace_ids, expected);
+            trace_ids.sort();
+            expected.sort();
+            assert_eq!(trace_ids, expected);
+        }
     }
 
     /// The number of spans of each name in `request`.
@@ -430,6 +496,50 @@ mod tests {
                 ("otlpprobe.tsamp.045.mixed", 2),
             ]
         );
+
+        // The names of the ETS case follow the same rule, and no name repeats.
+        let names = names_of(&ets_fixture());
+        assert!(names.keys().all(|name| name.starts_with("otlpprobe.ets.")), "{names:?}");
+        assert!(names.values().all(|count| *count == 1), "{names:?}");
+    }
+
+    #[test]
+    fn ets_fixture_counts_match_the_case() {
+        // The `otlp-traces-ets` case expects every trace and every span, and a stats group for each name of a span that
+        // is top-level.
+        let spans = spans_of(&ets_fixture());
+        let traces: HashSet<Vec<u8>> = spans.iter().map(|(_, span)| span.trace_id.clone()).collect();
+        assert_eq!(traces.len(), 9);
+        assert_eq!(spans.len(), 14);
+        assert!(spans.iter().all(|(service, _)| service == ETS_SERVICE));
+        assert_eq!(
+            spans.iter().filter(|(_, span)| span.parent_span_id.is_empty()).count(),
+            9
+        );
+    }
+
+    #[test]
+    fn the_ets_probes_carry_the_events_and_priorities_that_they_test() {
+        let spans = spans_of(&ets_fixture());
+        let span = |name: &str| spans.iter().find(|(_, span)| span.name == name).unwrap().1.clone();
+        let priority = |span: &Span| {
+            span.attributes
+                .iter()
+                .find(|attribute| attribute.key == PRIORITY)
+                .and_then(|attribute| attribute.value.as_ref()?.value.clone())
+        };
+
+        assert_eq!(span("otlpprobe.ets.021.exception_root").events[0].name, "exception");
+        assert_eq!(span("otlpprobe.ets.021.exception_child").events[0].name, "exception");
+        assert!(span("otlpprobe.ets.021.exception_child_root").events.is_empty());
+        assert_eq!(span("otlpprobe.ets.021.other_event").events[0].name, "log");
+        assert!(span("otlpprobe.ets.021.other_event").status.is_none());
+        assert_eq!(priority(&span("otlpprobe.ets.019.user_keep")), Some(Value::IntValue(2)));
+        assert_eq!(
+            priority(&span("otlpprobe.ets.019.user_drop_error")),
+            Some(Value::IntValue(-1))
+        );
+        assert_eq!(span("otlpprobe.ets.016.error_keep").status.unwrap().code, 2);
     }
 
     #[test]

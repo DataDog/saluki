@@ -20,7 +20,7 @@ mod sampling;
 
 pub use self::conversion::conversion_fixture;
 pub use self::obfuscation::obfuscation_fixture;
-pub use self::sampling::sampling_fixture;
+pub use self::sampling::{ets_fixture, sampling_fixture};
 
 /// 2023-11-14T22:13:20Z, in nanoseconds.
 const BASE_TIME_NANOS: u64 = 1_700_000_000_000_000_000;
