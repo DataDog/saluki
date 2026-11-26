@@ -36,7 +36,7 @@ def spec_text(known=None, expect=None):
 
 
 def known(**got):
-    return {"side": "adp", "issue": "ISSUE_UNIT", "reason": "A reason.", "got": got}
+    return {"side": "adp", "gap": "gap/unit", "issue": 9, "reason": "A reason.", "got": got}
 
 
 def answer(status=200, body=b"", **headers):
@@ -65,7 +65,10 @@ class DecodeTest(unittest.TestCase):
         self.assert_rejected(spec_text([known(headers={"content-type": PB})]), "has the value of expect")
         self.assert_rejected(spec_text([known(body="")]), "got.body: has the value of expect")
 
-    def test_a_known_entry_needs_an_issue_and_a_reason(self):
+    def test_a_known_entry_needs_a_gap_an_issue_and_a_reason(self):
+        entry = known(status=500)
+        del entry["gap"]
+        self.assert_rejected(spec_text([entry]), "missing key gap")
         entry = known(status=500)
         del entry["issue"]
         self.assert_rejected(spec_text([entry]), "missing key issue")
@@ -73,16 +76,26 @@ class DecodeTest(unittest.TestCase):
         del entry["reason"]
         self.assert_rejected(spec_text([entry]), "missing key reason")
         entry = known(status=500)
-        entry["issue"] = "soon"
-        self.assert_rejected(spec_text([entry]), "expected an issue number")
-        entry["issue"] = 0
-        self.assert_rejected(spec_text([entry]), "expected an issue number")
 
-    def test_a_known_entry_takes_a_number_or_a_placeholder(self):
+    def test_a_known_entry_takes_a_positive_issue_number(self):
+        for issue in ("soon", "ISSUE_UNIT", 0, -1, 1.5, True, None):
+            entry = known(status=500)
+            entry["issue"] = issue
+            self.assert_rejected(spec_text([entry]), "expected an issue number")
         entry = known(status=500)
         entry["issue"] = 3500
         self.assertEqual(probe.decode_spec(spec_text([entry]))[0]["known"]["adp"]["issue"], 3500)
-        self.assertEqual(probe.decode_spec(spec_text([known(status=500)]))[0]["known"]["adp"]["issue"], "ISSUE_UNIT")
+
+    def test_a_known_entry_takes_a_gap_in_the_form_of_the_cases(self):
+        for gap in ("otlp-http", "gap/", "gap/Upper", "gap/a_b", "gap/a--b", "", None, 3):
+            entry = known(status=500)
+            entry["gap"] = gap
+            self.assert_rejected(spec_text([entry]), "expected a gap")
+        entry = known(status=500)
+        entry["gap"] = "gap/otlp-http-content-type"
+        self.assertEqual(
+            probe.decode_spec(spec_text([entry]))[0]["known"]["adp"]["gap"], "gap/otlp-http-content-type"
+        )
 
     def test_unknown_keys_are_rejected(self):
         self.assert_rejected(spec_text([known(status=500, colour="red")]), "unknown key colour")
@@ -114,7 +127,8 @@ class JudgeTest(unittest.TestCase):
 
     def test_a_known_entry_matches_its_own_answer(self):
         text = spec_text([known(headers={"Content-Type": TP}, body="OK")])
-        self.assertEqual(verdict(text, "adp", answer(body=b"OK", content_type=TP))[:2], ("KNOWN", "ISSUE_UNIT"))
+        verdict_, entry, _ = verdict(text, "adp", answer(body=b"OK", content_type=TP))
+        self.assertEqual((verdict_, entry["gap"], entry["issue"]), ("KNOWN", "gap/unit", 9))
 
     def test_a_known_entry_does_not_apply_to_the_other_side(self):
         text = spec_text([known(headers={"Content-Type": TP}, body="OK")])
@@ -123,7 +137,8 @@ class JudgeTest(unittest.TestCase):
 
     def test_an_answer_that_meets_expect_makes_the_entry_stale(self):
         text = spec_text([known(headers={"Content-Type": TP}, body="OK")])
-        self.assertEqual(verdict(text, "adp", answer(content_type=PB))[:2], ("STALE", "ISSUE_UNIT"))
+        verdict_, entry, _ = verdict(text, "adp", answer(content_type=PB))
+        self.assertEqual((verdict_, entry["gap"], entry["issue"]), ("STALE", "gap/unit", 9))
 
     def test_a_partly_fixed_answer_makes_the_entry_stale(self):
         text = spec_text([known(status=500, headers={"Content-Type": TP})])
@@ -182,12 +197,12 @@ class RunTest(unittest.TestCase):
     def test_a_known_difference_exits_zero(self):
         code, output = self.run_helper(spec_text([known(headers={"Content-Type": TP}, body="OK")]), "adp")
         self.assertEqual(code, 0, output)
-        self.assertIn("KNOWN ISSUE_UNIT one", output)
+        self.assertIn("KNOWN gap/unit 9 one", output)
 
     def test_a_stale_entry_exits_one(self):
         code, output = self.run_helper(spec_text([known(status=500)]), "adp")
         self.assertEqual(code, 1, output)
-        self.assertIn("STALE ISSUE_UNIT one", output)
+        self.assertIn("STALE gap/unit 9 one", output)
 
     def test_an_unexpected_answer_exits_one(self):
         code, output = self.run_helper(spec_text(), "adp")
@@ -202,7 +217,7 @@ class RunTest(unittest.TestCase):
         code, output = self.run_helper(text, "adp", port)
         self.assertEqual(code, 2, output)
         self.assertIn("ERROR one: connection refused", output)
-        self.assertNotIn("KNOWN ISSUE", output)
+        self.assertNotIn("KNOWN gap/", output)
 
     def test_the_main_function_reports_a_spec_error_with_code_two(self):
         with tempfile.TemporaryDirectory() as directory:

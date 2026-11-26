@@ -23,6 +23,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-response-format",
           "issue": 3482,
           "reason": "ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in the content type of the request, which is what the Agent sends.",
           "got": {
@@ -55,6 +56,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-response-format",
           "issue": 3482,
           "reason": "ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in the content type of the request, which is what the Agent sends.",
           "got": {
@@ -87,6 +89,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-response-format",
           "issue": 3482,
           "reason": "ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in the content type of the request, which is what the Agent sends.",
           "got": {
@@ -119,6 +122,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-content-type",
           "issue": 3480,
           "reason": "ADP ignores the content type and decodes every body as protobuf, so it fails a JSON body with status 500. The Agent decodes the JSON.",
           "got": {
@@ -152,6 +156,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-content-type",
           "issue": 3480,
           "reason": "ADP ignores the content type and decodes every body as protobuf, so it fails a JSON body with status 500. The Agent decodes the JSON.",
           "got": {
@@ -187,6 +192,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-content-encoding",
           "issue": 3481,
           "reason": "ADP ignores `Content-Encoding` and decodes the compressed body as protobuf, so it fails with status 500. The Agent decompresses the body.",
           "got": {
@@ -221,6 +227,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-content-encoding",
           "issue": 3481,
           "reason": "ADP ignores `Content-Encoding`, so it accepts the body. The Agent refuses an encoding that it does not know, with status 400.",
           "got": {
@@ -254,6 +261,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-content-type",
           "issue": 3480,
           "reason": "ADP ignores the content type, so it accepts the body. The Agent refuses a content type that is not JSON or protobuf, with status 415.",
           "got": {
@@ -284,6 +292,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-content-type",
           "issue": 3480,
           "reason": "ADP ignores the content type, so it accepts the body. The Agent refuses a request with no content type, with status 415.",
           "got": {
@@ -316,6 +325,7 @@
       "known": [
         {
           "side": "adp",
+          "gap": "gap/otlp-http-response-format",
           "issue": 3482,
           "reason": "ADP answers a body that it cannot decode with status 500 and plain text. The Agent answers with status 400 and a `google.rpc.Status` message, as the OTLP specification says.",
           "got": {

@@ -4,6 +4,11 @@
 The case runs this script once in each arm, with the spec in `probes.json` and the port of that arm's receiver. The
 script uses the standard library only, because it runs in the Agent image.
 
+The script keeps its own known differences, in the `known` entries of the spec, because panoramic has no step that sends
+an arbitrary HTTP request, and its `known_differences` belong to the `compare` step. The entries have the shape of the
+`known_differences` of panoramic: a `gap`, an `issue` and a `reason`. See "Known differences" in
+`docs/development/panoramic.md`.
+
 Usage:
 
     otlp_http_probe.py --spec probes.json --side {adp,agent} --port N
@@ -43,8 +48,10 @@ A probe has these keys:
 - `known`: the differences that exist today. Optional. An entry has these keys:
   - `side`: `adp` or `agent`. The script ignores an entry for the other side. A probe has at most one entry for each
     side.
-  - `issue`: the GitHub issue that tracks the difference. It is a number, or a placeholder such as `ISSUE_NAME` for an
-    issue that nobody has filed yet. The script only checks the form of a placeholder, and prints it as written.
+  - `gap`: the name of the gap, in the form of the gaps in `test/correctness/cases/*/config.yaml`: `gap/` and then
+    lower-case words joined by `-`, such as `gap/otlp-http-content-type`. Several entries can name the same gap.
+  - `issue`: the number of the GitHub issue that tracks the gap. It is a positive integer. The script rejects a
+    placeholder.
   - `reason`: why the side answers differently.
   - `got`: the answer of the side. It has the keys of `expect`, and overrides only the keys that it names. A header
     that `got` names replaces the header of `expect`, and the other headers stay. `body` and `body_contains` replace
@@ -58,8 +65,8 @@ The script prints one line for each probe, with the status, the headers and the 
 sent, and a last line with the totals.
 
 - `PASS`: the probe has no known entry for this side, and the answer meets `expect`.
-- `KNOWN <issue>`: the answer meets `expect` with the overrides of `got`.
-- `STALE <issue>`: the answer meets `expect`, or a field that `got` overrides has the value that `expect` gives. The
+- `KNOWN <gap> <issue>`: the answer meets `expect` with the overrides of `got`.
+- `STALE <gap> <issue>`: the answer meets `expect`, or a field that `got` overrides has the value that `expect` gives. The
   receiver changed, so remove or narrow the entry. A stale entry fails the run.
 - `FAIL`: the answer meets neither.
 - `ERROR`: the request ended with a refused or reset connection, a timeout or a protocol error. An error is never
@@ -98,7 +105,7 @@ SIDES = ("adp", "agent")
 RESERVED_HEADERS = ("host", "content-length")
 
 ID_FORM = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
-PLACEHOLDER_FORM = re.compile(r"ISSUE_[A-Z][A-Z0-9_]*")
+GAP_FORM = re.compile(r"gap/[a-z0-9]+(-[a-z0-9]+)*")
 
 # The longest part of a response body that a verdict line shows.
 SHOWN_BODY_BYTES = 100
@@ -208,22 +215,26 @@ def request_of(where, value):
     return request
 
 
+def gap_of(where, value):
+    if not isinstance(value, str) or not GAP_FORM.fullmatch(value):
+        raise SpecError(f"{where}: expected a gap such as gap/otlp-http-content-type, not {value!r}")
+    return value
+
+
 def issue_of(where, value):
-    """An issue is a number, or a placeholder for an issue that nobody has filed yet."""
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    if isinstance(value, str) and PLACEHOLDER_FORM.fullmatch(value):
-        return value
-    raise SpecError(f"{where}: expected an issue number, or a placeholder such as ISSUE_NAME")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise SpecError(f"{where}: expected an issue number, which is a positive integer")
+    return value
 
 
 def known_of(where, value, expect):
-    keys_of(where, value, ("side", "issue", "reason", "got"))
+    keys_of(where, value, ("side", "gap", "issue", "reason", "got"))
     got = checks_of(f"{where}.got", value["got"], status_required=False)
     if not got:
         raise SpecError(f"{where}.got: names nothing")
     entry = {
         "side": one_of(f"{where}.side", value["side"], SIDES),
+        "gap": gap_of(f"{where}.gap", value["gap"]),
         "issue": issue_of(f"{where}.issue", value["issue"]),
         "reason": text_of(f"{where}.reason", value["reason"]),
         "got": got,
@@ -448,9 +459,9 @@ def overridden(expect, got):
 
 
 def judge(probe, side, answer):
-    """The verdict on an answer: `(verdict, issue, problems)`.
+    """The verdict on an answer: `(verdict, entry, problems)`.
 
-    `issue` is the issue of the known entry for `side`, or `None`. `problems` says what the answer misses, for a `FAIL`,
+    `entry` is the known entry for `side`, or `None`. `problems` says what the answer misses, for a `FAIL`,
     or what changed, for a `STALE`.
     """
     expect = probe["expect"]
@@ -459,15 +470,15 @@ def judge(probe, side, answer):
     if entry is None:
         return ("FAIL", None, failed) if failed else ("PASS", None, [])
     if not failed:
-        return "STALE", entry["issue"], ["the answer meets expect"]
+        return "STALE", entry, ["the answer meets expect"]
     # A field that `got` overrides and that has the value of `expect` again is fixed, even when others are not.
     fixed = [f"{label} meets expect" for label, checks in overridden(expect, entry["got"]) if not unmet(checks, answer)]
     if fixed:
-        return "STALE", entry["issue"], fixed
+        return "STALE", entry, fixed
     problems = unmet(overlay(expect, entry["got"]), answer)
     if problems:
-        return "FAIL", entry["issue"], problems + [f"the known entry {entry['issue']} does not match either"]
-    return "KNOWN", entry["issue"], []
+        return "FAIL", entry, problems + [f"the known entry {entry['gap']} does not match either"]
+    return "KNOWN", entry, []
 
 
 def show_answer(answer):
@@ -537,9 +548,9 @@ def run(probes, side, send_probe, out=sys.stdout):
             counts["ERROR"] += 1
             print(f"ERROR {probe['id']}: {problem_of(error)}", file=out, flush=True)
             continue
-        verdict, issue, problems = judge(probe, side, answer)
+        verdict, entry, problems = judge(probe, side, answer)
         counts[verdict] += 1
-        label = f"{verdict} {issue}" if verdict in ("KNOWN", "STALE") else verdict
+        label = f"{verdict} {entry['gap']} {entry['issue']}" if verdict in ("KNOWN", "STALE") else verdict
         line = f"{label} {probe['id']}: {show_answer(answer)}"
         if problems:
             line += f" -- {'; '.join(problems)}"

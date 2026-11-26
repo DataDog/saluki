@@ -2,7 +2,10 @@ description: >-
   ADP's OTLP/HTTP receiver and the Agent's each answer the same requests. A script runs in each container, sends the
   requests of `probes.json` to the receiver of that container, and checks the status, headers and body of each answer.
   The requests that each receiver accepts then reach its intake. `probes.json` lists the known differences of ADP, each
-  with an issue.
+  with a gap and an issue.
+# The script keeps these known differences in `probes.json`, and not in a `known_differences` list, because panoramic has
+# no step that sends an arbitrary HTTP request. Each entry has a gap, an issue and a reason, as in panoramic, and the
+# docstring of `otlp_http_probe.py` describes how the script checks them.
 timeout: 5m
 subject_os: [linux]
 
