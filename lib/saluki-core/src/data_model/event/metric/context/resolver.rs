@@ -357,10 +357,10 @@ impl ContextResolverBuilder {
 ///
 /// `ContextResolver` specifically manages interning and mapping of contexts. It can be cheaply cloned itself.
 ///
-/// When caching is enabled, `resolve` takes a lock to look for an existing context. We use a read/write lock because lookups happen much more
-/// often than inserts. The cache splits its contexts over shards, and each shard has its own lock. A hit takes the
-/// read lock of one shard. A miss takes the write lock of that shard, so requests for other shards continue while the
-/// resolver creates a context.
+/// When caching is enabled, `resolve` takes a lock to look for an existing context. We use a read/write lock because
+/// lookups happen much more often than inserts. The cache splits its contexts over shards, and each shard has its own
+/// lock. A hit takes the read lock of one shard. A miss takes the write lock of that shard, so requests for other shards
+/// continue while the resolver creates a context.
 ///
 /// Once a context is resolved, a cheap handle -- `Context` -- is returned. This handle, like `ContextResolver`, can be
 /// cheaply cloned. It points directly to the underlying context data (name and tags) and provides access to these

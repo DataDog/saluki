@@ -40,9 +40,9 @@
 //!
 //! ## Memory return
 //!
-//! After a sweep or an eviction pass, a shard shrinks each of its vectors and its index when it uses a quarter or
-//! less of its capacity. The new capacity is twice the current length. This hysteresis stops a shard from shrinking
-//! and growing again on each small change in its length.
+//! After a sweep, a shard shrinks each of its vectors and its index when it uses a quarter or less of its capacity.
+//! The new capacity is twice the current length. This hysteresis stops a shard from shrinking and growing again on
+//! each small change in its length.
 //!
 //! # Layout
 //!
@@ -596,8 +596,9 @@ impl Shard {
             self.live.shrink_to(self.live.len() * 2);
         }
         if self.index.len() <= self.index.capacity() / 4 {
-            self.index
-                .shrink_to_fit(|&i| index_hash(slot_key(&self.slots, &self.live, i)));
+            self.index.shrink_to(self.index.len() * 2, |&i| {
+                index_hash(slot_key(&self.slots, &self.live, i))
+            });
         }
         (expired, reaped)
     }
