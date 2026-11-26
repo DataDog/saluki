@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use ddsketch::DDSketch;
 use saluki_common::time::get_unix_timestamp;
 use saluki_core::{
-    accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
+    accounting::{ByteBudget, MemoryBounds, MemoryBoundsBuilder, UsageExpr},
     components::{transforms::*, BuildContext},
     data_model::event::{
         metric::{context::Context, *},
@@ -25,7 +25,7 @@ use saluki_core::{
     },
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_metrics::{Histogram, MetricsBuilder};
+use saluki_metrics::{Counter, Histogram, MetricsBuilder};
 use stringtheory::MetaString;
 use tokio::{
     select,
@@ -398,6 +398,7 @@ impl TransformBuilder for AggregateConfiguration {
             state,
             telemetry,
             flush_duration,
+            byte_budget_refusals: metrics_builder.register_counter("aggregate_byte_budget_refused_events_total"),
             primary_flush_interval: self.primary_flush_interval,
             flush_open_windows: self.flush_open_windows,
             context_snapshot_requests: Some(context_snapshot_requests),
@@ -461,6 +462,7 @@ pub struct Aggregate {
     state: AggregationState,
     telemetry: Telemetry,
     flush_duration: Histogram,
+    byte_budget_refusals: Counter,
     primary_flush_interval: Duration,
     flush_open_windows: bool,
     context_snapshot_requests: Option<AggregateContextSnapshotRequestReceiver>,
@@ -469,6 +471,7 @@ pub struct Aggregate {
 #[async_trait]
 impl Transform for Aggregate {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+        self.state.byte_budget = context.topology_context().memory_limiter().byte_budget().cloned();
         let mut health = context.take_health_handle();
         let (events, dispatcher) = context.interconnect();
 
@@ -548,10 +551,17 @@ impl Aggregate {
 
     fn ingest_batch(&mut self, timestamp: u64, metrics: impl Iterator<Item = Metric>) {
         for metric in metrics {
-            let was_breached = self.state.context_limit_breached();
-            if !self.state.insert(timestamp, metric) {
-                self.record_rejected_metric(was_breached);
-            }
+            let slot = self.state.contexts.find(metric.context());
+            self.ingest_at(timestamp, metric, slot);
+        }
+    }
+
+    fn ingest_at(&mut self, timestamp: u64, metric: Metric, slot: Option<Slot>) {
+        let was_breached = self.state.context_limit_breached();
+        match self.state.insert_at(timestamp, metric, slot) {
+            InsertOutcome::Admitted => {}
+            InsertOutcome::ContextLimit => self.record_rejected_metric(was_breached),
+            InsertOutcome::ByteBudget => self.byte_budget_refusals.increment(1),
         }
     }
 
@@ -601,10 +611,7 @@ impl Aggregate {
                                 break;
                             };
                             let metric = metrics.next().expect("the input batch has a pending metric");
-                            let was_breached = self.state.context_limit_breached();
-                            if !self.state.insert_at(*timestamp, metric, slot) {
-                                self.record_rejected_metric(was_breached);
-                            }
+                            self.ingest_at(*timestamp, metric, slot);
                         }
                         if metrics.peek().is_none() {
                             ingress = None;
@@ -657,8 +664,16 @@ async fn receive_context_snapshot_request(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum InsertOutcome {
+    Admitted,
+    ContextLimit,
+    ByteBudget,
+}
+
 struct AggregationState {
     contexts: Storage,
+    byte_budget: Option<ByteBudget>,
     context_limit: usize,
     bucket_width_secs: NonZeroU64,
     counter_expire_secs: Option<NonZeroU64>,
@@ -679,6 +694,7 @@ impl AggregationState {
 
         Self {
             contexts: Storage::default(),
+            byte_budget: None,
             context_limit,
             bucket_width_secs,
             counter_expire_secs,
@@ -706,16 +722,17 @@ impl AggregationState {
         snapshot
     }
 
+    #[cfg(test)]
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
         let slot = self.contexts.find(metric.context());
-        self.insert_at(timestamp, metric, slot)
+        self.insert_at(timestamp, metric, slot) == InsertOutcome::Admitted
     }
 
-    fn insert_at(&mut self, timestamp: u64, metric: Metric, slot: Option<Slot>) -> bool {
+    fn insert_at(&mut self, timestamp: u64, metric: Metric, slot: Option<Slot>) -> InsertOutcome {
         // The limit only rejects new contexts. An existing context can still merge another sample.
         if slot.is_none() && self.contexts.len() >= self.context_limit {
             self.context_limit_breached = true;
-            return false;
+            return InsertOutcome::ContextLimit;
         }
 
         // An empty state has no counters to keep alive. The owner skips flushing an empty state, so its last flush can
@@ -725,7 +742,7 @@ impl AggregationState {
             self.last_flush = 0;
         }
 
-        let (context, mut values, metadata) = metric.into_parts();
+        let (context, mut values, mut metadata) = metric.into_parts();
 
         // Collapse all non-timestamped values into a single timestamped value.
         //
@@ -733,6 +750,18 @@ impl AggregationState {
         // however many values were in the original metric instead of full aggregated values.
         let bucket_ts = align_to_bucket_start(timestamp, self.bucket_width_secs);
         values.collapse_non_timestamped(bucket_ts);
+
+        let admission = metadata.take_dogstatsd_admission();
+        let _reservation = if let Some(budget) = &self.byte_budget {
+            let growth = self.contexts.growth_bytes(slot, &values, &metadata, timestamp);
+            let Some(reservation) = budget.try_reserve(growth) else {
+                admission.refuse();
+                return InsertOutcome::ByteBudget;
+            };
+            Some(reservation)
+        } else {
+            None
+        };
 
         trace!(
             bucket_ts,
@@ -759,7 +788,8 @@ impl AggregationState {
             );
         }
 
-        true
+        admission.admit();
+        InsertOutcome::Admitted
     }
 
     /// Captures one cutoff and the set of rows that this flush must visit.
@@ -1159,6 +1189,143 @@ mod tests {
     const COUNTER_EXPIRE_SECS: u64 = 20;
     const COUNTER_EXPIRE: Option<Duration> = Some(Duration::from_secs(COUNTER_EXPIRE_SECS));
 
+    #[test]
+    fn byte_budget_reclaims_idle_contexts_and_reconciles_original_lines() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+        use saluki_core::data_model::event::metric::context::ContextResolverBuilder;
+
+        let recorder = Arc::new(TestRecorder::default());
+        metrics::with_local_recorder(&*recorder, DogStatsDAdmission::register_counters);
+        let mut resolver = ContextResolverBuilder::for_tests()
+            .with_cached_contexts_limit(128)
+            .build();
+        for i in 0..30 {
+            resolver.resolve(format!("seed.{i}"), ["env:prod"], None).unwrap();
+        }
+        let memory = ByteBudget::new(128 * 1024, 0);
+        let reaped = Arc::new(AtomicUsize::new(0));
+        let _reclaim = memory.register_reclaimer({
+            let reaped = Arc::clone(&reaped);
+            let recorder = Arc::clone(&recorder);
+            move || {
+                let count = resolver.evict_idle_for_budget();
+                if count != 0 {
+                    assert_eq!(recorder.counter("dsd_byte_budget_refused_events_total"), Some(0));
+                    reaped.fetch_add(count, Relaxed);
+                }
+            }
+        });
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        state.byte_budget = Some(memory);
+        let context = Context::from_static_name("budget.set");
+        let mut admitted = 0;
+        let mut refused_bytes = 0;
+        let mut aggregate_refused = 0;
+        let mut expected = SetPoints::from_buckets([]);
+        let offered = 20;
+        for i in 0..offered {
+            let member = format!("{i:02}{}", "x".repeat(8173));
+            let line = format!("rubric.w5.set:{member}|s\n");
+            assert_eq!(line.len(), 8192);
+            let mut metric = Metric::set(context.clone(), member.as_str());
+            metric.metadata_mut().track_dogstatsd_admission(line.len());
+            let side_copy = metric.clone();
+            drop(side_copy);
+            let slot = state.contexts.find(metric.context());
+            match state.insert_at(20, metric, slot) {
+                InsertOutcome::Admitted => {
+                    admitted += 1;
+                    expected.merge(SetPoints::from((20, member.as_str())));
+                }
+                InsertOutcome::ByteBudget => {
+                    assert_eq!(reaped.load(Relaxed), 30);
+                    refused_bytes += line.len();
+                    aggregate_refused += 1;
+                }
+                InsertOutcome::ContextLimit => panic!("the Set always uses one context"),
+            }
+        }
+        assert!(admitted > 0);
+        assert!(aggregate_refused > 0, "must exercise Set merge refusal");
+        assert_eq!(
+            recorder.counter("dsd_byte_budget_admitted_events_total"),
+            Some(admitted)
+        );
+        assert_eq!(
+            recorder.counter("dsd_byte_budget_refused_events_total"),
+            Some(offered - admitted)
+        );
+        assert_eq!(
+            recorder.counter("dsd_byte_budget_refused_wire_bytes_total"),
+            Some(refused_bytes as u64)
+        );
+        let slot = state.contexts.find(&context).unwrap();
+        assert_eq!(state.contexts.take_values(slot), MetricValues::Set(expected));
+    }
+
+    #[test]
+    fn byte_budget_refuses_histogram_and_sketch_overflow_without_changing_the_row() {
+        for (initial, next) in [
+            (MetricValues::histogram([1.0, 2.0, 3.0]), MetricValues::histogram(4.0)),
+            (
+                MetricValues::distribution([1.0, 2.0, 4.0, 8.0]),
+                MetricValues::distribution(16.0),
+            ),
+        ] {
+            let mut state = AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                1,
+                None,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            );
+            let context = Context::from_static_name("budget.overflow");
+            assert!(state.insert(
+                20,
+                Metric::from_parts(context.clone(), initial.clone(), MetricMetadata::default())
+            ));
+            state.byte_budget = Some(ByteBudget::new(32 * 1024 - 1, 0));
+            let slot = state.contexts.find(&context).unwrap();
+            let incoming = Metric::from_parts(context, next, MetricMetadata::default());
+            assert_eq!(state.insert_at(20, incoming, Some(slot)), InsertOutcome::ByteBudget);
+            let mut expected = initial;
+            expected.collapse_non_timestamped(20);
+            assert_eq!(state.contexts.take_values(slot), expected);
+        }
+    }
+
+    #[test]
+    fn byte_budget_accepts_a_million_bounded_aggregate_contexts() {
+        const MIB: usize = 1024 * 1024;
+        const CONTEXTS: usize = 1_000_000;
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            CONTEXTS,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        state.byte_budget = Some(ByteBudget::new(896 * MIB, 400 * MIB));
+        for i in 0..CONTEXTS {
+            let context = Context::from_parts(format!("rubric.normal.{i}"), TagSet::default());
+            let metric = match i % 4 {
+                0 => Metric::gauge(context, 1.0),
+                1 => Metric::counter(context, 1.0),
+                2 => Metric::histogram(context, 1.0),
+                _ => Metric::distribution(context, 1.0),
+            };
+            assert!(state.insert(20, metric), "unexpected refusal at context {i}");
+        }
+        assert_eq!(state.contexts.len(), CONTEXTS);
+    }
+
     /// Gets the bucket start timestamp for the given step.
     const fn bucket_ts(step: u64) -> u64 {
         align_to_bucket_start(insert_ts(step), BUCKET_WIDTH_SECS)
@@ -1467,7 +1634,7 @@ mod tests {
         let slot = state.claim_for_ingest(&mut cursor, &context, &mut deferred).unwrap();
         let metadata = MetricMetadata::default().with_unit("bytes");
         let update = Metric::from_parts(context.clone(), MetricValues::gauge((10, 9.0)), metadata.clone());
-        assert!(state.insert_at(30, update, slot));
+        assert_eq!(state.insert_at(30, update, slot), InsertOutcome::Admitted);
         let closed = deferred.take().unwrap();
         assert_eq!(closed, Metric::gauge(context.clone(), (10, 1.0)));
 
@@ -1476,7 +1643,10 @@ mod tests {
         assert!(!retained);
         assert_eq!(closed.unwrap().values(), &MetricValues::gauge((10, 5.0)));
         let slot = state.claim_for_ingest(&mut cursor, &fresh, &mut deferred).unwrap();
-        assert!(state.insert_at(30, Metric::gauge(fresh.clone(), (10, 3.0)), slot));
+        assert_eq!(
+            state.insert_at(30, Metric::gauge(fresh.clone(), (10, 3.0)), slot),
+            InsertOutcome::Admitted
+        );
         assert!(cursor.next_slot().is_none());
         state.finish_flush(cursor);
 

@@ -1,0 +1,3 @@
+features:
+  - |
+    Use the lower of the configured memory limit and the Linux cgroup v2 memory limit to guide DogStatsD admission. Reclaim idle contexts first and report admitted and refused events and refused wire bytes when memory is tight.

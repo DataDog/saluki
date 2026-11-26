@@ -24,12 +24,12 @@ use saluki_common::sync::{
     work_queue::{self, WorkQueueReceiver, WorkQueueSender},
 };
 use saluki_core::{
-    accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr},
+    accounting::{ByteBudget, ByteBudgetBatch, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr},
     components::{sources::*, BuildContext},
     data_model::{
         event::{
             eventd::EventD,
-            metric::{Metric, MetricMetadata, MetricOrigin},
+            metric::{DogStatsDAdmission, Metric, MetricMetadata, MetricOrigin},
             service_check::ServiceCheck,
             Event, EventType,
         },
@@ -987,6 +987,8 @@ struct DogStatsDDecoder {
     source_context: SourceContext,
     context: DecoderContext,
     event_buffer: EventBufferManager<DEFAULT_EVENTS_BUFFER_CAPACITY>,
+    admission_budget: Option<ByteBudgetBatch>,
+    configured_tag_bytes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -1066,7 +1068,16 @@ impl Source for DogStatsD {
         // receiver to the next decoder puts it behind the previous decoder's decode work on the same runtime thread.
         let (datagram_sender, datagram_receivers) =
             work_queue::bounded(self.decoder_worker_count, self.io_buffer_queue_capacity);
-        let decoder_context = self.decoder_context;
+        let mut decoder_context = self.decoder_context;
+        let _reclaimer = context.topology_context().memory_limiter().byte_budget().map(|budget| {
+            DogStatsDAdmission::register_counters();
+            let primary = decoder_context.context_resolvers.primary().clone();
+            let no_agg = decoder_context.context_resolvers.no_agg().clone();
+            budget.register_reclaimer(move || {
+                primary.evict_idle_for_budget();
+                no_agg.evict_idle_for_budget();
+            })
+        });
 
         // Decoders must drain their queue to completion, so they deliberately ignore the shutdown signal and stop only
         // once their queue closes -- which happens when every listener and stream handler has dropped its datagram
@@ -1517,10 +1528,21 @@ async fn acquire_io_buffer(io_buffer_pool: &ElasticObjectPool<BytesBuffer>) -> B
 impl DogStatsDDecoder {
     fn new(source_context: SourceContext, context: DecoderContext) -> Self {
         let event_buffer = source_context.dispatcher().event_buffer_manager();
+        let admission_budget = source_context
+            .topology_context()
+            .memory_limiter()
+            .byte_budget()
+            .map(ByteBudget::batch);
+        let configured_tag_bytes = context
+            .additional_tags
+            .iter()
+            .fold(0usize, |bytes, tag| bytes.saturating_add(tag.len().saturating_add(32)));
         Self {
             source_context,
             context,
             event_buffer,
+            admission_budget,
+            configured_tag_bytes,
         }
     }
 
@@ -1604,12 +1626,15 @@ impl DogStatsDDecoder {
                         payload,
                     ));
                 }
-                Some(Ok(Frame::Message(frame))) => {
+                Some(Ok(Frame::Message(line))) => {
                     if matches!(listen_addr, ListenAddress::NamedPipe { .. }) {
-                        capture_named_pipe_frame(&self.context.traffic_capture, frame);
+                        capture_named_pipe_frame(
+                            &self.context.traffic_capture,
+                            line.strip_suffix(b"\n").unwrap_or(line),
+                        );
                         metrics.packet_receive_success().increment(1);
                     }
-                    self.decode_frame(frame, listen_addr, peer_addr, process_origin, metrics, packet_forwarder)
+                    self.decode_frame(line, listen_addr, peer_addr, process_origin, metrics, packet_forwarder)
                         .await;
                 }
                 None => {
@@ -1643,15 +1668,16 @@ impl DogStatsDDecoder {
     }
 
     async fn decode_frame(
-        &mut self, frame: &[u8], listen_addr: &ListenAddress, peer_addr: &ConnectionAddress,
+        &mut self, line: &[u8], listen_addr: &ListenAddress, peer_addr: &ConnectionAddress,
         process_origin: Option<&ProcessOrigin>, metrics: &Metrics, packet_forwarder: Option<&PacketForwarder>,
     ) {
+        let frame = line.strip_suffix(b"\n").unwrap_or(line);
         trace!(%listen_addr, %peer_addr, frame = %frame.escape_ascii(), "Decoded frame.");
         if let Some(forwarder) = packet_forwarder {
             forwarder.forward(frame).await;
         }
 
-        match self.handle_frame(frame, metrics, process_origin) {
+        match self.handle_frame(line, metrics, process_origin) {
             Ok(Some(event)) => {
                 if let Some(event_buffer) = self.event_buffer.try_push(event) {
                     debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -1672,7 +1698,7 @@ impl DogStatsDDecoder {
     }
 
     fn handle_frame(
-        &mut self, frame: &[u8], source_metrics: &Metrics, process_origin: Option<&ProcessOrigin>,
+        &mut self, line: &[u8], source_metrics: &Metrics, process_origin: Option<&ProcessOrigin>,
     ) -> Result<Option<Event>, ParseError> {
         let DecoderContext {
             codec,
@@ -1683,6 +1709,22 @@ impl DogStatsDDecoder {
             additional_tags,
             ..
         } = &mut self.context;
+        let budget = &mut self.admission_budget;
+        let frame = line.strip_suffix(b"\n").unwrap_or(line);
+        let wire_bytes = line.len();
+        if let Some(budget) = budget {
+            // A comma can introduce a tag. Counting all commas also bounds permissive and malformed input before
+            // the parser allocates a value or normalizes any text.
+            let bytes = wire_bytes
+                .saturating_mul(2)
+                .saturating_add(memchr::memchr_iter(b',', frame).count().saturating_mul(32))
+                .saturating_add(self.configured_tag_bytes)
+                .saturating_add(288);
+            if !budget.try_spend(bytes) {
+                DogStatsDAdmission::record_refused(wire_bytes);
+                return Ok(None);
+            }
+        }
 
         let resolve_telemetry_origin = || {
             (source_metrics.origin_telemetry_enabled() && *origin_detection_enabled)
@@ -1731,7 +1773,10 @@ impl DogStatsDDecoder {
                     additional_tags,
                     default_hostname,
                 ) {
-                    Some(metric) => {
+                    Some(mut metric) => {
+                        if budget.is_some() {
+                            metric.metadata_mut().track_dogstatsd_admission(wire_bytes);
+                        }
                         source_metrics.record_metrics_received(events_len, resolve_telemetry_origin().as_deref());
                         Event::Metric(metric)
                     }
@@ -1749,6 +1794,9 @@ impl DogStatsDDecoder {
                 }
                 match handle_event_packet(event, context_resolvers, process_origin, additional_tags) {
                     Some(event) => {
+                        if budget.is_some() {
+                            DogStatsDAdmission::record_admitted();
+                        }
                         source_metrics.events_received().increment(1);
                         Event::EventD(event)
                     }
@@ -1768,6 +1816,9 @@ impl DogStatsDDecoder {
                 }
                 match handle_service_check_packet(service_check, context_resolvers, process_origin, additional_tags) {
                     Some(service_check) => {
+                        if budget.is_some() {
+                            DogStatsDAdmission::record_admitted();
+                        }
                         source_metrics.service_checks_received().increment(1);
                         Event::ServiceCheck(service_check)
                     }

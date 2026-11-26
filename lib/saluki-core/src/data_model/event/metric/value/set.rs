@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt, num::NonZeroU64};
+use std::{collections::HashSet, fmt, mem, num::NonZeroU64};
 
 use stringtheory::MetaString;
 
@@ -91,6 +91,46 @@ impl SetMembers {
         };
         one.into_iter().chain(many.into_iter().flatten())
     }
+
+    fn contains(&self, member: &MetaString) -> bool {
+        match self {
+            Self::Empty => false,
+            Self::One(value) => value == member,
+            Self::Many(values) => values.contains(member),
+        }
+    }
+
+    fn growth_bytes(&self, stored: Option<&Self>) -> usize {
+        let member_bytes = self
+            .iter()
+            .filter(|member| {
+                !stored.is_some_and(|set| set.contains(member)) && MetaString::try_inline(member).is_none()
+            })
+            .fold(0usize, |bytes, member| {
+                bytes.saturating_add(member.len().saturating_add(64))
+            });
+
+        // Merging two tables can reserve based on the iterator length, even if some members are duplicates.
+        let (count, capacity) = match (stored, self) {
+            (Some(Self::Many(existing)), Self::One(member)) => (
+                existing.len() + usize::from(!existing.contains(member)),
+                existing.capacity(),
+            ),
+            (Some(Self::Many(existing)), Self::Many(incoming)) => {
+                (existing.len().saturating_add(incoming.len()), existing.capacity())
+            }
+            (Some(Self::One(_)), Self::Many(incoming)) => (incoming.len() + 1, incoming.capacity()),
+            (Some(Self::One(existing)), Self::One(member)) if existing != member => (2, 0),
+            (None | Some(Self::Empty), Self::Many(incoming)) => (incoming.len(), 0),
+            _ => return member_bytes,
+        };
+        if count <= capacity {
+            return member_bytes;
+        }
+        // Hash-table buckets round to powers of two and carry a control byte per entry. Count the whole new table
+        // because the old allocation can still be resident during growth.
+        member_bytes.saturating_add(count.saturating_mul(4).saturating_mul(mem::size_of::<MetaString>() + 1))
+    }
 }
 
 impl<'a> FromIterator<&'a str> for SetMembers {
@@ -163,6 +203,36 @@ impl SetPoints {
     /// Returns the number of points in this set.
     pub fn len(&self) -> usize {
         self.0.values.len()
+    }
+
+    /// Estimates bytes retained or allocated by merging these points into full or packed Set buckets.
+    pub fn merge_growth_bytes(
+        &self, stored: Option<&Self>, packed: Option<(Option<NonZeroU64>, &SetBucket)>,
+    ) -> (usize, usize) {
+        let mut bytes = 0usize;
+        let mut buckets = stored.map_or(usize::from(packed.is_some()), SetPoints::len);
+        let capacity = stored.map_or(1, |set| set.0.values.capacity());
+        for point in &self.0.values {
+            let existing = stored
+                .and_then(|set| {
+                    set.0
+                        .values
+                        .iter()
+                        .find(|bucket| bucket.timestamp == point.timestamp)
+                        .map(|bucket| &bucket.value)
+                })
+                .or_else(|| {
+                    packed
+                        .filter(|(timestamp, _)| *timestamp == point.timestamp)
+                        .map(|(_, bucket)| &bucket.0)
+                });
+            buckets += usize::from(existing.is_none());
+            bytes = bytes.saturating_add(point.value.growth_bytes(existing));
+        }
+        if buckets > capacity {
+            bytes = bytes.saturating_add(buckets.saturating_mul(2 * mem::size_of::<TimestampedValue<SetMembers>>()));
+        }
+        (bytes, buckets)
     }
 
     /// Merges another set of points into this one.
