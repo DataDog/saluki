@@ -938,7 +938,7 @@ fn processing_rule_records(start_index: u64) -> Vec<LogRecord> {
     ]
 }
 
-/// Builds the fixture of the `otlp-logs-enrichment` case.
+/// Builds the fixture of the `otlp-logs-enrichment` and `otlp-logs-enrichment-ddtags` cases.
 ///
 /// Both sides set `DD_PROVIDER_KIND`, so the tagger's global entity carries `provider_kind`. Each resource exercises
 /// how the infra attributes processor places that global tag, and which unified service tag attributes it has.
@@ -984,6 +984,12 @@ pub fn enrichment_fixture() -> Vec<u8> {
         ),
         // gap/origin-detection: a process ID that doesn't exist adds no `container.id`.
         ("enrich-unknown-process-id", vec![kv("process.pid", int(2_147_483_647))]),
+        // gap/tags-as-ddtags: an existing resource attribute with a known key survives enrichment, whether or not custom
+        // tags become `ddtags`. Unit tests cover known keys that come from the tagger.
+        (
+            "enrich-known-key",
+            vec![kv("kube_namespace", string("enrich-namespace"))],
+        ),
     ];
 
     let mut resources = Vec::new();
@@ -994,6 +1000,19 @@ pub fn enrichment_fixture() -> Vec<u8> {
             vec![scope_logs(no_scope(), vec![record(index as u64, id, vec![])])],
         ));
     }
+
+    // gap/tags-as-ddtags: custom tags merge into the `ddtags` that a record already has.
+    resources.push(resource_logs(
+        vec![kv("host.name", string("enrich-host"))],
+        vec![scope_logs(
+            no_scope(),
+            vec![record(
+                resources.len() as u64,
+                "enrich-record-ddtags",
+                vec![kv("ddtags", string("record:tag"))],
+            )],
+        )],
+    ));
 
     ExportLogsServiceRequest {
         resource_logs: resources,

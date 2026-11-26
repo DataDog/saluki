@@ -53,4 +53,4 @@ procedure:
     logs:
       # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
       identity_fields: ["fixture_id"]
-      min_count: 21
+      min_count: 27

@@ -1,3 +1,4 @@
+mod ddtags;
 #[cfg(test)]
 mod reference_tests;
 pub(super) mod render;

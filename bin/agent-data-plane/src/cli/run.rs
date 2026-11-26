@@ -61,9 +61,9 @@ use crate::{
     component_inputs::{
         apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
         logs_processing_rules, metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration,
-        origin_tag_cardinality, otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver,
-        otlp_traces_settings, ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist,
-        trace_configuration, trace_sampler_configuration, trace_tag_replacer_configuration,
+        origin_tag_cardinality, otlp_context_settings, otlp_debug_verbosity, otlp_logs_settings, otlp_metrics_settings,
+        otlp_receiver, otlp_traces_settings, ottl_error_mode, resolve_static_tags, tag_filter_entries,
+        tag_value_allowlist, trace_configuration, trace_sampler_configuration, trace_tag_replacer_configuration,
         traces_forwarder_configuration,
     },
     components::{
@@ -1122,6 +1122,7 @@ async fn add_otlp_pipeline_to_blueprint(
         routes,
         proxy_destinations,
         metrics: otlp_metrics_settings(&otlp.metrics),
+        logs: otlp_logs_settings(&otlp.logs),
         traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),
         contexts: otlp_context_settings(&otlp.contexts),
         debug_verbosity: otlp_debug_verbosity(&otlp.debug),

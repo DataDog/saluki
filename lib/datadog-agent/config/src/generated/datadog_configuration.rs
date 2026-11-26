@@ -1828,12 +1828,31 @@ pub struct OtlpConfigLogs {
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
+
+    #[serde(default)]
+    pub infra_attributes: OtlpConfigLogsInfraAttributes,
 }
 
 impl Default for OtlpConfigLogs {
     fn default() -> Self {
         Self {
             enabled: Default::default(),
+            infra_attributes: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigLogsInfraAttributes {
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub tags_as_ddtags: bool,
+}
+
+impl Default for OtlpConfigLogsInfraAttributes {
+    fn default() -> Self {
+        Self {
+            tags_as_ddtags: Default::default(),
         }
     }
 }

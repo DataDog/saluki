@@ -152,6 +152,12 @@ pub static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = La
     m
 });
 
+/// Returns `true` if `key` is one of the Datadog tag keys that the translator takes from resource attributes
+/// (`KubernetesDDTags`).
+pub fn is_kubernetes_dd_tag(key: &str) -> bool {
+    KUBERNETES_DD_TAGS.contains(key)
+}
+
 pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: ResourceAttributeTagMode) -> TagSet {
     let mut tags = TagSet::default();
 

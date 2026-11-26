@@ -1684,6 +1684,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.receiver.logs_enabled = value;
     }
 
+    fn consume_otlp_config_logs_infra_attributes_tags_as_ddtags(&mut self, value: bool) {
+        self.config.domains.otlp.logs.tags_as_ddtags = value;
+    }
+
     fn consume_otlp_config_metrics_delta_ttl(&mut self, value: i64) {
         if value <= 0 {
             self.record_error(TranslateError::new_with_message(

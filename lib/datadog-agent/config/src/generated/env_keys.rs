@@ -1068,6 +1068,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_LOGS_INFRA_ATTRIBUTES_TAGS_AS_DDTAGS"],
+        path: &["otlp_config", "logs", "infra_attributes", "tags_as_ddtags"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_METRICS_DELTA_TTL"],
         path: &["otlp_config", "metrics", "delta_ttl"],
         decode: EnvDecode::Integer,

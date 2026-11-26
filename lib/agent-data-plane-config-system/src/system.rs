@@ -1231,6 +1231,40 @@ mod tests {
         standalone_system(file)
     }
 
+    #[test]
+    fn otlp_logs_tags_as_ddtags_comes_from_yaml_and_environment() {
+        let cases = [
+            ("default", standalone_system(json!({})), false),
+            (
+                "YAML",
+                standalone_system(
+                    json!({ "otlp_config": { "logs": { "infra_attributes": { "tags_as_ddtags": true } } } }),
+                ),
+                true,
+            ),
+            (
+                "environment",
+                standalone_system_with_env(
+                    json!({}),
+                    &[("DD_OTLP_CONFIG_LOGS_INFRA_ATTRIBUTES_TAGS_AS_DDTAGS", "true")],
+                ),
+                true,
+            ),
+            (
+                "environment over YAML",
+                standalone_system_with_env(
+                    json!({ "otlp_config": { "logs": { "infra_attributes": { "tags_as_ddtags": true } } } }),
+                    &[("DD_OTLP_CONFIG_LOGS_INFRA_ATTRIBUTES_TAGS_AS_DDTAGS", "false")],
+                ),
+                false,
+            ),
+        ];
+        for (source, system, expected) in cases {
+            let system = system.unwrap_or_else(|error| panic!("{source} boots: {error}"));
+            assert_eq!(system.config().domains.otlp.logs.tags_as_ddtags, expected, "{source}");
+        }
+    }
+
     #[tokio::test]
     async fn standalone_reads_log_file_max_size_from_numbers_strings_and_environment() {
         // A YAML integer reaches the translator as its decimal string, a string keeps the Agent's unit

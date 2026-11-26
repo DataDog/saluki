@@ -101,7 +101,6 @@ tracking.
 | `otlp_config.logs.batch.flush_timeout`                          | OTLP logs exporter batch flush timeout            | [#2973] |
 | `otlp_config.logs.batch.max_size`                               | OTLP logs exporter batch max size                 | [#2973] |
 | `otlp_config.logs.batch.min_size`                               | OTLP logs exporter batch min size                 | [#2973] |
-| `otlp_config.logs.infra_attributes.tags_as_ddtags`              | Write infra tags as `ddtags` on OTLP logs         | [#2972] |
 | `otlp_config.metrics.infra_attributes.as_tags`                  | Promote infrastructure attributes to tags         | [#2559] |
 | `use_v3_api.distributions.enabled`                              | Send sketches using the V3 API                    | [#3091] |
 | `use_v3_api.distributions.endpoints`                            | Per-endpoint V3 sketches mode                     | [#3091] |
@@ -1591,6 +1590,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `observability_pipelines_worker.traces.enabled`                                            | Route traces and stats to OPW                      |
 | `observability_pipelines_worker.traces.url`                                                | OPW traces intake URL                              |
 | `origin_detection_unified`                                                                 | Unified origin detection mode                      |
+| `otlp_config.logs.infra_attributes.tags_as_ddtags`                                         | Write infra tags as `ddtags` on OTLP logs          |
 | `otlp_config.metrics.delta_ttl`                                                            | TTL (seconds) for cached delta-conversion points   |
 | `otlp_config.metrics.enabled`                                                              | Accept OTLP metrics                                |
 | `otlp_config.metrics.histograms.mode`                                                      | OTLP histogram bucket reporting mode               |
@@ -2002,6 +2002,17 @@ and no longer matches `env`. Tags that are kept are sent unchanged. See
 `SPEC.md` in the `datadog-agent-tag-normalization` crate (`lib/datadog-agent/tag-normalization/`)
 for the rules.
 
+### `otlp_config.logs.infra_attributes.tags_as_ddtags`
+
+Controls whether custom infrastructure tags on OTLP logs become the `ddtags` of each log record instead of
+resource attributes. The default `false` writes every tag as a resource attribute, so a custom tag, such as a
+Kubernetes label that the tagger adds, becomes a log attribute. When `true`, custom tags become log tags.
+Unified service tags, convention keys, Kubernetes Datadog tag keys, and keys with the `datadog.container.tag.`
+prefix stay resource attributes in both cases.
+
+This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent processes the logs and
+applies this key.
+
 ### `otlp_config.metrics.delta_ttl`
 
 Controls how long previously seen data points are kept in memory when converting cumulative
@@ -2209,7 +2220,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559
 [#2969]: https://github.com/DataDog/saluki/issues/2969
-[#2972]: https://github.com/DataDog/saluki/issues/2972
 [#2973]: https://github.com/DataDog/saluki/issues/2973
 [#2974]: https://github.com/DataDog/saluki/issues/2974
 [#2975]: https://github.com/DataDog/saluki/issues/2975

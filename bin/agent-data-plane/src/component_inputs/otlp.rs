@@ -7,8 +7,8 @@ use agent_data_plane_config::domains::{otlp, traces::ApmFeature};
 use saluki_components::sources::{
     ContainerTagPromotion, CorsConfiguration, CumulativeMonotonicMode, GrpcTransport, HistogramMode,
     InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpDebugVerbosity, OtlpGrpcReceiver, OtlpHttpReceiver,
-    OtlpKeepalive, OtlpMetricsSettings, OtlpProxyDestinations, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings,
-    ProxyDestination, SummaryMode,
+    OtlpKeepalive, OtlpLogsSettings, OtlpMetricsSettings, OtlpProxyDestinations, OtlpReceiver, OtlpReceiverTls,
+    OtlpTracesSettings, ProxyDestination, SummaryMode,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
@@ -105,6 +105,13 @@ fn proxy_destination(address: &str, unix: bool, key: &str) -> Result<ProxyDestin
     }
 
     ProxyDestination::from_tcp_address(address).with_error_context(|| format!("Invalid OTLP proxy destination `{key}`"))
+}
+
+/// Builds the OTLP logs translation settings.
+pub(crate) fn otlp_logs_settings(logs: &otlp::Logs) -> OtlpLogsSettings {
+    OtlpLogsSettings {
+        tags_as_ddtags: logs.tags_as_ddtags,
+    }
 }
 
 /// Builds the OTLP trace translation settings from the OTLP trace settings and the APM features.
@@ -406,6 +413,16 @@ mod tests {
             otlp_proxy_destinations(&otlp).unwrap(),
             OtlpProxyDestinations { grpc: None, http: None }
         );
+    }
+
+    #[test]
+    fn otlp_logs_settings_come_from_resolved_configuration() {
+        for tags_as_ddtags in [false, true] {
+            assert_eq!(
+                OtlpLogsSettings { tags_as_ddtags },
+                otlp_logs_settings(&otlp::Logs { tags_as_ddtags })
+            );
+        }
     }
 
     #[test]
