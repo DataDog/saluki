@@ -9,8 +9,7 @@ use saluki_core::data_model::tags::Tag;
 
 use crate::common::otlp::util::{first_attribute, put_str_attribute};
 use crate::common::otlp::value::otlp_value_as_string;
-
-const DDTAGS: &str = "ddtags";
+use crate::sources::otlp::logs::transform::DDTAGS_ATTR;
 
 /// Returns the diverted tags of a resource as one `ddtags` value: sorted and comma-separated.
 ///
@@ -39,11 +38,11 @@ pub(super) fn ddtags_value(mut tags: Vec<Tag>) -> Option<String> {
 /// The existing value converts with `otlp_value_as_string`, as `AsString` does. An array or map value differs from
 /// `pdata` until #3397 lands.
 pub(super) fn merge_ddtags(record_attributes: &mut Vec<KeyValue>, tags: &str) {
-    let merged = match first_attribute(record_attributes, DDTAGS).map(otlp_value_as_string) {
+    let merged = match first_attribute(record_attributes, DDTAGS_ATTR).map(otlp_value_as_string) {
         Some(existing) if !existing.is_empty() => format!("{existing},{tags}"),
         _ => tags.to_owned(),
     };
-    put_str_attribute(record_attributes, DDTAGS, merged);
+    put_str_attribute(record_attributes, DDTAGS_ATTR, merged);
 }
 
 #[cfg(test)]
