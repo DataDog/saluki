@@ -34,7 +34,7 @@
 //! Thus, the resolver returns the existing allocation and does not create a duplicate context with the same key.
 //!
 //! A weak entry whose context has dropped is dead. A dead weak entry keeps the whole context allocation alive, but not
-//! the name, tags, or other data that the context owns. This is a trade-off between lookup cost and memory: each
+//! the strings, origin tags, or lease that the context owns. This is a trade-off between lookup cost and memory: each
 //! miss checks two weak entries, and each sweep checks at least a quarter of them. A dead entry thus stays only until
 //! the next check finds it.
 //!
@@ -69,9 +69,9 @@
 //!  |  | 0x80000000 |------+       +-----+---------+-----------+           |
 //!  |  +------------+      |                                               |
 //!  |                      |       live: Vec<LiveSlot> (16 B each)         |
-//!  |                      |       +-----+--------------------+            |
-//!  |                      +------>| key | Weak<ContextInner> | [0]        |
-//!  |                              +-----+--------------------+            |
+//!  |                      |       +-----+------------+                    |
+//!  |                      +------>| key | WeakPacked | [0]                |
+//!  |                              +-----+------------+                    |
 //!  +----------------------------------------------------------------------+
 //! ```
 //!
@@ -105,7 +105,7 @@ use std::{
     num::NonZeroUsize,
     sync::{
         atomic::{AtomicU32, Ordering::Relaxed},
-        Arc, RwLock, Weak,
+        Arc, RwLock,
     },
     time::{Duration, Instant},
 };
@@ -114,7 +114,7 @@ use hashbrown::HashTable;
 use saluki_common::{hash::NoopU64BuildHasher, sync::shutdown::ShutdownHandle};
 use tokio::{pin, select, time::sleep};
 
-use super::{Context, ContextInner, ContextKey};
+use super::{packed::WeakPacked, Context, ContextKey};
 use crate::{
     cache::Telemetry,
     runtime::{self, ScopeGuard},
@@ -432,7 +432,7 @@ struct LiveSlot {
     key: ContextKey,
 
     /// The weak reference to the context allocation.
-    context: Weak<ContextInner>,
+    context: WeakPacked,
 }
 
 /// One lock-protected part of a [`ContextCache`].
@@ -542,11 +542,11 @@ impl Shard {
         // the count is 1, the cache owns the only reference, so no other thread can raise it. If the count is larger,
         // another owner can drop its reference right after the load. That leaves a dead weak entry, and
         // `Shard::reap_live` removes it later.
-        if Arc::strong_count(&slot.context.inner) > 1 {
+        if slot.context.inner.strong_count() > 1 {
             let live_position = self.live.len() as u32 | LIVE_BIT;
             self.live.push(LiveSlot {
                 key: slot.key,
-                context: Arc::downgrade(&slot.context.inner),
+                context: slot.context.inner.downgrade(),
             });
             *entry.into_mut() = live_position;
         } else {
@@ -658,14 +658,14 @@ mod tests {
 
     fn insert(shard: &mut Shard, name: &str, now: u32) -> bool {
         let context = Context::from_parts(name, crate::data_model::tags::TagSet::default());
-        let key = context.inner.key;
+        let key = context.inner.key();
         shard.insert(key, index_hash(key), context, now)
     }
 
     fn get<'a>(shard: &'a Shard, name: &str) -> Option<&'a Slot> {
         let key = Context::from_parts(name, crate::data_model::tags::TagSet::default())
             .inner
-            .key;
+            .key();
         shard.get(key, index_hash(key))
     }
 
@@ -738,14 +738,14 @@ mod tests {
         resolver.resolve("metric.b", ["env:prod"], None).unwrap();
 
         let cache = resolver.context_cache.as_ref().unwrap();
-        let key = held.inner.key;
+        let key = held.inner.key();
         assert!(cache.state.shards[0]
             .0
             .read()
             .unwrap()
             .get(key, index_hash(key))
             .is_none());
-        assert_eq!(Arc::strong_count(&held.inner), 1);
+        assert_eq!(held.inner.strong_count(), 1);
 
         let resolved = resolver.resolve("metric.a", ["env:prod"], None).unwrap();
         assert!(held.ptr_eq(&resolved));
@@ -766,7 +766,7 @@ mod tests {
             assert_eq!(shard.slots.capacity(), 0);
             assert_eq!(shard.index.len(), 1);
         }
-        assert_eq!(Arc::strong_count(&held.inner), 1);
+        assert_eq!(held.inner.strong_count(), 1);
 
         let resolved = resolver.resolve("metric.a", ["env:prod"], None).unwrap();
         assert!(held.ptr_eq(&resolved));

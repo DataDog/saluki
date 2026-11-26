@@ -4,10 +4,8 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     ops::Deref,
-    sync::Arc,
 };
 
-use metrics::Gauge;
 use saluki_common::collections::{ContiguousBitSet, PrehashedHashSet};
 use serde::{Serialize, Serializer};
 use stringtheory::{CheapMetaString, MetaString};
@@ -18,11 +16,12 @@ mod hash;
 use self::hash::{hash_context, hash_context_with_host_and_seen};
 pub use self::hash::{hash_context_with_host, ContextKey};
 
+mod packed;
+use self::packed::{Packed, Parts, TagMetadata};
+
 mod resolver;
 pub use self::resolver::{ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder};
-use crate::data_model::tags::{Tag, TagSet, TagSetIter, TagStr};
-
-const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
+use crate::data_model::tags::{Tag, TagSet, TagStr};
 
 /// A metric name borrowed from a context.
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -80,49 +79,55 @@ impl fmt::Display for ContextName {
 }
 
 /// A metric context.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+///
+/// A context is the combination of a metric name, an optional host, instrumented tags, and origin tags. It
+/// identifies one metric series.
+///
+/// # Design
+///
+/// A context is an 8-byte handle to one immutable, reference-counted allocation. The allocation holds the name,
+/// host, and tags inline, or as IDs in a shared symbol table. Cloning a context only increments a reference count.
+///
+/// A context never changes after construction. Each method that changes a name, host, or tag set builds a new
+/// allocation, and other holders of the old context see no change.
+///
+/// Equality and hashing use only the 64-bit [`ContextKey`], which hashes the name, host, and both tag sets. This is a
+/// trade-off between speed and exactness. A comparison costs one integer comparison, and never compares strings. Two
+/// different contexts with the same key compare as equal. For 1,000,000 contexts, the chance of any such collision is
+/// about 1 in 37,000,000.
+#[derive(Clone)]
 pub struct Context {
-    inner: Arc<ContextInner>,
+    inner: Packed,
 }
 
 impl Context {
     /// Creates a new `Context` from the given static name.
     pub fn from_static_name(name: &'static str) -> Self {
-        let tags = TagSet::default();
-        let origin_tags = TagSet::default();
-
-        let (key, _) = hash_context(name, &tags, &origin_tags);
-        Self {
-            inner: Arc::new(ContextInner {
-                name: MetaString::from_static(name),
-                host: None,
-                tags,
-                origin_tags,
-                key,
-                active_count: Gauge::noop(),
-            }),
-        }
+        Self::from_static_parts(name, &[])
     }
 
     /// Creates a new `Context` from the given static name and given static tags.
     pub fn from_static_parts(name: &'static str, tags: &[&'static str]) -> Self {
-        let mut tag_set = TagSet::with_capacity(tags.len());
-        for tag in tags {
-            tag_set.insert_tag(MetaString::from_static(tag));
-        }
-
-        let origin_tags = TagSet::default();
-
-        let (key, _) = hash_context(name, &tag_set, &origin_tags);
+        let origin = TagSet::default();
+        let key = hash_context(name, tags, &origin).0;
         Self {
-            inner: Arc::new(ContextInner {
-                name: MetaString::from_static(name),
-                host: None,
-                tags: tag_set,
-                origin_tags,
-                key,
-                active_count: Gauge::noop(),
-            }),
+            inner: Packed::new(
+                Parts {
+                    key,
+                    name,
+                    host: None,
+                    origin,
+                    domain: None,
+                    tracked: false,
+                    lease: None,
+                    metadata: TagMetadata {
+                        deduplicate: true,
+                        additions: tags.len(),
+                        modified: !tags.is_empty(),
+                    },
+                },
+                tags.iter().copied(),
+            ),
         }
     }
 
@@ -130,234 +135,244 @@ impl Context {
     pub fn from_parts<S: Into<MetaString>>(name: S, tags: impl Into<TagSet>) -> Self {
         let name = name.into();
         let tags = tags.into();
-        let origin_tags = TagSet::default();
-        let (key, _) = hash_context(&name, &tags, &origin_tags);
+        let origin = TagSet::default();
+        let key = hash_context(&name, &tags, &origin).0;
         Self {
-            inner: Arc::new(ContextInner {
-                name,
-                host: None,
-                tags,
-                origin_tags,
-                key,
-                active_count: Gauge::noop(),
-            }),
+            inner: Packed::new(
+                Parts {
+                    key,
+                    name: &name,
+                    host: None,
+                    origin,
+                    domain: None,
+                    tracked: false,
+                    lease: None,
+                    metadata: TagMetadata::from_tag_set(&tags),
+                },
+                (&tags).into_iter().map(Tag::as_str),
+            ),
         }
     }
 
     /// Clones this context, and uses the given name for the cloned context.
+    ///
+    /// The host and both tag sets of this context are preserved. The clone is a new allocation with a new key.
     pub fn with_name<S: Into<MetaString>>(&self, name: S) -> Self {
-        // Regenerate the context key to account for the new name.
         let name = name.into();
-        let host = self.inner.host.clone();
-        let tags = self.inner.tags.clone();
-        let origin_tags = self.inner.origin_tags.clone();
-        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
-
-        Self {
-            inner: Arc::new(ContextInner {
-                name,
-                host,
-                tags,
-                origin_tags,
-                key,
-                active_count: Gauge::noop(),
-            }),
-        }
+        self.derive(
+            &name,
+            self.host(),
+            self.tags().into_iter().map(TagStr::as_str),
+            self.origin_tags().clone(),
+            self.inner.metadata(),
+            false,
+        )
     }
 
     /// Clones this context, and uses the given tags for the cloned context.
     ///
-    /// The name and origin tags of this context are preserved.
+    /// The name, host and origin tags are preserved. The clone is a new allocation with a new key.
     pub fn with_tags(&self, tags: impl Into<TagSet>) -> Self {
-        let name = self.inner.name.clone();
-        let host = self.inner.host.clone();
-        let tags = tags.into();
-        let origin_tags = self.inner.origin_tags.clone();
-        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
-
-        Self {
-            inner: Arc::new(ContextInner {
-                name,
-                host,
-                tags,
-                origin_tags,
-                key,
-                active_count: Gauge::noop(),
-            }),
-        }
+        self.with_tags_and_origin_tags(tags, self.origin_tags().clone())
     }
 
     /// Clones this context, and uses the given origin tags for the cloned context.
     ///
-    /// The name and instrumented tags of this context are preserved.
+    /// The name, host and instrumented tags are preserved. The clone is a new allocation with a new key.
     pub fn with_origin_tags(&self, origin_tags: impl Into<TagSet>) -> Self {
-        let name = self.inner.name.clone();
-        let host = self.inner.host.clone();
-        let tags = self.inner.tags.clone();
-        let origin_tags = origin_tags.into();
-        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
-
-        Self {
-            inner: Arc::new(ContextInner {
-                name,
-                host,
-                tags,
-                origin_tags,
-                key,
-                active_count: Gauge::noop(),
-            }),
-        }
+        self.derive(
+            self.name(),
+            self.host(),
+            self.tags().into_iter().map(TagStr::as_str),
+            origin_tags.into(),
+            self.inner.metadata(),
+            false,
+        )
     }
 
-    /// Clones this context, replacing both instrumented tags and origin tags in a single allocation.
+    /// Clones this context, replacing both instrumented tags and origin tags in one allocation.
     ///
-    /// Preferred over two separate `with_tags` / `with_origin_tags` calls when both sets need to
-    /// be replaced, as it halves the number of `Arc` allocations.
+    /// Use this method instead of separate `with_tags` and `with_origin_tags` calls when you replace both tag sets.
+    /// It builds one new allocation and computes one key, instead of two of each.
     pub fn with_tags_and_origin_tags(&self, tags: impl Into<TagSet>, origin_tags: impl Into<TagSet>) -> Self {
-        let name = self.inner.name.clone();
-        let host = self.inner.host.clone();
         let tags = tags.into();
-        let origin_tags = origin_tags.into();
-        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
-
-        Self {
-            inner: Arc::new(ContextInner {
-                name,
-                host,
-                tags,
-                origin_tags,
-                key,
-                active_count: Gauge::noop(),
-            }),
-        }
-    }
-
-    pub(super) fn from_inner(inner: ContextInner) -> Self {
-        Self { inner: Arc::new(inner) }
+        self.derive(
+            self.name(),
+            self.host(),
+            (&tags).into_iter().map(Tag::as_str),
+            origin_tags.into(),
+            TagMetadata::from_tag_set(&tags),
+            false,
+        )
     }
 
     /// Returns whether `self` and `other` share the same backing allocation.
     pub fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
+        self.inner.ptr_eq(&other.inner)
     }
 
     /// Returns the name of this context.
     pub fn name(&self) -> &ContextName {
-        ContextName::from_str(&self.inner.name)
+        ContextName::from_str(self.inner.name())
     }
 
     /// Returns the host of this context, if one has been set.
     pub fn host(&self) -> Option<&str> {
-        self.inner.host.as_deref()
+        self.inner.host()
     }
 
     /// Clones this context, and uses the given host for the cloned context.
     pub fn with_host<S: Into<Option<MetaString>>>(&self, host: S) -> Self {
-        let name = self.inner.name.clone();
         let host = host.into();
-        let tags = self.inner.tags.clone();
-        let origin_tags = self.inner.origin_tags.clone();
-        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
-
-        Self {
-            inner: Arc::new(ContextInner {
-                name,
-                host,
-                tags,
-                origin_tags,
-                key,
-                active_count: Gauge::noop(),
-            }),
-        }
+        self.derive(
+            self.name(),
+            host.as_deref(),
+            self.tags().into_iter().map(TagStr::as_str),
+            self.origin_tags().clone(),
+            self.inner.metadata(),
+            false,
+        )
     }
 
-    /// Returns a borrowed view of the instrumented tags.
+    /// Returns a borrowed view of the instrumented tags of this context.
     pub fn tags(&self) -> ContextTags<'_> {
-        ContextTags(&self.inner.tags)
+        ContextTags(&self.inner)
     }
 
     /// Returns the origin tags of this context.
     pub fn origin_tags(&self) -> &TagSet {
-        &self.inner.origin_tags
+        self.inner.origin()
     }
 
     /// Mutates the instrumented tags of this context via a closure.
     ///
-    /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations don't affect other holders. If this context is
-    /// the sole owner, the mutation happens in place.
-    ///
-    /// The context key is automatically recomputed after the closure returns.
+    /// The closure gets an owned copy of the tags. After the closure returns, this method builds a new allocation and
+    /// computes a new context key, even if the closure changed nothing. Other holders of this context keep the old
+    /// allocation, so the mutation does not affect them.
     pub fn mutate_tags(&mut self, f: impl FnOnce(&mut TagSet)) {
-        self.mutate_inner(|inner| f(&mut inner.tags));
+        self.with_tag_sets_mut(|tags, _| f(tags));
     }
 
     /// Mutates the origin tags of this context via a closure.
     ///
-    /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations don't affect other holders. If this context is
-    /// the sole owner, the mutation happens in place.
-    ///
-    /// The context key is automatically recomputed after the closure returns.
+    /// The closure gets a copy of the origin tags. After the closure returns, this method builds a new allocation and
+    /// computes a new context key, even if the closure changed nothing. Other holders of this context keep the old
+    /// allocation, so the mutation does not affect them.
     pub fn mutate_origin_tags(&mut self, f: impl FnOnce(&mut TagSet)) {
-        self.mutate_inner(|inner| f(&mut inner.origin_tags));
+        let mut origin = self.origin_tags().clone();
+        f(&mut origin);
+        *self = self.derive(
+            self.name(),
+            self.host(),
+            self.tags().into_iter().map(TagStr::as_str),
+            origin,
+            self.inner.metadata(),
+            self.inner.track_rewrite(),
+        );
     }
 
     /// Mutates both instrumented tags and origin tags via a single closure.
     ///
-    /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations don't affect other holders. If this context is
-    /// the sole owner, the mutation happens in place.
-    ///
-    /// The context key is recomputed once after the closure returns.
+    /// The closure gets owned copies of both tag sets. After the closure returns, this method builds one new
+    /// allocation and computes the context key once, even if the closure changed nothing. Other holders of this
+    /// context keep the old allocation, so the mutation does not affect them.
     pub fn with_tag_sets_mut(&mut self, f: impl FnOnce(&mut TagSet, &mut TagSet)) {
-        self.mutate_inner(|inner| f(&mut inner.tags, &mut inner.origin_tags));
+        let mut tags = self.tags().to_mutable();
+        let mut origin = self.origin_tags().clone();
+        f(&mut tags, &mut origin);
+        *self = self.derive(
+            self.name(),
+            self.host(),
+            (&tags).into_iter().map(Tag::as_str),
+            origin,
+            TagMetadata::from_tag_set(&tags),
+            self.inner.track_rewrite(),
+        );
     }
 
-    /// Runs the given closure on the inner context data, recomputing the context key afterwards.
+    /// Builds a new context from the given parts, and computes its context key.
     ///
-    /// When the inner context state is shared (we aren't the only ones with a strong reference), we clone the inner
-    /// data first to have our own copy. Otherwise, we modify the inner data in place.
-    fn mutate_inner(&mut self, f: impl FnOnce(&mut ContextInner)) {
-        let inner = Arc::make_mut(&mut self.inner);
-        f(inner);
-        inner.recalculate_key();
+    /// The new context keeps the resolver domain of this context. A strict-mode lease carries over and reuses each
+    /// interned string whose value did not change.
+    ///
+    /// If `tracked` is `false`, the new context does not count toward the active-context gauge of the resolver. A
+    /// copy of a context is detached from the resolver statistics, because the resolver counts only the contexts
+    /// that it creates. A caller that replaces its only reference passes `true`, so the replacement takes over the
+    /// count of the old context.
+    fn derive<'a>(
+        &self, name: &str, host: Option<&str>, tags: impl Iterator<Item = &'a str> + Clone, origin: TagSet,
+        metadata: TagMetadata, tracked: bool,
+    ) -> Self {
+        let key = hash_context_with_host(name, host, tags.clone(), &origin).0;
+        let lease = self.inner.lease().map(|lease| lease.rewrite(name, host, tags.clone()));
+        Self {
+            inner: Packed::new(
+                Parts {
+                    key,
+                    name,
+                    host,
+                    origin,
+                    domain: self.inner.domain(),
+                    tracked,
+                    metadata,
+                    lease: lease.as_ref(),
+                },
+                tags,
+            ),
+        }
     }
 
-    /// Creates a lazy copy-on-write mutable view over this context's tag sets.
+    /// Creates a lazy copy-on-write mutable view over the tag sets of this context.
     ///
-    /// The returned view supports mutations (for example, [`retain_tags`][TagSetMutView::retain_tags])
-    /// without immediately triggering an `Arc` clone. The actual clone, mutation, and context key
-    /// recomputation only happen when [`TagSetMutView::finish`] is called, and only if changes
-    /// were actually recorded.
+    /// The view records mutations, such as [`retain_tags`][TagSetMutView::retain_tags], without a new allocation.
+    /// [`TagSetMutView::finish`] builds the new allocation and computes the new context key, and only if the view
+    /// recorded a change.
     ///
-    /// `state` provides reusable scratch space for tracking pending changes. Holding a
-    /// long-lived [`TagSetMutViewState`] across calls amortizes any vector allocations.
+    /// `state` provides reusable scratch space for tracking pending changes. Hold a long-lived
+    /// [`TagSetMutViewState`] across calls to amortize its allocations.
     pub fn tags_mut_view<'a, 'b>(&'a mut self, state: &'b mut TagSetMutViewState) -> TagSetMutView<'a, 'b> {
         TagSetMutView { context: self, state }
     }
 
     /// Returns the size of this context in bytes.
     ///
-    /// A context's size is the sum of the sizes of its fields and the size of the `Context` struct itself, and
-    /// includes:
-    /// - the context name
-    /// - the context host and tags (both instrumented and origin)
+    /// The size is the sum of these parts:
     ///
-    /// Since origin tags can potentially be expensive to calculate, this method will cache the size of the origin tags
-    /// when this method is first called.
+    /// - the 8-byte handle
+    /// - the packed allocation, which holds the name, host, instrumented tags, and the origin tag handle
+    /// - an estimate of the origin tag data
     ///
-    /// Additionally, the value returned by this method doesn't compensate for externalities such as origin tags
-    /// potentially being shared by multiple contexts, or whether or not tags are inlined, interned, or heap
-    /// allocated. This means that the value returned is essentially the worst-case usage, and should be used as a rough
+    /// The value doesn't count the shared symbol table or a strict-mode lease, because many contexts share them. It
+    /// counts the full origin tag data for each context, even when contexts share it. Thus, use the value as a rough
     /// estimate.
     pub fn size_of(&self) -> usize {
-        let name_size = self.inner.name.len();
-        let host_size = self.inner.host.as_ref().map_or(0, |host| host.len());
-        let tags_size = self.inner.tags.size_of();
-        let origin_tags_size = self.inner.origin_tags.size_of();
+        size_of::<Self>() + self.inner.allocation_bytes() + self.origin_tags().size_of()
+    }
+}
 
-        BASE_CONTEXT_SIZE + name_size + host_size + tags_size + origin_tags_size
+impl PartialEq for Context {
+    fn eq(&self, other: &Self) -> bool {
+        // The 64-bit key stands in for the full contents. See the `# Design` section of `Context`.
+        self.inner.key() == other.inner.key()
+    }
+}
+
+impl Eq for Context {}
+
+impl Hash for Context {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.key().hash(state);
+    }
+}
+
+impl fmt::Debug for Context {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Context")
+            .field("name", &self.name())
+            .field("host", &self.host())
+            .field("tags", &self.tags())
+            .field("key", &self.inner.key())
+            .finish()
     }
 }
 
@@ -367,69 +382,83 @@ impl From<&'static str> for Context {
     }
 }
 
-impl<'a> From<(&'static str, &'a [&'static str])> for Context {
-    fn from((name, tags): (&'static str, &'a [&'static str])) -> Self {
+impl From<(&'static str, &[&'static str])> for Context {
+    fn from((name, tags): (&'static str, &[&'static str])) -> Self {
         Self::from_static_parts(name, tags)
     }
 }
 
 impl fmt::Display for Context {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.inner.name)?;
-        if !self.inner.tags.is_empty() {
+        write!(f, "{}", self.name())?;
+        let tags = self.tags();
+        if !tags.is_empty() {
             write!(f, "{{")?;
-
-            let mut needs_separator = false;
-            for tag in &self.inner.tags {
-                if needs_separator {
+            for (i, tag) in tags.into_iter().enumerate() {
+                if i > 0 {
                     write!(f, ", ")?;
-                } else {
-                    needs_separator = true;
                 }
-
-                write!(f, "{}", tag)?;
+                write!(f, "{tag}")?;
             }
-
             write!(f, "}}")?;
         }
-
         Ok(())
     }
 }
 
 /// The instrumented tags of a context, in insertion order.
 #[derive(Clone, Copy)]
-pub struct ContextTags<'a>(&'a TagSet);
+pub struct ContextTags<'a>(&'a Packed);
 
 impl<'a> ContextTags<'a> {
     /// Returns the number of tags.
     pub fn len(self) -> usize {
-        self.0.len()
+        self.0.tag_count()
     }
 
     /// Returns whether the context has no instrumented tags.
     pub fn is_empty(self) -> bool {
-        self.0.is_empty()
+        self.len() == 0
     }
 
     /// Returns whether the tag set has an overlay change.
     pub fn is_modified(self) -> bool {
-        self.0.is_modified()
+        self.0.metadata().modified
     }
 
     /// Matches a complete tag, including its value if present.
     pub fn has_tag(self, text: impl AsRef<str>) -> bool {
-        self.0.has_tag(text)
+        self.into_iter().any(|tag| tag == text.as_ref())
     }
 
     /// Returns the first matching tag by key, checking additions before base tags.
     pub fn get_single_tag(self, name: impl AsRef<str>) -> Option<&'a TagStr> {
-        self.0.get_single_tag(name).map(Tag::as_tag_str)
+        let mut base_match = None;
+        let base_count = self.len() - self.0.metadata().additions;
+        for (i, tag) in self.into_iter().enumerate() {
+            if tag.has_name(name.as_ref()) {
+                if i >= base_count {
+                    return Some(tag);
+                }
+                if base_match.is_none() {
+                    base_match = Some(tag);
+                }
+                if base_count == self.len() {
+                    break;
+                }
+            }
+        }
+        base_match
     }
 
     /// Creates an owned mutable tag set in the same order.
     pub fn to_mutable(self) -> TagSet {
-        self.0.clone()
+        let metadata = self.0.metadata();
+        TagSet::from_context_tags(
+            self.into_iter().map(TagStr::as_str),
+            self.len() - metadata.additions,
+            metadata.modified,
+        )
     }
 }
 
@@ -450,31 +479,23 @@ impl<'a> IntoIterator for ContextTags<'a> {
     type IntoIter = ContextTagsIter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ContextTagsIter {
-            tags: self.0.into_iter(),
-            remaining: self.len(),
-        }
+        ContextTagsIter(self.0.tag_iter())
     }
 }
 
 /// An iterator over the borrowed instrumented tags of a context.
 #[derive(Clone)]
-pub struct ContextTagsIter<'a> {
-    tags: TagSetIter<'a>,
-    remaining: usize,
-}
+pub struct ContextTagsIter<'a>(packed::TagIter<'a>);
 
 impl<'a> Iterator for ContextTagsIter<'a> {
     type Item = &'a TagStr;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let tag = self.tags.next()?;
-        self.remaining -= 1;
-        Some(tag.as_tag_str())
+        self.0.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining, Some(self.remaining))
+        self.0.size_hint()
     }
 }
 
@@ -482,12 +503,11 @@ impl ExactSizeIterator for ContextTagsIter<'_> {}
 
 /// Reusable scratch space for [`TagSetMutView`] operations.
 ///
-/// Holding a long-lived instance across calls amortizes bitset allocations. The bitsets are
-/// cleared automatically when the associated [`TagSetMutView`] is dropped.
+/// Hold a long-lived instance across calls to amortize bitset allocations. The bitsets are cleared automatically when
+/// the associated [`TagSetMutView`] is dropped.
 #[derive(Debug, Default)]
 pub struct TagSetMutViewState {
-    tag_base_removals: ContiguousBitSet,
-    tag_addition_removals: ContiguousBitSet,
+    tag_removals: ContiguousBitSet,
     origin_base_removals: ContiguousBitSet,
     origin_addition_removals: ContiguousBitSet,
     hash_seen: PrehashedHashSet<u64>,
@@ -500,80 +520,103 @@ impl TagSetMutViewState {
     }
 
     fn clear(&mut self) {
-        self.tag_base_removals.clear_all();
-        self.tag_addition_removals.clear_all();
+        self.tag_removals.clear_all();
         self.origin_base_removals.clear_all();
         self.origin_addition_removals.clear_all();
     }
 }
 
-/// A lazy copy-on-write mutable view over a [`Context`]'s tag sets.
+/// A lazy copy-on-write mutable view over the two tag sets of a [`Context`].
 ///
-/// Operations on this view (for example, [`retain_tags`][Self::retain_tags]) are recorded but not
-/// applied immediately. The actual `Arc` clone, mutation, and context key recomputation only
-/// occur when [`finish`][Self::finish] is called, and only if changes were recorded.
+/// The view records operations, such as [`retain_tags`][Self::retain_tags], but does not apply them immediately.
+/// [`finish`][Self::finish] builds the new allocation and computes the new context key, and only if the view recorded
+/// a change.
 pub struct TagSetMutView<'a, 'b> {
     context: &'a mut Context,
     state: &'b mut TagSetMutViewState,
 }
 
-impl<'a, 'b> TagSetMutView<'a, 'b> {
-    /// Scan instrumented tags with the given predicate.
+impl TagSetMutView<'_, '_> {
+    /// Scans the instrumented tags with the given predicate.
     ///
-    /// Tags for which `f` returns `false` are flagged for removal. This is a read-only scan;
-    /// no mutation occurs until [`finish`][Self::finish] is called.
+    /// Tags for which `f` returns `false` are flagged for removal. This is a read-only scan: no mutation occurs until
+    /// [`finish`][Self::finish] is called. The scan visits added tags before base tags.
     pub fn retain_tags(&mut self, mut f: impl FnMut(&TagStr) -> bool) {
-        self.context.inner.tags.collect_removals(
-            |tag: &Tag| f(tag.as_tag_str()),
-            &mut self.state.tag_base_removals,
-            &mut self.state.tag_addition_removals,
-        );
+        let tags = self.context.tags();
+        let additions = tags.0.metadata().additions;
+        let base_count = tags.len() - additions;
+        let removals = &mut self.state.tag_removals;
+        let mut consider = |(index, tag)| {
+            if !removals.is_set(index) && !f(tag) {
+                removals.set(index);
+            }
+        };
+        if additions != 0 {
+            tags.into_iter().enumerate().skip(base_count).for_each(&mut consider);
+        }
+        tags.into_iter().enumerate().take(base_count).for_each(consider);
     }
 
-    /// Scan origin tags with the given predicate.
+    /// Scans the origin tags with the given predicate.
     ///
-    /// Tags for which `f` returns `false` are flagged for removal. This is a read-only scan;
-    /// no mutation occurs until [`finish`][Self::finish] is called.
+    /// Tags for which `f` returns `false` are flagged for removal. This is a read-only scan: no mutation occurs until
+    /// [`finish`][Self::finish] is called.
     pub fn retain_origin_tags(&mut self, mut f: impl FnMut(&TagStr) -> bool) {
-        self.context.inner.origin_tags.collect_removals(
+        self.context.origin_tags().collect_removals(
             |tag: &Tag| f(tag.as_tag_str()),
             &mut self.state.origin_base_removals,
             &mut self.state.origin_addition_removals,
         );
     }
 
-    /// Apply all recorded changes and return the total number of tags affected.
+    /// Applies all recorded changes, and returns the number of tags removed.
     ///
-    /// If no changes were recorded, this is a no-op: no `Arc` clone, no rehash, returns 0.
-    /// Otherwise, triggers `Arc::make_mut` on the context, applies the changes to both tag sets,
-    /// and recomputes the context key.
-    ///
-    /// Returns the number of tags removed.
+    /// If no changes were recorded, this does nothing and returns 0: no new allocation and no rehash. Otherwise, it
+    /// builds a new allocation without the flagged tags and recomputes the context key. Other holders of the old
+    /// context see no change.
     pub fn finish(self) -> usize {
-        let total_tags = self.state.tag_base_removals.len() + self.state.tag_addition_removals.len();
-        let total_origin = self.state.origin_base_removals.len() + self.state.origin_addition_removals.len();
-        let total = total_tags + total_origin;
-
-        if total == 0 {
+        let removed = self.state.tag_removals.len()
+            + self.state.origin_base_removals.len()
+            + self.state.origin_addition_removals.len();
+        if removed == 0 {
             return 0;
         }
 
-        let inner = Arc::make_mut(&mut self.context.inner);
-
-        if total_tags > 0 {
-            inner
-                .tags
-                .apply_removals(&self.state.tag_base_removals, &self.state.tag_addition_removals);
-        }
-        if total_origin > 0 {
-            inner
-                .origin_tags
-                .apply_removals(&self.state.origin_base_removals, &self.state.origin_addition_removals);
-        }
-
-        inner.recalculate_key_with_seen(&mut self.state.hash_seen);
-
-        total
+        let context = &mut *self.context;
+        let mut origin = context.origin_tags().clone();
+        origin.apply_removals(&self.state.origin_base_removals, &self.state.origin_addition_removals);
+        let removals = &self.state.tag_removals;
+        let mut metadata = context.inner.metadata();
+        let base_count = context.tags().len() - metadata.additions;
+        metadata.additions -= removals.into_iter().filter(|&i| i >= base_count).count();
+        metadata.modified |= !removals.is_empty();
+        let tags = context
+            .tags()
+            .into_iter()
+            .map(TagStr::as_str)
+            .enumerate()
+            .filter_map(|(i, tag)| (!removals.is_set(i)).then_some(tag));
+        let name = context.inner.name();
+        let host = context.host();
+        let key = hash_context_with_host_and_seen(name, host, tags.clone(), &origin, &mut self.state.hash_seen).0;
+        let lease = context
+            .inner
+            .lease()
+            .map(|lease| lease.rewrite(name, host, tags.clone()));
+        context.inner = Packed::new(
+            Parts {
+                key,
+                name,
+                host,
+                origin,
+                domain: context.inner.domain(),
+                tracked: context.inner.track_rewrite(),
+                metadata,
+                lease: lease.as_ref(),
+            },
+            tags,
+        );
+        removed
     }
 }
 
@@ -583,177 +626,95 @@ impl Drop for TagSetMutView<'_, '_> {
     }
 }
 
-pub(super) struct ContextInner {
-    key: ContextKey,
-    name: MetaString,
-    host: Option<MetaString>,
-    tags: TagSet,
-    origin_tags: TagSet,
-    active_count: Gauge,
-}
-
-impl ContextInner {
-    pub fn from_parts(
-        key: ContextKey, name: MetaString, host: Option<MetaString>, tags: TagSet, origin_tags: TagSet,
-        active_count: Gauge,
-    ) -> Self {
-        Self {
-            key,
-            name,
-            host,
-            tags,
-            origin_tags,
-            active_count,
-        }
-    }
-
-    fn calculate_key(name: &str, host: Option<&str>, tags: &TagSet, origin_tags: &TagSet) -> ContextKey {
-        let mut seen = PrehashedHashSet::default();
-        let (key, _) = hash_context_with_host_and_seen(name, host, tags, origin_tags, &mut seen);
-        key
-    }
-
-    fn recalculate_key(&mut self) {
-        self.key = Self::calculate_key(&self.name, self.host.as_deref(), &self.tags, &self.origin_tags);
-    }
-
-    fn recalculate_key_with_seen(&mut self, seen: &mut PrehashedHashSet<u64>) {
-        let (key, _) =
-            hash_context_with_host_and_seen(&self.name, self.host.as_deref(), &self.tags, &self.origin_tags, seen);
-        self.key = key;
-    }
-}
-
-impl Clone for ContextInner {
-    fn clone(&self) -> Self {
-        Self {
-            key: self.key,
-            name: self.name.clone(),
-            host: self.host.clone(),
-            tags: self.tags.clone(),
-            origin_tags: self.origin_tags.clone(),
-
-            // We're specifically detaching this context from the statistics of the resolver from which `self`
-            // originated, as we only want to track the statistics of the contexts created _directly_ through the
-            // resolver.
-            active_count: Gauge::noop(),
-        }
-    }
-}
-
-impl Drop for ContextInner {
-    fn drop(&mut self) {
-        self.active_count.decrement(1);
-    }
-}
-
-impl PartialEq<ContextInner> for ContextInner {
-    fn eq(&self, other: &ContextInner) -> bool {
-        // TODO: Note about why we consider the hash good enough for equality.
-        self.key == other.key
-    }
-}
-
-impl Eq for ContextInner {}
-
-impl Hash for ContextInner {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.key.hash(state);
-    }
-}
-
-impl fmt::Debug for ContextInner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ContextInner")
-            .field("name", &self.name)
-            .field("host", &self.host)
-            .field("tags", &self.tags)
-            .field("key", &self.key)
-            .finish()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_model::tags::Tag;
-
-    const SIZE_OF_CONTEXT_NAME: &str = "size_of_test_metric";
-    const SIZE_OF_CONTEXT_CHANGED_NAME: &str = "size_of_test_metric_changed";
-    const SIZE_OF_CONTEXT_TAGS: &[&str] = &["size_of_test_tag1", "size_of_test_tag2"];
-    const SIZE_OF_CONTEXT_ORIGIN_TAGS: &[&str] = &["size_of_test_origin_tag1", "size_of_test_origin_tag2"];
 
     fn tag_set(tags: &[&str]) -> TagSet {
-        tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>()
+        tags.iter().map(|s| Tag::from(*s)).collect()
     }
 
     #[test]
-    fn size_of_context_from_static_name() {
-        let context = Context::from_static_name(SIZE_OF_CONTEXT_NAME);
-        assert_eq!(context.size_of(), BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len());
+    fn reports_inline_allocation_and_shared_origin_size() {
+        let context = Context::from_static_parts("metric", &["env:prod", "region:us"]);
+        let origin: TagSet = tag_set(&["origin:a"]).into_shared().into();
+        let enriched = context.with_origin_tags(origin.clone());
+        assert_eq!(context.size_of(), 96);
+        assert_eq!(enriched.size_of(), 96 + size_of::<TagSet>() + origin.size_of());
+        assert!(std::ptr::eq(
+            origin.get_single_tag("origin").unwrap(),
+            enriched.origin_tags().get_single_tag("origin").unwrap(),
+        ));
     }
 
     #[test]
-    fn size_of_context_from_static_parts() {
-        let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
+    fn packed_allocation_sizes_and_tag_order() {
+        use std::{num::NonZeroUsize, sync::Arc};
 
-        let context = Context::from_static_parts(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS);
+        use stringtheory::interning::SymbolTable;
+
+        let symbols = Arc::new(SymbolTable::new(1024 * 1024));
+        let mut resolver = ContextResolverBuilder::for_tests()
+            .with_interner_capacity_bytes(NonZeroUsize::new(1024 * 1024).unwrap())
+            .with_symbol_table(Arc::clone(&symbols))
+            .without_caching()
+            .build();
+        let name = "metric.a";
+        assert!(symbols.try_intern(name).is_none());
+        let _name_symbol = symbols.try_intern(name).unwrap();
+        let shared: Vec<_> = (0..50)
+            .map(|n| format!("shared_workload_context_distinct_tag_value_{n:08x}"))
+            .collect();
+        let unique: Vec<_> = (0..9)
+            .map(|n| format!("unique_workload_context_distinct_tag_value_{n:08x}"))
+            .collect();
+        assert!(shared.iter().chain(&unique).all(|tag| tag.len() == 51));
+        // Warm one symbol at a time so the fixture does not depend on the witness index distribution.
+        let _shared_symbols: Vec<_> = shared
+            .iter()
+            .map(|tag| {
+                assert!(symbols.try_intern(tag).is_none());
+                symbols.try_intern(tag).unwrap()
+            })
+            .collect();
+        let mut mixed = shared[..8].to_vec();
+        mixed[3].clone_from(&unique[8]);
+
+        assert_eq!(size_of::<Context>(), 8);
+        for (tags, bytes) in [
+            (&[][..], 56),
+            (&shared[..8], 88),
+            (&mixed[..], 144),
+            (&unique[..8], 472),
+            (&shared[..], 256),
+        ] {
+            // Use disjoint inline observations in each case. The mixed tag must remain inline in the unique case.
+            let context = resolver.resolve(name, tags, None).unwrap();
+            assert_eq!(context.inner.allocation_bytes(), bytes, "{tags:?}");
+            assert_eq!(context.tags().into_iter().map(TagStr::as_str).collect::<Vec<_>>(), tags);
+        }
+    }
+
+    #[test]
+    fn borrowed_tags_preserve_inline_unicode_duplicates_and_addition_priority() {
+        let mut tags = tag_set(&["k:base", "bare"]).into_shared().to_mutable();
+        let long = format!("uni:{}", "𝄞".repeat(40));
+        tags.insert_tag(Tag::from(long.as_str()));
+        tags.insert_tag(Tag::from("k:added"));
+        let context = Context::from_parts("metric", tags);
+        assert_eq!(context.tags().get_single_tag("k").unwrap().value(), Some("added"));
         assert_eq!(
-            context.size_of(),
-            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len() + tags.size_of()
+            context.tags().into_iter().map(TagStr::as_str).collect::<Vec<_>>(),
+            ["k:base", "bare", &long, "k:added"]
         );
-    }
-
-    #[test]
-    fn size_of_context_from_parts() {
-        let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
-
-        let context = Context::from_parts(SIZE_OF_CONTEXT_NAME, tags.clone());
+        let deduplicated = Context::from_static_parts("metric", &["k:1", "k:1", "k:2"]);
         assert_eq!(
-            context.size_of(),
-            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len() + tags.size_of()
+            deduplicated.tags().into_iter().map(TagStr::as_str).collect::<Vec<_>>(),
+            ["k:1", "k:2"]
         );
-    }
-
-    #[test]
-    fn size_of_context_with_name() {
-        // Check the check after `with_name` when there's both tags and no tags.
-        let context = Context::from_static_name(SIZE_OF_CONTEXT_NAME).with_name(SIZE_OF_CONTEXT_CHANGED_NAME);
         assert_eq!(
-            context.size_of(),
-            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_CHANGED_NAME.len()
-        );
-
-        let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
-
-        let context = Context::from_static_parts(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS)
-            .with_name(SIZE_OF_CONTEXT_CHANGED_NAME);
-        assert_eq!(
-            context.size_of(),
-            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_CHANGED_NAME.len() + tags.size_of()
-        );
-    }
-
-    #[test]
-    fn size_of_context_origin_tags() {
-        let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
-        let origin_tags = tag_set(SIZE_OF_CONTEXT_ORIGIN_TAGS);
-
-        let (key, _) = hash_context(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS, SIZE_OF_CONTEXT_ORIGIN_TAGS);
-
-        let context = Context::from_inner(ContextInner {
-            key,
-            name: MetaString::from_static(SIZE_OF_CONTEXT_NAME),
-            host: None,
-            tags: tags.clone(),
-            origin_tags: origin_tags.clone(),
-            active_count: Gauge::noop(),
-        });
-
-        // Make sure the size of the context is correct with origin tags.
-        assert_eq!(
-            context.size_of(),
-            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len() + tags.size_of() + origin_tags.size_of()
+            deduplicated.tags().to_mutable().get_single_tag("k").unwrap().value(),
+            Some("1")
         );
     }
 
@@ -835,31 +796,13 @@ mod tests {
     // --- Helper for contexts with origin tags ---
 
     fn context_with_origin(name: &'static str, tags: &[&'static str], origin_tags: &[&'static str]) -> Context {
-        let (key, _) = hash_context(name, tags, origin_tags);
-        Context::from_inner(ContextInner {
-            key,
-            name: MetaString::from_static(name),
-            host: None,
-            tags: tag_set(tags),
-            origin_tags: tag_set(origin_tags),
-            active_count: Gauge::noop(),
-        })
+        Context::from_static_parts(name, tags).with_origin_tags(tag_set(origin_tags))
     }
 
     fn context_with_host(
         name: &'static str, host: &'static str, tags: &[&'static str], origin_tags: &[&'static str],
     ) -> Context {
-        let tags = tag_set(tags);
-        let origin_tags = tag_set(origin_tags);
-        let key = ContextInner::calculate_key(name, Some(host), &tags, &origin_tags);
-        Context::from_inner(ContextInner {
-            key,
-            name: MetaString::from_static(name),
-            host: Some(MetaString::from_static(host)),
-            tags,
-            origin_tags,
-            active_count: Gauge::noop(),
-        })
+        context_with_origin(name, tags, origin_tags).with_host(MetaString::from_static(host))
     }
 
     #[test]

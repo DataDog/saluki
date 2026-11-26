@@ -9,7 +9,7 @@ use saluki_core::{
     },
 };
 use saluki_error::{generic_error, GenericError};
-use stringtheory::interning::GenericMapInterner;
+use stringtheory::interning::{GenericMapInterner, SymbolTable};
 
 use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver, ProcessOrigin};
 
@@ -45,6 +45,7 @@ impl ContextResolvers {
         let allow_context_heap_allocations = config.allow_context_heap_allocations;
 
         let interner = GenericMapInterner::new(context_string_interner_size);
+        let symbols = Arc::new(SymbolTable::new(context_string_interner_size.get()));
 
         let origin_tags = maybe_origin_tags_resolver.clone();
         let tags_resolver =
@@ -64,6 +65,7 @@ impl ContextResolvers {
             .with_heap_allocations(allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
             .with_interner(interner.clone())
+            .with_symbol_table(Arc::clone(&symbols))
             .build();
 
         let no_agg_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/no_agg", context.component_id()))?
@@ -72,6 +74,7 @@ impl ContextResolvers {
             .with_heap_allocations(allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
             .with_interner(interner)
+            .with_symbol_table(symbols)
             .build();
 
         Ok(ContextResolvers {
