@@ -323,7 +323,8 @@ container, the participant also collects the input capture of the baseline sende
 A case's `procedure` tells panoramic what to do after the participants start. Each `step` names either an **action**
 that changes something or an **assertion** that checks a condition. The other fields are arguments to that step.
 
-For example, the [DogStatsD intake case][intake-case] waits for ADP's UDP listener to start, then runs these two steps:
+For example, `test/integration/cases/dogstatsd-intake-metric/config.yaml` waits for ADP's UDP listener to start,
+then runs these two steps:
 
 ```yaml
 - step: send
@@ -353,13 +354,11 @@ The [`compare` step](#writing-a-comparison-case) uses the time left in the case.
 If a step does not report within its budget plus 10 seconds, panoramic marks it `errored`.
 If the case timeout stops a running step, panoramic marks it `interrupted`.
 
-To find the available steps, start at [`register` in `steps/mod.rs`][step-registry]. Each step's implementation
-defines its YAML fields, which fields accept [references](#references), and what it needs from its participants.
+To find the available steps, start at `register` in `bin/correctness/panoramic/src/steps/mod.rs`.
+Each step's implementation defines its YAML fields, which fields accept [references](#references), and what it needs
+from its participants.
 When it plans the case, panoramic checks those fields and needs for every OS in `subject_os`. For example, it rejects
 the procedure above if `adp` has no `dogstatsd_udp` endpoint or `intake` offers no `dump` operation.
-
-[intake-case]: https://github.com/DataDog/saluki/blob/main/test/integration/cases/dogstatsd-intake-metric/config.yaml
-[step-registry]: https://github.com/DataDog/saluki/blob/main/bin/correctness/panoramic/src/steps/mod.rs
 
 ## Observation
 
@@ -563,13 +562,13 @@ This minimum counts the groups each intake holds. In spans-only mode (`otlp_dire
 A correctness case compares the Agent's intake (`baseline`) with ADP's intake (`comparison`). A **gap** is a
 difference between their outputs that we intend to fix. Instead of disabling the case, describe the mismatch in a
 `known_differences` entry on its `compare` step. The case can then pass with that difference and still catch others.
-Logs and APM stats support these entries; spans and metrics do not.
+Only logs and APM stats support these entries.
 
 ### Read a known difference
 
-In the [log severity and body case][logs-case], the fixture sends a log with an empty body. The Agent sends an empty
-string to its intake. ADP sends the text `"null"` to its intake. Here is the entry for that gap, under `logs` in the
-`compare` step:
+The fixture for `test/correctness/cases/otlp-logs-severity-body/config.yaml` sends a log with an empty body.
+Suppose the Agent sends an empty string to its intake and ADP sends the text `"null"`. To describe that gap, add an
+entry under `logs` in the `compare` step:
 
 ```yaml
 logs:
@@ -591,16 +590,13 @@ mismatch, not an expected value: `reason` explains the gap to the reader. Consid
 - ADP sends the empty string. The path no longer matches a difference, so the step fails and names the **stale**
   path. Remove it in the change that fixes the gap.
 
-Logs and trace stats use the same [ratchet][ratchet] to enforce this last rule. Each path in each entry must match
-at least once. If a path covers several fixtures, a match on one keeps it from going stale. Keep entries narrow.
-
-[logs-case]: https://github.com/DataDog/saluki/blob/main/test/correctness/cases/otlp-logs-severity-body/config.yaml
-[ratchet]: https://github.com/DataDog/saluki/blob/main/bin/correctness/panoramic/src/steps/analysis/ratchet.rs
+Logs and trace stats use the same ratchet to enforce this last rule. Each path in each entry must match at least
+once. If a path covers several fixtures, a match on one keeps it from going stale. Keep entries narrow.
+See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching rules.
 
 ### Choose what the entry covers
 
-- `gap` names the defect and `reason` explains it. `issue` is its GitHub issue number: optional for logs, required for
-  trace stats.
+- `gap` names the defect and `reason` explains it. `issue` is its GitHub issue number.
 - `paths` names the fields to match. For logs, `content.message` names the message inside the log content;
   `envelope.status` names the status on the envelope. In a dotted path, `*` matches one segment and `**` matches zero
   or more.
@@ -618,7 +614,8 @@ to their own intake. For example, a stats group can hold a hit count for a parti
 sets `otlp_direct_analysis_mode: true`. That option checks spans only, so the step cannot declare a stats gap.
 
 If the trace counts or span IDs differ, the trace comparison stops before it checks stats. When it does compare
-stats, it checks every group, not just the first mismatch. Use these paths under `traces.known_differences`:
+stats, it checks every group, not just the first mismatch. Each entry under `traces.known_differences` needs an
+`issue`. Choose the path according to what differs:
 
 - `stats.groups`: one intake has a group that the other lacks. Use `when` to identify the group by its fields, for
   example `{service: [api-gateway]}`.

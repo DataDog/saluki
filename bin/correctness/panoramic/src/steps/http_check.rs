@@ -1,4 +1,6 @@
 //! `http_check`: an HTTP endpoint of a participant answers a `GET` as expected.
+//!
+//! This step sends no client certificate, so it cannot access ADP's privileged routes. Use the ADP CLI for those routes.
 
 use std::time::Duration;
 
