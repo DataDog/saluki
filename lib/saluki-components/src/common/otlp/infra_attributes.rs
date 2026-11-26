@@ -83,7 +83,8 @@ pub enum CustomTags {
 /// - **Write order.** The tags go into the attributes in resolution order. The Agent iterates a Go map, so its order
 ///   is random. The order changes the result when an earlier tag writes an attribute that a later unified service tag
 ///   checks, such as a `deployment.environment` tag before the `env` tag.
-/// - **No `allow_hostname_override`.** The Agent's OTLP ingest doesn't set it.
+/// - **No hostname override.** The Agent's processor can write its own hostname into `datadog.host.name`, but its OTLP
+///   ingest doesn't turn that on.
 pub fn process_tags(
     attributes: &mut Vec<KeyValue>, resolver: &OtlpOriginTagResolver, cardinality: OriginTagCardinality,
     custom_tags: CustomTags,
