@@ -220,6 +220,8 @@ procedure:
         timeout: 2m
   # The other intakes get none of them. These steps follow the steps above, which saw each fixture arrive where it
   # belongs. An item that went astray had the time to arrive during those steps, and the settle covers a late request.
+  # The settle of 30s stays above the slowest flush of ADP. The APM statistics leave on a tick of 10s after a bucket of
+  # 10s has closed, so they can take 20s to arrive. The encoder adds up to 2s, and the metrics aggregate every 15s.
   - parallel:
       # Split arm. `dd_url` gets no traces and no statistics, and `apm_dd_url` gets no metrics. The extra intake needs
       # no step here. The steps above list its keys, so a trace or a statistic with the main key, or with the key of

@@ -159,6 +159,9 @@ procedure:
   # The failover intake of ADP gets the metrics above, and no traces and no statistics, although the trace-agent of the
   # Agent sends both there. This is DataDog/saluki#2429. When ADP fails over APM data, these two steps fail. Then
   # replace them with the steps that the Agent side has for `intake-agent-mrf`.
+  #
+  # The settle of 30s stays above the slowest flush of ADP. The APM statistics leave on a tick of 10s after a bucket of
+  # 10s has closed, so they can take 20s to arrive, and the encoder adds up to 2s.
   - parallel:
       # DataDog/saluki#2429: ADP sends no spans to the failover region.
       - step: intake_from
