@@ -1,0 +1,354 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive the same fixed OTLP traces over gRPC, and their intakes must hold the
+  same spans. Each way that a span converts has a span of its own: its names, its attributes, its status, its events and
+  links, its trace and span IDs, and the metadata of its resource.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up.
+  - {step: process_stable_for, on: load, duration: 32s}
+  # ADP sends the spans itself, and does not proxy the traces to the Agent.
+  - parallel:
+      - step: compare
+        telemetry: traces
+        comparison: intake-adp
+        baseline: intake-agent
+        otlp_direct_analysis_mode: true
+        traces:
+          # The fixture holds 91 spans. The Agent drops four of them, and ADP drops four more. At least 83 spans in 77
+          # traces reach each side.
+          min_traces: 77
+          min_spans: 83
+          # The spans that both sides send with the same service, name and resource. A span whose service, name or
+          # resource differs between the sides is in `known_differences`.
+          spans:
+            - {service: otlpresourcenoservicename, name: Internal, resource: otlpprobe.conv.resource.no_service_name}
+            - {service: probe-conv, name: Consumer, resource: otlpprobe.conv.naming.kind_consumer}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.attribute.analytics_bool}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.attribute.analytics_string}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.attribute.long_key}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.attribute.long_value}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.attribute.peer_service}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.attribute.sample_rate}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.attribute.sample_rate_and_tracestate}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.attribute.tracestate}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.datadog.error}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.attributes}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.exception_event}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.http_status}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.http_status_string}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.message}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.no_message}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.ok_with_message}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.partial_attributes}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.error.unset_with_message}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.event.attributes}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.kind.root}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.link.attributes}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.naming.kind_internal}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.naming.kind_unspecified}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.typed.arrays}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.typed.bools}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.typed.bytes}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.typed.empty}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.typed.kvlist}
+            - {service: probe-conv, name: Internal, resource: otlpprobe.conv.typed.numbers}
+            - {service: probe-conv, name: Internal, resource: process}
+            - {service: probe-conv, name: Consumer, resource: otlpprobe.conv.kind.consumer_child}
+            - {service: probe-conv, name: Producer, resource: otlpprobe.conv.kind.producer_child}
+            - {service: probe-conv, name: Producer, resource: otlpprobe.conv.naming.kind_producer}
+            - {service: probe-conv, name: amqp.client.request, resource: otlpprobe.conv.naming.protocol_client}
+            - {service: probe-conv, name: amqp.server.request, resource: otlpprobe.conv.naming.protocol_server}
+            - {service: probe-conv, name: aws.conv_function.invoke, resource: otlpprobe.conv.naming.faas_client}
+            - {service: probe-conv, name: aws.s3.request, resource: GetObject S3}
+            - {service: probe-conv, name: client.request, resource: otlpprobe.conv.kind.client_child}
+            - {service: probe-conv, name: client.request, resource: otlpprobe.conv.naming.kind_client}
+            - {service: probe-conv, name: conv.http.operation, resource: GET /conv/override-http}
+            - {service: probe-conv, name: conv.operation, resource: conv resource}
+            - {service: probe-conv, name: grpc.client.request, resource: Ping}
+            - {service: probe-conv, name: grpc.server.request, resource: GetUser conv.Users}
+            - {service: probe-conv, name: http.client.request, resource: GET}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/datadog-status}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/http-server}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/status/both_keys}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/status/int}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/status/invalid_string}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/status/legacy_int}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/status/legacy_string}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/status/negative}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/status/out_of_range}
+            - {service: probe-conv, name: http.server.request, resource: GET /conv/status/string}
+            - {service: probe-conv, name: http.server.request, resource: HTTP /conv/other-method}
+            - {service: probe-conv, name: http.server.request, resource: PUT /conv/legacy-method}
+            - {service: probe-conv, name: kafka.publish, resource: publish conv-topic}
+            - {service: probe-conv, name: kafka.receive, resource: receive}
+            - {service: probe-conv, name: mysql.query, resource: SELECT id FROM conv_namespace}
+            - {service: probe-conv, name: postgresql.query, resource: SELECT id FROM conv_legacy}
+            - {service: probe-conv, name: postgresql.query, resource: SELECT id FROM conv_statement}
+            - {service: probe-conv, name: pubsub.invoke, resource: otlpprobe.conv.naming.faas_server}
+            - {service: probe-conv, name: server.request, resource: otlpprobe.conv.kind.server_child}
+            - {service: probe-conv, name: server.request, resource: otlpprobe.conv.naming.kind_server}
+            - {service: probe-conv-dd-env, name: Internal, resource: otlpprobe.conv.resource.datadog_env_version}
+            - {service: probe-conv-dd-host, name: Internal, resource: otlpprobe.conv.resource.datadog_host_name}
+            - {service: probe-conv-fargate, name: Internal, resource: otlpprobe.conv.resource.fargate}
+            - {service: probe-conv-high, name: Internal, resource: otlpprobe.conv.high.same_a}
+            - {service: probe-conv-high, name: Internal, resource: otlpprobe.conv.high.same_b}
+            - {service: probe-conv-host, name: Internal, resource: otlpprobe.conv.resource.host_name}
+            - {service: probe-conv-meta, name: Internal, resource: otlpprobe.conv.resource.from_resource}
+            - {service: probe-conv-meta-span, name: Internal, resource: otlpprobe.conv.resource.from_span}
+            - {service: probe-conv-span-env, name: Internal, resource: otlpprobe.conv.resource.span_only}
+            - {service: probe-conv-span-service, name: Internal, resource: otlpprobe.conv.naming.service_attribute}
+            - {service: probe-conv-zero, name: Internal, resource: otlpprobe.conv.zero.control}
+          # Both sides drop the spans with a zero trace ID, a zero low half of the trace ID or a zero span ID, and
+          # the root span of the trace with the zero span ID. The control span of the same service reaches both.
+          absent:
+            - {service: probe-conv-zero, resource: otlpprobe.conv.zero.trace_id}
+            - {service: probe-conv-zero, resource: otlpprobe.conv.zero.low_half}
+            - {service: probe-conv-zero, resource: otlpprobe.conv.zero.span_id_root}
+            - {service: probe-conv-zero, resource: otlpprobe.conv.zero.span_id_child}
+          # The baseline is the Agent, and the comparison is ADP. One entry for each kind of difference of a span, so
+          # that each side's part of a difference goes stale on its own.
+          known_differences:
+            # The names and the resources of four conventions.
+            - gap: gap/otlp-span-naming
+              issue: 3442
+              paths: [span.resource]
+              kinds: [value]
+              when: {service: [probe-conv], resource: ["POST /conv/{id}/client"]}
+              reason: The Agent appends the `url.template` of a client HTTP span to its resource. ADP does not.
+            - gap: gap/otlp-span-naming
+              issue: 3442
+              paths: [span.name, span.resource, span.type_]
+              kinds: [value]
+              when: {service: [probe-conv], resource: [SELECT id FROM conv_modern]}
+              reason: The Agent names a span with `db.system.name` and `db.query.text` after its database and gives it the type `sql` and the query as its resource. ADP reads `db.system` only.
+            - gap: gap/otlp-span-naming
+              issue: 3442
+              paths: [span.resource]
+              kinds: [value]
+              when: {service: [probe-conv], resource: [query GetConv]}
+              reason: ADP lowercases the resource of a GraphQL span. The Agent does not.
+            - gap: gap/otlp-span-naming
+              issue: 3442
+              paths: [span.name]
+              kinds: [value]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.naming.kind_unknown]}
+              reason: The Agent names a span of an unknown kind `unnamed_operation`. ADP names it `Internal`.
+            # Attributes that are not scalars.
+            - gap: gap/otlp-typed-attributes
+              issue: 3443
+              paths: [span.meta.conv.bytes]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.typed.bytes]}
+              reason: The Agent keeps a bytes attribute as a base64 string in `meta`. ADP does not.
+            - gap: gap/otlp-typed-attributes
+              issue: 3443
+              paths: [span.meta_struct.conv.bytes]
+              kinds: [extra]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.typed.bytes]}
+              reason: ADP keeps a bytes attribute as raw bytes in `meta_struct`. The Agent does not.
+            - gap: gap/otlp-typed-attributes
+              issue: 3443
+              paths: [span.meta.conv.strings, span.meta.conv.mixed, span.meta.conv.empty_array]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.typed.arrays]}
+              reason: The Agent keeps an array attribute as a JSON string in `meta`. ADP drops it.
+            - gap: gap/otlp-typed-attributes
+              issue: 3443
+              paths: [span.meta.conv.map]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.typed.kvlist]}
+              reason: The Agent keeps a key-value list attribute as a JSON string in `meta`. ADP drops it.
+            - gap: gap/otlp-typed-attributes
+              issue: 3443
+              paths: [span.meta.conv.no_value]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.typed.empty]}
+              reason: The Agent keeps an attribute with no value as an empty string in `meta`. ADP drops it.
+            # HTTP status codes and errors.
+            - gap: gap/otlp-http-status-code-string
+              issue: 3433
+              paths: [span.meta.http.status_code]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [GET /conv/status/string, GET /conv/status/legacy_string, otlpprobe.conv.error.http_status_string]}
+              reason: The Agent sends a string HTTP status code in `meta` next to the number. ADP sends the number only.
+            - gap: gap/otlp-status-tags
+              issue: 3444
+              paths: [span.meta.http.status_code]
+              kinds: [extra]
+              when: {service: [probe-conv], resource: [GET /conv/status/invalid_string]}
+              reason: ADP keeps a status code that is not a number in `meta`. The Agent drops it.
+            - gap: gap/otlp-status-tags
+              issue: 3444
+              paths: [span.meta.error.msg]
+              kinds: [extra]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.error.http_status]}
+              reason: ADP derives the error message of an error with no message from a numeric HTTP status code too. The Agent reads the code from `meta` only, and a number goes to `metrics`.
+            - gap: gap/otlp-status-tags
+              issue: 3444
+              paths: [span.meta.error.msg, span.meta.error.stack, span.meta.error.type]
+              kinds: [extra]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.error.exception_event]}
+              reason: ADP derives the error tags of an error with no message from its `exception` event. The Agent does not.
+            # Sampling tags of the root span.
+            - gap: gap/otlp-sampling-span-tags
+              issue: 3419
+              paths: [span.metrics._dd1.sr.rcusr]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.attribute.tracestate, otlpprobe.conv.attribute.sample_rate, otlpprobe.conv.attribute.sample_rate_and_tracestate]}
+              reason: The Agent writes the client sample rate of the root span. ADP does not.
+            # The SQL query tag.
+            - gap: gap/otlp-sql-query-tag
+              issue: 3388
+              paths: [span.meta.sql.query]
+              kinds: [extra]
+              when: {service: [probe-conv], resource: [SELECT id FROM conv_legacy, SELECT id FROM conv_statement, SELECT id FROM conv_namespace]}
+              reason: ADP adds `sql.query` to a span that the tracer sent no `sql.query` for. The Agent does not.
+            # The `datadog.*` attributes. ADP applies them and does not keep the tag.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.service, span.name, span.resource, span.type_]
+              kinds: [value]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.datadog.fields]}
+              reason: ADP uses `datadog.service`, `datadog.name`, `datadog.resource` and `datadog.type`. The Agent derives the fields and keeps the tags.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.datadog.service, span.meta.datadog.name, span.meta.datadog.resource, span.meta.datadog.type]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.datadog.fields]}
+              reason: The Agent keeps `datadog.service`, `datadog.name`, `datadog.resource` and `datadog.type` as tags. ADP does not.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.error]
+              kinds: [value]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.datadog.error]}
+              reason: ADP sets the error from `datadog.error`. The Agent does not.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.error.msg, span.meta.error.stack, span.meta.error.type]
+              kinds: [extra]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.datadog.error]}
+              reason: ADP sets the error tags from `datadog.error.msg`, `datadog.error.stack` and `datadog.error.type`.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.datadog.error.msg, span.meta.datadog.error.stack, span.meta.datadog.error.type, span.metrics.datadog.error]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [otlpprobe.conv.datadog.error]}
+              reason: The Agent keeps the `datadog.error` attributes as tags. ADP does not.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.span.kind, span.metrics.http.status_code]
+              kinds: [value]
+              when: {service: [probe-conv], resource: [GET /conv/datadog-status]}
+              reason: ADP uses `datadog.span.kind` and `datadog.http_status_code`. The Agent keeps its own span kind and status code.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.datadog.span.kind, span.meta.datadog.http_status_code]
+              kinds: [missing]
+              when: {service: [probe-conv], resource: [GET /conv/datadog-status]}
+              reason: The Agent keeps `datadog.span.kind` and `datadog.http_status_code` as tags. ADP does not.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.env, span.meta.version]
+              kinds: [value]
+              when: {service: [probe-conv-dd-env], resource: [otlpprobe.conv.resource.datadog_env_version]}
+              reason: ADP takes the environment and the version from `datadog.env` and `datadog.version`. The Agent takes them from the OpenTelemetry attributes.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.datadog.env, span.meta.datadog.version]
+              kinds: [missing]
+              when: {service: [probe-conv-dd-env], resource: [otlpprobe.conv.resource.datadog_env_version]}
+              reason: The Agent keeps `datadog.env` and `datadog.version` as tags. ADP does not.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.datadog.host.name]
+              kinds: [missing]
+              when: {service: [probe-conv-dd-host], resource: [otlpprobe.conv.resource.datadog_host_name]}
+              reason: The Agent keeps the `datadog.host.name` of the resource as a tag. ADP does not.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.name, span.resource, span.tracer_metadata.app_version, span.tracer_metadata.env]
+              kinds: [value]
+              when: {service: [probe-conv-dd-resource], resource: [otlpprobe.conv.resource.datadog_attributes]}
+              reason: ADP applies the `datadog.name`, `datadog.resource`, `datadog.env` and `datadog.version` of a resource. The Agent does not.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.env, span.meta.version]
+              kinds: [extra]
+              when: {service: [probe-conv-dd-resource], resource: [otlpprobe.conv.resource.datadog_attributes]}
+              reason: ADP sets the environment and the version from `datadog.env` and `datadog.version` of the resource.
+            - gap: gap/otlp-datadog-attribute-overrides
+              issue: 3417
+              paths: [span.meta.datadog.env, span.meta.datadog.version, span.meta.datadog.host.name, span.meta.datadog.name, span.meta.datadog.resource]
+              kinds: [missing]
+              when: {service: [probe-conv-dd-resource], resource: [otlpprobe.conv.resource.datadog_attributes]}
+              reason: The Agent keeps the `datadog.*` attributes of a resource as tags. ADP does not.
+            # The metadata of the payload.
+            - gap: gap/otlp-payload-metadata
+              issue: 3446
+              paths: [span.tracer_metadata.language_name, span.tracer_metadata.tracer_version]
+              kinds: [value]
+              when: {service: [probe-conv-meta, probe-conv-meta-span], resource: [otlpprobe.conv.resource.from_resource, otlpprobe.conv.resource.from_span]}
+              reason: The Agent normalizes the SDK language and version of the resource. ADP sends them as they are.
+            - gap: gap/otlp-payload-metadata
+              issue: 3446
+              paths: [span.tracer_metadata.app_version]
+              kinds: [value]
+              when: {service: [probe-conv-meta-span, probe-conv-span-env, probe-conv-dd-env], resource: [otlpprobe.conv.resource.from_span, otlpprobe.conv.resource.span_only, otlpprobe.conv.resource.datadog_env_version]}
+              reason: The Agent takes the version of the payload from its first span. ADP takes it from the resource, and leaves it empty when the resource has none.
+            - gap: gap/otlp-payload-metadata
+              issue: 3446
+              paths: [span.tracer_metadata.env]
+              kinds: [value]
+              when: {service: [probe-conv-span-env, probe-conv-dd-env], resource: [otlpprobe.conv.resource.span_only, otlpprobe.conv.resource.datadog_env_version]}
+              reason: The Agent takes the environment of the payload from its first span when the resource has none. ADP leaves it empty.
+            - gap: gap/otlp-payload-metadata
+              issue: 3446
+              paths: [span.tracer_metadata.tags._dd.tags.container]
+              kinds: [value]
+              when: {service: [probe-conv-fargate], resource: [otlpprobe.conv.resource.fargate]}
+              reason: ADP writes the `task_arn` container tag of a Fargate task twice. The Agent writes it once.
+            # The spans of a trace whose spans have different high halves of the trace ID.
+            - gap: gap/otlp-high-trace-id-group
+              issue: 3445
+              paths: [spans]
+              kinds: [missing]
+              when: {service: [probe-conv-high], resource: [otlpprobe.conv.high.mixed_a, otlpprobe.conv.high.mixed_b, otlpprobe.conv.high.zero_half_a, otlpprobe.conv.high.zero_half_b]}
+              reason: The Agent groups spans by the low half of the trace ID and keeps them. ADP drops the group.
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: probe-conv}
+        sender: adp
+        timeout: 1m

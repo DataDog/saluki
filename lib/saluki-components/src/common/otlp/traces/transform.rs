@@ -4609,6 +4609,87 @@ mod tests {
         );
     }
 
+    /// `ignore_missing_datadog_fields` reads only the `datadog.*` attributes: no field falls back to the semantic
+    /// conventions. The Core Agent has no such setting, because its `IgnoreMissingDatadogFields` is deprecated and
+    /// unused. This test pins the behavior that ADP takes from the Datadog exporter of the OpenTelemetry Collector.
+    #[test]
+    fn otel_span_to_dd_span_ignore_missing_datadog_fields_skips_semantic_convention_fallbacks() {
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            kind: SpanKind::Server as i32,
+            attributes: vec![
+                kv_str("http.request.method", "GET"),
+                kv_str("http.route", "/conv"),
+                kv_int(SEMCONV_HTTP_RESPONSE_STATUS_CODE, 503),
+            ],
+            status: Some(OtlpStatus {
+                code: StatusCode::Error as i32,
+                message: "conv failure".to_string(),
+            }),
+            ..Default::default()
+        };
+        let resource = resource(vec![
+            kv_str(SERVICE_NAME, "checkout"),
+            kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT_NAME, "staging"),
+            kv_str(SEMCONV_SERVICE_VERSION, "1.2.3"),
+        ]);
+
+        // With the fallbacks, the span has what the semantic conventions give it.
+        let dd_span = convert_v2(&span, &resource, None, &conversion());
+        assert_eq!(dd_span.service(), "checkout");
+        assert_eq!(dd_span.name(), "http.server.request");
+        assert_eq!(dd_span.resource(), "GET /conv");
+        assert_eq!(dd_span.span_type(), "web");
+        assert_eq!(meta_str(&dd_span, "error.msg"), Some("conv failure"));
+        assert_eq!(meta_str(&dd_span, "env"), Some("staging"));
+        assert_eq!(meta_str(&dd_span, "version"), Some("1.2.3"));
+        assert!(dd_span.attributes.contains_key(HTTP_STATUS_CODE_KEY));
+
+        // Without them, none of those fields is set. The empty name becomes `unnamed_operation`.
+        let ignoring = SpanConversion {
+            ignore_missing_fields: true,
+            ..conversion()
+        };
+        let dd_span = convert_v2(&span, &resource, None, &ignoring);
+        assert_eq!(dd_span.service(), "");
+        assert_eq!(dd_span.name(), "unnamed_operation");
+        assert_eq!(dd_span.resource(), "");
+        assert_eq!(dd_span.span_type(), "");
+        assert_eq!(meta_str(&dd_span, "error.msg"), None);
+        assert_eq!(meta_str(&dd_span, "env"), None);
+        assert_eq!(meta_str(&dd_span, "version"), None);
+        assert!(!dd_span.attributes.contains_key(HTTP_STATUS_CODE_KEY));
+    }
+
+    /// With `ignore_missing_datadog_fields`, the `datadog.*` attributes still set the fields.
+    #[test]
+    fn otel_span_to_dd_span_ignore_missing_datadog_fields_reads_datadog_attributes() {
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            kind: SpanKind::Server as i32,
+            attributes: vec![
+                kv_str(KEY_DATADOG_SERVICE, "dd-service"),
+                kv_str(KEY_DATADOG_NAME, "dd.operation"),
+                kv_str(KEY_DATADOG_RESOURCE, "dd_resource"),
+                kv_str(KEY_DATADOG_TYPE, "dd-type"),
+                kv_str("http.request.method", "GET"),
+                kv_str("http.route", "/conv"),
+            ],
+            ..Default::default()
+        };
+        let resource = resource(vec![kv_str(SERVICE_NAME, "checkout")]);
+        let ignoring = SpanConversion {
+            ignore_missing_fields: true,
+            ..conversion()
+        };
+
+        let dd_span = convert_v2(&span, &resource, None, &ignoring);
+        assert_eq!(dd_span.service(), "dd-service");
+        assert_eq!(dd_span.name(), "dd.operation");
+        assert_eq!(dd_span.resource(), "dd_resource");
+        assert_eq!(dd_span.span_type(), "dd-type");
+    }
+
     /// A negative resolved status code produces no `http.status_code` attribute, matching the
     /// Agent's `code >= 0` guard.
     #[test]
