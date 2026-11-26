@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Origin detection with External Data now finds ephemeral containers in Kubernetes pods, as the Datadog Agent does.
