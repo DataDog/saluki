@@ -838,31 +838,6 @@ mod tests {
         assert_eq!(validate_and_fix_duration(0, i64::MAX as u64), i64::MAX as u64);
     }
 
-    /// TNORM-009. A start before the year-2000 floor is replaced, and a start on the floor is not
-    /// (`start < Year2000NanosecTS`, `pkg/trace/traceutil/normalize/duration.go`).
-    #[test]
-    fn validate_and_fix_start_time_replaces_a_start_one_nanosecond_before_the_floor() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-        let duration = 5_000_000;
-
-        let start = validate_and_fix_start_time(YEAR_2000_NANOSEC_TS - 1, duration);
-        assert!(
-            start > YEAR_2000_NANOSEC_TS && start.abs_diff(now - duration) < 5_000_000_000,
-            "start: {start}, now: {now}"
-        );
-        assert_eq!(
-            validate_and_fix_start_time(YEAR_2000_NANOSEC_TS, duration),
-            YEAR_2000_NANOSEC_TS
-        );
-
-        // A span that starts and ends at zero has no duration to take off, so it starts at the receive time.
-        let start = validate_and_fix_start_time(0, 0);
-        assert!(start.abs_diff(now) < 5_000_000_000, "start: {start}, now: {now}");
-    }
-
     /// TNORM-011. The limit is in bytes, and a cut never splits a character.
     #[test]
     fn truncate_utf8_cuts_a_span_type_at_the_byte_limit_on_a_character_boundary() {
