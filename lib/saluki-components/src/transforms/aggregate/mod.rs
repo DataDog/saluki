@@ -1,7 +1,9 @@
 use std::{
     future::pending,
+    iter::Peekable,
     num::NonZeroU64,
-    sync::Mutex,
+    ops::Range,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -15,12 +17,15 @@ use saluki_core::{
         metric::{context::Context, *},
         Event, EventType,
     },
+    health::Health,
     observability::ComponentMetricsExt as _,
-    topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
+    topology::{
+        interconnect::{BufferedDispatcher, EventBufferManager},
+        EventsBuffer, EventsConsumer, EventsDispatcher, OutputDefinition, DEFAULT_EVENTS_BUFFER_CAPACITY,
+    },
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_metrics::MetricsBuilder;
-use smallvec::SmallVec;
+use saluki_metrics::{Histogram, MetricsBuilder};
 use stringtheory::MetaString;
 use tokio::{
     select,
@@ -387,9 +392,12 @@ impl TransformBuilder for AggregateConfiguration {
             telemetry.clone(),
         );
 
+        let flush_duration = metrics_builder.register_histogram("aggregate_flush_duration_seconds");
+
         Ok(Box::new(Aggregate {
             state,
             telemetry,
+            flush_duration,
             primary_flush_interval: self.primary_flush_interval,
             flush_open_windows: self.flush_open_windows,
             context_snapshot_requests: Some(context_snapshot_requests),
@@ -452,6 +460,7 @@ impl MemoryBounds for AggregateConfiguration {
 pub struct Aggregate {
     state: AggregationState,
     telemetry: Telemetry,
+    flush_duration: Histogram,
     primary_flush_interval: Duration,
     flush_open_windows: bool,
     context_snapshot_requests: Option<AggregateContextSnapshotRequestReceiver>,
@@ -461,6 +470,7 @@ pub struct Aggregate {
 impl Transform for Aggregate {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
+        let (events, dispatcher) = context.interconnect();
 
         let mut primary_flush = interval_at(
             tokio::time::Instant::now() + self.primary_flush_interval,
@@ -474,87 +484,41 @@ impl Transform for Aggregate {
         loop {
             select! {
                 _ = health.live() => continue,
-                _ = primary_flush.tick() => {
-                    // We've reached the end of the current window. Flush our aggregation state and forward the metrics
-                    // onwards. Regardless of whether any metrics were aggregated, we always update the aggregation
-                    // state to track the start time of the current aggregation window.
+                tick = primary_flush.tick() => {
+                    // Close the current window in chunks before the next tick. A successful flush advances the
+                    // cutoff for idle counters even when no row produces output.
                     if !self.state.is_empty() {
-                        debug!("Flushing aggregated metrics...");
-
-                        let should_flush_open_windows = final_primary_flush && self.flush_open_windows;
-
-                        // Remember if the context limit had been surpassed before this flush.
+                        debug!(?tick, final_primary_flush, "Flushing aggregated metrics...");
+                        let flush_start = Instant::now();
+                        // Remember the limit state because removing rows during the flush can clear the breach.
                         let was_breached = self.state.context_limit_breached();
+                        let was_final = final_primary_flush;
+                        final_primary_flush = self.flush_period(final_primary_flush, &mut health, events, dispatcher).await;
+                        self.telemetry.increment_flushes();
+                        let elapsed = flush_start.elapsed();
+                        self.flush_duration.record(elapsed);
+                        self.telemetry.record_last_flush_duration(elapsed);
+                        debug!(?tick, final_primary_flush = was_final, duration_ns = elapsed.as_nanos(), "Finished aggregate flush.");
 
-                        let mut dispatcher = context.dispatcher().buffered().expect("default output should always exist");
-                        let flush = async {
-                            let flush_start = Instant::now();
-
-                            if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
-                                error!(error = %e, "Failed to flush aggregation state.");
-                            }
-
-                            self.telemetry.increment_flushes();
-
-                            // If flush recovered us from a breach, log the recovery.
-                            if was_breached && !self.state.context_limit_breached() {
-                                info!("Context limit no longer exceeded, metrics are being accepted again.");
-                            }
-
-                            match dispatcher.flush().await {
-                                Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
-                                Err(e) => error!(error = %e, "Failed to flush aggregated events."),
-                            }
-
-                            self.telemetry.record_last_flush_duration(flush_start.elapsed());
-                        };
-                        tokio::pin!(flush);
-
-                        // A flush can wait a long time for space in a full downstream channel. Keep answering liveness
-                        // probes while it waits. Probes go first so that a waiting probe is seen on every wakeup, even
-                        // when the flush would use up the task's cooperative budget.
-                        loop {
-                            select! {
-                                biased;
-                                _ = health.live() => {},
-                                _ = &mut flush => break,
-                            }
+                        // Log recovery only when the flush takes a breached state back below the limit.
+                        if was_breached && !self.state.context_limit_breached() {
+                            info!("Context limit no longer exceeded, metrics are being accepted again.");
+                        }
+                        if !was_final && final_primary_flush {
+                            primary_flush.reset_immediately();
+                            continue;
                         }
                     }
-
-                    // If this is the final flush, we break out of the loop.
+                    // Exit after the final flush, not when input closes during a regular flush.
                     if final_primary_flush {
-                        debug!("All aggregation complete.");
-                        break
+                        break;
                     }
                 },
                 snapshot_request = receive_context_snapshot_request(&mut self.context_snapshot_requests) => {
-                    match snapshot_request {
-                        Some(response) => {
-                            send_context_snapshot_if_open(response, || self.state.snapshot_contexts());
-                        }
-                        None => self.context_snapshot_requests = None,
-                    }
+                    self.answer_snapshot(snapshot_request);
                 },
-                maybe_events = context.events().next(), if !final_primary_flush => match maybe_events {
-                    Some(events) => {
-                        trace!(events_len = events.len(), "Received events.");
-
-                        let current_time = get_unix_timestamp();
-
-                        for metric in events.into_events::<Metric>() {
-                            let was_breached = self.state.context_limit_breached();
-                            if !self.state.insert(current_time, metric) {
-                                trace!("Dropping metric due to context limit.");
-                                if !was_breached {
-                                    // Warn once per breach. Count each rejection until a flush frees space.
-                                    warn!(context_limit = self.state.context_limit, "Context limit reached, \
-                                    dropping metrics. Consider increasing `aggregate_context_limit`.");
-                                }
-                                self.telemetry.increment_events_dropped();
-                            }
-                        }
-                    },
+                maybe_events = events.next(), if !final_primary_flush => match maybe_events {
+                    Some(events) => self.ingest_batch(get_unix_timestamp(), events.into_events::<Metric>()),
                     None => {
                         // We've reached the end of our input stream, so mark ourselves for a final flush and reset the
                         // interval so it ticks immediately on the next loop iteration.
@@ -573,6 +537,117 @@ impl Transform for Aggregate {
     }
 }
 
+impl Aggregate {
+    fn answer_snapshot(&mut self, request: Option<AggregateContextSnapshotRequest>) {
+        if let Some(response) = request {
+            send_context_snapshot_if_open(response, || self.state.snapshot_contexts());
+        } else {
+            self.context_snapshot_requests = None;
+        }
+    }
+
+    fn ingest_batch(&mut self, timestamp: u64, metrics: impl Iterator<Item = Metric>) {
+        for metric in metrics {
+            let was_breached = self.state.context_limit_breached();
+            if !self.state.insert(timestamp, metric) {
+                self.record_rejected_metric(was_breached);
+            }
+        }
+    }
+
+    fn record_rejected_metric(&self, was_breached: bool) {
+        trace!("Dropping metric due to context limit.");
+        // Warn once per breach. Count each rejection until a flush frees space.
+        if !was_breached {
+            warn!(
+                context_limit = self.state.context_limit,
+                "Context limit reached, dropping metrics. \
+                Consider increasing `aggregate_context_limit`."
+            );
+        }
+        self.telemetry.increment_events_dropped();
+    }
+
+    async fn flush_period(
+        &mut self, mut input_closed: bool, health: &mut Health, events: &mut EventsConsumer,
+        dispatcher: &EventsDispatcher,
+    ) -> bool {
+        let mut cursor = self
+            .state
+            .start_flush(get_unix_timestamp(), input_closed && self.flush_open_windows);
+        let bucket_width = self.state.bucket_width_secs;
+        let hist_config = self.state.hist_config.clone();
+        let mut buffers = dispatcher.event_buffer_manager();
+        let mut deferred = None;
+        let mut ingress = None::<(u64, Peekable<_>)>;
+        let mut failed = false;
+        let mut aggregated_events = 0;
+
+        while (!failed && !cursor.is_done()) || deferred.is_some() {
+            let chunk = self
+                .state
+                .next_flush_chunk(&mut cursor, &mut buffers, &mut deferred, !failed);
+            // Keep this future alive when input or a probe wins. It can own a buffer waiting for downstream space.
+            let dispatch = dispatch_flush_chunk(dispatcher, chunk, bucket_width, &hist_config);
+            tokio::pin!(dispatch);
+            let mut blocked = false;
+
+            let result = loop {
+                if !failed && !blocked {
+                    if let Some((timestamp, metrics)) = ingress.as_mut() {
+                        while let Some(context) = metrics.peek().map(Metric::context) {
+                            let Ok(slot) = self.state.claim_for_ingest(&mut cursor, context, &mut deferred) else {
+                                blocked = true;
+                                break;
+                            };
+                            let metric = metrics.next().expect("the input batch has a pending metric");
+                            let was_breached = self.state.context_limit_breached();
+                            if !self.state.insert_at(*timestamp, metric, slot) {
+                                self.record_rejected_metric(was_breached);
+                            }
+                        }
+                        if metrics.peek().is_none() {
+                            ingress = None;
+                        }
+                    }
+                }
+
+                // Keep answering liveness probes while a full downstream channel delays this chunk.
+                // Poll the probe alongside dispatch, snapshots, and input instead of waiting for dispatch first.
+                select! {
+                    _ = health.live() => {},
+                    result = &mut dispatch => break result,
+                    request = receive_context_snapshot_request(&mut self.context_snapshot_requests) => {
+                        self.answer_snapshot(request);
+                    },
+                    next = events.next(), if !input_closed && !failed && ingress.is_none() => match next {
+                        Some(events) => ingress = Some((get_unix_timestamp(), events.into_events::<Metric>().peekable())),
+                        None => input_closed = true,
+                    },
+                }
+            };
+
+            match result {
+                Ok(count) => aggregated_events += count,
+                Err(error) => {
+                    error!(%error, "Failed to flush aggregated events.");
+                    // Stop scanning live rows. Still dispatch any row that an input update already detached.
+                    failed = true;
+                }
+            }
+        }
+
+        if !failed {
+            self.state.finish_flush(cursor);
+        }
+        if let Some((timestamp, metrics)) = ingress {
+            self.ingest_batch(timestamp, metrics);
+        }
+        debug!(aggregated_events, "Dispatched events.");
+        input_closed
+    }
+}
+
 async fn receive_context_snapshot_request(
     receiver: &mut Option<AggregateContextSnapshotRequestReceiver>,
 ) -> Option<AggregateContextSnapshotRequest> {
@@ -584,12 +659,11 @@ async fn receive_context_snapshot_request(
 
 struct AggregationState {
     contexts: Storage,
-    contexts_remove_buf: Vec<Context>,
     context_limit: usize,
     bucket_width_secs: NonZeroU64,
     counter_expire_secs: Option<NonZeroU64>,
     last_flush: u64,
-    hist_config: HistogramConfiguration,
+    hist_config: Arc<HistogramConfiguration>,
     telemetry: Telemetry,
     /// Tracks whether the context limit has been breached. Starts out as `false`. Set to `true` on the first dropped
     /// metric. Reset to `false` when the context count drops below the limit during flush.
@@ -605,12 +679,11 @@ impl AggregationState {
 
         Self {
             contexts: Storage::default(),
-            contexts_remove_buf: Vec::new(),
             context_limit,
             bucket_width_secs,
             counter_expire_secs,
             last_flush: 0,
-            hist_config,
+            hist_config: Arc::new(hist_config),
             telemetry,
             context_limit_breached: false,
         }
@@ -635,6 +708,10 @@ impl AggregationState {
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
         let slot = self.contexts.find(metric.context());
+        self.insert_at(timestamp, metric, slot)
+    }
+
+    fn insert_at(&mut self, timestamp: u64, metric: Metric, slot: Option<Slot>) -> bool {
         // The limit only rejects new contexts. An existing context can still merge another sample.
         if slot.is_none() && self.contexts.len() >= self.context_limit {
             self.context_limit_breached = true;
@@ -685,172 +762,219 @@ impl AggregationState {
         true
     }
 
-    async fn flush(
-        &mut self, current_time: u64, flush_open_buckets: bool, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
-    ) -> Result<(), GenericError> {
-        // A previous flush may have failed after marking some contexts for removal. Re-evaluate them:
-        // ingestion may have added values since then, and their telemetry admission is still live.
-        self.contexts_remove_buf.clear();
+    /// Captures one cutoff and the set of rows that this flush must visit.
+    fn start_flush(&self, cutoff: u64, flush_open_buckets: bool) -> FlushCursor {
         let bucket_width_secs = self.bucket_width_secs;
-        let counter_expire_secs = self.counter_expire_secs.map(|d| d.get()).unwrap_or(0);
-
-        // Values with a timestamp less than or equal to `split_timestamp` are flushed. Normally that's just before the
-        // start of the current bucket, so only closed buckets are flushed. When flushing open buckets, it's every value.
+        let open_bucket = align_to_bucket_start(cutoff, bucket_width_secs);
+        // Split off timestamps at or below this value. An ordinary flush leaves the current bucket open.
+        // A final flush that includes open buckets takes every value, even one with a future timestamp.
         let split_timestamp = if flush_open_buckets {
             u64::MAX
         } else {
-            align_to_bucket_start(current_time, bucket_width_secs).saturating_sub(1)
+            open_bucket.saturating_sub(1)
         };
-
-        // Calculate the buckets we need to potentially generate zero-value counters for.
-        //
-        // We only need to do this if we've flushed before, since we won't have any knowledge of which counters are idle
-        // or not until that happens.
-        let mut zero_value_buckets = SmallVec::<[(u64, MetricValues); 4]>::new();
-        if self.last_flush != 0 {
-            let start = align_to_bucket_start(self.last_flush, bucket_width_secs);
-
-            // Clock-skew guards. Bucketing reads the wall clock while the flush cadence is monotonic, so a wall-clock
-            // jump is not bounded by the flush interval. A backward jump empties the zero-value range (a silent counter
-            // gap); a forward jump makes the loop below run once per bucket across the whole jumped span — O(jump) work
-            // and allocation. Assert before the loop so a flood fails fast rather than after the damage is done.
+        // The first flush has no earlier cutoff from which to generate idle counter buckets.
+        let zero_buckets = if self.last_flush == 0 {
+            0..0
+        } else {
+            // The timer uses a monotonic clock, but bucket timestamps use the wall clock. A backward jump can leave a
+            // gap in the counter series. A forward jump can add work and allocations for every skipped bucket.
+            // Check the span before scanning rows. With a 15-second flush and 10-second buckets, one or two buckets
+            // close per tick. The 10,000-bucket assertion detects jumps on the scale of hours at that width.
             saluki_antithesis::always_ge!(
-                current_time,
+                cutoff,
                 self.last_flush,
                 "aggregate flush wall-clock did not move backward",
-                { "current_time": current_time, "last_flush": self.last_flush }
+                { "current_time": cutoff, "last_flush": self.last_flush }
             );
-            // The 10_000 bound is generous. A default 15s flush over a 10s bucket yields one or two buckets. The bound
-            // trips only on a multi-hour wall-clock jump, never on a slow-but-sane flush.
             saluki_antithesis::always_le!(
-                current_time.saturating_sub(self.last_flush) / bucket_width_secs.get(),
+                cutoff.saturating_sub(self.last_flush) / bucket_width_secs.get(),
                 10_000,
                 "aggregate zero-value bucket span bounded across a flush",
                 {
-                    "current_time": current_time,
+                    "current_time": cutoff,
                     "last_flush": self.last_flush,
                     "bucket_width_secs": bucket_width_secs.get()
                 }
             );
 
-            for bucket_start in (start..current_time).step_by(bucket_width_secs.get() as usize) {
-                if is_bucket_closed(current_time, bucket_start, bucket_width_secs, flush_open_buckets) {
-                    zero_value_buckets.push((bucket_start, MetricValues::counter((bucket_start, 0.0))));
-                }
-            }
-
-            // Anti-vacuity anchor: prove the idle-counter zero-value path actually runs in some timeline.
+            let start = align_to_bucket_start(self.last_flush, bucket_width_secs);
+            let end = if flush_open_buckets { cutoff } else { open_bucket };
+            // Check that at least one test timeline exercises idle counter bucket generation.
             saluki_antithesis::sometimes!(
-                !zero_value_buckets.is_empty(),
+                start < end,
                 "aggregate flush generated zero-value counter buckets",
-                { "count": zero_value_buckets.len() }
+                { "count": end.saturating_sub(start).div_ceil(bucket_width_secs.get()) }
             );
+            start..end
+        };
+
+        FlushCursor {
+            cutoff,
+            split_timestamp,
+            zero_buckets,
+            frontiers: AggregateMetricType::ALL.map(|kind| self.contexts.len_for(kind)),
+            remaining: self.contexts.len(),
+            next_kind: 0,
+            retained: 0,
+            counts: FlushCounts::default(),
         }
+    }
 
-        // Iterate over each context we're tracking, and flush any values that are in buckets which are now closed.
-        debug!(timestamp = current_time, "Flushing buckets.");
-
-        let mut flush_counts = FlushCounts::default();
-
-        let kinds = AggregateMetricType::ALL;
-        let frontiers = kinds.map(|kind| self.contexts.len_for(kind));
-        let slots = kinds
-            .into_iter()
-            .zip(frontiers)
-            .flat_map(|(kind, len)| (0..len).map(move |i| Slot::new(kind, i)));
-        for slot in slots {
-            let mut values = self.contexts.take_values(slot);
-            let last_seen = self.contexts.last_seen(slot);
-            // Figure out if we should remove this metric or not if it has no values in open buckets.
-            //
-            // We have a special carve-out for counters here, which we have the ability to keep alive after they are
-            // flushed, based on a configured expiration period. This allows us to continue emitting a zero value for
-            // counters when they're idle, which can make them appear "live" in downstream systems, even when they're
-            // not.
-            //
-            // This is useful for sparsely-updated counters.
-            let should_expire_if_empty = match slot.kind() {
-                AggregateMetricType::Counter => {
-                    saluki_antithesis::always_le!(
-                        last_seen,
-                        u64::MAX - counter_expire_secs,
-                        "aggregate counter expiry add does not overflow",
-                        { "last_seen": last_seen, "counter_expire_secs": counter_expire_secs }
-                    );
-                    counter_expire_secs == 0 || last_seen.saturating_add(counter_expire_secs) < current_time
-                }
-                _ => true,
+    fn claim_for_ingest(
+        &mut self, cursor: &mut FlushCursor, context: &Context, deferred: &mut Option<Metric>,
+    ) -> Result<Option<Slot>, ()> {
+        let slot = self.contexts.find(context);
+        let Some(slot) = slot else {
+            // Unvisited rows can still expire. Do not refuse a new context until its admission is known.
+            return if self.contexts.len() >= self.context_limit && !cursor.is_done() {
+                Err(())
+            } else {
+                Ok(None)
             };
+        };
+        let frontier = cursor.frontiers[slot.kind().index()];
+        if slot.index() >= frontier {
+            return Ok(Some(slot));
+        }
+        if deferred.is_some() {
+            return Err(());
+        }
 
-            // If we're dealing with a counter, we'll merge in our calculated set of zero values. We only merge in the
-            // values that represent now-closed buckets.
-            //
-            // This is also safe to do even when there are real values in those buckets since adding zero to anything is
-            // a no-op from the perspective of what we end up flushing, and it doesn't mess with the "last seen" time.
-            if slot.kind() == AggregateMetricType::Counter {
-                let expires_at = last_seen.saturating_add(counter_expire_secs);
-                for (zv_bucket_start, zero_value) in &zero_value_buckets {
-                    if expires_at > *zv_bucket_start {
-                        values.merge(zero_value.clone());
-                    } else {
-                        // Since zero-value buckets are in order, we can break early if this bucket is past the
-                        // expiration cutoff of the counter. No other bucket will be within the expiration range.
-                        break;
-                    }
+        // Move the row to the visited partition before closing it. Swap-delete then cannot move an unvisited row.
+        let claimed = cursor.claim(slot.kind());
+        if claimed != slot {
+            self.contexts.swap(slot, claimed);
+        }
+        let (retained, closed) = self.close_slot(cursor, claimed);
+        *deferred = closed;
+        Ok(retained.then_some(claimed))
+    }
+
+    fn next_flush_chunk(
+        &mut self, cursor: &mut FlushCursor, buffers: &mut EventBufferManager<DEFAULT_EVENTS_BUFFER_CAPACITY>,
+        deferred: &mut Option<Metric>, scan: bool,
+    ) -> Option<(EventsBuffer, bool)> {
+        let mut has_histograms = false;
+        let mut expected_outputs = 0;
+        let mut next = deferred.take();
+        let histogram_outputs =
+            self.hist_config.statistics().len() + usize::from(self.hist_config.copy_to_distribution());
+        // Visit only a bounded number of rows and detach their closed values before dispatch can suspend.
+        for _ in 0..DEFAULT_EVENTS_BUFFER_CAPACITY {
+            let metric = match next.take() {
+                Some(metric) => metric,
+                None if scan => {
+                    let Some(slot) = cursor.next_slot() else { break };
+                    let Some(metric) = self.close_slot(cursor, slot).1 else {
+                        continue;
+                    };
+                    metric
                 }
+                None => break,
+            };
+            let histogram = matches!(metric.values(), MetricValues::Histogram(_));
+            let outputs = if histogram { histogram_outputs } else { 1 };
+            if outputs == 0 {
+                continue;
             }
+            if expected_outputs != 0 && outputs > DEFAULT_EVENTS_BUFFER_CAPACITY - expected_outputs {
+                *deferred = Some(metric);
+                break;
+            }
+            let overflow = buffers.try_push(Event::Metric(metric));
+            debug_assert!(overflow.is_none());
+            has_histograms |= histogram;
+            expected_outputs += outputs;
+            // A single histogram can exceed this budget. Its dispatcher yields after each full output buffer.
+            if expected_outputs >= DEFAULT_EVENTS_BUFFER_CAPACITY {
+                break;
+            }
+        }
+        buffers.consume().map(|buffer| (buffer, has_histograms))
+    }
 
-            // Finally, figure out if the current metric can be removed.
-            //
-            // For any metric with values that are in open buckets, we split off the values that are in closed buckets
-            // and keep the metric alive. When all the values are in closed buckets, or there are no values, we'll
-            // remove the metric if `should_remove_if_empty` is `true`.
-            //
-            // This means we'll always remove all-closed/empty non-counter metrics, and we _may_ remove all-closed/empty
-            // counters.
-            let closed = values.split_at_timestamp(split_timestamp);
-            let should_remove = values.is_empty() && should_expire_if_empty;
+    fn close_slot(&mut self, cursor: &mut FlushCursor, slot: Slot) -> (bool, Option<Metric>) {
+        if let Some((timestamp, value)) = self.contexts.single_packed_gauge(slot) {
+            if timestamp > cursor.split_timestamp {
+                cursor.retained += 1;
+                return (true, None);
+            }
+            let values = MetricValues::gauge((timestamp, value));
+            self.telemetry.increment_flushed(&values, &mut cursor.counts);
+            let metadata = self.contexts.metadata(slot);
+            let context = self.remove_flushed_slot(slot);
+            return (false, Some(Metric::from_parts(context, values, metadata)));
+        }
+
+        let mut values = self.contexts.take_values(slot);
+        let last_seen = self.contexts.last_seen(slot);
+        // Keep idle counters long enough to emit zeros for sparse series. Without those points, downstream systems
+        // can treat a counter as absent between updates.
+        let expire_if_empty = if slot.kind() == AggregateMetricType::Counter {
+            let expiry = self.counter_expire_secs.map_or(0, NonZeroU64::get);
+            saluki_antithesis::always_le!(
+                last_seen,
+                u64::MAX - expiry,
+                "aggregate counter expiry add does not overflow",
+                { "last_seen": last_seen, "counter_expire_secs": expiry }
+            );
+            let expires_at = last_seen.saturating_add(expiry);
+            // Zero does not change an existing bucket's total or the row's last update time. Bucket starts increase,
+            // so stop at expiry instead of inspecting the rest of the range.
+            let zero_end = cursor.zero_buckets.end.min(expires_at);
+            for bucket in (cursor.zero_buckets.start..zero_end).step_by(self.bucket_width_secs.get() as usize) {
+                values.merge(MetricValues::counter((bucket, 0.0)));
+            }
+            expiry == 0 || expires_at < cursor.cutoff
+        } else {
+            true
+        };
+
+        // Keep values in open buckets. With no open values, only an unexpired idle counter can retain its row.
+        let closed = values.split_at_timestamp(cursor.split_timestamp).map(|closed| {
+            self.telemetry.increment_flushed(&closed, &mut cursor.counts);
+            (
+                counter_values_to_rate(closed, self.bucket_width_secs),
+                self.contexts.metadata(slot),
+            )
+        });
+        let retained = !values.is_empty() || !expire_if_empty;
+        let metric = if retained {
+            cursor.retained += 1;
             self.contexts.set_values(slot, values, last_seen);
-            if let Some(closed_bucket_values) = closed {
-                self.telemetry
-                    .increment_flushed(&closed_bucket_values, &mut flush_counts);
+            closed.map(|(values, metadata)| {
+                Metric::from_parts(self.contexts.header(slot).context.clone(), values, metadata)
+            })
+        } else {
+            // Expire the row and its telemetry admission before dispatch. A failed chunk does not revisit its closed
+            // rows. Rows that this flush does not reach keep their values and admission for a later flush.
+            let context = self.remove_flushed_slot(slot);
+            closed.map(|(values, metadata)| Metric::from_parts(context, values, metadata))
+        };
+        (retained, metric)
+    }
 
-                // We got some closed bucket values, so flush those out.
-                transform_and_push_metric(
-                    self.contexts.header(slot).context.clone(),
-                    closed_bucket_values,
-                    self.contexts.metadata(slot),
-                    bucket_width_secs,
-                    &self.hist_config,
-                    dispatcher,
-                )
-                .await?;
-            }
-
-            if should_remove {
-                self.contexts_remove_buf
-                    .push(self.contexts.header(slot).context.clone());
-            }
-        }
-
-        // Remove any contexts that were marked as needing to be removed.
-        for context in self.contexts_remove_buf.drain(..) {
-            if let Some(slot) = self.contexts.find(&context) {
-                let header = self.contexts.remove(slot);
-                self.telemetry
-                    .decrement_contexts(&header.context, slot.kind(), header.origin_id);
-            }
-        }
-        self.contexts.trim_empty_side_stores();
-
-        if self.context_limit_breached && self.contexts.len() < self.context_limit {
+    fn remove_flushed_slot(&mut self, slot: Slot) -> Context {
+        let header = self.contexts.remove(slot);
+        self.telemetry
+            .decrement_contexts(&header.context, slot.kind(), header.origin_id);
+        if self.contexts.len() < self.context_limit {
             self.context_limit_breached = false;
         }
+        header.context
+    }
 
-        self.last_flush = current_time;
-        self.telemetry.record_last_flush_counts(&flush_counts);
-
-        Ok(())
+    fn finish_flush(&mut self, cursor: FlushCursor) {
+        self.contexts.trim_empty_side_stores();
+        // Advance the start of the next zero-fill range to this flush's cutoff, even if no row emits a metric.
+        // If all pre-cutoff rows expired, the first new context must not inherit their zero-fill range.
+        self.last_flush = if cursor.retained == 0 && !self.contexts.is_empty() {
+            0
+        } else {
+            cursor.cutoff
+        };
+        self.telemetry.record_last_flush_counts(&cursor.counts);
     }
 
     fn context_limit_breached(&self) -> bool {
@@ -858,86 +982,132 @@ impl AggregationState {
     }
 }
 
-async fn transform_and_push_metric(
-    context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: NonZeroU64,
+struct FlushCursor {
+    cutoff: u64,
+    split_timestamp: u64,
+    zero_buckets: Range<u64>,
+    // Each page sequence has unvisited rows before its frontier. Visited and newly inserted rows follow it.
+    frontiers: [usize; AggregateMetricType::ALL.len()],
+    remaining: usize,
+    next_kind: usize,
+    retained: usize,
+    counts: FlushCounts,
+}
+
+impl FlushCursor {
+    fn is_done(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn claim(&mut self, kind: AggregateMetricType) -> Slot {
+        let frontier = &mut self.frontiers[kind.index()];
+        *frontier -= 1;
+        self.remaining -= 1;
+        Slot::new(kind, *frontier)
+    }
+
+    fn next_slot(&mut self) -> Option<Slot> {
+        while let Some(&kind) = AggregateMetricType::ALL.get(self.next_kind) {
+            if self.frontiers[self.next_kind] != 0 {
+                return Some(self.claim(kind));
+            }
+            self.next_kind += 1;
+        }
+        None
+    }
+}
+
+async fn dispatch_flush_chunk(
+    dispatcher: &EventsDispatcher, chunk: Option<(EventsBuffer, bool)>, bucket_width: NonZeroU64,
+    hist_config: &HistogramConfiguration,
+) -> Result<usize, GenericError> {
+    tokio::task::consume_budget().await;
+    let Some((buffer, has_histograms)) = chunk else {
+        return Ok(0);
+    };
+    if !has_histograms {
+        let count = buffer.len();
+        dispatcher.dispatch(buffer).await?;
+        return Ok(count);
+    }
+
+    let mut buffered = dispatcher.buffered()?;
+    for metric in buffer.into_events::<Metric>() {
+        let (context, values, metadata) = metric.into_parts();
+        if let MetricValues::Histogram(points) = values {
+            push_histogram(context, points, metadata, bucket_width, hist_config, &mut buffered).await?;
+        } else {
+            buffered
+                .push(Event::Metric(Metric::from_parts(context, values, metadata)))
+                .await?;
+        }
+    }
+    buffered.flush().await
+}
+
+/// Emits each configured histogram statistic as its own metric and optionally emits a distribution copy.
+async fn push_histogram(
+    context: Context, mut points: HistogramPoints, metadata: MetricMetadata, bucket_width_secs: NonZeroU64,
     hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
 ) -> Result<(), GenericError> {
     let bucket_width = Duration::from_secs(bucket_width_secs.get());
-
-    match values {
-        // If we're dealing with a histogram, we calculate a configured set of aggregates/percentiles from it, and emit
-        // them as individual metrics.
-        MetricValues::Histogram(ref mut points) => {
-            // Build the distribution from the original samples, independent of the configured histogram statistics.
-            if hist_config.copy_to_distribution() {
-                let sketch_points = points
-                    .into_iter()
-                    .map(|(ts, hist)| {
-                        let mut sketch = DDSketch::default();
-                        for sample in hist.samples() {
-                            sketch.insert_n(sample.value.into_inner(), sample.weight.0 as u64);
-                        }
-                        (ts, sketch)
-                    })
-                    .collect::<SketchPoints>();
-                let distribution_values = MetricValues::distribution(sketch_points);
-                let metric_context = if !hist_config.copy_to_distribution_prefix().is_empty() {
-                    context.with_name(format!(
-                        "{}{}",
-                        hist_config.copy_to_distribution_prefix(),
-                        context.name()
-                    ))
-                } else {
-                    context.clone()
-                };
-                let new_metric = Metric::from_parts(metric_context, distribution_values, metadata.clone());
-                dispatcher.push(Event::Metric(new_metric)).await?;
-            }
-            // We collect our histogram points in their "summary" view, which sorts the underlying samples allowing
-            // proper quantile queries to be answered, hence our "sorted" points. We do it this way because rather than
-            // sort every time we insert, or cloning the points, we only sort when a summary view is constructed, which
-            // requires mutable access to sort the samples in-place.
-            let mut sorted_points = Vec::new();
-            for (ts, h) in points {
-                sorted_points.push((ts, h.summary_view()));
-            }
-
-            for statistic in hist_config.statistics() {
-                let new_points = sorted_points
-                    .iter()
-                    .map(|(ts, hs)| (*ts, statistic.value_from_histogram(hs)))
-                    .collect::<ScalarPoints>();
-
-                let new_values = if statistic.is_rate_statistic() {
-                    MetricValues::rate(new_points, bucket_width)
-                } else {
-                    MetricValues::gauge(new_points)
-                };
-
-                // The `.count` statistic is dimensionless. Do not carry the histogram's unit into that metric.
-                let new_metadata = if matches!(statistic, HistogramStatistic::Count) {
-                    metadata.clone().with_unit(MetaString::empty())
-                } else {
-                    metadata.clone()
-                };
-
-                let new_context = context.with_name(format!("{}.{}", context.name(), statistic.suffix()));
-                let new_metric = Metric::from_parts(new_context, new_values, new_metadata);
-                dispatcher.push(Event::Metric(new_metric)).await?;
-            }
-
-            Ok(())
-        }
-
-        // If we're not dealing with a histogram, then all we need to worry about is converting counters to rates before
-        // forwarding our single, aggregated metric.
-        values => {
-            let adjusted_values = counter_values_to_rate(values, bucket_width_secs);
-
-            let metric = Metric::from_parts(context, adjusted_values, metadata);
-            dispatcher.push(Event::Metric(metric)).await
-        }
+    // Build the distribution from the original samples, independent of the configured histogram statistics.
+    if hist_config.copy_to_distribution() {
+        let sketch_points = (&points)
+            .into_iter()
+            .map(|(ts, hist)| {
+                let mut sketch = DDSketch::default();
+                for sample in hist.samples() {
+                    sketch.insert_n(sample.value.into_inner(), sample.weight.0 as u64);
+                }
+                (ts, sketch)
+            })
+            .collect::<SketchPoints>();
+        let distribution_values = MetricValues::distribution(sketch_points);
+        let metric_context = if !hist_config.copy_to_distribution_prefix().is_empty() {
+            context.with_name(format!(
+                "{}{}",
+                hist_config.copy_to_distribution_prefix(),
+                context.name()
+            ))
+        } else {
+            context.clone()
+        };
+        let new_metric = Metric::from_parts(metric_context, distribution_values, metadata.clone());
+        dispatcher.push(Event::Metric(new_metric)).await?;
     }
+    // Sort each bucket in place for its summary view. This answers quantile queries without sorting at insertion
+    // time or cloning the samples.
+    let mut sorted_points = Vec::new();
+    for (ts, h) in &mut points {
+        sorted_points.push((ts, h.summary_view()));
+    }
+
+    for statistic in hist_config.statistics() {
+        let new_points = sorted_points
+            .iter()
+            .map(|(ts, hs)| (*ts, statistic.value_from_histogram(hs)))
+            .collect::<ScalarPoints>();
+
+        let new_values = if statistic.is_rate_statistic() {
+            MetricValues::rate(new_points, bucket_width)
+        } else {
+            MetricValues::gauge(new_points)
+        };
+
+        // The `.count` statistic is dimensionless. Do not carry the histogram's unit into that metric.
+        let new_metadata = if matches!(statistic, HistogramStatistic::Count) {
+            metadata.clone().with_unit(MetaString::empty())
+        } else {
+            metadata.clone()
+        };
+
+        let new_context = context.with_name(format!("{}.{}", context.name(), statistic.suffix()));
+        let new_metric = Metric::from_parts(new_context, new_values, new_metadata);
+        dispatcher.push(Event::Metric(new_metric)).await?;
+    }
+
+    Ok(())
 }
 
 /// Emits counters as rates with the bucket width as their interval. Other metric values keep their kind.
@@ -960,12 +1130,6 @@ fn counter_values_to_rate(values: MetricValues, interval_secs: NonZeroU64) -> Me
 /// ```
 const fn align_to_bucket_start(timestamp: u64, bucket_width_secs: NonZeroU64) -> u64 {
     timestamp - (timestamp % bucket_width_secs.get())
-}
-
-const fn is_bucket_closed(
-    current_time: u64, bucket_start: u64, bucket_width_secs: NonZeroU64, flush_open_buckets: bool,
-) -> bool {
-    flush_open_buckets || current_time.saturating_sub(bucket_start) >= bucket_width_secs.get()
 }
 
 // TODO: One thing we ought to consider is a property test, specifically a state machine property test, where we
@@ -1010,29 +1174,8 @@ mod tests {
         BUCKET_WIDTH_SECS.get() * (step + 1)
     }
 
-    struct DispatcherReceiver {
-        receiver: mpsc::Receiver<EventsBuffer>,
-    }
-
-    impl DispatcherReceiver {
-        fn collect_next(&mut self) -> Vec<Metric> {
-            match self.receiver.try_recv() {
-                Ok(event_buffer) => {
-                    let mut metrics = event_buffer
-                        .into_iter()
-                        .filter_map(|event| event.try_into_metric())
-                        .collect::<Vec<Metric>>();
-
-                    metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
-                    metrics
-                }
-                Err(_) => Vec::new(),
-            }
-        }
-    }
-
     /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
-    fn build_basic_dispatcher() -> (EventsDispatcher, DispatcherReceiver) {
+    fn build_basic_dispatcher() -> (EventsDispatcher, mpsc::Receiver<EventsBuffer>) {
         let context = ComponentContext::test_transform("test");
         let mut dispatcher = Dispatcher::new(context);
 
@@ -1042,7 +1185,7 @@ mod tests {
             .attach_sender_to_output(&OutputName::Default, buffer_tx)
             .unwrap();
 
-        (dispatcher, DispatcherReceiver { receiver: buffer_rx })
+        (dispatcher, buffer_rx)
     }
 
     async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
@@ -1052,23 +1195,30 @@ mod tests {
     async fn get_flushed_metrics_with_open_windows(
         timestamp: u64, flush_open_buckets: bool, state: &mut AggregationState,
     ) -> Vec<Metric> {
-        let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
-        let mut buffered_dispatcher = dispatcher.buffered().expect("default output should always exist");
-
-        // Flush the metrics to an event buffer.
-        state
-            .flush(timestamp, flush_open_buckets, &mut buffered_dispatcher)
-            .await
-            .expect("should not fail to flush aggregation state");
-
-        // Flush our buffered dispatcher, which should ensure that the event buffer is sent out, and then read it from the
-        // receiver:
-        buffered_dispatcher
-            .flush()
-            .await
-            .expect("should not fail to flush buffered sender");
-
-        dispatcher_receiver.collect_next()
+        let (dispatcher, mut receiver) = build_basic_dispatcher();
+        // Dispatch and drain concurrently so a full receiver cannot block this test's flush.
+        let send = async move {
+            let mut cursor = state.start_flush(timestamp, flush_open_buckets);
+            let mut buffers = dispatcher.event_buffer_manager();
+            let mut deferred = None;
+            while !cursor.is_done() || deferred.is_some() {
+                let chunk = state.next_flush_chunk(&mut cursor, &mut buffers, &mut deferred, true);
+                dispatch_flush_chunk(&dispatcher, chunk, state.bucket_width_secs, &state.hist_config)
+                    .await
+                    .expect("should dispatch each flush chunk");
+            }
+            state.finish_flush(cursor);
+        };
+        let receive = async {
+            let mut metrics = Vec::new();
+            while let Some(buffer) = receiver.recv().await {
+                metrics.extend(buffer.into_events::<Metric>());
+            }
+            metrics
+        };
+        let ((), mut metrics) = tokio::join!(send, receive);
+        metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
+        metrics
     }
 
     macro_rules! compare_points {
@@ -1172,6 +1322,172 @@ mod tests {
         for (values, expected) in cases {
             assert_eq!(AggregateMetricType::from(&values), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn aggregate_flush_records_one_duration_sample() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let config = AggregateConfiguration {
+            flush_open_windows: true,
+            ..AggregateConfiguration::for_test()
+        };
+        let (control, _outputs) = TestComponentDriver::options()
+            .with_component_id("aggregate")
+            .transform(config)
+            .await
+            .expect("aggregate transform should build");
+
+        control
+            .send_event(Event::Metric(Metric::counter("timed_flush", 1.0)))
+            .await;
+        control
+            .shutdown()
+            .await
+            .expect("aggregate should finish the final flush");
+
+        let labels = &[("component_id", "aggregate"), ("component_type", "transform")];
+        assert_eq!(recorder.counter(("aggregate_flushes_total", labels)), Some(1));
+        let samples = recorder
+            .histogram(("aggregate_flush_duration_seconds", labels))
+            .unwrap();
+        let elapsed_ns = recorder
+            .gauge(("aggregate_last_flush_duration_nanoseconds", labels))
+            .unwrap();
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0] * 1e9 - elapsed_ns).abs() < 1.0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn owner_ingests_while_downstream_is_full_and_finishes_shutdown() {
+        const UNVISITED_ROWS: usize = 900;
+        const PRE_CUTOFF_COUNT: usize = 2 * DEFAULT_EVENTS_BUFFER_CAPACITY + UNVISITED_ROWS;
+        let (handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+        let config = AggregateConfiguration {
+            primary_flush_interval: Duration::from_secs(60),
+            context_limit: PRE_CUTOFF_COUNT + 1,
+            flush_open_windows: true,
+            context_snapshot_receiver,
+            ..AggregateConfiguration::for_test()
+        };
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_interconnect_capacity(std::num::NonZeroUsize::new(1).unwrap())
+            .transform(config)
+            .await
+            .unwrap();
+        let mut output = outputs.take_default_output();
+        control
+            .send_events((0..PRE_CUTOFF_COUNT).map(|i| {
+                let context = Context::from_parts(format!("flush.pre.{i}"), TagSet::default());
+                let metric = if i == 0 {
+                    Metric::gauge(context, [(10, 1.0), (u64::MAX, 99.0)])
+                } else {
+                    Metric::gauge(context, (10, 1.0))
+                };
+                Event::Metric(metric)
+            }))
+            .await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while handle.snapshot().await.unwrap().len() != PRE_CUTOFF_COUNT {}
+        })
+        .await
+        .unwrap();
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            // The first chunk fills the channel. The second chunk waits before the last group is visited.
+            while handle.snapshot().await.unwrap().len() != UNVISITED_ROWS {}
+        })
+        .await
+        .unwrap();
+
+        let existing = Context::from_parts("flush.pre.0", TagSet::default());
+        let fresh = Context::from_static_name("flush.post");
+        control
+            .send_events([
+                Event::Metric(Metric::gauge(fresh.clone(), (10, 2.0))),
+                Event::Metric(Metric::set(existing.clone(), (10, "late"))),
+            ])
+            .await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let entries = handle.snapshot().await.unwrap();
+                if entries
+                    .iter()
+                    .any(|entry| entry.context() == &existing && entry.metric_type() == AggregateMetricType::Set)
+                {
+                    assert!(entries.iter().any(|entry| entry.context() == &fresh));
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let (shutdown, buffers) = tokio::join!(control.shutdown(), output.collect());
+        shutdown.unwrap();
+        let (last, earlier) = buffers.split_last().unwrap();
+        let old = earlier
+            .iter()
+            .flat_map(|buffer| buffer.events::<Metric>())
+            .collect::<Vec<_>>();
+        assert_eq!(old.len(), PRE_CUTOFF_COUNT);
+        assert!(old
+            .iter()
+            .all(|metric| metric.values() == &MetricValues::gauge((10, 1.0))));
+        assert_eq!(old.iter().filter(|metric| metric.context() == &existing).count(), 1);
+        let late = last.events::<Metric>().collect::<Vec<_>>();
+        assert_eq!(late.len(), 2);
+        assert!(late
+            .iter()
+            .any(|metric| metric.context() == &existing && metric.values() == &MetricValues::set((10, "late"))));
+        assert!(late
+            .iter()
+            .any(|metric| metric.context() == &fresh && metric.values() == &MetricValues::gauge((10, 2.0))));
+    }
+
+    #[tokio::test]
+    async fn cutoff_detaches_closed_values_before_same_type_update() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            2,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let context = Context::from_static_name("cutoff.updated");
+        let other = Context::from_static_name("cutoff.other");
+        let fresh = Context::from_static_name("cutoff.new");
+        assert!(state.insert(20, Metric::gauge(context.clone(), [(10, 1.0), (40, 4.0)])));
+        assert!(state.insert(20, Metric::gauge(other, (10, 5.0))));
+        let mut cursor = state.start_flush(30, false);
+        let mut deferred = None;
+        assert!(state.claim_for_ingest(&mut cursor, &fresh, &mut deferred).is_err());
+
+        let slot = state.claim_for_ingest(&mut cursor, &context, &mut deferred).unwrap();
+        let metadata = MetricMetadata::default().with_unit("bytes");
+        let update = Metric::from_parts(context.clone(), MetricValues::gauge((10, 9.0)), metadata.clone());
+        assert!(state.insert_at(30, update, slot));
+        let closed = deferred.take().unwrap();
+        assert_eq!(closed, Metric::gauge(context.clone(), (10, 1.0)));
+
+        let slot = cursor.next_slot().unwrap();
+        let (retained, closed) = state.close_slot(&mut cursor, slot);
+        assert!(!retained);
+        assert_eq!(closed.unwrap().values(), &MetricValues::gauge((10, 5.0)));
+        let slot = state.claim_for_ingest(&mut cursor, &fresh, &mut deferred).unwrap();
+        assert!(state.insert_at(30, Metric::gauge(fresh.clone(), (10, 3.0)), slot));
+        assert!(cursor.next_slot().is_none());
+        state.finish_flush(cursor);
+
+        let final_metrics = get_flushed_metrics(40, &mut state).await;
+        assert_eq!(
+            final_metrics,
+            [
+                Metric::gauge(fresh, (10, 3.0)),
+                Metric::from_parts(context, MetricValues::gauge([(10, 9.0), (40, 4.0)]), metadata),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1551,40 +1867,40 @@ mod tests {
         pending_response.respond(Vec::new());
     }
 
-    #[test]
-    fn bucket_is_closed() {
-        // Cases are defined as:
-        // (current time, bucket start, bucket width, flush open buckets, expected result)
-        let cases = [
-            // Bucket goes from [995, 1005), current time of 1000, so bucket is open.
-            (1000, 995, BUCKET_WIDTH_SECS, false, false),
-            (1000, 995, BUCKET_WIDTH_SECS, true, true),
-            // Bucket goes from [1000, 1010), current time of 1000, so bucket is open.
-            (1000, 1000, BUCKET_WIDTH_SECS, false, false),
-            (1000, 1000, BUCKET_WIDTH_SECS, true, true),
-            // Bucket goes from [1000, 1010), current time of 1010, so bucket is closed.
-            (1010, 1000, BUCKET_WIDTH_SECS, false, true),
-            (1010, 1000, BUCKET_WIDTH_SECS, true, true),
-        ];
+    #[tokio::test]
+    async fn cutoff_closes_only_aligned_buckets_unless_final() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            1,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        state.last_flush = 987;
+        // A cutoff inside [1000, 1010) leaves that bucket open and closes only earlier buckets.
+        let cursor = state.start_flush(1005, false);
+        assert_eq!(cursor.split_timestamp, 999);
+        assert_eq!(cursor.zero_buckets, 980..1000);
+        // At the exclusive end of the bucket, it closes and the next bucket opens.
+        let cursor = state.start_flush(1010, false);
+        assert_eq!(cursor.split_timestamp, 1009);
+        assert_eq!(cursor.zero_buckets, 980..1010);
+        // A final flush can emit values in the open bucket. Its zero range ends at the cutoff.
+        let cursor = state.start_flush(1005, true);
+        assert_eq!(cursor.split_timestamp, u64::MAX);
+        assert_eq!(cursor.zero_buckets, 980..1005);
 
-        for (current_time, bucket_start, bucket_width_secs, flush_open_buckets, expected) in cases {
-            let expected_reason = if expected {
-                "closed, was open"
-            } else {
-                "open, was closed"
-            };
-
-            assert_eq!(
-                is_bucket_closed(current_time, bucket_start, bucket_width_secs, flush_open_buckets),
-                expected,
-                "expected bucket to be {} (current_time={}, bucket_start={}, bucket_width={}, flush_open_buckets={})",
-                expected_reason,
-                current_time,
-                bucket_start,
-                bucket_width_secs,
-                flush_open_buckets
-            );
-        }
+        // Check actual output on both sides of an aligned boundary, including the point at the open bucket's start.
+        let context = Context::from_static_name("cutoff.boundary");
+        assert!(state.insert(999, Metric::gauge(context.clone(), [(999, 1.0), (1000, 2.0)])));
+        assert_eq!(
+            get_flushed_metrics_with_open_windows(1000, false, &mut state).await,
+            [Metric::gauge(context.clone(), (999, 1.0))]
+        );
+        assert_eq!(
+            get_flushed_metrics(1000, &mut state).await,
+            [Metric::gauge(context, (1000, 2.0))]
+        );
     }
 
     #[tokio::test]
@@ -2187,18 +2503,21 @@ mod tests {
         }
         let (dispatcher, receiver) = build_basic_dispatcher();
         drop(receiver);
-        let mut buffered = dispatcher.buffered().unwrap();
-        assert!(state.flush(flush_ts(1), false, &mut buffered).await.is_err());
+        let mut cursor = state.start_flush(flush_ts(1), false);
+        let mut buffers = dispatcher.event_buffer_manager();
+        let chunk = state.next_flush_chunk(&mut cursor, &mut buffers, &mut None, true);
         assert!(
-            !state.contexts_remove_buf.is_empty(),
-            "failure must follow a pending expiry"
+            dispatch_flush_chunk(&dispatcher, chunk, state.bucket_width_secs, &state.hist_config)
+                .await
+                .is_err()
         );
-        assert_eq!(state.contexts.len(), count);
+        assert_eq!(state.contexts.len(), count - DEFAULT_EVENTS_BUFFER_CAPACITY);
         let metric = ("aggregate_active_contexts_by_origin", &[("container", "one")]);
-        assert_eq!(recorder.gauge(metric), Some(count as f64));
+        assert_eq!(recorder.gauge(metric), Some(2.0));
 
-        // A context marked for removal before the failure can receive new, still-open values.
-        let revived = state.contexts_remove_buf[0].clone();
+        // The failed chunk expires its rows; the unvisited rows keep their origin admission and values.
+        // An unvisited row can take a new open value before the next flush without acquiring another admission.
+        let revived = state.snapshot_contexts()[0].context().clone();
         let future_ts = flush_ts(1) + 100;
         assert!(state.insert(future_ts, Metric::gauge(revived.clone(), (future_ts, 1.0))));
         let _ = get_flushed_metrics_with_open_windows(flush_ts(1), false, &mut state).await;

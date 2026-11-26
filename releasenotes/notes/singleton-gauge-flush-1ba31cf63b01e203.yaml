@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce aggregation work when flushing a gauge with one buffered point.

@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Allow metric ingestion to continue during large DogStatsD aggregation flushes.
