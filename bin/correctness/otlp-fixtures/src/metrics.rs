@@ -480,8 +480,8 @@ pub fn control_fixture() -> Vec<u8> {
 /// The fixture holds 3 series points whose names start with `otlpprobe.v3.series.`, and 2 sketch points whose names
 /// start with `otlpprobe.v3.sketch.`. The prefix tells a case which intake path the points must arrive on. A resource
 /// with a host holds a gauge, a delta monotonic sum and a histogram. A Lambda resource, which gives its metrics no
-/// host, holds a gauge and a histogram. So a series and a sketch each have a host and none. A probe that joins the
-/// fixture later takes one of the two prefixes, and the counts change.
+/// host, holds a gauge and a histogram. So the series and the sketches each include a point with a host and a point
+/// without one. A new probe in the fixture takes one of the two prefixes, and changes the counts.
 pub fn v3_fixture() -> Vec<u8> {
     request(vec![
         resource_metrics(
