@@ -1359,6 +1359,7 @@ async fn create_v3_batch_request(
     } = batch;
 
     let encoded_request = match create_v3_request(endpoint_uri, &encoded.payload, compressor).await {
+        Ok(request) => request,
         Err(e) => {
             error!(error = %e, payload_kind, events = event_count, "Failed to create V3 metrics request.");
             context.record_dropped_metrics(event_count);
@@ -2469,8 +2470,8 @@ mod tests {
             let body = request.request.into_body().into_bytes();
             assert_eq!(zstd::zstd_safe::find_frame_compressed_size(&body), Ok(body.len()));
             assert_eq!(
-                zstd::zstd_safe::get_frame_content_size(&body),
-                Ok(Some(request.uncompressed_len as u64))
+                zstd::zstd_safe::get_frame_content_size(&body).unwrap(),
+                Some(request.uncompressed_len as u64)
             );
             let decoded = zstd::bulk::decompress(&body, request.uncompressed_len).unwrap();
             assert_eq!(&decoded[decoded.len() - payload.len()..], payload);
