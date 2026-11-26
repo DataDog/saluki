@@ -28,6 +28,7 @@ futures = { workspace = true }
 prost-types = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tracing-subscriber = { workspace = true, features = ["registry"] }
 
 [lints]
 workspace = true
