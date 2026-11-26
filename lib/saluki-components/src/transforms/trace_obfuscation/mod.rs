@@ -215,7 +215,10 @@ mod tests {
     fn sql_resource_with_leading_hash_comment_is_obfuscated() {
         // A statement can start with a `#` line comment, and a bare `#` must not make the obfuscator panic. The Agent
         // skips such a comment to the line break when the DBMS is not PostgreSQL: its tokenizer calls `scanCommentType1`
-        // in the default branch of `'#'` (`pkg/obfuscate/sql_tokenizer.go`).
+        // in the default branch of `'#'`, and that function reads to the line break. A real run of the Agent gives
+        // `SELECT ?` for these statements, as this test does.
+        // https://github.com/DataDog/datadog-agent/blob/92824ec3d3f4a4c5b0926452999a39df5b4eb850/pkg/obfuscate/sql_tokenizer.go#L390-L416
+        // https://github.com/DataDog/datadog-agent/blob/92824ec3d3f4a4c5b0926452999a39df5b4eb850/pkg/obfuscate/sql_tokenizer.go#L842-L850
         for statement in ["#c\nSELECT 1", " #c\nSELECT 1"] {
             let span = Span::new("svc", "db.query", statement, "sql", 1, 0, 0, 0, 0)
                 .with_attributes(attributes(&[("db.system", "mysql")]));
@@ -224,8 +227,9 @@ mod tests {
             assert_eq!(span.resource(), "SELECT ?", "{statement:?}");
         }
 
-        // The Agent tokenizes `#` as an operator character when the DBMS is PostgreSQL. A real run of the Agent gives
-        // `SELECT ?` for all three statements, and ADP must give the same resource, not `Non-parsable SQL query`.
+        // The Agent tokenizes `#` as an operator character when the DBMS is PostgreSQL, in the same `'#'` case as above. A
+        // real run of the Agent gives `SELECT ?` for all three statements, and ADP must give the same resource, not
+        // `Non-parsable SQL query`.
         let span = Span::new("svc", "db.query", "#c\nSELECT 2", "sql", 1, 0, 0, 0, 0)
             .with_attributes(attributes(&[("db.system", "postgresql")]));
         let span = obfuscate(ObfuscationConfig::default(), span);
