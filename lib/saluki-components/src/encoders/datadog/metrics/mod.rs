@@ -25,7 +25,7 @@ use saluki_core::{
     topology::{EventsBuffer, PayloadsBuffer, PayloadsDispatcher},
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::compression::{CompressionScheme, Compressor, ZstdFrameCompressor};
+use saluki_io::compression::{CompressionScheme, Compressor, Level};
 use saluki_metrics::MetricsBuilder;
 use smallvec::SmallVec;
 use tokio::{
@@ -1094,7 +1094,6 @@ struct V3EncodingWorkspace {
     ratio: V3CompressionRatio,
     writer: V3Writer,
     promoted_tags_deduplicator: ReusableDeduplicator<TagStr>,
-    compressor: V3RequestCompressor,
 }
 
 impl Default for V3EncodingWorkspace {
@@ -1103,7 +1102,6 @@ impl Default for V3EncodingWorkspace {
             ratio: V3CompressionRatio::default(),
             writer: V3Writer::new(),
             promoted_tags_deduplicator: ReusableDeduplicator::new(),
-            compressor: V3RequestCompressor::default(),
         }
     }
 }
@@ -1346,9 +1344,13 @@ fn build_v3_batch(
 }
 
 /// Turns an encoded batch into a payload request, returning `None` if it does not fit the payload limits.
+/// Trace filter for compressed column sizes. Set `RUST_LOG` or `set-log-level` to
+/// `saluki_components::encoders::datadog::metrics::v3_columns=trace` to enable this profiling.
+const V3_COLUMNS_TARGET: &str = "saluki_components::encoders::datadog::metrics::v3_columns";
+
 async fn create_v3_batch_request(
     endpoint_uri: &str, batch: V3Batch, context: V3FlushContext<'_>, payload_kind: &'static str,
-    workspace: &mut V3EncodingWorkspace,
+    workspace: &mut V3EncodingWorkspace, compressor: &mut V3FlushCompressor,
 ) -> Option<V3PayloadRequest> {
     let V3Batch {
         mut encoded,
@@ -1356,16 +1358,7 @@ async fn create_v3_batch_request(
         data_point_count,
     } = batch;
 
-    let compression_scheme = context.endpoint_config.compression_scheme();
-    let encoded_request = match create_v3_request(
-        endpoint_uri,
-        &encoded.payload,
-        compression_scheme,
-        &mut workspace.compressor,
-    )
-    .await
-    {
-        Ok(request) => request,
+    let encoded_request = match create_v3_request(endpoint_uri, &encoded.payload, compressor).await {
         Err(e) => {
             error!(error = %e, payload_kind, events = event_count, "Failed to create V3 metrics request.");
             context.record_dropped_metrics(event_count);
@@ -1385,15 +1378,10 @@ async fn create_v3_batch_request(
 
     // Column telemetry needs separate compression. Measure it only when profiling is enabled and the request fits,
     // so discarded oversized attempts never pay for this extra work.
-    if tracing::enabled!(target: "saluki_components::encoders::datadog::metrics::v3_columns", tracing::Level::TRACE) {
-        measure_v3_column_compressed_sizes(
-            &mut encoded.stats,
-            &encoded.payload,
-            compression_scheme,
-            &mut workspace.compressor.zstd,
-        )
-        .await
-        .unwrap_or_else(|e| error!(error = %e, payload_kind, "Failed to measure V3 column compressed sizes."));
+    if tracing::enabled!(target: V3_COLUMNS_TARGET, tracing::Level::TRACE) {
+        measure_v3_column_compressed_sizes(&mut encoded.stats, &encoded.payload, compressor)
+            .await
+            .unwrap_or_else(|e| error!(error = %e, payload_kind, "Failed to measure V3 column compressed sizes."));
     }
     record_v3_serializer_stats(context.serializer_telemetry, &encoded.stats);
 
@@ -1410,7 +1398,7 @@ async fn create_v3_batch_request(
 /// a request attempt exceeds the endpoint limits.
 async fn split_and_encode_oversized_v3_range(
     endpoint_uri: &str, metrics: &[Metric], range: Range<usize>, context: V3FlushContext<'_>,
-    payload_kind: &'static str, workspace: &mut V3EncodingWorkspace,
+    payload_kind: &'static str, workspace: &mut V3EncodingWorkspace, compressor: &mut V3FlushCompressor,
 ) -> Vec<V3PayloadRequest> {
     // `build_v3_batch` advances past metrics it drops. Preserve that decision when the accepted batch has to be
     // re-encoded: retrying the raw source range would otherwise resurrect those metrics.
@@ -1456,7 +1444,9 @@ async fn split_and_encode_oversized_v3_range(
             data_point_count,
         };
 
-        if let Some(request) = create_v3_batch_request(endpoint_uri, batch, context, payload_kind, workspace).await {
+        if let Some(request) =
+            create_v3_batch_request(endpoint_uri, batch, context, payload_kind, workspace, compressor).await
+        {
             requests.push(request);
             continue;
         }
@@ -1514,6 +1504,8 @@ async fn encode_v3_payload_requests(
     workspace: &mut V3EncodingWorkspace, payloads_tx: &mut Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
     sampled_destinations: Option<Arc<[SketchShadowDestination]>>,
 ) -> Result<(), GenericError> {
+    // Reuse compression state within a flush, and release libzstd's tables before the next one.
+    let mut compressor = V3FlushCompressor::new(context.endpoint_config.compression_scheme());
     let mut shadow_requests = Vec::new();
     let target_uncompressed_len = workspace.ratio.uncompressed_target(context.payload_limits);
     let mut idx = 0;
@@ -1541,22 +1533,25 @@ async fn encode_v3_payload_requests(
             continue;
         };
 
-        let requests = match create_v3_batch_request(endpoint_uri, batch, context, payload_kind, workspace).await {
-            Some(request) => vec![request],
-            // Split when the real request exceeds the limit despite sizing against the byte target. The target
-            // adjusts from observed compression ratios, including the oversized attempts.
-            None => {
-                split_and_encode_oversized_v3_range(
-                    endpoint_uri,
-                    metrics,
-                    batch_start..idx,
-                    context,
-                    payload_kind,
-                    workspace,
-                )
-                .await
-            }
-        };
+        let requests =
+            match create_v3_batch_request(endpoint_uri, batch, context, payload_kind, workspace, &mut compressor).await
+            {
+                Some(request) => vec![request],
+                // Split when the real request exceeds the limit despite sizing against the byte target. The target
+                // adjusts from observed compression ratios, including the oversized attempts.
+                None => {
+                    split_and_encode_oversized_v3_range(
+                        endpoint_uri,
+                        metrics,
+                        batch_start..idx,
+                        context,
+                        payload_kind,
+                        workspace,
+                        &mut compressor,
+                    )
+                    .await
+                }
+            };
 
         for payload_request in requests {
             if sampled_destinations.is_some() {
@@ -1579,6 +1574,7 @@ async fn encode_v3_payload_requests(
             );
         }
     }
+    drop(compressor);
 
     if let Some(sampled_destinations) = sampled_destinations {
         // Validation requires the complete metric set from the already-dispatched V2 baseline.
@@ -1610,7 +1606,7 @@ fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3Encod
 
     for column in &stats.columns {
         let uncompressed_size = column.range.len() as u64;
-        let compressed_size = (column.compressed_len != 0).then_some(column.compressed_len as u64);
+        let compressed_size = column.compressed_len.map(|len| len as u64);
         telemetry.record_column_size(column.field_number, uncompressed_size, compressed_size);
     }
 }
@@ -1620,15 +1616,17 @@ fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3Encod
 /// Compress each column independently for profiling telemetry. Defer this work until the whole request fits to avoid
 /// compressing columns that the split path discards and encodes again.
 async fn measure_v3_column_compressed_sizes(
-    stats: &mut V3EncoderStats, payload: &[u8], compression_scheme: CompressionScheme, zstd: &mut ZstdFrameCompressor,
+    stats: &mut V3EncoderStats, payload: &[u8], compressor: &mut V3FlushCompressor,
 ) -> Result<(), GenericError> {
     for column in &mut stats.columns {
         let bytes = &payload[column.range.clone()];
-        column.compressed_len = match compression_scheme {
+        column.compressed_len = Some(match compressor.scheme {
             CompressionScheme::Noop => bytes.len(),
-            CompressionScheme::Zstd(level) => zstd.compress(bytes, level)?.len(),
-            _ => compress_v3_stream(&[bytes], compression_scheme).await?.len(),
-        };
+            CompressionScheme::Zstd(level) => {
+                compress_v3_zstd(&mut compressor.zstd, bytes, &mut compressor.output, level)?
+            }
+            scheme => compress_v3_stream(&[bytes], scheme).await?.len(),
+        });
     }
     Ok(())
 }
@@ -1924,15 +1922,48 @@ fn metric_tags<'a>(metric: &'a Metric, additional_tags: &'a SharedTagSet) -> imp
         .chain(metric.context().origin_tags().into_iter().map(Tag::as_tag_str))
 }
 
-#[derive(Default)]
-struct V3RequestCompressor {
+struct V3FlushCompressor {
+    scheme: CompressionScheme,
     input: Vec<u8>,
-    zstd: ZstdFrameCompressor,
+    output: Vec<u8>,
+    zstd: Option<zstd::bulk::Compressor<'static>>,
+}
+
+impl V3FlushCompressor {
+    fn new(scheme: CompressionScheme) -> Self {
+        Self {
+            scheme,
+            input: Vec::new(),
+            output: Vec::new(),
+            zstd: None,
+        }
+    }
+}
+
+fn compress_v3_zstd(
+    compressor: &mut Option<zstd::bulk::Compressor<'static>>, input: &[u8], output: &mut Vec<u8>, level: Level,
+) -> std::io::Result<usize> {
+    let compressor = match compressor {
+        Some(compressor) => compressor,
+        slot @ None => {
+            let range = zstd::compression_level_range();
+            let level = match level {
+                Level::Fastest => 1,
+                Level::Best => *range.end(),
+                Level::Precise(level) => level.clamp(*range.start(), *range.end()),
+                _ => zstd::DEFAULT_COMPRESSION_LEVEL,
+            };
+            slot.insert(zstd::bulk::Compressor::new(level)?)
+        }
+    };
+    output.clear();
+    output.reserve(zstd::compress_bound(input.len()));
+    compressor.compress_to_buffer(input, output)
 }
 
 /// Creates a V3 HTTP request from encoded payload data.
 async fn create_v3_request(
-    endpoint_uri: &str, payload: &[u8], compression_scheme: CompressionScheme, compressor: &mut V3RequestCompressor,
+    endpoint_uri: &str, payload: &[u8], compressor: &mut V3FlushCompressor,
 ) -> Result<V3EncodedRequest, GenericError> {
     // Keep the wire payload as one continuous compressed stream. Per-column compressed sizes are measured
     // independently for telemetry.
@@ -1948,17 +1979,16 @@ async fn create_v3_request(
     let uncompressed_len = header_len + payload.len();
 
     let header = &header_buf[..header_len];
+    let compression_scheme = compressor.scheme;
     let compressed_buf = if let CompressionScheme::Zstd(level) = compression_scheme {
         compressor.input.clear();
         compressor.input.reserve(uncompressed_len);
         compressor.input.extend_from_slice(header);
         compressor.input.extend_from_slice(payload);
-        let compressed = compressor
-            .zstd
-            .compress(&compressor.input, level)
+        compress_v3_zstd(&mut compressor.zstd, &compressor.input, &mut compressor.output, level)
             .error_context("Failed to compress V3 payload.")?;
-        // The request owns just the compressed bytes; the workspace retains its worst-case output capacity.
-        FrozenChunkedBytesBuffer::from(Bytes::copy_from_slice(compressed))
+        // The request owns only the compressed bytes, so later payloads can reuse the output buffer.
+        FrozenChunkedBytesBuffer::from(Bytes::copy_from_slice(&compressor.output))
     } else {
         compress_v3_stream(&[header, payload], compression_scheme).await?
     };
@@ -2350,8 +2380,7 @@ mod tests {
         let request = create_v3_request(
             "/api/intake/metrics/custom/series",
             &encoded.payload,
-            CompressionScheme::noop(),
-            &mut V3RequestCompressor::default(),
+            &mut V3FlushCompressor::new(CompressionScheme::noop()),
         )
         .await
         .expect("request should be created");
@@ -2365,26 +2394,22 @@ mod tests {
         let mut encoded =
             encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
+        assert!(encoded
+            .stats
+            .columns
+            .iter()
+            .all(|column| column.compressed_len.is_none()));
+        let mut compressor = V3FlushCompressor::new(CompressionScheme::noop());
 
-        let request = create_v3_request(
-            METRICS_SERIES_V3_PATH,
-            &encoded.payload,
-            CompressionScheme::noop(),
-            &mut V3RequestCompressor::default(),
-        )
-        .await
-        .expect("request should be created");
-        measure_v3_column_compressed_sizes(
-            &mut encoded.stats,
-            &encoded.payload,
-            CompressionScheme::noop(),
-            &mut ZstdFrameCompressor::default(),
-        )
-        .await
-        .expect("column compressed sizes should be measured");
+        let request = create_v3_request(METRICS_SERIES_V3_PATH, &encoded.payload, &mut compressor)
+            .await
+            .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut encoded.stats, &encoded.payload, &mut compressor)
+            .await
+            .expect("column compressed sizes should be measured");
 
         for column in &encoded.stats.columns {
-            assert_eq!(column.compressed_len, column.range.len());
+            assert_eq!(column.compressed_len, Some(column.range.len()));
         }
 
         let mut expected_body = Vec::new();
@@ -2406,27 +2431,17 @@ mod tests {
             encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let mut compressor = V3RequestCompressor::default();
-        let request = create_v3_request(
-            METRICS_SERIES_V3_PATH,
-            &encoded.payload,
-            CompressionScheme::zstd_default(),
-            &mut compressor,
-        )
-        .await
-        .expect("request should be created");
-        measure_v3_column_compressed_sizes(
-            &mut encoded.stats,
-            &encoded.payload,
-            CompressionScheme::zstd_default(),
-            &mut compressor.zstd,
-        )
-        .await
-        .expect("column compressed sizes should be measured");
+        let mut compressor = V3FlushCompressor::new(CompressionScheme::zstd_default());
+        let request = create_v3_request(METRICS_SERIES_V3_PATH, &encoded.payload, &mut compressor)
+            .await
+            .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut encoded.stats, &encoded.payload, &mut compressor)
+            .await
+            .expect("column compressed sizes should be measured");
 
         for column in &encoded.stats.columns {
             let expected_compressed = zstd::bulk::compress(&encoded.payload[column.range.clone()], 3).unwrap();
-            assert_eq!(column.compressed_len, expected_compressed.len());
+            assert_eq!(column.compressed_len, Some(expected_compressed.len()));
         }
 
         let mut expected_body = Vec::new();
@@ -2441,6 +2456,25 @@ mod tests {
         let decoded_body = zstd::stream::decode_all(Cursor::new(request.request.into_body().into_bytes()))
             .expect("compressed V3 body should decode");
         assert_eq!(decoded_body, expected_body);
+    }
+
+    #[tokio::test]
+    async fn v3_flush_compressor_emits_independent_sized_frames() {
+        let mut compressor = V3FlushCompressor::new(CompressionScheme::new("zstd", 5));
+        let larger = [42; 8192];
+        for payload in [&larger[..], b"next payload", b""] {
+            let request = create_v3_request(METRICS_SERIES_V3_PATH, payload, &mut compressor)
+                .await
+                .unwrap();
+            let body = request.request.into_body().into_bytes();
+            assert_eq!(zstd::zstd_safe::find_frame_compressed_size(&body), Ok(body.len()));
+            assert_eq!(
+                zstd::zstd_safe::get_frame_content_size(&body),
+                Ok(Some(request.uncompressed_len as u64))
+            );
+            let decoded = zstd::bulk::decompress(&body, request.uncompressed_len).unwrap();
+            assert_eq!(&decoded[decoded.len() - payload.len()..], payload);
+        }
     }
 
     #[test]
@@ -2525,8 +2559,7 @@ mod tests {
         measure_v3_column_compressed_sizes(
             &mut encoded.stats,
             &encoded.payload,
-            CompressionScheme::noop(),
-            &mut ZstdFrameCompressor::default(),
+            &mut V3FlushCompressor::new(CompressionScheme::noop()),
         )
         .await
         .expect("column compressed sizes should be measured");
@@ -2538,7 +2571,10 @@ mod tests {
             .find(|column| column.field_number == VALUE_SINT64_FIELD_NUMBER)
             .expect("sint64 value column should be present");
         let value_sint64_len = value_sint64_column.range.len() as u64;
-        assert_eq!(value_sint64_column.compressed_len as u64, value_sint64_len);
+        assert_eq!(
+            value_sint64_column.compressed_len.map(|len| len as u64),
+            Some(value_sint64_len)
+        );
 
         record_v3_serializer_stats(&serializer_telemetry, &encoded.stats);
 
@@ -2579,8 +2615,7 @@ mod tests {
         create_v3_request(
             METRICS_SERIES_V3_PATH,
             &encoded.payload,
-            CompressionScheme::noop(),
-            &mut V3RequestCompressor::default(),
+            &mut V3FlushCompressor::new(CompressionScheme::noop()),
         )
         .await
         .expect("request should be created")

@@ -134,8 +134,8 @@ pub struct V3ColumnBytes {
     pub field_number: u32,
     /// Raw column contents within the payload, excluding the protobuf field header.
     pub range: Range<usize>,
-    /// Compressed length of the column, or `0` if the caller does not measure it.
-    pub compressed_len: usize,
+    /// Compressed length of the column, if measured.
+    pub compressed_len: Option<usize>,
 }
 
 /// Collects metrics for one V3 columnar payload at a time.
@@ -858,7 +858,7 @@ fn write_packed_column(
         columns.push(V3ColumnBytes {
             field_number,
             range: start + header_len..output.len(),
-            compressed_len: 0,
+            compressed_len: None,
         });
     }
     Ok(())
