@@ -535,10 +535,7 @@ For traces, set expectations under `traces`:
 - `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
 - `spans`: a list of spans that each side must hold. An entry has a `service` and a `name` or a `resource`, and a span
   of the side must match every field that the entry sets. The `name` is the operation name.
-- `absent`: a list of spans that neither side may hold, with the fields of an entry of `spans`. A failure names the
-  side that holds a span that meets an entry. Name a span that both sides drop, and name a span of the same service in
-  `spans`, one that both sides hold, so that the check can't pass because the whole service is missing. The step
-  rejects an `absent` entry whose service has no entry in `spans`.
+- `absent`: spans that neither intake may hold. See [Check that both sides drop a span](#check-that-both-sides-drop-a-span).
 - `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
   The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
@@ -565,6 +562,22 @@ For example, `test/correctness/cases/otlp-traces-stats/config.yaml` requires at 
 Its `spans` entries also check that the named probe spans arrived. Neither check proves that a span counted toward
 the right group. The [group comparison](#why-one-span-can-produce-two-group-differences) tests that separately.
 
+#### Check that both sides drop a span
+
+The `otlp-traces-conversion` case sends a span with a zero trace ID. Neither intake should receive it. The fixture
+also sends a valid control span for the same service. Here are the two entries from `traces`:
+
+```yaml
+spans:
+  - {service: probe-conv-zero, name: Internal, resource: otlpprobe.conv.zero.control}
+absent:
+  - {service: probe-conv-zero, resource: otlpprobe.conv.zero.trace_id}
+```
+
+`absent` selects by `service` and at least one of `name` or `resource`. If either intake has a matching span, the
+failure names that side. Panoramic requires a `spans` entry for the same service: if the fixture sends nothing,
+the absent span alone would look like a successful drop. This is an expectation on each intake, not a known difference.
+
 ### When the intakes hold different sets
 
 Suppose ADP drops a span and changes the resource on another. `compare` reports the missing span by service, name
@@ -582,7 +595,7 @@ A correctness case compares the Agent's intake (`baseline`) with ADP's intake (`
 difference between their outputs that we intend to fix. Instead of disabling the case, describe the mismatch in a
 `known_differences` entry on its `compare` step. The case can then pass with that difference and still catch others.
 Only `logs`, `metrics` and `traces` accept `known_differences`. Metric entries cover series types. Trace entries cover
-span fields or APM stats.
+span fields, whole spans or APM stats.
 
 ### Read a known difference
 
@@ -680,24 +693,6 @@ The case uses two `stats.groups` entries for [the same gap](https://github.com/D
 Each entry's `when` names the operation and its root flag. If ADP starts counting the child but still counts the root,
 only the `missing` entry goes stale. A separate `span.parent_id` entry covers the field on the span itself.
 
-**Known differences of traces.** A traces `compare` reports every difference in the spans and the APM statistics,
-not only the first. A span or a statistics group on one side only does not stop the comparison of the spans and
-groups on both sides. A span on one side only fails the step. A split trace shows up as a different `trace_id` of
-the spans on both sides, so no known difference can cover `span.trace_id`, and `additional_span_ignore_fields` can't
-hold `trace_id`.
-`traces: {known_differences: [...]}` lists the differences that an open gap explains, as
-`logs: {known_differences: [...]}` does for logs. An entry has `gap`, `issue` (the number of the GitHub issue),
-`paths`, `kinds` (optional), `when` (optional) and `reason`. With `otlp_direct_analysis_mode`, the stats are not
-compared, so the step takes no `stats.` paths. A path is `stats.groups`, for a statistics group on one side only,
-`stats.<field>`, for a field of a group on both sides, `span.<field>`, such as `span.metrics._top_level`, for a field
-of a span on both sides, or `spans`, for a span on one side only. `stats.<field>` covers a difference anywhere inside
-the field, such as in a sketch. A kind is `missing` (only in the baseline), `extra` (only in the comparison) or
-`value`. `when` matches the fields of the group, for example `{service: [api-gateway]}`, or the `service`, `name` and
-`resource` of the span. An entry with a `span.` path or the path `spans` must name its spans with `when`. An entry with
-the path `spans` excuses a whole span, so it must also set `kinds` and name its spans by `name` or `resource`, not by
-`service` alone. A difference that no entry covers fails the step, and so does an entry path that matches no difference
-for one of the values in `when`, so that a fix removes its entries.
-
 ### A span field or an ignored field?
 
 For a string HTTP status code, the Agent sends both the text and the number. ADP sends only the number.
@@ -721,5 +716,16 @@ after a fix.
 If the outputs differ by design, compare what should agree. For example, the Agent and ADP each set a log timestamp
 when they encode the log. Panoramic checks that the timestamps are within a minute of each other rather than treating
 their difference as a defect.
+
+### When only one intake receives a span
+
+Use `span.<field>` if the spans pair and one field differs. Use `paths: [spans]` only if an open gap explains why
+the entire span is on one side. For example, the Agent keeps `otlpprobe.conv.high.mixed_a` in the trace conversion
+case, but ADP drops it. There is no ADP span whose fields `compare` could check.
+
+The entry for [this gap](https://github.com/DataDog/saluki/issues/3445) sets `kinds: [missing]` and lists the affected
+resources in `when`. Use `extra` for a span only ADP sends. A whole-span entry must set `kinds` and select by `name`
+or `resource`; `service` alone is too broad. Panoramic matches `when` against the span on the side that has it.
+If ADP sends the span too, the `missing` path goes stale for that resource and `compare` checks the paired spans.
 
 [status-issue]: https://github.com/DataDog/saluki/issues/3433
