@@ -178,6 +178,10 @@ test-integration:
   # subset named in `CASE`; the Makefile fails the job unless exactly those cases pass. Every other
   # pipeline (`main`, `releases/*`, tags, schedules, and manual, web and API runs) leaves `CASE`
   # empty and runs every macOS case. Both architectures share this one list.
+  #
+  # Only `push` pipelines match. This project has no `external_pull_request_event` or
+  # `merge_request_event` pipelines: the PR and queue refs are plain branches, and the workflow rule
+  # on `CI_EXTERNAL_PULL_REQUEST_TARGET_BRANCH_NAME` only guards against deleted Graphite bases.
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_BRANCH !~ /^releases\//
       variables:
