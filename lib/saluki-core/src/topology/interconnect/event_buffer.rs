@@ -300,7 +300,7 @@ impl<const N: usize> IntoIterator for FixedSizeEventBuffer<N> {
 }
 
 /// An owning iterator over the events in a fixed-size event buffer.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct EventBufferIntoIter<const N: usize>(FixedSizeEventBuffer<N>);
 
 impl<const N: usize> Iterator for EventBufferIntoIter<N> {
