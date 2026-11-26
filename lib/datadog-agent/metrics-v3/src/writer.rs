@@ -979,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn test_append_len_str() {
+    fn intern_string_prefixes_length() {
         let mut buf = Vec::new();
         assert_eq!(intern_string(&mut Interner::default(), &mut buf, "hello"), 1);
         // Length 5 = 0x05, then "hello"
