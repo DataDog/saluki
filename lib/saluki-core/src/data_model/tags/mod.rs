@@ -9,7 +9,6 @@ mod raw;
 pub use self::raw::RawTags;
 
 mod tagset;
-pub(crate) use self::tagset::TagSetIter;
 pub use self::tagset::{SharedTagSet, TagSet};
 
 /// A metric tag.
