@@ -70,8 +70,13 @@
 //! With `count: 0`, the step checks that nothing arrives. It passes when no selected item reached the intake from any
 //! sender for the whole `settle`, and fails when one does. It takes no `sender` or `path`, because no item may arrive
 //! at all. It needs an explicit `settle`. The step cannot see a request that is still in flight, so `settle` is the
-//! time that a wrong delivery has to arrive. Use it only after a step that saw the same payload arrive at the right
-//! intake. Then the payload had time to reach its destination. An absence that follows no delivery proves nothing:
+//! time that a wrong delivery has to arrive.
+//!
+//! An absence that follows no delivery proves nothing, because the payload may have gone nowhere. The plan therefore
+//! rejects the step unless an earlier procedure entry has a step that expects the same items from a sender. That step
+//! can be at any intake. Both steps need the same `telemetry` and the same `select`. The earlier step must not use
+//! `count: 0`. A step in the same `parallel` entry does not count, because those steps run together. So a typo in
+//! `select`, or an absence in the first entry, fails the plan:
 //!
 //! ```yaml
 //! - step: intake_from
@@ -395,6 +400,12 @@ impl Target {
             Telemetry::TraceStats => format!("groups of trace statistics of service '{}'", selector),
             Telemetry::Logs => format!("logs of service '{}'", selector),
         }
+    }
+
+    /// The claim that the selected items reach an intake. Steps compare claims by their text, so two steps share a claim
+    /// if they have the same telemetry and the same selector.
+    fn reach_claim(&self) -> String {
+        format!("{} reach an intake", self.describe())
     }
 
     /// A file name that is safe on every host. Two steps share it if they have the same telemetry, expected sender and
@@ -1103,6 +1114,17 @@ impl Step for IntakeFrom {
     /// The wait for the first success, the read that can end after it, the settle, and the read that ends the watch.
     fn budget(&self) -> Duration {
         self.timeout.duration + self.settle.duration + PROBE_TIMEOUT * 2
+    }
+
+    /// That the selected items reach an intake, if the step saw them arrive from a sender.
+    fn establishes(&self) -> Option<String> {
+        matches!(self.expect, Expect::From { .. }).then(|| self.target.reach_claim())
+    }
+
+    /// That the selected items reach an intake, if the step expects them at none. Without it, the absence holds when the
+    /// items went nowhere.
+    fn presumes(&self) -> Option<String> {
+        (self.expect == Expect::Nothing).then(|| self.target.reach_claim())
     }
 
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
@@ -2370,6 +2392,8 @@ subject_os: [linux]
 participants:
   intake:
     type: datadog-intake
+  elsewhere:
+    type: datadog-intake
   sender:
     subject: true
     image: alpine:3.20
@@ -2377,23 +2401,31 @@ procedure:
   - {step: intake_from, on: intake, telemetry: metrics, select: {name_prefix: "fx."}, sender: adp, count: 3, settle: 1ms, timeout: 1ms}
   - {step: intake_from, on: intake, telemetry: spans, select: {service: fx}, sender: adp, settle: 1ms, timeout: 1ms}
   - {step: intake_from, on: intake, telemetry: logs, select: {service: fx}, sender: adp, settle: 1ms, timeout: 1ms}
+  - {step: intake_from, on: elsewhere, telemetry: trace_stats, select: {service: fx}, sender: adp, settle: 1ms, timeout: 1ms}
   - {step: intake_from, on: intake, telemetry: trace_stats, select: {service: fx}, count: 0, settle: 1ms, timeout: 1ms}
 "#;
 
     #[tokio::test]
     async fn the_planned_step_reads_an_intake_through_its_published_port() {
         let plan = plan_case(CASE).unwrap_or_else(|errors| panic!("{}", errors.join("\n")));
-        let steps: Vec<_> = plan.procedure.iter().flat_map(|node| node.steps()).collect();
-        for step in &steps {
+        let planned: Vec<_> = plan.procedure.iter().flat_map(|node| node.steps()).collect();
+        for step in &planned {
+            let on = step.fields.0["on"].as_str().unwrap();
             assert_eq!(
                 step.needs,
                 [Need::Endpoint(
-                    "intake".to_string(),
+                    on.to_string(),
                     API.to_string(),
                     EndpointOperation::Request
                 )]
             );
         }
+        // The step on `elsewhere` only shows the plan that the delivery of the statistics happens. The test reads
+        // `intake` alone.
+        let steps: Vec<_> = planned
+            .into_iter()
+            .filter(|step| step.fields.0["on"] == "intake")
+            .collect();
 
         // The client of the handle needs the process-wide crypto provider, which `main` installs at startup.
         let _ = crate::default_crypto_provider().install_default();
@@ -2457,5 +2489,151 @@ procedure:
             "{:#?}",
             errors
         );
+    }
+
+    /// A case with two intakes, whose procedure is `procedure`.
+    fn presumption_case(procedure: &str) -> String {
+        format!(
+            "timeout: 5m\nsubject_os: [linux]\nparticipants:\n  here: {{type: datadog-intake}}\n  there: {{type: \
+             datadog-intake}}\n  sender: {{subject: true, image: 'alpine:3.20'}}\nprocedure:\n{}",
+            procedure
+        )
+    }
+
+    /// A step that expects the fixtures of `telemetry` from ADP at `on`.
+    fn delivery(on: &str, telemetry: Telemetry) -> String {
+        format!(
+            "{{step: intake_from, on: {}, telemetry: {}, select: {}, sender: adp, settle: 1ms, timeout: 1ms}}",
+            on,
+            telemetry.name(),
+            selection(telemetry)
+        )
+    }
+
+    /// A step that expects none of the fixtures of `telemetry` at `on`.
+    fn absence(on: &str, telemetry: Telemetry) -> String {
+        format!(
+            "{{step: intake_from, on: {}, telemetry: {}, select: {}, count: 0, settle: 1ms, timeout: 1ms}}",
+            on,
+            telemetry.name(),
+            selection(telemetry)
+        )
+    }
+
+    #[test]
+    fn an_absence_plans_after_a_delivery_of_the_same_items_in_an_earlier_entry() {
+        for telemetry in TELEMETRIES {
+            let (delivered, absent) = (delivery("here", telemetry), absence("there", telemetry));
+            let procedures = [
+                format!("  - {}\n  - {}\n", delivered, absent),
+                format!("  - parallel:\n      - {}\n  - {}\n", delivered, absent),
+                format!("  - {}\n  - parallel:\n      - {}\n", delivered, absent),
+                // A step that expects the items from a sender establishes them wherever it is. The absence at the same
+                // intake would fail when it runs, but it does not hold vacuously.
+                format!("  - {}\n  - {}\n", delivered, absence("here", telemetry)),
+            ];
+            for procedure in procedures {
+                if let Err(errors) = plan_case(&presumption_case(&procedure)) {
+                    panic!("{}: {}", telemetry.name(), errors.join("\n"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_absence_of_items_that_no_earlier_step_expects_does_not_plan() {
+        let spans = delivery("here", Telemetry::Spans);
+        let typo = absence("there", Telemetry::Spans).replace("service: fx", "service: fx-typo");
+        let prefix = absence("there", Telemetry::Metrics).replace("'fx.'", "'fx.a.'");
+        let cases = [
+            // The select differs.
+            (
+                format!("  - {}\n  - {}\n", spans, typo),
+                "step 2",
+                "spans of service 'fx-typo' reach an intake",
+            ),
+            (
+                format!("  - {}\n  - {}\n", delivery("here", Telemetry::Metrics), prefix),
+                "step 2",
+                "metric data points with a name that starts with 'fx.a.' reach an intake",
+            ),
+            // The telemetry differs.
+            (
+                format!("  - {}\n  - {}\n", spans, absence("there", Telemetry::Logs)),
+                "step 2",
+                "logs of service 'fx' reach an intake",
+            ),
+            (
+                format!("  - {}\n  - {}\n", spans, absence("there", Telemetry::TraceStats)),
+                "step 2",
+                "groups of trace statistics of service 'fx' reach an intake",
+            ),
+            // No step comes before it.
+            (
+                format!("  - {}\n  - {}\n", absence("there", Telemetry::Spans), spans),
+                "step 1",
+                "spans of service 'fx' reach an intake",
+            ),
+            // The steps of one entry run together, so the delivery does not come before the absence.
+            (
+                format!(
+                    "  - parallel:\n      - {}\n      - {}\n",
+                    spans,
+                    absence("there", Telemetry::Spans)
+                ),
+                "step 1.2",
+                "spans of service 'fx' reach an intake",
+            ),
+            (
+                format!(
+                    "  - parallel:\n      - {}\n      - {}\n",
+                    absence("there", Telemetry::Spans),
+                    spans
+                ),
+                "step 1.1",
+                "spans of service 'fx' reach an intake",
+            ),
+            // An absence shows no delivery.
+            (
+                format!(
+                    "  - {}\n  - {}\n",
+                    absence("here", Telemetry::Spans),
+                    absence("there", Telemetry::Spans)
+                ),
+                "step 1",
+                "spans of service 'fx' reach an intake",
+            ),
+        ];
+        for (procedure, at, claim) in cases {
+            let errors = plan_case(&presumption_case(&procedure)).unwrap_err();
+            let message = format!(
+                "intake_from: the step presumes that {}, and no step in an earlier procedure entry shows it",
+                claim
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains(&format!(", {}: {}", at, message))),
+                "'{}' at {} is not in:\n{}\nfor:\n{}",
+                message,
+                at,
+                errors.join("\n"),
+                procedure
+            );
+        }
+    }
+
+    #[test]
+    fn a_step_that_does_not_build_does_not_make_an_absence_fail_the_plan_as_well() {
+        // The delivery has no `sender`, so it does not build and cannot establish anything.
+        let broken = delivery("here", Telemetry::Spans).replace("sender: adp, ", "");
+        let procedure = format!("  - {}\n  - {}\n", broken, absence("there", Telemetry::Spans));
+        let errors = plan_case(&presumption_case(&procedure)).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.contains("'sender' is required")),
+            "{:#?}",
+            errors
+        );
+        assert!(!errors.iter().any(|error| error.contains("presumes")), "{:#?}", errors);
     }
 }

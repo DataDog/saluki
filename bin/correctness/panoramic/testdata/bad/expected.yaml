@@ -1,4 +1,5 @@
 # Each bad case under this directory, the subject OS it is planned for, and a substring of the error.
+absence-without-a-delivery: {subject_os: linux, error: "the step presumes that spans of service 'fx' reach an intake, and no step in an earlier procedure entry shows it"}
 create-order-cycle: {subject_os: linux, error: "the create order has a cycle: first -> second -> first"}
 file-source-outside-the-suite: {subject_os: linux, error: "is outside the suite directory"}
 host-process-with-a-log-file: {subject_os: macos, error: "observed through its pipes and its exit"}

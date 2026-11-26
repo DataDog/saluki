@@ -14,8 +14,8 @@
 //! name, the environment each declared connection delivers, and each endpoint's address and readiness evidence. Then,
 //! across participants: each connection gets its route and its address as the consumer reaches it, every reference is
 //! checked against its place and filled in where planning knows its value, and the create and start orders are
-//! computed as levels, with what each consumer waits for. Last, each step of the procedure is built, and what it uses
-//! and what its references name are checked.
+//! computed as levels, with what each consumer waits for. Last, each step of the procedure is built, and what it uses,
+//! what its references name, and what it presumes of the steps before it are checked.
 //!
 //! The plan owns everything the lifecycle acts on: the contents of every file and the operations steps call. After
 //! planning, nothing reads the loaded case or calls a participant type, except an operation a step calls.
@@ -357,17 +357,15 @@ fn build_procedure(
 ) -> Vec<ProcedureNode<PlannedStep>> {
     let values = participants.map(reference::Values::of_plan);
     let mut procedure = Vec::new();
+    let mut skipped = false;
     for (index, node) in case.procedure.iter().enumerate() {
         let parallel = matches!(node, ProcedureNode::Parallel(_));
         let mut steps = Vec::new();
         for (member, entry) in node.steps().iter().enumerate() {
-            let at = if parallel {
-                format!("step {}.{}", index + 1, member + 1)
-            } else {
-                format!("step {}", index + 1)
-            };
+            let at = location(index, member, parallel);
             let Some(factory) = registry.step(&entry.step) else {
                 problems.push(Some(at), format!("unknown step '{}'", entry.step));
+                skipped = true;
                 continue;
             };
             if parallel && factory.purpose() == StepPurpose::Action {
@@ -375,6 +373,7 @@ fn build_procedure(
                     Some(at),
                     format!("'{}' is an action, and only assertions run in parallel", entry.step),
                 );
+                skipped = true;
                 continue;
             }
             let template_fields = factory.template_fields();
@@ -394,6 +393,7 @@ fn build_procedure(
                 Ok(step) => step,
                 Err(message) => {
                     problems.push(Some(at), format!("{}: {}", entry.step, message));
+                    skipped = true;
                     continue;
                 }
             };
@@ -432,7 +432,42 @@ fn build_procedure(
             ProcedureNode::Parallel(_) => ProcedureNode::Parallel(steps),
         });
     }
+    // A step that did not build cannot establish what a later step presumes, so the check would report a mistake that
+    // the case does not make.
+    if !skipped {
+        check_presumptions(&procedure, problems);
+    }
     procedure
+}
+
+/// Where the step at `member` of the procedure entry at `index` is, as the problems of the plan name it.
+fn location(index: usize, member: usize, parallel: bool) -> String {
+    if parallel {
+        format!("step {}.{}", index + 1, member + 1)
+    } else {
+        format!("step {}", index + 1)
+    }
+}
+
+/// Checks that an earlier procedure entry establishes what each step presumes.
+fn check_presumptions(procedure: &[ProcedureNode<PlannedStep>], problems: &mut Problems<'_>) {
+    let mut established = BTreeSet::new();
+    for (index, node) in procedure.iter().enumerate() {
+        let parallel = matches!(node, ProcedureNode::Parallel(_));
+        for (member, planned) in node.steps().iter().enumerate() {
+            let Some(claim) = planned.step.presumes().filter(|claim| !established.contains(claim)) else {
+                continue;
+            };
+            problems.push(
+                Some(location(index, member, parallel)),
+                format!(
+                    "{}: the step presumes that {}, and no step in an earlier procedure entry shows it",
+                    planned.name, claim
+                ),
+            );
+        }
+        established.extend(node.steps().iter().filter_map(|planned| planned.step.establishes()));
+    }
 }
 
 /// Checks that everything `step` needs exists in `participants`, with what each operation it calls uses, records how

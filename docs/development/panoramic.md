@@ -262,7 +262,9 @@ connect to it.
 - a reference to something that does not exist, or whose value is not known in time;
 - a cycle in the order of creation or start;
 - a step that does not decode, or that names a participant, process, command, operation or endpoint that does not
-  exist on that OS.
+  exist on that OS;
+- a step that presumes what no earlier entry of the procedure shows, such as an `intake_from` absence of items that no
+  earlier step expects from a sender.
 
 Panoramic cannot check that a program exists in an image, that a script is correct, or that the software opens its
 listeners. Those fail at start, in `exec`, or at a readiness timeout, with the output attached.
@@ -489,9 +491,11 @@ case from `test/integration/cases` that uses the same steps.
   every step that expects an item the keys of its intake, so that a key that the case does not name cannot deliver. The
   reports, the kept files and the `Debug` form of the step never show the value of a key. The case file, the output of
   `panoramic plan` and the `plan.json` of a failed case do show it, so use only synthetic keys.
-- To check that telemetry does not reach an intake, use `intake_from` with `count: 0` and an explicit `settle`. Put it
-  after the steps that saw the same payload arrive at its right intake, and let `settle` cover the time that a wrong
-  delivery needs to arrive. An absence step with no such delivery before it also passes when the payload went nowhere.
+- To check that telemetry does not reach an intake, use `intake_from` with `count: 0` and an explicit `settle`. Let
+  `settle` cover the time that a wrong delivery needs to arrive. The plan rejects the step unless an earlier entry of
+  the procedure has a step that expects the same items from a sender, at any intake. Both steps need the same
+  `telemetry` and `select`, so an absence cannot pass because the payload went nowhere, or because of a typo in
+  `select`. A step in the same `parallel` entry does not count.
 - List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
   See [Files](#files).
 
