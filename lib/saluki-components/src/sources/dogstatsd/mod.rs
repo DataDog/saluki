@@ -311,8 +311,9 @@ pub struct DogStatsDConfiguration {
     /// - When set to `true`, each context is one packed allocation. Recurring strings of 8 bytes or more become IDs in
     ///   a shared `SymbolTable`, and other strings stay inline in the context. A full table never drops a metric, but
     ///   memory usage for contexts is unbounded.
-    /// - When set to `false`, the resolvers intern each metric name and tag in a `GenericMapInterner`. If the metric
-    ///   name and all of its tags can't be interned, the metric is skipped.
+    /// - When set to `false`, the resolvers copy string bytes into each packed context allocation. An interner lease
+    ///   bounds the strings that do not fit inline in a `MetaString`. The resolvers skip the metric if they cannot
+    ///   acquire the lease for its name and all its tags.
     ///
     /// The interner size settings bound each store. Event and service check tags always use the
     /// `GenericMapInterner`.
@@ -348,8 +349,8 @@ pub struct DogStatsDConfiguration {
     /// - a `GenericMapInterner` for metric contexts when `allow_context_heap_allocations` is `false`, and for event
     ///   and service check tags in both cases
     ///
-    /// Both stores allocate their storage on demand, so each size is an upper bound rather than an up-front
-    /// allocation.
+    /// `SymbolTable` allocates its storage on demand, so this size is an upper bound; `GenericMapInterner`
+    /// allocates its backing buffer up front.
     ///
     /// Defaults to unset, so `context_string_interner_entry_count` sets the size.
     pub context_string_interner_size_bytes: Option<ByteSize>,
@@ -893,9 +894,8 @@ impl MemoryBounds for DogStatsDConfiguration {
                 UsageExpr::config("dogstatsd_buffer_count", self.buffer_count),
                 UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
             ))
-            // The context resolvers intern metric strings in a `SymbolTable` or a `GenericMapInterner`, which
-            // `allow_context_heap_allocations` selects. This value is the bound of that store. Both stores allocate on
-            // demand, so this value is an upper bound rather than an up-front allocation.
+            // Account for the store that bounds metric contexts. In strict mode it also holds event and service
+            // check tags. In heap-allowed mode the separate store for those tags is not included in this estimate.
             .with_expr(UsageExpr::config(
                 "dogstatsd_string_interner_size_bytes",
                 self.effective_context_string_interner_bytes().as_u64() as usize,

@@ -24,7 +24,7 @@ pub use self::resolver::{ContextResolver, ContextResolverBuilder, TagsResolver, 
 use crate::data_model::tags::{Tag, TagSet, TagStr};
 
 /// A metric name borrowed from a context.
-#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct ContextName(str);
 
@@ -69,6 +69,12 @@ impl PartialEq<str> for ContextName {
 impl PartialEq<MetaString> for ContextName {
     fn eq(&self, other: &MetaString) -> bool {
         &self.0 == other.as_ref()
+    }
+}
+
+impl fmt::Debug for ContextName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
     }
 }
 
@@ -632,6 +638,12 @@ mod tests {
 
     fn tag_set(tags: &[&str]) -> TagSet {
         tags.iter().map(|s| Tag::from(*s)).collect()
+    }
+
+    #[test]
+    fn context_debug_formats_the_name_as_a_string() {
+        let ctx = Context::from_static_parts("adp.remote_config_polls_total", &[]);
+        assert!(format!("{ctx:?}").contains(r#"name: "adp.remote_config_polls_total""#));
     }
 
     #[test]

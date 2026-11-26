@@ -170,8 +170,8 @@ impl ContextResolverBuilder {
     /// Sets the capacity of the string interner, in bytes.
     ///
     /// This is the maximum number of bytes that the interner will use for interning strings that are present in
-    /// contexts being resolved. The interner allocates its storage on demand, in chunks, and it won't exceed the
-    /// configured capacity when it allocates any backing storage.
+    /// contexts being resolved. This capacity may or may not be allocated entirely when the resolver is built, but the
+    /// interner won't exceed the configured capacity when allocating any backing storage.
     ///
     /// This capacity applies to the interner that the resolver uses:
     ///
@@ -1362,6 +1362,26 @@ mod tests {
         let metrics_after = snapshotter.snapshot().into_vec();
         let active_contexts = get_gauge_value(&metrics_after, Telemetry::active_contexts_name());
         assert_eq!(active_contexts, -1.0);
+    }
+
+    #[test]
+    fn unique_context_rewrite_preserves_active_context_count() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let mut context = metrics::with_local_recorder(&recorder, || {
+            let mut resolver = ContextResolverBuilder::for_tests().without_caching().build();
+            resolver.resolve("name", &["tag"][..], None).unwrap()
+        });
+        let active_contexts = || get_gauge_value(&snapshotter.snapshot().into_vec(), Telemetry::active_contexts_name());
+        assert_eq!(active_contexts(), 1.0);
+
+        context.mutate_tags(|tags| tags.insert_tag("added:yes"));
+        assert_eq!(context.tags().get_single_tag("added").unwrap().value(), Some("yes"));
+        // Each snapshot reports the gauge change since the preceding snapshot.
+        assert_eq!(active_contexts(), 0.0);
+
+        drop(context);
+        assert_eq!(active_contexts(), -1.0);
     }
 
     #[test]
