@@ -38,6 +38,3 @@ otlp_config:
         endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"
   traces:
     enable_otlp_compute_top_level_by_span_kind: true
-    # The receiver keeps half of the traces, and error tracking standalone mode forwards the other half as well.
-    probabilistic_sampler:
-      sampling_percentage: 50

@@ -1,4 +1,5 @@
-//! The fixtures of the `otlp-traces-sampling` and `otlp-traces-ets` cases: one probe for each sampling decision.
+//! The fixtures of the `otlp-traces-sampling` and `otlp-traces-ets-decisions` cases: one probe for each sampling
+//! decision.
 //!
 //! The OTLP receiver of the Agent and of ADP keeps a trace when a hash of the low 64 bits of its trace ID falls below
 //! the sampling rate of the receiver. A fixture picks the trace ID of each probe, so that the decision of the receiver
@@ -511,8 +512,8 @@ mod tests {
 
     #[test]
     fn ets_fixture_counts_match_the_case() {
-        // The `otlp-traces-ets` case expects every trace and every span, and a stats group for each name of a span that
-        // is top-level.
+        // The `otlp-traces-ets-decisions` case expects every trace and every span, and a stats group for each name of a
+        // span that is top-level.
         let spans = spans_of(&ets_fixture());
         let traces: HashSet<Vec<u8>> = spans.iter().map(|(_, span)| span.trace_id.clone()).collect();
         assert_eq!(traces.len(), 9);
