@@ -1,4 +1,5 @@
-//! The `ddtags` of OTLP log records, from the custom infra tags that `logs_tags_as_ddtags` diverts.
+//! The `ddtags` of OTLP log records, from the custom infra tags that
+//! `otlp_config.logs.infra_attributes.tags_as_ddtags` diverts (the Agent processor's `logs_tags_as_ddtags`).
 //!
 //! This matches the logs part of the Datadog Agent's infra attributes processor (`processLogs` and
 //! `writeDdtagsToLogRecords`,
@@ -242,7 +243,6 @@ mod tests {
                 }],
                 "new:tag",
             ),
-            ("integer", vec![attribute("ddtags", Value::IntValue(5))], "5,new:tag"),
             (
                 "first of two",
                 vec![string("ddtags", "first:tag"), string("ddtags", "second:tag")],

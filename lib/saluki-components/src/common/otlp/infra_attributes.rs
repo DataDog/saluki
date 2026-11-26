@@ -66,8 +66,9 @@ pub enum CustomTags {
     /// attribute that the resource already has.
     Attributes(ContainerTagPromotion),
 
-    /// Returns custom tags for the caller to send as `ddtags`, as the Agent's logs pipeline does with
-    /// `logs_tags_as_ddtags`. A Kubernetes Datadog tag key still goes into the resource attributes.
+    /// Returns custom tags for the caller to send as `ddtags`. The logs pipeline uses it for
+    /// `otlp_config.logs.infra_attributes.tags_as_ddtags`, as the Agent does for `logs_tags_as_ddtags`. A Kubernetes
+    /// Datadog tag key still goes into the resource attributes.
     DdTags,
 }
 
