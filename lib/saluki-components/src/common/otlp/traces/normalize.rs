@@ -820,8 +820,8 @@ mod tests {
         assert_eq!(validate_and_fix_duration(start, u64::MAX), 0);
     }
 
-    /// TNORM-008. The reference zeroes a duration only when `start + duration` exceeds `math.MaxInt64`
-    /// (`FixDuration`, `pkg/trace/traceutil/normalize/duration.go`), so a span that ends exactly there keeps it.
+    /// The reference zeroes a duration only when `start + duration` exceeds `math.MaxInt64` (`FixDuration`,
+    /// `pkg/trace/traceutil/normalize/duration.go`), so a span that ends exactly there keeps it.
     #[test]
     fn validate_and_fix_duration_keeps_a_duration_that_ends_at_i64_max() {
         let start = YEAR_2000_NANOSEC_TS;
@@ -838,7 +838,7 @@ mod tests {
         assert_eq!(validate_and_fix_duration(0, i64::MAX as u64), i64::MAX as u64);
     }
 
-    /// TNORM-011. The limit is in bytes, and a cut never splits a character.
+    /// The limit is in bytes, and a cut never splits a character.
     #[test]
     fn truncate_utf8_cuts_a_span_type_at_the_byte_limit_on_a_character_boundary() {
         let exact = MetaString::from("t".repeat(MAX_TYPE_LEN));
@@ -860,8 +860,8 @@ mod tests {
         );
     }
 
-    /// TNORM-024. An attribute key or value at its limit is not cut, one byte over is, and the ellipsis comes after the
-    /// cut (`Truncate`, `pkg/trace/agent/truncator.go`).
+    /// An attribute key or value at its limit is not cut, one byte over is, and the ellipsis comes after the cut
+    /// (`Truncate`, `pkg/trace/agent/truncator.go`).
     #[test]
     fn truncate_with_ellipses_keeps_a_key_and_a_value_at_their_limits() {
         for limit in [MAX_META_KEY_LEN, MAX_META_VAL_LEN] {

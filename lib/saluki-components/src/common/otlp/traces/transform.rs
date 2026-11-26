@@ -5049,8 +5049,8 @@ mod tests {
         ]
     }
 
-    /// TNORM-008. A negative duration, and a duration that overflows `start + duration`, become zero, and a duration that
-    /// ends exactly at `math.MaxInt64` stays. The start is not touched. Mirrors `FixDuration`
+    /// A negative duration, and a duration that overflows `start + duration`, become zero, and a duration that ends
+    /// exactly at `math.MaxInt64` stays. The start is not touched. Mirrors `FixDuration`
     /// (`pkg/trace/traceutil/normalize/duration.go`).
     #[test]
     fn duration_boundaries_match_the_reference_on_both_receive_paths() {
@@ -5080,8 +5080,8 @@ mod tests {
         }
     }
 
-    /// TNORM-009. A start before the year-2000 floor becomes the receive time minus the duration, clamped to the receive
-    /// time, and a start on the floor stays. The duration is fixed first, so it survives. Mirrors `FixStartTime`
+    /// A start before the year-2000 floor becomes the receive time minus the duration, clamped to the receive time, and
+    /// a start on the floor stays. The duration is fixed first, so it survives. Mirrors `FixStartTime`
     /// (`pkg/trace/traceutil/normalize/duration.go`).
     #[test]
     fn start_time_boundaries_match_the_reference_on_both_receive_paths() {
@@ -5127,8 +5127,8 @@ mod tests {
         }
     }
 
-    /// TNORM-011. A `span.type` of 100 bytes stays, a longer one is cut to 100 bytes, and the cut never splits a
-    /// character. Mirrors `validateAndFixType` (`pkg/trace/agent/normalizer.go`).
+    /// A `span.type` of 100 bytes stays, a longer one is cut to 100 bytes, and the cut never splits a character.
+    /// Mirrors `validateAndFixType` (`pkg/trace/agent/normalizer.go`).
     #[test]
     fn span_type_boundaries_match_the_reference_on_both_receive_paths() {
         let cases = [
@@ -5158,9 +5158,9 @@ mod tests {
         }
     }
 
-    /// TNORM-024. An attribute key of 200 bytes and a string value of 25000 bytes stay. One byte more is cut to the
-    /// limit, and an ellipsis follows the cut. A number keeps its value and loses part of a long key. A structured key
-    /// is exempt. Mirrors `Truncate` (`pkg/trace/agent/truncator.go`).
+    /// An attribute key of 200 bytes and a string value of 25000 bytes stay. One byte more is cut to the limit, and an
+    /// ellipsis follows the cut. A number keeps its value and loses part of a long key. A structured key is exempt.
+    /// Mirrors `Truncate` (`pkg/trace/agent/truncator.go`).
     #[test]
     fn attribute_truncation_boundaries_match_the_reference_on_both_receive_paths() {
         let key_at_limit = "k".repeat(MAX_META_KEY_LEN);
