@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use self::dogstatsd::{Capture, Replay, Stats};
 use super::datadog_agent::{
     self, ListenAt, Listener, With, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE,
-    NOT_WINDOWS,
+    NOT_WINDOWS, SHARED_ENV_INTAKE,
 };
 use crate::core::handle::{Handle, HandleError};
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
@@ -294,7 +294,7 @@ fn host_processes(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             },
         )]),
         ready: BTreeMap::from([("dogstatsd_udp".to_string(), ready)]),
-        consumes: BTreeMap::from([("intake", INTAKE)]),
+        consumes: BTreeMap::from([("intake", SHARED_ENV_INTAKE)]),
         commands: BTreeMap::from([
             (
                 "adp".to_string(),

@@ -321,8 +321,8 @@ container, the participant also collects the input capture of the baseline sende
 
 **`millstone-sender`.** It runs one `millstone` that sends to one target and exits. Use it when a case checks that
 traffic reaches the product, and not that two products agree. The case supplies `millstone.yaml` with `template: true`.
-The case writes the target as a field of the `target` connection, and sets the payload and the `volume` in the file. The
-participant has one process, `main`, so `exits_with` on `main` checks that the sender finished. The `millstone`
+The `target` of the file must be one reference to a field of the `target` connection, and panoramic checks it.
+The case sets the payload and the `volume` in the file. The participant has one process, `main`, so `exits_with` on `main` checks that the sender finished. The `millstone`
 type does not fit such a case: it starts a comparison sender and a baseline sender, and needs two targets.
 
 **Where the tools run.** `datadog-intake` and `millstone` are the same executables on every OS, and a case names none of
@@ -360,8 +360,9 @@ two steps:
 
 The sender sends two counts of 3 and exits. ADP exports the total as a rate: 6 counts in 10 seconds, or 0.6 per second.
 The assertion polls the `intake` participant's `dump` operation until it finds the matching series or its time runs
-out. A sender that exits with code 0 shows that it reached ADP's listener. Only the intake shows that the metric
-arrived. Neither step needs to know how its participant runs.
+out. The gate on ADP's listener shows that ADP bound it. An exit with code 0 shows that the sender submitted its
+datagrams, and a UDP send can succeed when the datagram is dropped. The named, tagged rate at the intake is the evidence
+of delivery. Neither step needs to know how its participant runs.
 
 Panoramic runs steps in order. A `parallel` block runs assertions together and waits for them all. It cannot contain
 actions or another block. If a step does not pass, panoramic leaves later procedure entries `not_run`.

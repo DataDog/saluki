@@ -27,8 +27,8 @@ participants:
       DD_DOGSTATSD_ORIGIN_DETECTION: "false"
 
 procedure:
-  # The sender starts once ADP's UDP listener is bound, so a clean exit means the sender reached the listener. It
-  # does not show that anything arrived, which the intake assertion does.
+  # The sender starts once ADP has bound its UDP listener. Exit 0 shows that millstone submitted its datagrams, and a
+  # UDP send can succeed when the datagram is dropped. Only the intake assertion below shows delivery.
   - step: exits_with
     on: sender
     process: main

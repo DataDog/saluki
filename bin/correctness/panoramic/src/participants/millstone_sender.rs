@@ -10,11 +10,13 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::millstone::TARGET;
 use super::tools;
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{FileSource, ParticipantSpec};
+use crate::core::template::{Reference, Template};
 
 /// The executable that sends.
 const BINARY: &str = "millstone";
@@ -31,6 +33,24 @@ const HOST_YAML_ARG: &str = "{{ self.dir }}/millstone.yaml";
 
 /// The reference prefix of the connection, as the sender's file writes it.
 const TARGET_REFERENCE: &str = "self.connections.target.";
+
+/// Whether the `target` of the sender's file is one reference to a field of the `target` connection, and nothing else.
+/// A reference elsewhere in the file, such as in a comment, does not make the sender send to the connection.
+fn targets_connection(text: &str) -> Result<bool, String> {
+    let file: Value =
+        saluki_config::yaml::from_str(text).map_err(|e| format!("{} does not parse as YAML: {}", MILLSTONE_YAML, e))?;
+    let Some(target) = file.get("target").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let target = target.trim();
+    let template = Template::parse(target)?;
+    let is_connection =
+        |reference: &Reference| matches!(reference, Reference::Connection { name, .. } if name == "target");
+    Ok(target.starts_with("{{")
+        && target.ends_with("}}")
+        && template.references().all(is_connection)
+        && template.references().count() == 1)
+}
 
 /// The sender takes no `with` parameters.
 #[derive(Deserialize)]
@@ -65,10 +85,10 @@ impl ParticipantType for MillstoneSender {
             cx.case.files.get(MILLSTONE_YAML).map(|file| &file.source),
             Some(FileSource::Case { template: true, .. })
         );
-        if !text.contains(TARGET_REFERENCE) || !is_template {
+        if !is_template || !targets_connection(text)? {
             return Err(format!(
-                "millstone-sender's {} must send to a field of the target connection, such as {{{{ {}url }}}}, and the \
-                 case must place it with template: true",
+                "millstone-sender's {} must set `target` to a field of the target connection, such as {{{{ {}url }}}}, \
+                 and the case must place it with template: true",
                 MILLSTONE_YAML, TARGET_REFERENCE
             ));
         }

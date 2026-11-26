@@ -186,6 +186,17 @@ pub(super) const INTAKE: Consumed = Consumed {
     ],
 };
 
+/// The connection to an intake where the Agent and ADP read one environment, as on macOS and in a Windows container.
+/// There the `ADP_` forms have no meaning, and the case may not set them.
+pub(super) const SHARED_ENV_INTAKE: Consumed = Consumed {
+    accepts: &[Protocol::Http],
+    required: false,
+    env: &[
+        ("DD_DD_URL", "{{ self.connections.intake.url }}"),
+        ("DD_APM_DD_URL", "{{ self.connections.intake.url }}"),
+    ],
+};
+
 /// The connection to a DogStatsD server the Agent and ADP forward every packet they receive to, with the `ADP_` forms
 /// for the reason [`INTAKE`] has them.
 pub(super) const DOGSTATSD_FORWARD: Consumed = Consumed {
