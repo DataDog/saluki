@@ -1271,8 +1271,8 @@ mod tests {
         assert!(
             report.message.contains(
                 "The comparison holds no span that meets `spans[0]` (service=db, name=db.query, meta.sql.query = \
-                 SELECT ?): 1 span(s) have that service, name and resource, but span 11 has `meta.sql.query` is \
-                 `SELECT 'canary'`, not `SELECT ?`."
+                 SELECT ?): 1 span(s) have that service, name and resource, and 1 fail `meta`: span 11 has \
+                 `meta.sql.query` is `SELECT 'canary'`, not `SELECT ?`."
             ),
             "{}",
             report.message
@@ -1432,8 +1432,9 @@ mod tests {
                 .contains("The comparison holds no span that meets `spans[0]`")
                 && report
                     .message
-                    .contains("2 span(s) have that service, name and resource")
-                && report.message.contains("span 12 has `meta.sql.query`"),
+                    .contains("2 span(s) have that service, name and resource, and 1 fail `meta`")
+                && report.message.contains("span 12 has `meta.sql.query`")
+                && !report.message.contains("span 11 has"),
             "{}",
             report.message
         );

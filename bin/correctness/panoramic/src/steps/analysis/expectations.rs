@@ -396,22 +396,30 @@ impl ExpectedSpan {
     /// Otherwise it lists the fields that the expectation sets: the names, the resources, or both as `name/resource`
     /// pairs.
     fn describe_held(&self, spans: &HashMap<u64, Span>) -> String {
-        let mut selected = spans.iter().filter(|(_, span)| self.selects(span)).collect::<Vec<_>>();
+        let selected = spans.iter().filter(|(_, span)| self.selects(span)).collect::<Vec<_>>();
         if self.meta.is_empty() || selected.is_empty() {
             return self.describe_service(spans);
         }
 
-        selected.sort_by_key(|(span_id, _)| **span_id);
-        let listed = selected
+        // List only the spans that fail: a span that meets `meta` has nothing to show, and listing it could push the
+        // leaking span past `MAX_LISTED`.
+        let mut failing = selected
+            .iter()
+            .map(|(span_id, span)| (**span_id, self.meta_mismatches(span)))
+            .filter(|(_, mismatches)| !mismatches.is_empty())
+            .collect::<Vec<_>>();
+        failing.sort_by_key(|(span_id, _)| *span_id);
+        let listed = failing
             .iter()
             .take(MAX_LISTED)
-            .map(|(span_id, span)| format!("span {} has {}", span_id, self.meta_mismatches(span).join(" and ")))
+            .map(|(span_id, mismatches)| format!("span {} has {}", span_id, mismatches.join(" and ")))
             .collect::<Vec<_>>();
         format!(
-            "{} span(s) have that service, name and resource, but {}{}",
+            "{} span(s) have that service, name and resource, and {} fail `meta`: {}{}",
             selected.len(),
+            failing.len(),
             listed.join("; "),
-            if selected.len() > MAX_LISTED { "; and more" } else { "" }
+            if failing.len() > MAX_LISTED { "; and more" } else { "" }
         )
     }
 
