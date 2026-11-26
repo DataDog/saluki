@@ -12,9 +12,10 @@ Usage:
 The spec
 --------
 
-`probes.json` is an object with one key, `probes`: a list of probes. The script sends them in file order, so a spec
-lists the probes that deliver telemetry first. Decoding is strict: an unknown key, a missing key or a wrong type is a
-spec error, and the script exits with code 2 before it sends anything.
+`probes.json` is an object with one key, `probes`: a list of probes. The script sends them in file order, on one new
+connection for each probe, and keeps no state from one probe to the next. A probe that fails, on either side, does not
+change the answer to a later one, so the order of the probes does not matter. Decoding is strict: an unknown key, a
+missing key or a wrong type is a spec error, and the script exits with code 2 before it sends anything.
 
 A probe has these keys:
 
