@@ -9,6 +9,7 @@
 use std::{
     future::Future,
     io,
+    mem::size_of,
     num::NonZeroUsize,
     path::PathBuf,
     pin::Pin,
@@ -1713,13 +1714,7 @@ impl DogStatsDDecoder {
         let frame = line.strip_suffix(b"\n").unwrap_or(line);
         let wire_bytes = line.len();
         if let Some(budget) = budget {
-            // A comma can introduce a tag. Counting all commas also bounds permissive and malformed input before
-            // the parser allocates a value or normalizes any text.
-            let bytes = wire_bytes
-                .saturating_mul(2)
-                .saturating_add(memchr::memchr_iter(b',', frame).count().saturating_mul(32))
-                .saturating_add(self.configured_tag_bytes)
-                .saturating_add(288);
+            let bytes = estimate_frame_bytes(frame, wire_bytes, self.configured_tag_bytes);
             if !budget.try_spend(bytes) {
                 DogStatsDAdmission::record_refused(wire_bytes);
                 return Ok(None);
@@ -2226,6 +2221,41 @@ fn handle_service_check_packet(
         .with_message(packet.message.map(|s| s.into()));
 
     Some(service_check)
+}
+
+fn estimate_frame_bytes(frame: &[u8], wire_bytes: usize, configured_tag_bytes: usize) -> usize {
+    // Count all commas because they can introduce tags even in permissive or malformed input.
+    wire_bytes
+        .saturating_mul(2)
+        .saturating_add(memchr::memchr_iter(b',', frame).count().saturating_mul(32))
+        .saturating_add(configured_tag_bytes)
+        .saturating_add(packed_sample_bytes(frame))
+        .saturating_add(288)
+}
+
+fn packed_sample_bytes(frame: &[u8]) -> usize {
+    if parse_message_type(frame) != MessageType::MetricSample {
+        return 0;
+    }
+    let Some(name_end) = memchr::memchr2(b':', b'|', frame).filter(|&i| frame[i] == b':') else {
+        return 0;
+    };
+    let value_and_type = &frame[name_end + 1..];
+    let Some(value_end) = memchr::memchr(b'|', value_and_type) else {
+        return 0;
+    };
+    if !matches!(&value_and_type[value_end + 1..], [b'h' | b'd', ..] | [b'm', b's', ..]) {
+        return 0;
+    }
+    let separators = memchr::memchr_iter(b':', &value_and_type[..value_end]).count();
+    if separators == 0 {
+        return 0;
+    }
+    // Histogram and timer samples hold a value and weight. Round up for collection growth, and use the same
+    // allowance per sample for distribution sketch storage.
+    (separators + 1)
+        .next_power_of_two()
+        .saturating_mul(size_of::<[f64; 2]>())
 }
 
 async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext) {

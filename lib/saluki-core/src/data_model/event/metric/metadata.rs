@@ -158,11 +158,11 @@ struct AdmissionCounters {
 
 /// A single DogStatsD line's byte-budget decision, independent of filters and other non-budget drops.
 ///
-/// The production topology has at most one aggregating branch. If a line never reaches it (e.g. an
-/// aggregation bypass, a filter), dropping the last copy records that the source byte budget accepted it.
+/// The production topology has at most one aggregating branch. A line can miss it, for example, because of an
+/// aggregation bypass or a filter. Dropping the last copy then records that the source byte budget accepted the line.
 ///
-/// The word is null for untracked metrics, a tagged wire length for unique ownership, or a strong `Arc` reference
-/// shared between fan-out copies. The common, un-cloned input does not allocate a ticket.
+/// The word is null for metrics that are not tracked. It holds a tagged wire length for unique ownership, or a
+/// strong `Arc` reference shared between copies. The common input with one owner does not allocate a ticket.
 #[derive(Debug, Default)]
 pub struct DogStatsDAdmission(AtomicPtr<SharedAdmission>);
 

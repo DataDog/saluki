@@ -8,7 +8,9 @@ use tokio::time::timeout;
 
 use super::*;
 use crate::sources::dogstatsd::should_warn_stream_log_too_big;
-use crate::sources::dogstatsd::{handle_metric_packet, BufferDecodeMode, DecodeOutcome, PacketForwarder};
+use crate::sources::dogstatsd::{
+    estimate_frame_bytes, handle_metric_packet, BufferDecodeMode, DecodeOutcome, PacketForwarder,
+};
 
 fn packets_ok_key(listener_type: &str) -> Key {
     source_counter(
@@ -26,6 +28,25 @@ fn origin_detection_errors_key(reason: &str) -> Key {
         "component_errors_total",
         &[("error_type", "origin_detection"), ("reason", reason)],
     )
+}
+
+#[test]
+fn packed_numeric_frames_reserve_for_sample_storage() {
+    const SAMPLES: usize = 4093;
+    for metric_type in [b"h".as_slice(), b"ms", b"d"] {
+        let mut line = b"x:".to_vec();
+        line.extend(b"1:".repeat(SAMPLES - 1));
+        line.extend(b"1|");
+        line.extend(metric_type);
+        let wire_bytes = line.len() + 1;
+        assert!((8190..=8192).contains(&wire_bytes));
+        assert!(estimate_frame_bytes(&line, wire_bytes, 0) >= SAMPLES * 16);
+    }
+
+    // Colons outside the value segment, or inside a set member, are not sample separators.
+    for line in [b"x:1|h|#k:v".as_slice(), b"x:1:2:3|s"] {
+        assert_eq!(estimate_frame_bytes(line, line.len(), 0), line.len() * 2 + 288);
+    }
 }
 
 #[tokio::test]
