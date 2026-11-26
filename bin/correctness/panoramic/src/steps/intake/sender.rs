@@ -65,10 +65,9 @@
 //!
 //! With `count: 0`, the step checks that nothing arrives. It passes when no selected item reached the intake from any
 //! sender for the whole `settle`, and fails when one does. It takes no `sender` or `path`, because no item may arrive
-//! at all, and it needs an explicit `settle`: the step cannot see a request that is still in flight, so `settle` is the
-//! time that a wrong delivery has to arrive. Use it only after a step that saw the same payload arrive at the
-//! right intake, so that the payload had time to reach its destination. An absence that follows no delivery proves
-//! nothing:
+//! at all. It needs an explicit `settle`. The step cannot see a request that is still in flight, so `settle` is the
+//! time that a wrong delivery has to arrive. Use it only after a step that saw the same payload arrive at the right
+//! intake. Then the payload had time to reach its destination. An absence that follows no delivery proves nothing:
 //!
 //! ```yaml
 //! - step: intake_from
