@@ -144,7 +144,7 @@ procedure:
             - {service: probe-obf-card-eleven, name: Internal, meta: {payment.card: "41111111111"}}
             - {service: probe-obf-card-seventeen, name: Internal, meta: {payment.card: "41111111111111111"}}
             - {service: probe-obf-card-nineteen, name: Internal, meta: {payment.card: "4111111111111111111"}}
-            - {service: probe-obf-card-in-text, name: Internal}
+            - {service: probe-obf-card-in-text, name: Internal, meta: {payment.note: "card 4111111111111111 declined"}}
             # TODO: the card in the event of `probe-obf-card-event` is not asserted. `meta` does not reach `span_events`, so a regression
             # of the scrub of an event attribute passes, on one side or on both. It takes an expectation on `span_events` in panoramic.
             - {service: probe-obf-card-event, name: Internal}
