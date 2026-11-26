@@ -2000,6 +2000,114 @@ mod tests {
         assert_eq!(traces_spans_len(&traces), 2);
     }
 
+    /// A span ID that is not 8 bytes long decodes to zero, so its trace is dropped as for a zero span ID. A trace in the
+    /// same request survives. The Agent rejects the whole request when it decodes such an ID, so this is a known
+    /// difference of the receivers, which `otlp-rcv-http` checks.
+    #[test]
+    fn translate_spans_drops_trace_with_non_canonical_span_id() {
+        for raw_span_id in [vec![0xABu8; 4], vec![0xABu8; 9]] {
+            let recorder = TestRecorder::default();
+            let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+            let mut translator = OtlpTracesTranslator::new(
+                OtlpTracesSettings {
+                    string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                    ..traces_settings()
+                },
+                5000,
+                SemanticRegistryProvider::default(),
+                OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+            );
+            let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+            let bad_trace = [0xEEu8; 16];
+            let good_trace = [0xFFu8; 16];
+            let mut wrong_length = span(bad_trace, [2u8; 8], vec![]);
+            wrong_length.span_id = raw_span_id.clone();
+            let rs = build_resource_spans(
+                vec![],
+                vec![
+                    span(bad_trace, [1u8; 8], vec![]),
+                    wrong_length,
+                    span(good_trace, [3u8; 8], vec![]),
+                ],
+            );
+
+            let traces: Vec<Trace> = translator
+                .translate_spans(rs, &metrics)
+                .filter_map(Event::try_into_trace)
+                .collect();
+            let length = raw_span_id.len();
+            assert_eq!(
+                traces.len(),
+                1,
+                "span ID of {length} bytes: only the sibling trace survives"
+            );
+            assert_eq!(traces[0].trace_id_low, u64::from_be_bytes([0xFF; 8]));
+            assert_eq!(traces[0].spans().len(), 1);
+
+            // One trace is dropped. Its two spans are counted, the span that was already accepted and the one with
+            // the wrong length.
+            let trace_tags: &[(&str, &str)] = &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("intentional", "true"),
+                ("drop_reason", "span_id_zero"),
+            ];
+            assert_eq!(
+                recorder.counter(("component_events_dropped_total", trace_tags)),
+                Some(1),
+                "span ID of {length} bytes"
+            );
+            let span_tags: &[(&str, &str)] = &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("intentional", "true"),
+                ("drop_reason", "span_id_zero"),
+                ("message_type", "otlp_spans"),
+            ];
+            assert_eq!(
+                recorder.counter(("component_events_dropped_total", span_tags)),
+                Some(2),
+                "span ID of {length} bytes"
+            );
+        }
+    }
+
+    /// A parent ID that is not 8 bytes long decodes to zero, so the span becomes a root and the trace keeps it. The
+    /// Agent rejects the whole request when it decodes such an ID, so this is a known difference of the receivers,
+    /// which `otlp-rcv-http` checks.
+    #[test]
+    fn translate_spans_turns_non_canonical_parent_id_into_root() {
+        let trace = trace_id16(0, 1);
+        let root = span(trace, [1u8; 8], vec![]);
+        let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![]);
+        let mut short_parent = span(trace, [3u8; 8], vec![]);
+        short_parent.parent_span_id = vec![1u8; 4];
+        let mut long_parent = span(trace, [4u8; 8], vec![]);
+        long_parent.parent_span_id = vec![1u8; 9];
+
+        let traces = translate(build_resource_spans(
+            vec![],
+            vec![root, child, short_parent, long_parent],
+        ));
+        assert_eq!(traces.len(), 1, "the trace is kept");
+
+        let spans = traces[0].spans();
+        assert_eq!(spans.len(), 4, "every span is kept");
+        let parent_of = |id: u8| {
+            spans
+                .iter()
+                .find(|s| s.span_id() == u64::from_be_bytes([id; 8]))
+                .expect("the span is present")
+                .parent_id()
+        };
+        assert_eq!(parent_of(1), 0);
+        assert_eq!(parent_of(2), u64::from_be_bytes([1; 8]), "a valid parent is kept");
+        assert_eq!(parent_of(3), 0, "a parent of 4 bytes becomes a root");
+        assert_eq!(parent_of(4), 0, "a parent of 9 bytes becomes a root");
+    }
+
     fn traces_spans_len(traces: &[Trace]) -> usize {
         traces.iter().map(|t| t.spans().len()).sum()
     }
