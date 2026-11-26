@@ -1,0 +1,247 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive the same fixed OTLP traces over gRPC, with the receiver keeping half
+  of them by their trace IDs. The intakes must hold the same spans, from the same sampling decisions, and the same APM
+  stats groups. Each decision has a span name of its own.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  # `max_traces_per_second` is the deprecated name of the target rate. The Agent reads it into the `target_tps` of each
+  # payload, which the comparison checks against the value of ADP, so ADP must read the alias too.
+  - step: config_key_equals
+    on: adp
+    view: runtime
+    key: domains.traces.target_traces_per_second
+    value: 42.0
+    timeout: 60s
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up.
+  - {step: process_stable_for, on: load, duration: 45s}
+  # ADP sends the spans and their statistics itself, and does not proxy the traces to the Agent.
+  - parallel:
+      - step: compare
+        telemetry: traces
+        comparison: intake-adp
+        baseline: intake-agent
+        # The fixture holds 26 traces and 36 spans. The Agent drops 8 traces and 13 spans: the traces of 002.drop (2),
+        # 035.drop, 013.not_rescued, 021.exception, 037.string, 040.client, and the drop-range trace of 045.mixed, and
+        # the roots of 035.sss, 037.int and 038.metric. It holds 18 traces and 23 spans. ADP drops 7 traces and 12
+        # spans: the same, except that it keeps the children of 037.string and 040.client, and drops 006.none. It
+        # holds 19 traces and 24 spans. The limits are the counts of each side, so a sampler that keeps every trace
+        # fails, even when the other side does the same.
+        traces:
+          min_traces: 18
+          max_traces: 19
+          min_spans: 23
+          max_spans: 24
+          spans:
+            # TSAMP-001, TSAMP-002: the receiver keeps the traces in its keep range, with its decision maker and rate.
+            - service: probe-sampling
+              name: otlpprobe.tsamp.002.keep
+              priority: 1
+              dropped_trace: false
+              meta: {_dd.p.dm: "-9"}
+              chunk_tags: {_dd.otlp_sr: "0.50"}
+            # TSAMP-004: the last priority of a trace wins, and a user keep beats the drop of the receiver.
+            - {service: probe-sampling, name: otlpprobe.tsamp.004.last, priority: 2, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.004.last_child, priority: 2, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.005.user, priority: 1, dropped_trace: false}
+            # TSAMP-006: the Agent keeps a trace with the priority -128 as a trace without a priority, and ADP drops it.
+            - service: probe-sampling
+              name: otlpprobe.tsamp.006.none
+              side: baseline
+              priority: -128
+              dropped_trace: false
+            # TSAMP-011, TSAMP-012, TSAMP-013: the error sampler keeps an error trace that another sampler dropped. The
+            # priority that it leaves differs, so no entry sets it.
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.012.user_zero, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.013.rescued, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr, priority: 1, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr_rescue, dropped_trace: false}
+            # TSAMP-035, TSAMP-037: single span sampling keeps the span that asks for it, with the priority 2.
+            - {service: probe-sampling, name: otlpprobe.tsamp.035.sss, priority: 2, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.037.int, priority: 2, dropped_trace: false}
+            - service: probe-sampling
+              name: otlpprobe.tsamp.037.string
+              side: comparison
+              priority: 2
+              dropped_trace: false
+            # TSAMP-038, TSAMP-039, TSAMP-040: a dropped trace sends its events alone, marked as dropped, and a kept
+            # trace sends them with the other spans.
+            - {service: probe-sampling, name: otlpprobe.tsamp.038.metric, priority: 0, dropped_trace: true}
+            - {service: probe-analytics, name: otlpprobe.tsamp.038.fixed, priority: 0, dropped_trace: true}
+            - {service: probe-sampling, name: otlpprobe.tsamp.039.kept_root, priority: 1, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.039.kept_event, priority: 1, dropped_trace: false}
+            - service: probe-sampling
+              name: otlpprobe.tsamp.040.client
+              side: comparison
+              priority: 0
+              dropped_trace: true
+            # TSAMP-003, TSAMP-045, TSTAT-009: the kept traces of the probes of the decision maker and of the stats.
+            - {service: probe-sampling, name: otlpprobe.tsamp.003.child_first, priority: 1, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.003.child_first_child, priority: 1, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.045.mixed, priority: 1, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.tstat009.first, priority: 1, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.tstat009.second, priority: 1, dropped_trace: false}
+          absent:
+            - {service: probe-sampling, name: otlpprobe.tsamp.002.drop}
+            - {service: probe-sampling, name: otlpprobe.tsamp.035.drop}
+            - {service: probe-sampling, name: otlpprobe.tsamp.013.not_rescued}
+            - {service: probe-sampling, name: otlpprobe.tsamp.021.exception}
+            - {service: probe-sampling, name: otlpprobe.tsamp.035.sss_root}
+            - {service: probe-sampling, name: otlpprobe.tsamp.037.root}
+            - {service: probe-sampling, name: otlpprobe.tsamp.037.string_root}
+            - {service: probe-sampling, name: otlpprobe.tsamp.038.metric_root}
+            - {service: probe-sampling, name: otlpprobe.tsamp.040.client_root}
+          # The Agent computes stats before it samples, so it holds 24 groups. ADP computes them from the traces that
+          # it keeps, so it holds 14.
+          min_stats_groups: 14
+          # The baseline is the Agent, and the comparison is ADP.
+          known_differences:
+            - gap: gap/otlp-sampling-span-tags
+              issue: 3419
+              paths: [span.metrics._dd1.sr.rcusr]
+              kinds: [missing]
+              when: {name: [otlpprobe.tsamp.013.rescued, otlpprobe.tsamp.tstat009.second]}
+              reason: The Agent writes the client sample rate of the root span. ADP does not.
+            - gap: gap/otlp-sampling-span-tags
+              issue: 3419
+              paths: [span.meta._dd.p.dm]
+              kinds: [missing]
+              when: {name: [otlpprobe.tsamp.003.child_first_child, otlpprobe.tsamp.tstat009.first]}
+              reason: The Agent writes the decision maker on the first span of the trace. ADP writes it on the root.
+            - gap: gap/otlp-sampling-span-tags
+              issue: 3419
+              paths: [span.meta._dd.p.dm]
+              kinds: [extra]
+              when: {name: [otlpprobe.tsamp.003.child_first, otlpprobe.tsamp.tstat009.second]}
+              reason: ADP writes the decision maker on the root. The Agent writes it on the first span of the trace.
+            - gap: gap/otlp-manual-decision-maker
+              issue: 3461
+              paths: [span.meta._dd.p.dm]
+              kinds: [missing]
+              when: {name: [otlpprobe.tsamp.004.last, otlpprobe.tsamp.005.user]}
+              reason: The Agent writes the decision maker `-4` for a user sampling priority. ADP writes none.
+            - gap: gap/otlp-manual-decision-maker
+              issue: 3461
+              paths: [span.trace_chunk_metadata.tags._dd.p.dm]
+              kinds: [missing]
+              when: {name: [otlpprobe.tsamp.004.last, otlpprobe.tsamp.004.last_child, otlpprobe.tsamp.005.user]}
+              reason: The Agent writes the decision maker `-4` of a user priority as a chunk tag. ADP writes none.
+            - gap: gap/otlp-sampling-priority-none
+              issue: 3462
+              paths: [spans]
+              kinds: [missing]
+              when: {name: [otlpprobe.tsamp.006.none]}
+              reason: >-
+                The Agent treats the priority -128 as no priority, and its sampler for traces without a priority keeps
+                the trace. ADP treats it as a manual drop.
+            - gap: gap/otlp-error-rescue-priority
+              issue: 3463
+              paths: [span.trace_chunk_metadata.priority]
+              kinds: [value]
+              when:
+                name:
+                  - otlpprobe.tsamp.011.rescue
+                  - otlpprobe.tsamp.012.user_zero
+                  - otlpprobe.tsamp.013.rescued
+                  - otlpprobe.tsamp.028.prob_sr_rescue
+              reason: The Agent leaves the priority 0 on a trace that the error sampler keeps. ADP sets it to 1.
+            - gap: gap/otlp-prob-sr-removed
+              issue: 3464
+              paths: [span.metrics._dd.prob_sr]
+              kinds: [missing]
+              when: {name: [otlpprobe.tsamp.028.prob_sr]}
+              reason: ADP removes `_dd.prob_sr` from the root of a trace that the receiver keeps. The Agent keeps it.
+            - gap: gap/otlp-string-span-sampling-mechanism
+              issue: 3465
+              paths: [spans]
+              kinds: [extra]
+              when: {name: [otlpprobe.tsamp.037.string]}
+              reason: >-
+                The Agent keeps a span for single span sampling only if its mechanism is a number. ADP also keeps a
+                span with a string.
+            - gap: gap/otlp-client-analyzed-span
+              issue: 3466
+              paths: [spans]
+              kinds: [extra]
+              when: {name: [otlpprobe.tsamp.040.client]}
+              reason: >-
+                ADP sends a span that the client marked `_dd.analyzed` as an event of a dropped trace. The Agent
+                drops it.
+            - gap: gap/otlp-stats-after-sampling
+              issue: 2592
+              paths: [stats.groups]
+              kinds: [missing]
+              when:
+                name:
+                  - otlpprobe.tsamp.002.drop
+                  - otlpprobe.tsamp.006.none
+                  - otlpprobe.tsamp.013.not_rescued
+                  - otlpprobe.tsamp.021.exception
+                  - otlpprobe.tsamp.035.drop
+                  - otlpprobe.tsamp.035.sss_root
+                  - otlpprobe.tsamp.037.root
+                  - otlpprobe.tsamp.037.string_root
+                  - otlpprobe.tsamp.038.metric_root
+                  - otlpprobe.tsamp.040.client_root
+              reason: The Agent computes stats before it samples. ADP computes them from the spans that it keeps.
+            - gap: gap/otlp-stats-after-sampling
+              issue: 2592
+              paths: [stats.hits, stats.top_level_hits, stats.duration_ns, stats.ok_summary]
+              kinds: [value]
+              when: {name: [otlpprobe.tsamp.045.mixed]}
+              reason: >-
+                The Agent counts the traces that its sampler drops. ADP counts only the one trace of the name that it
+                keeps.
+            - gap: gap/otlp-stats-trace-root
+              issue: 3467
+              paths: [stats.hits, stats.top_level_hits, stats.duration_ns]
+              kinds: [value]
+              when: {name: [otlpprobe.tsamp.tstat009.first, otlpprobe.tsamp.tstat009.second]}
+              reason: >-
+                The Agent takes the last span without a parent as the root of the trace, and weights every group by its
+                sample rate. ADP takes the first.
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: probe-sampling}
+        sender: adp
+        count: 22
+        timeout: 1m
+      - step: intake_from
+        on: intake-adp
+        telemetry: trace_stats
+        select: {service: probe-sampling}
+        sender: adp
+        timeout: 1m
