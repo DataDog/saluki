@@ -88,6 +88,8 @@ pub fn process_tags(
     attributes: &mut Vec<KeyValue>, resolver: &OtlpOriginTagResolver, cardinality: OriginTagCardinality,
     custom_tags: CustomTags,
 ) {
+    // As in the Agent, any `container.id` attribute stops the origin lookup, even an empty or unknown one. The Agent
+    // detects the container ID only when `Map.Get` finds no `container.id`.
     let origin_container = match first_attribute(attributes, CONTAINER_ID) {
         Some(_) => None,
         None => resolver.container_entity_from_origin_attributes(attributes, cardinality),
