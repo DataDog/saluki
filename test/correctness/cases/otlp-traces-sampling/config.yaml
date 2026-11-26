@@ -34,8 +34,8 @@ participants:
       millstone.yaml: {from: millstone.yaml, template: true}
     connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
 procedure:
-  # `max_traces_per_second` is the deprecated name of the target rate. The Agent reads it into the `target_tps` of each
-  # payload, which the comparison checks against the value of ADP, so ADP must read the alias too.
+  # The Agent reads the target rate into the `target_tps` of each payload, and the comparison checks it against the
+  # value of ADP. Both sides would match at the default, so this step pins that ADP reads the configured rate.
   - step: config_key_equals
     on: adp
     view: runtime
