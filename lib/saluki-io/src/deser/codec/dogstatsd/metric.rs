@@ -1,10 +1,9 @@
 use nom::{
-    branch::alt,
-    bytes::complete::{tag, take_while1},
-    combinator::{all_consuming, value},
+    bytes::complete::tag,
+    combinator::all_consuming,
     error::{Error, ErrorKind},
     number::complete::double,
-    sequence::{preceded, separated_pair, terminated},
+    sequence::preceded,
     IResult, Parser as _,
 };
 use saluki_core::data_model::{event::metric::*, origin::OriginTagCardinality, tags::RawTags};
@@ -64,25 +63,51 @@ pub struct MetricPacket<'a> {
     pub unit: Option<&'static str>,
 }
 
+/// Parses a DogStatsD metric from its name, values, type, and optional extension fields.
+///
+/// The name must be non-empty and valid UTF-8. Permissive mode accepts any name character except the `:` value
+/// delimiter and the `|` field delimiter, like the reference DogStatsD server.
+///
+/// # Errors
+///
+/// Returns a parse error for invalid framing, an invalid name, or a value that cannot be parsed for its metric type.
 #[inline]
 pub fn parse_dogstatsd_metric<'a>(
     input: &'a [u8], config: &DogStatsDCodecConfiguration,
 ) -> IResult<&'a [u8], MetricPacket<'a>> {
-    // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
-    // actual value itself.
-    let metric_name_parser = if config.permissive {
-        permissive_metric_name
+    // Validate the whole frame once for the common case. If this fails, require UTF-8 for names and values
+    // individually so the parser can still normalize tags and ignore unknown fields.
+    let utf8_frame = simdutf8::basic::from_utf8(input).ok();
+    let name_end = if config.permissive {
+        memchr::memchr2(b':', b'|', input)
     } else {
-        ascii_alphanum_and_seps
+        input.iter().position(|&c| !is_ascii_alphanum_or_sep(c))
+    }
+    .unwrap_or(input.len());
+    let raw_name = &input[..name_end];
+    if raw_name.is_empty() {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
+    }
+    // An ASCII delimiter cannot occur inside a UTF-8 code point. Strict names contain only ASCII bytes.
+    let metric_name = match utf8_frame {
+        Some(frame) => &frame[..name_end],
+        None => utf8(raw_name)?.1,
     };
-    let (remaining, (metric_name, (metric_type, raw_metric_values))) =
-        separated_pair(metric_name_parser, tag(":"), raw_metric_values).parse(input)?;
+    let (value_input, _) = tag(":").parse(&input[name_end..])?;
+    let (remaining, (metric_type, raw_values)) = raw_metric_values(value_input)?;
+    // The value starts after `:` and ends before `|`. Both delimiters are character boundaries in a valid frame.
+    let raw_metric_values = match utf8_frame {
+        Some(frame) => &frame[name_end + 1..name_end + 1 + raw_values.len()],
+        None => utf8(raw_values)?.1,
+    };
+    // Permissive numeric parsing skips empty values such as the one in `1::2`, but rejects a payload with only
+    // empty values. A set treats the whole value as one member, so `::` is valid for a set.
+    if !matches!(metric_type, MetricType::Set) && raw_values.iter().all(|&b| b == b':') {
+        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    }
 
-    // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
-    // the very front, which we'd want to consume before going further.
-    //
-    // After that, we simply split the remaining bytes by the pipe separator, and then try and parse each chunk to see
-    // if it's any of the protocol extensions we know of.
+    // Parse the name, raw values, and metric type before the optional fields. Some extensions apply only to
+    // particular types. A leading `|` separates the first extension from the type.
     let mut maybe_sample_rate = None;
     let mut maybe_tags = None;
     let mut maybe_local_data = None;
@@ -104,6 +129,13 @@ pub fn parse_dogstatsd_metric<'a>(
                 remaining = tail;
                 continue;
             }
+
+            let utf8_chunk = || {
+                utf8_frame.map(|frame| {
+                    let start = input.len() - remaining.len();
+                    &frame[start..start + chunk.len()]
+                })
+            };
 
             match chunk[0] {
                 // Sample rate: indicates client-side sampling of this metric which will need to be "reinflated" at some
@@ -128,8 +160,10 @@ pub fn parse_dogstatsd_metric<'a>(
                 }
                 // Tags: additional tags to be added to the metric.
                 b'#' => {
-                    let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
-                    maybe_tags = Some(tags);
+                    maybe_tags = Some(match utf8_chunk() {
+                        Some(chunk) => RawTags::new(&chunk[1..], config.maximum_tag_count, config.maximum_tag_length),
+                        None => tags(config)(&chunk[1..])?.1,
+                    });
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
                 //
@@ -176,8 +210,10 @@ pub fn parse_dogstatsd_metric<'a>(
                 }
                 // Cardinality: client-provided cardinality for the metric.
                 b'c' if chunk.starts_with(CARDINALITY_PREFIX) && config.client_origin_detection => {
-                    let (_, cardinality) = cardinality(chunk)?;
-                    maybe_cardinality = cardinality;
+                    maybe_cardinality = match utf8_chunk() {
+                        Some(chunk) => OriginTagCardinality::try_from(&chunk[CARDINALITY_PREFIX.len()..]).ok(),
+                        None => cardinality(chunk)?.1,
+                    };
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -239,18 +275,6 @@ pub fn parse_dogstatsd_metric<'a>(
 }
 
 #[inline]
-fn permissive_metric_name(input: &[u8]) -> IResult<&[u8], &str> {
-    // Like the reference DogStatsD server, we allow any characters in the metric name other than the `:` value
-    // delimiter and the `|` field delimiter. The name must still be valid UTF-8, since we can't safely handle it
-    // otherwise.
-    let (remaining, raw_name) = take_while1(|c: u8| c != b':' && c != b'|').parse(input)?;
-    match simdutf8::basic::from_utf8(raw_name) {
-        Ok(name) => Ok((remaining, name)),
-        Err(_) => Err(nom::Err::Error(Error::new(raw_name, ErrorKind::Verify))),
-    }
-}
-
-#[inline]
 fn sample_rate<'a>(
     metric_name: &'a str, config: &'a DogStatsDCodecConfiguration,
 ) -> impl Fn(f64) -> Result<SampleRate, &'static str> + 'a {
@@ -270,38 +294,43 @@ fn sample_rate<'a>(
 
 #[inline]
 fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
-    let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|")).parse(input)?;
-    let (remaining, metric_type) = alt((
-        value(MetricType::Gauge, tag("g")),
-        value(MetricType::Count, tag("c")),
-        value(MetricType::Timer, tag("ms")),
-        value(MetricType::Histogram, tag("h")),
-        value(MetricType::Set, tag("s")),
-        value(MetricType::Distribution, tag("d")),
-    ))
-    .parse(remaining)?;
-
-    // Make sure the raw value(s) are valid UTF-8 before we use them later on.
-    if simdutf8::basic::from_utf8(raw_values).is_err() {
-        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    let end = memchr::memchr(b'|', input).unwrap_or(input.len());
+    if end == 0 {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
     }
-
-    // Make sure a numeric metric has at least one value. In permissive mode, empty values in a multi-value payload (for
-    // example, `1::2`) are skipped when parsing, but a payload made up of only empty values (for example, `:` or `::`)
-    // has no values at all, which the reference DogStatsD server rejects.
-    //
-    // A set's value isn't split on `:`, so `::` is a valid set member.
-    if !matches!(metric_type, MetricType::Set) && raw_values.iter().all(|&b| b == b':') {
-        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    if end == input.len() {
+        return Err(nom::Err::Error(Error::new(&input[end..], ErrorKind::Tag)));
     }
+    let type_input = &input[end + 1..];
+    let (metric_type, type_len) = match type_input {
+        [b'g', ..] => (MetricType::Gauge, 1),
+        [b'c', ..] => (MetricType::Count, 1),
+        [b'm', b's', ..] => (MetricType::Timer, 2),
+        [b'h', ..] => (MetricType::Histogram, 1),
+        [b's', ..] => (MetricType::Set, 1),
+        [b'd', ..] => (MetricType::Distribution, 1),
+        _ => return Err(nom::Err::Error(Error::new(type_input, ErrorKind::Tag))),
+    };
 
-    Ok((remaining, (metric_type, raw_values)))
+    Ok((&type_input[type_len..], (metric_type, &input[..end])))
 }
 
+// Both the singleton path and the general parser take validated UTF-8. A set borrows the full value without splitting.
 #[inline]
 fn metric_values_from_raw(
-    input: &[u8], metric_type: MetricType, sample_rate: Option<SampleRate>, skip_empty_values: bool,
+    input: &str, metric_type: MetricType, sample_rate: Option<SampleRate>, skip_empty_values: bool,
 ) -> Result<(u64, MetricValues), NomParserError<'_>> {
+    if matches!(metric_type, MetricType::Count | MetricType::Gauge) {
+        if let Some(value) = simple_metric_float(input.as_bytes()) {
+            let values = if matches!(metric_type, MetricType::Gauge) {
+                MetricValues::gauge(value)
+            } else {
+                MetricValues::counter(sample_rate.map_or(value, |rate| value * rate.raw_weight()))
+            };
+            return Ok((1, values));
+        }
+    }
+
     let mut num_points = 0;
     let floats = FloatIter::new(input, skip_empty_values).inspect(|_| num_points += 1);
 
@@ -310,10 +339,7 @@ fn metric_values_from_raw(
         MetricType::Gauge => MetricValues::gauge_fallible(floats)?,
         MetricType::Set => {
             num_points = 1;
-
-            // SAFETY: We've already checked above that `input` is valid UTF-8.
-            let value = unsafe { std::str::from_utf8_unchecked(input) };
-            MetricValues::set(value)
+            MetricValues::set(input)
         }
         MetricType::Timer | MetricType::Histogram => MetricValues::histogram_sampled_fallible(floats, sample_rate)?,
         MetricType::Distribution => MetricValues::distribution_sampled_fallible(floats, sample_rate)?,
@@ -323,12 +349,12 @@ fn metric_values_from_raw(
 }
 
 struct FloatIter<'a> {
-    raw_values: &'a [u8],
+    raw_values: &'a str,
     skip_empty_values: bool,
 }
 
 impl<'a> FloatIter<'a> {
-    fn new(raw_values: &'a [u8], skip_empty_values: bool) -> Self {
+    fn new(raw_values: &'a str, skip_empty_values: bool) -> Self {
         Self {
             raw_values,
             skip_empty_values,
@@ -345,7 +371,11 @@ impl<'a> Iterator for FloatIter<'a> {
                 return None;
             }
 
-            let (raw_value, tail) = split_at_delimiter(self.raw_values, b':')?;
+            // The input is already a `str`. The ASCII colon marks a character boundary on both sides of the split.
+            let (raw_value, tail) = match memchr::memchr(b':', self.raw_values.as_bytes()) {
+                Some(index) => (&self.raw_values[..index], &self.raw_values[index + 1..]),
+                None => (self.raw_values, ""),
+            };
             self.raw_values = tail;
 
             // An empty value in a multi-value payload (for example, `1::2`) is a structural defect. In permissive mode,
@@ -355,15 +385,15 @@ impl<'a> Iterator for FloatIter<'a> {
                 continue;
             }
 
-            // SAFETY: The caller that creates `ValueIter` is responsible for ensuring that the entire byte slice is valid
-            // UTF-8.
-            let value_s = unsafe { std::str::from_utf8_unchecked(raw_value) };
-            match value_s.parse::<f64>() {
+            if let Some(value) = simple_metric_float(raw_value.as_bytes()) {
+                return Some(Ok(value));
+            }
+            match raw_value.parse::<f64>() {
                 Ok(value) if value.is_finite() => return Some(Ok(value)),
                 Ok(_) => {
-                    debug!(value = value_s, "Dropping non-finite DogStatsD metric value.");
+                    debug!(value = raw_value, "Dropping non-finite DogStatsD metric value.");
                 }
-                Err(_) => return Some(Err(nom::Err::Error(Error::new(raw_value, ErrorKind::Float)))),
+                Err(_) => return Some(Err(nom::Err::Error(Error::new(raw_value.as_bytes(), ErrorKind::Float)))),
             }
         }
     }
@@ -605,6 +635,33 @@ mod tests {
         let actual = parse_dsd_metric(&input).expect("metric with invalid tag bytes should parse");
 
         assert_eq!(actual, Some(expected));
+    }
+
+    #[test]
+    fn metric_utf8_validation_preserves_field_specific_rules() {
+        let config = DogStatsDCodecConfiguration::default()
+            .with_permissive_mode(true)
+            .with_client_origin_detection(true);
+
+        let input = "métrique:0.3|g|unknown:日本語|#hôte:parís|card:HIGH";
+        let (remaining, packet) = parse_dogstatsd_metric(input.as_bytes(), &config).expect("should parse UTF-8");
+        assert!(remaining.is_empty());
+        assert_eq!(packet.metric_name, "métrique");
+        assert_eq!(packet.tags.iter().collect::<Vec<_>>(), ["hôte:parís"]);
+        assert_eq!(packet.cardinality, Some(OriginTagCardinality::High));
+
+        let input = b"metric:0.3|g|unknown:\xff|c:\xfe|card:high|card:\xff|#valid:tag,\xff\xfe";
+        let (remaining, packet) = parse_dogstatsd_metric(input, &config).expect("should tolerate malformed fields");
+        assert!(remaining.is_empty());
+        assert_eq!(packet.metric_name, "metric");
+        assert_eq!(packet.tags.iter().collect::<Vec<_>>(), ["valid:tag", "\u{FFFD}"]);
+        assert_eq!(packet.local_data, None);
+        assert_eq!(packet.cardinality, None);
+
+        for input in [b"metric:1\xff|g", b"metric:1\xff|s"] {
+            let result = parse_dogstatsd_metric(input, &config);
+            assert!(matches!(result, Err(nom::Err::Error(error)) if error.code == nom::error::ErrorKind::Verify));
+        }
     }
 
     #[test]
@@ -999,6 +1056,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn metric_scalar_values_match_the_standard_float_parser() {
+        let values = ["-0.0", "42", "0.3", "+001.9", "1e-20", ".5", "2.", "9007199254740993.1"];
+        let input = format!("metric:{}|g", values.join(":"));
+        let (_, packet) = parse_dogstatsd_metric(input.as_bytes(), &DogStatsDCodecConfiguration::default())
+            .expect("should parse valid floats");
+        let MetricValues::Gauge(points) = packet.values else {
+            panic!("expected gauge points");
+        };
+
+        assert_eq!(packet.num_points as usize, values.len());
+        assert_eq!(
+            (&points)
+                .into_iter()
+                .map(|(_, value)| value.to_bits())
+                .collect::<Vec<_>>(),
+            values.map(|value| value.parse::<f64>().unwrap().to_bits()),
+        );
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(1000))]
         #[test]
@@ -1010,10 +1087,8 @@ mod tests {
             // to escape the unit tests. This is left here for the sole reason of incrementally running this every time
             // all tests are run, in the hopes of potentially catching an issue that might have been missed.
             //
-            // Beyond "does not panic", we also encode the structural guarantee the parser makes on success: the metric
-            // name is matched with `take_while1` (so it is always non-empty) and the name parser stops at the `:`
-            // value delimiter (so the name can never contain one). Whenever the parser accepts an input, the produced
-            // metric must satisfy both.
+            // The parser rejects an empty name and stops the name at the value delimiter. Check these invariants
+            // whenever parsing succeeds, in addition to checking that arbitrary bytes do not cause a panic.
             if let Ok(Some(metric)) = parse_dsd_metric(&input) {
                 let name = metric.context().name();
                 let name = name.as_ref();

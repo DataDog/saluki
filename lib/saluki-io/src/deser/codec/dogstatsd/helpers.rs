@@ -121,12 +121,50 @@ pub fn non_empty_utf8(input: &[u8]) -> IResult<&[u8], &str> {
 /// If the input slice doesn't at least one byte of valid characters, an error is returned.
 #[inline]
 pub fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
-    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'_' || c == b'-' || c == b'.';
     unsafe_ascii_while1!(
         input,
-        valid_char,
+        is_ascii_alphanum_or_sep,
         "DogStatsD name bytes are ASCII before unchecked UTF-8 conversion"
     )
+}
+
+#[inline]
+pub(super) fn is_ascii_alphanum_or_sep(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b' ' | b'_' | b'-' | b'.')
+}
+
+/// Parses short signed integers and decimals with one fractional digit. Other forms use the general parser.
+#[inline]
+pub(super) fn simple_metric_float(input: &[u8]) -> Option<f64> {
+    let (negative, digits) = match input {
+        [b'-', digits @ ..] => (true, digits),
+        [b'+', digits @ ..] => (false, digits),
+        _ => (false, input),
+    };
+    let (whole, fraction) = match digits {
+        [whole @ .., b'.', digit @ b'0'..=b'9'] => (whole, Some(digit - b'0')),
+        _ => (digits, None),
+    };
+    if !(1..=14).contains(&whole.len()) {
+        return None;
+    }
+
+    let mut mantissa = 0i64;
+    for &byte in whole {
+        let digit = byte.wrapping_sub(b'0');
+        if digit > 9 {
+            return None;
+        }
+        // The digit limit keeps the mantissa below 10^15, so it cannot overflow and converts to f64 exactly.
+        mantissa = mantissa.wrapping_mul(10).wrapping_add(i64::from(digit));
+    }
+
+    let value = match fraction {
+        Some(digit) => (mantissa * 10 + i64::from(digit)) as f64 / 10.0,
+        None => mantissa as f64,
+    };
+    // Apply the sign after conversion to preserve negative zero.
+    Some(if negative { -value } else { value })
 }
 
 /// Extracts as many raw tags from the input slice as possible, up to the configured limit.
@@ -241,10 +279,33 @@ pub fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>>
 mod tests {
     use saluki_core::data_model::origin::OriginTagCardinality;
 
-    use super::{cardinality, to_valid_utf8, CARDINALITY_PREFIX};
+    use super::{cardinality, simple_metric_float, to_valid_utf8, CARDINALITY_PREFIX};
 
     fn card(s: &str) -> Vec<u8> {
         format!("{}{}", simdutf8::basic::from_utf8(CARDINALITY_PREFIX).unwrap(), s).into_bytes()
+    }
+
+    #[test]
+    fn simple_metric_float_matches_standard_rounding() {
+        for raw in ["0", "-0", "+42", "0012", "0.3", "-0.0", "-589.9", "99999999999999.9"] {
+            let actual = simple_metric_float(raw.as_bytes()).expect("should take the simple path");
+            assert_eq!(actual.to_bits(), raw.parse::<f64>().unwrap().to_bits(), "{raw}");
+        }
+
+        for raw in [
+            "",
+            "-",
+            "1e2",
+            ".5",
+            "2.",
+            "1.25",
+            "1..2",
+            "NaN",
+            " 1",
+            "999999999999999.9",
+        ] {
+            assert_eq!(simple_metric_float(raw.as_bytes()), None, "{raw}");
+        }
     }
 
     #[test]
