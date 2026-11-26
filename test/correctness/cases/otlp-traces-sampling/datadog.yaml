@@ -18,8 +18,8 @@ process_config:
     enabled: false
 
 # Let the samplers decide: no limit on the errors they keep. `max_traces_per_second` is the deprecated name of
-# `target_traces_per_second`, and sets the rate of the trace sampler. The analyzed span turns the one span of the
-# fixture with this service and name into an event.
+# `target_traces_per_second`, and sets the rate of the trace sampler. The analyzed span turns the spans of the
+# fixture with this service and name into events.
 apm_config:
   enabled: true
   max_traces_per_second: 42
