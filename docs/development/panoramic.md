@@ -131,7 +131,8 @@ ports are fixed.
 
 | Job | What it runs |
 | --- | --- |
-| `test-integration` | Every integration case on Linux, with the images the pipeline built. |
+| `test-integration` | Every integration case on Linux except the OTLP receiver cases, with the images the pipeline built. |
+| `test-integration-otlp` | The OTLP receiver cases on Linux, with the same images. `ci/tooling/integration-cases.sh` lists them. |
 | `test-integration-macos-arm64`, `test-integration-macos-amd64` | The cases that declare macOS, as host processes. |
 | `test-integration-windows-amd64` | The cases that declare Windows, in Windows containers. |
 | `generate-correctness-pipeline` | Makes one `test-correctness-<case>` job for each correctness case. |
@@ -477,6 +478,10 @@ case from `test/integration/cases` that uses the same steps.
   confirm a UDP listener, so `port_listening` is not a readiness gate for it.
 - Use `config_key_equals`, `config_set` or an `exec` of the `adp` command for the privileged API of ADP.
   `http_check` and `http_request` cannot reach it.
+- To compare the answers of ADP and the Agent to the same requests, run a script in each container with `exec`, as
+  `test/integration/cases/otlp-rcv-http` does. Its `probes.json` holds what the Agent answers, and a `known` entry for
+  each difference of ADP, with an issue. A script that finds a known difference gone fails the step, so the entry
+  cannot outlive the fix.
 - List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
   See [Files](#files).
 

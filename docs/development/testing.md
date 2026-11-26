@@ -162,6 +162,10 @@ macOS refuses to bind a port that another user's process holds, so a listener in
 
 CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage. The Windows job is in `.gitlab/windows.yml`.
 
+CI runs the Linux cases in two jobs. `test-integration` runs every case except the OTLP receiver cases, and
+`test-integration-otlp` runs only those, so a difference in a receiver shows in a job of its own. A new OTLP receiver
+case goes in `OTLP_CASES` in `ci/tooling/integration-cases.sh`. `make test-integration` still runs every case.
+
 The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
 
 ## Benchmark tests: Single Machine Performance (SMP)

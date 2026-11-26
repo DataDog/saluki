@@ -109,7 +109,10 @@ run-correctness-tests:
     # folds child status into the parent
     strategy: depend
 
-test-integration:
+# Runs the Linux integration cases in containers, with the images that this pipeline built. The job that extends this
+# one sets `INTEGRATION_CASE_GROUP`, and `ci/tooling/integration-cases.sh` lists the cases of the group, so that each
+# case runs in one job.
+.test-integration-linux:
   stage: e2e
   tags: ["docker-in-docker:amd64"]
   needs:
@@ -147,11 +150,25 @@ test-integration:
     - docker tag "$BUNDLED_IMAGE" saluki-images/datadog-agent:testing-devel
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest
-    # Run the panoramic binary and the courier that build-panoramic-binary published, from the repository root.
-    - target/release/panoramic run -d $(pwd)/test/integration/cases
+    # Run the panoramic binary and the courier that build-panoramic-binary published, from the repository root. The list
+    # is set in a separate command, so that a failure to list the cases fails the job.
+    - INTEGRATION_CASES=$(bash ci/tooling/integration-cases.sh "$INTEGRATION_CASE_GROUP")
+    - target/release/panoramic run -d $(pwd)/test/integration/cases -t "$INTEGRATION_CASES"
   after_script:
     - bash ci/tooling/report-panoramic-results.sh convert integration
     - bash ci/tooling/report-panoramic-results.sh upload
+
+# Every Linux integration case except the OTLP receiver cases.
+test-integration:
+  extends: .test-integration-linux
+  variables:
+    INTEGRATION_CASE_GROUP: shared
+
+# The OTLP receiver cases, which run in a job of their own. Add such a case to `ci/tooling/integration-cases.sh`.
+test-integration-otlp:
+  extends: .test-integration-linux
+  variables:
+    INTEGRATION_CASE_GROUP: otlp
 
 # Runs the integration cases that declare macOS directly on a bare-metal macOS runner. No
 # Docker, no virtualization: panoramic spawns ADP (and the Core Agent for converged cases) as
