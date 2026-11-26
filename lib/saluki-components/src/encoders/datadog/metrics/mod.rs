@@ -1864,7 +1864,7 @@ fn is_v3_series_resource_tag(tag: &TagStr) -> bool {
     tag.value_if_named("dd.internal.resource").is_some()
 }
 
-/// Returns every tag of `metric` for the V1 and V2 encoders, in chain order.
+/// Returns every tag of `metric` for the series and sketch encoders, in chain order.
 ///
 /// The chain order is the instrumented tags of the context, then `additional_tags`, then the origin tags of the
 /// context. Callers pass the result through a `ReusableDeduplicator`, which keeps the first copy of each tag. Thus, a

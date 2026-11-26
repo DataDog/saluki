@@ -132,8 +132,8 @@ impl CheapMetaString for Tag {
 /// - [`ToOwned`] turns a `&TagStr` into a `Tag`.
 ///
 /// `TagStr` does not implement `Deref<Target = str>`. Otherwise, every `str` method would also apply to a `Tag`
-/// through two derefs, and calls such as `tag.len()` could resolve to a different type than the reader expects. Use
-/// [`TagStr::as_str`] or `AsRef<str>` to get the raw string.
+/// through two dereferences, and calls such as `tag.len()` could resolve to a different type than the reader expects.
+/// Use [`TagStr::as_str`] or `AsRef<str>` to get the raw string.
 #[derive(Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 #[repr(transparent)]
