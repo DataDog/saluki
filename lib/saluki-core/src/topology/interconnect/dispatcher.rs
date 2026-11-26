@@ -1,11 +1,11 @@
-use std::{borrow::Cow, time::Instant};
+use std::{borrow::Cow, sync::Arc, time::Instant};
 
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{static_metrics, Counter, Histogram};
 use tokio::sync::mpsc;
 
-use super::Dispatchable;
+use super::{event_buffer::EventBufferPool, Dispatchable, EventBufferManager, FixedSizeEventBuffer};
 use crate::{
     components::ComponentContext,
     topology::{condition::EdgeGate, OutputName},
@@ -167,6 +167,12 @@ where
     }
 }
 
+pub(super) type BufferFactory<T> = Arc<dyn Fn() -> T + Send + Sync>;
+
+pub(super) fn make_buffer<T: Default>(factory: Option<&BufferFactory<T>>) -> T {
+    factory.map_or_else(T::default, |factory| factory())
+}
+
 /// A buffered dispatcher.
 ///
 /// `BufferedDispatcher` provides an efficient and ergonomic interface to `Dispatcher` that allows for writing events
@@ -177,15 +183,17 @@ pub struct BufferedDispatcher<'a, T> {
     metrics: &'a DispatcherMetrics,
     flushed_len: usize,
     buffer: Option<T>,
+    buffer_factory: Option<&'a BufferFactory<T>>,
     target: &'a DispatchTarget<T>,
 }
 
 impl<'a, T> BufferedDispatcher<'a, T> {
-    fn new(target: &'a DispatchTarget<T>) -> Self {
+    fn new(target: &'a DispatchTarget<T>, buffer_factory: Option<&'a BufferFactory<T>>) -> Self {
         Self {
             metrics: &target.metrics,
             flushed_len: 0,
             buffer: None,
+            buffer_factory,
             target,
         }
     }
@@ -220,7 +228,7 @@ where
         //
         // If our current buffer is empty, create a new one first. If the current buffer is full, return an error
         // because it should be impossible to get a new buffer that is full.
-        let buffer = self.buffer.get_or_insert_default();
+        let buffer = self.buffer.get_or_insert_with(|| make_buffer(self.buffer_factory));
         if buffer.try_push(item).is_some() {
             return Err(generic_error!("Dispatch buffer already full after acquisition."));
         }
@@ -282,6 +290,7 @@ where
     context: ComponentContext,
     default: Option<DispatchTarget<T>>,
     targets: FastHashMap<Cow<'static, str>, DispatchTarget<T>>,
+    buffer_factory: Option<BufferFactory<T>>,
 }
 
 impl<T> Dispatcher<T>
@@ -294,6 +303,7 @@ where
             context,
             default: None,
             targets: FastHashMap::default(),
+            buffer_factory: None,
         }
     }
 
@@ -412,6 +422,21 @@ where
     }
 }
 
+impl<const N: usize> Dispatcher<FixedSizeEventBuffer<N>> {
+    pub(crate) fn with_event_buffer_pool(context: ComponentContext) -> Self {
+        let pool = Arc::new(EventBufferPool::<N>::default());
+        Self {
+            buffer_factory: Some(Arc::new(move || pool.buffer())),
+            ..Self::new(context)
+        }
+    }
+
+    /// Makes a buffer manager that shares this dispatcher's recycled allocations.
+    pub fn event_buffer_manager(&self) -> EventBufferManager<N> {
+        EventBufferManager::with_factory(self.buffer_factory.clone())
+    }
+}
+
 impl<T> Dispatcher<T>
 where
     T: DispatchBuffer,
@@ -426,7 +451,8 @@ where
     ///
     /// If the default output hasn't been configured, an error will be returned.
     pub fn buffered(&self) -> Result<BufferedDispatcher<'_, T>, GenericError> {
-        self.get_default_output().map(BufferedDispatcher::new)
+        self.get_default_output()
+            .map(|target| BufferedDispatcher::new(target, self.buffer_factory.as_ref()))
     }
 
     /// Creates a buffered dispatcher for the given named output.
@@ -442,7 +468,8 @@ where
     where
         N: AsRef<str>,
     {
-        self.get_named_output(output_name.as_ref()).map(BufferedDispatcher::new)
+        self.get_named_output(output_name.as_ref())
+            .map(|target| BufferedDispatcher::new(target, self.buffer_factory.as_ref()))
     }
 
     /// Dispatches a single item to the default output.
@@ -472,7 +499,7 @@ where
             Some(name) => self.get_named_output(name)?,
         };
 
-        let mut buffer = T::default();
+        let mut buffer = make_buffer::<T>(self.buffer_factory.as_ref());
         if buffer.try_push(item).is_some() {
             return Err(generic_error!("Default-constructed buffer rejected a single item."));
         }
@@ -494,6 +521,41 @@ mod tests {
     use ordered_float::OrderedFloat;
 
     use super::*;
+    use crate::{
+        data_model::event::{metric::Metric, Event},
+        topology::interconnect::Consumer,
+    };
+
+    #[tokio::test]
+    async fn downstream_drain_recycles_backing_across_buffered_outputs() {
+        let context = ComponentContext::test_source("recycled_dispatcher");
+        let mut dispatcher = Dispatcher::<FixedSizeEventBuffer<1>>::with_event_buffer_pool(context.clone());
+        let (tx, rx) = mpsc::channel(1);
+        let mut consumer = Consumer::new(context, rx);
+        dispatcher.add_output(OutputName::Default).unwrap();
+        dispatcher.attach_sender_to_output(&OutputName::Default, tx).unwrap();
+
+        let mut manager = dispatcher.event_buffer_manager();
+        assert!(manager
+            .try_push(Event::Metric(Metric::counter("before", 1.0)))
+            .is_none());
+        dispatcher.dispatch(manager.consume().unwrap()).await.unwrap();
+
+        let first = consumer.next().await.unwrap();
+        let original = std::ptr::from_ref(first.events::<Metric>().next().unwrap());
+        assert_eq!(first.into_events::<Metric>().count(), 1);
+
+        dispatcher
+            .buffered()
+            .unwrap()
+            .send_all([Event::Metric(Metric::counter("after", 2.0))])
+            .await
+            .unwrap();
+        let second = consumer.next().await.unwrap();
+        let metric = second.events::<Metric>().next().unwrap();
+        assert_eq!(std::ptr::from_ref(metric), original);
+        assert_eq!(metric.context().name(), "after");
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct SingleEvent<T>(T);

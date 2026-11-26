@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reuse drained allocations for subsequent metric batches.
