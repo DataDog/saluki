@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, collections::VecDeque, ops::Range, sync::Arc, time::Duration};
+use std::{collections::HashMap, collections::VecDeque, ops::Range, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use ddsketch::DDSketch;
@@ -37,7 +37,7 @@ use tracing::{debug, error, warn};
 use url::Url;
 
 use self::v3::{
-    V3EncodedMetrics, V3EncodedRequest, V3EncoderStats, V3MetricType, V3PayloadLimits, V3PayloadRequest,
+    SymbolOwner, V3EncodedMetrics, V3EncodedRequest, V3EncoderStats, V3MetricType, V3PayloadLimits, V3PayloadRequest,
     V3PayloadSplitReason, V3SerializerTelemetry, V3Writer,
 };
 use crate::{
@@ -1705,6 +1705,10 @@ pub(super) fn metric_has_emittable_values(metric: &Metric) -> bool {
     }
 }
 
+// Retain symbols only for longer tag lists, where avoiding repeated text hashing offsets the cost of pinning.
+// This counts all context tags, including device and resource tags promoted out of the V3 tagset.
+const MIN_CONTEXT_TAGS_FOR_PINNED_SYMBOLS: usize = 32;
+
 fn write_metric_to_v3(
     writer: &mut V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
     promoted_tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
@@ -1741,8 +1745,8 @@ fn write_metric_to_v3(
             Some((tag.as_str(), hint))
         }
     });
-    if context_tags.len() >= 32 {
-        let mut symbol_owner: Option<Arc<dyn Any + Send + Sync>> = None;
+    if context_tags.len() >= MIN_CONTEXT_TAGS_FOR_PINNED_SYMBOLS {
+        let mut symbol_owner: Option<SymbolOwner> = None;
         builder.set_unique_tags_with_symbols(tags, || {
             Arc::clone(symbol_owner.get_or_insert_with(|| Arc::new(context.clone())))
         });

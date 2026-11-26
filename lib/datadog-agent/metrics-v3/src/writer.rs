@@ -896,8 +896,12 @@ fn append_len(dst: &mut Vec<u8>, mut len: usize) {
     }
 }
 
+// Use the bitset for longer tagsets, where it avoids more of the work of comparison sorting.
+const MIN_TAGSET_BITSET_LEN: usize = 32;
+
 fn sort_and_delta_tagset(ids: &mut [i64]) {
-    if ids.len() >= 32 {
+    if ids.len() >= MIN_TAGSET_BITSET_LEN {
+        // Sort and delta-encode distinct IDs below 128 using a bitset.
         let mut bits = 0u128;
         for &id in &*ids {
             if id as u64 >= u64::from(u128::BITS) {

@@ -117,7 +117,8 @@ impl Interner {
 const PINNED_SYMBOL_SLOTS: usize = 512;
 const PINNED_SYMBOL_PROBES: usize = 4;
 
-pub(crate) type SymbolOwner = Arc<dyn Any + Send + Sync>;
+/// A reference that keeps a cached symbol's text alive and immutable at the same address.
+pub type SymbolOwner = Arc<dyn Any + Send + Sync>;
 
 #[derive(Debug)]
 struct PinnedSymbol {
@@ -128,12 +129,19 @@ struct PinnedSymbol {
     _owner: SymbolOwner,
 }
 
+/// Maps retained symbols to payload IDs using their hint, address, and length.
+///
+/// Each occupied slot owns a reference that keeps the text alive and immutable at that address until replacement or
+/// reset. Unlike `Interner::intern_symbol`, this cache can therefore reuse an ID without comparing the arena bytes.
 #[derive(Debug, Default)]
 pub(crate) struct PinnedSymbols {
     slots: Vec<Option<PinnedSymbol>>,
 }
 
 impl PinnedSymbols {
+    /// Returns the cached ID or interns the text and retains an owner for the new entry.
+    ///
+    /// The owner from `retain` must keep `text` alive and immutable at this address while the slot is occupied.
     pub fn intern(
         &mut self, hint: SymbolHint, text: &str, intern: impl FnOnce() -> i64, retain: impl FnOnce() -> SymbolOwner,
     ) -> i64 {
