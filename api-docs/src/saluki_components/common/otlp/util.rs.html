@@ -483,7 +483,7 @@
 <a href=#483 id=483 data-nosnippet>483</a><span class="doccomment">/// Returns the value of the first attribute named `key`, like `Map.Get` in `pdata`.
 <a href=#484 id=484 data-nosnippet>484</a>///
 <a href=#485 id=485 data-nosnippet>485</a>/// The inner `Option` is `None` for an attribute that is present but has an empty value.
-<a href=#486 id=486 data-nosnippet>486</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>first_attribute&lt;<span class="lifetime">'a</span>&gt;(attributes: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[otlp_common::KeyValue], key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>Value&gt;&gt; {
+<a href=#486 id=486 data-nosnippet>486</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>first_attribute&lt;<span class="lifetime">'a</span>&gt;(attributes: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[otlp_common::KeyValue], key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>Value&gt;&gt; {
 <a href=#487 id=487 data-nosnippet>487</a>    attributes
 <a href=#488 id=488 data-nosnippet>488</a>        .iter()
 <a href=#489 id=489 data-nosnippet>489</a>        .find(|kv| kv.key == key)
