@@ -7,14 +7,13 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_core::data_model::{
     event::log::Log,
-    origin::OriginTagsResolver,
     tags::{Tag, TagSet},
 };
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
-use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
+use crate::common::otlp::infra_attributes::apply_infra_attributes;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::hostname_from_source_attributes;
 use crate::common::otlp::util::first_attribute;
@@ -74,16 +73,14 @@ pub(super) struct ResourceLogsIter {
 
 impl ResourceLogsIter {
     pub(super) fn new(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
-        let resource = resource_logs.resource.unwrap_or_default();
+        let mut resource = resource_logs.resource.unwrap_or_default();
+        apply_infra_attributes(&mut resource.attributes, origin_tag_resolver);
         // An empty host or service counts as missing, so the record fallbacks still apply.
         let host = host_from_attributes(&resource.attributes);
 
         let service = service_from_attributes(&resource.attributes);
         let mut attribute_tags = tags_from_attributes(&resource.attributes, ResourceAttributeTagMode::Mapped);
         attribute_tags.insert_tag(OTEL_SOURCE_TAG.clone());
-        let origin = raw_origin_from_attributes(&resource.attributes);
-        let origin_tags = origin_tag_resolver.resolve_origin_tags(origin);
-        attribute_tags.merge_shared(&origin_tags);
 
         Self {
             resource,
@@ -176,6 +173,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::resource::v1 as otlp_resource_v1;
     use saluki_core::components::ComponentContext;
     use saluki_core::data_model::event::log::Log;
+    use saluki_env::workload::providers::TestWorkloadProvider;
     use saluki_metrics::test::TestRecorder;
     use serde_json::Value as JsonValue;
 
@@ -231,6 +229,13 @@ mod tests {
         lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource,
         scope: Option<otlp_common::InstrumentationScope>,
     ) -> Log {
+        translate_log_with_provider(lr, resource, scope, TestWorkloadProvider::new())
+    }
+
+    fn translate_log_with_provider(
+        lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource,
+        scope: Option<otlp_common::InstrumentationScope>, provider: TestWorkloadProvider,
+    ) -> Log {
         let scope_logs = otlp_logs_v1::ScopeLogs {
             scope,
             log_records: vec![lr],
@@ -244,9 +249,7 @@ mod tests {
 
         let translator = ResourceLogsIter::new(
             resource_logs,
-            &OtlpOriginTagResolver::new(std::sync::Arc::new(
-                saluki_env::workload::providers::NoopWorkloadProvider,
-            )),
+            &OtlpOriginTagResolver::new(std::sync::Arc::new(provider)),
         );
 
         let mut logs = translator
@@ -380,6 +383,57 @@ mod tests {
         };
         let log = translate_log(lr, resource, None);
         assert!(log.tags().has_tag("kube_node:node-1"));
+    }
+
+    /// Infra attributes become resource attributes, so the translator places them as it places any resource
+    /// attribute: known keys become tags and every key becomes a content property.
+    #[test]
+    fn places_infra_attributes_in_properties_and_tags() {
+        let provider = TestWorkloadProvider::with_entity(
+            saluki_env::workload::EntityId::Global,
+            &["service:tag-service", "env:prod", "kube_namespace:ns", "team:infra"],
+        );
+        let log = translate_log_with_provider(otlp_logs_v1::LogRecord::default(), empty_resource(), None, provider);
+
+        assert_eq!(log.service(), "tag-service");
+        let props = log.additional_properties();
+        for (key, value) in [
+            ("service.name", "tag-service"),
+            ("deployment.environment", "prod"),
+            ("kube_namespace", "ns"),
+            ("team", "infra"),
+        ] {
+            assert_eq!(
+                props.get(key),
+                Some(&JsonValue::String(value.into())),
+                "property: {key}"
+            );
+        }
+        assert!(props.get("service").is_none() && props.get("env").is_none());
+
+        let tags = log.tags();
+        for tag in ["service:tag-service", "env:prod", "kube_namespace:ns"] {
+            assert!(tags.has_tag(tag), "tag: {tag}");
+        }
+        assert!(!tags.has_tag("team:infra"));
+    }
+
+    #[test]
+    fn resource_service_name_wins_over_the_service_tag() {
+        let provider =
+            TestWorkloadProvider::with_entity(saluki_env::workload::EntityId::Global, &["service:tag-service"]);
+        let resource = otlp_resource_v1::Resource {
+            attributes: vec![key_value_string_to_otlp_common_key_value(
+                SERVICE_NAME,
+                "resource-service",
+            )],
+            ..Default::default()
+        };
+        let log = translate_log_with_provider(otlp_logs_v1::LogRecord::default(), resource, None, provider);
+
+        assert_eq!(log.service(), "resource-service");
+        assert!(log.tags().has_tag("service:resource-service"));
+        assert!(!log.tags().has_tag("service:tag-service"));
     }
 
     #[test]

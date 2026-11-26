@@ -72,6 +72,10 @@ fn main() -> ExitCode {
             logs::attributes_fixture,
         ),
         (
+            "test/correctness/cases/otlp-logs-enrichment/millstone.yaml",
+            logs::enrichment_fixture,
+        ),
+        (
             "test/correctness/cases/otlp-logs-severity-body/millstone.yaml",
             logs::severity_body_fixture,
         ),

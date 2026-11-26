@@ -501,6 +501,20 @@ pub(super) fn first_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], k
     })
 }
 
+/// Sets the first attribute named `key` to a string value, or adds the attribute, like `Map.PutStr` in `pdata`.
+pub(crate) fn put_str_attribute(attributes: &mut Vec<otlp_common::KeyValue>, key: &str, value: impl Into<String>) {
+    let value = Some(otlp_common::AnyValue {
+        value: Some(Value::StringValue(value.into())),
+    });
+    match attributes.iter_mut().find(|kv| kv.key == key) {
+        Some(kv) => kv.value = value,
+        None => attributes.push(otlp_common::KeyValue {
+            key: key.to_owned(),
+            value,
+        }),
+    }
+}
+
 /// Resolves an AKS cluster name from an Azure managed resource group name.
 fn aks_cluster_name(resource_group_name: &str) -> Option<&str> {
     let segments: Vec<_> = resource_group_name.split('_').collect();
@@ -652,6 +666,27 @@ mod tests {
 
     use super::*;
     use crate::common::otlp::source::resolve_source_from_attributes;
+
+    #[test]
+    fn put_str_attribute_overwrites_the_first_attribute_or_appends() {
+        let int_attribute = |key: &str, value| KeyValue {
+            key: key.to_owned(),
+            value: Some(AnyValue {
+                value: Some(Value::IntValue(value)),
+            }),
+        };
+        let mut attributes = vec![int_attribute("a", 1), int_attribute("a", 2)];
+        put_str_attribute(&mut attributes, "a", "x");
+        put_str_attribute(&mut attributes, "b", "y");
+        assert_eq!(
+            attributes,
+            [
+                string_attribute("a", "x"),
+                int_attribute("a", 2),
+                string_attribute("b", "y"),
+            ]
+        );
+    }
 
     fn string_attribute(key: &str, value: &str) -> KeyValue {
         KeyValue {

@@ -937,3 +937,66 @@ fn processing_rule_records(start_index: u64) -> Vec<LogRecord> {
         with_body(10, "keep-json-encoding", "rendered <b> today", vec![]),
     ]
 }
+
+/// Builds the fixture of the `otlp-logs-enrichment` case.
+///
+/// Both sides set `DD_PROVIDER_KIND`, so the tagger's global entity carries `provider_kind`. Each resource exercises
+/// how the infra attributes processor places that global tag, and which unified service tag attributes it has.
+pub fn enrichment_fixture() -> Vec<u8> {
+    let no_scope = InstrumentationScope::default;
+    let cases: Vec<(&str, Vec<KeyValue>)> = vec![
+        // gap/infra-attributes: the global tag becomes a resource attribute, and so a content property.
+        (
+            "enrich-all-service-tags",
+            vec![
+                kv("service.name", string("enrich-service")),
+                kv("deployment.environment", string("enrich-env")),
+                kv("service.version", string("1.2.3")),
+            ],
+        ),
+        ("enrich-no-service-tags", vec![]),
+        (
+            "enrich-env-name",
+            vec![
+                kv("service.name", string("enrich-service")),
+                kv("deployment.environment.name", string("enrich-env-name")),
+            ],
+        ),
+        (
+            "enrich-both-env-spellings",
+            vec![
+                kv("deployment.environment", string("enrich-env")),
+                kv("deployment.environment.name", string("enrich-env-name")),
+            ],
+        ),
+        // gap/infra-attributes: a global tag overwrites a resource attribute with the same key.
+        (
+            "enrich-provider-kind-collision",
+            vec![kv("provider_kind", string("resource-value"))],
+        ),
+        // gap/infra-attributes: a container ID that the tagger doesn't know adds no tags, and stays as it is.
+        (
+            "enrich-unknown-container-id",
+            vec![kv(
+                "container.id",
+                string("0000000000000000000000000000000000000000000000000000000000000000"),
+            )],
+        ),
+        // gap/origin-detection: a process ID that doesn't exist adds no `container.id`.
+        ("enrich-unknown-process-id", vec![kv("process.pid", int(2_147_483_647))]),
+    ];
+
+    let mut resources = Vec::new();
+    for (index, (id, mut attributes)) in cases.into_iter().enumerate() {
+        attributes.push(kv("host.name", string("enrich-host")));
+        resources.push(resource_logs(
+            attributes,
+            vec![scope_logs(no_scope(), vec![record(index as u64, id, vec![])])],
+        ));
+    }
+
+    ExportLogsServiceRequest {
+        resource_logs: resources,
+    }
+    .encode_to_vec()
+}
