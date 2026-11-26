@@ -601,11 +601,10 @@ logs:
 Logs, metrics and traces use the same ratchet to enforce this last rule. Without `when`, each path in an
 entry must match at least one difference. With `when`, each listed value must match a difference at each path.
 
-For example, suppose two fixtures have a status gap. An entry covers `envelope.status` with
+A test in `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` shows what happens when two fixtures have a
+status gap. The entry covers `envelope.status` with
 `when: {fixture_id: [severity-0, severity-1]}`. If ADP fixes `severity-0`, the step reports that path as stale for
 `severity-0`, even though `severity-1` still differs. Remove the fixed fixture from `when`; keep the other one.
-
-See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching rules.
 
 ### Choose what the entry covers
 
