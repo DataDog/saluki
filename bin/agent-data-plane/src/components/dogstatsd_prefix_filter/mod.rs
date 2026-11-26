@@ -251,7 +251,9 @@ impl Transform for DogStatsDPrefixFilter {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        events.retain_events::<Metric, _>(|metric| self.process_metric(metric));
+                        if !self.metric_prefix.is_empty() || self.matcher.len() != 0 {
+                            events.retain_events::<Metric, _>(|metric| self.process_metric(metric));
+                        }
 
                         if let Err(e) = context.dispatcher().dispatch(events).await {
                             error!(error = %e, "Failed to dispatch events.");

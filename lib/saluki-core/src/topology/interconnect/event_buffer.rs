@@ -8,7 +8,10 @@ use std::{
 };
 
 use crate::{
-    data_model::event::{metric::Metric, Event, EventKind, EventType},
+    data_model::event::{
+        metric::{context::Context, Metric},
+        Event, EventKind, EventType,
+    },
     topology::interconnect::{
         dispatcher::{make_buffer, BufferFactory, DispatchBuffer},
         Dispatchable,
@@ -87,10 +90,16 @@ fn into_metric_kind<T: EventKind>(metric: Metric) -> Option<T> {
     (&mut Some(metric) as &mut dyn Any).downcast_mut::<Option<T>>()?.take()
 }
 
+fn metric_has_timestamp(metric: &Metric) -> bool {
+    metric.values().any_timestamped()
+}
+
 /// A fixed-size event buffer.
 pub struct FixedSizeEventBuffer<const N: usize> {
     events: Backing,
     seen_event_types: EventType,
+    // `None` means that a mutation may have changed the presence of timestamps.
+    timestamped_metrics: Option<bool>,
     recycler: Option<Arc<EventBufferPool<N>>>,
 }
 
@@ -123,6 +132,14 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         self.seen_event_types.contains(event_type)
     }
 
+    /// Returns `true` if any metric in this event buffer has a timestamped value.
+    pub fn has_timestamped_metrics(&self) -> bool {
+        self.timestamped_metrics.unwrap_or_else(|| match &self.events {
+            Backing::Metrics(metrics) => metrics.iter().any(metric_has_timestamp),
+            Backing::Mixed(events) => events.iter().filter_map(Event::try_as_metric).any(metric_has_timestamp),
+        })
+    }
+
     /// Clears the event buffer, removing all events and resetting the seen event types.
     pub fn clear(&mut self) {
         match &mut self.events {
@@ -130,6 +147,7 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
             Backing::Mixed(events) => events.clear(),
         }
         self.seen_event_types = EventType::none();
+        self.timestamped_metrics = Some(false);
     }
 
     /// Attempts to append an event to the back of the event buffer.
@@ -139,6 +157,9 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         if self.len() == self.capacity() {
             return Some(event);
         }
+
+        let found_timestamp =
+            self.timestamped_metrics != Some(true) && event.try_as_metric().is_some_and(metric_has_timestamp);
 
         match (&mut self.events, event) {
             (Backing::Metrics(metrics), Event::Metric(metric)) => {
@@ -172,6 +193,9 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
                 events.push_back(event);
             }
         }
+        if found_timestamp {
+            self.timestamped_metrics = Some(true);
+        }
         None
     }
 
@@ -189,9 +213,25 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
             .chain(events.filter_map(T::try_from_event_ref))
     }
 
+    /// Returns mutable references to metric contexts without invalidating timestamp metadata.
+    pub fn metric_contexts_mut(&mut self) -> impl Iterator<Item = &mut Context> {
+        let has_metrics = self.has_event_type(EventType::Metric);
+        let (metrics, events) = match &mut self.events {
+            Backing::Metrics(metrics) => (metrics.iter_mut(), vec_deque::IterMut::default()),
+            Backing::Mixed(events) if has_metrics => (vec_deque::IterMut::default(), events.iter_mut()),
+            Backing::Mixed(_) => (vec_deque::IterMut::default(), vec_deque::IterMut::default()),
+        };
+        metrics
+            .chain(events.filter_map(Metric::try_from_event_mut))
+            .map(Metric::context_mut)
+    }
+
     /// Returns an iterator over mutable references to the events of type `T` in the event buffer.
     pub fn events_mut<T: EventKind>(&mut self) -> impl Iterator<Item = &mut T> {
         let has_event_type = self.has_event_type(T::EVENT_TYPE);
+        if has_event_type && T::EVENT_TYPE == EventType::Metric {
+            self.timestamped_metrics = None;
+        }
         let (metrics, events) = match &mut self.events {
             Backing::Metrics(metrics) if T::EVENT_TYPE == EventType::Metric => {
                 (metrics.iter_mut(), vec_deque::IterMut::default())
@@ -231,28 +271,45 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
             return;
         }
 
-        let events = match &mut self.events {
+        let retaining_metrics = T::EVENT_TYPE == EventType::Metric;
+        if retaining_metrics {
+            // A callback can change timestamps before it panics.
+            self.timestamped_metrics = None;
+        }
+        let mut has_timestamped_metrics = false;
+        let mut predicate = |value: &mut T| {
+            let keep = predicate(value);
+            if keep && retaining_metrics && !has_timestamped_metrics {
+                has_timestamped_metrics = (value as &dyn Any)
+                    .downcast_ref::<Metric>()
+                    .is_some_and(metric_has_timestamp);
+            }
+            keep
+        };
+
+        match &mut self.events {
             Backing::Metrics(metrics) => {
                 metrics.retain_mut(|metric| metric_mut(metric).is_none_or(&mut predicate));
                 if metrics.is_empty() {
                     self.seen_event_types = EventType::none();
                 }
-                return;
             }
-            Backing::Mixed(events) => events,
-        };
-        let mut seen_event_types = EventType::none();
-        events.retain_mut(|event| {
-            let keep = match T::try_from_event_mut(event) {
-                Some(value) => predicate(value),
-                None => true,
-            };
-            if keep {
-                seen_event_types |= event.event_type();
+            Backing::Mixed(events) => {
+                let mut seen_event_types = EventType::none();
+                events.retain_mut(|event| {
+                    let keep = T::try_from_event_mut(event).is_none_or(&mut predicate);
+                    if keep {
+                        seen_event_types |= event.event_type();
+                    }
+                    keep
+                });
+                self.seen_event_types = seen_event_types;
             }
-            keep
-        });
-        self.seen_event_types = seen_event_types;
+        }
+
+        if retaining_metrics {
+            self.timestamped_metrics = Some(has_timestamped_metrics);
+        }
     }
 
     /// Removes all events of type `T` from the event buffer, returning them.
@@ -274,6 +331,12 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         if !self.has_event_type(T::EVENT_TYPE) {
             return extracted.into_iter();
         }
+
+        let track_timestamps = T::EVENT_TYPE == EventType::Metric && self.timestamped_metrics != Some(false);
+        if track_timestamps {
+            self.timestamped_metrics = None;
+        }
+        let mut has_timestamped_metrics = false;
         let events = match &mut self.events {
             Backing::Metrics(metrics) => {
                 let mut i = 0;
@@ -282,11 +345,17 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
                         let metric = metrics.swap_remove_back(i).expect("index is in bounds");
                         extracted.push(into_metric_kind(metric).expect("metric type was already checked"));
                     } else {
+                        if track_timestamps && !has_timestamped_metrics {
+                            has_timestamped_metrics = metric_has_timestamp(&metrics[i]);
+                        }
                         i += 1;
                     }
                 }
                 if metrics.is_empty() {
                     self.seen_event_types = EventType::none();
+                }
+                if track_timestamps {
+                    self.timestamped_metrics = Some(has_timestamped_metrics);
                 }
                 return extracted.into_iter();
             }
@@ -306,10 +375,16 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
                 extracted.push(value);
             } else {
                 seen_event_types |= events[i].event_type();
+                if track_timestamps && !has_timestamped_metrics {
+                    has_timestamped_metrics = events[i].try_as_metric().is_some_and(metric_has_timestamp);
+                }
                 i += 1;
             }
         }
         self.seen_event_types = seen_event_types;
+        if track_timestamps {
+            self.timestamped_metrics = Some(has_timestamped_metrics);
+        }
         extracted.into_iter()
     }
 }
@@ -319,6 +394,7 @@ impl<const N: usize> Default for FixedSizeEventBuffer<N> {
         Self {
             events: Backing::default(),
             seen_event_types: EventType::none(),
+            timestamped_metrics: Some(false),
             recycler: None,
         }
     }
@@ -339,6 +415,7 @@ impl<const N: usize> Clone for FixedSizeEventBuffer<N> {
         Self {
             events,
             seen_event_types: self.seen_event_types,
+            timestamped_metrics: self.timestamped_metrics,
             recycler: self.recycler.clone(),
         }
     }
@@ -484,9 +561,12 @@ impl<const N: usize> EventBufferManager<N> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
     use super::*;
     use crate::data_model::event::{
         eventd::EventD,
+        metric::ScalarPoints,
         service_check::{CheckStatus, ServiceCheck},
     };
 
@@ -518,6 +598,91 @@ mod tests {
             assert!(next.try_push(event.clone()).is_none());
             assert_eq!(backing_ptr(&next), first_ptr);
             assert_eq!(next.into_iter().collect::<Vec<_>>(), [event]);
+        }
+    }
+
+    #[test]
+    fn timestamp_presence_resets_on_clear_and_recycling() {
+        let pool = Arc::new(EventBufferPool::<2>::default());
+        let timestamped = Event::Metric(Metric::counter("timestamped", (123, 1.0)));
+        let plain = Event::Metric(Metric::counter("plain", 1.0));
+        let eventd = Event::EventD(EventD::new("event", "event"));
+
+        for mixed in [false, true] {
+            let mut buffer = pool.buffer();
+            assert!(buffer.try_push(timestamped.clone()).is_none());
+            if mixed {
+                assert!(buffer.try_push(eventd.clone()).is_none());
+            }
+            assert!(buffer.has_timestamped_metrics());
+            assert!(buffer.clone().has_timestamped_metrics());
+            drop(buffer);
+
+            let mut buffer = pool.buffer();
+            let first = if mixed { eventd.clone() } else { plain.clone() };
+            assert!(buffer.try_push(first).is_none());
+            assert!(buffer.try_push(plain.clone()).is_none());
+            assert_eq!(buffer.try_push(timestamped.clone()), Some(timestamped.clone()));
+            assert_eq!(buffer.timestamped_metrics, Some(false));
+
+            buffer.clear();
+            assert!(buffer.try_push(timestamped.clone()).is_none());
+            assert!(buffer.has_timestamped_metrics());
+            buffer.clear();
+            assert!(!buffer.has_timestamped_metrics());
+        }
+    }
+
+    #[test]
+    fn timestamp_presence_tracks_typed_mutation_and_removal() {
+        for mixed in [false, true] {
+            let mut buffer = FixedSizeEventBuffer::<4>::default();
+            assert!(buffer.try_push(Event::Metric(Metric::counter("plain", 1.0))).is_none());
+            if mixed {
+                assert!(buffer.try_push(Event::EventD(EventD::new("event", "event"))).is_none());
+            }
+            let points = ScalarPoints::from_iter([(None, 1.0), (NonZeroU64::new(123), 2.0)]);
+            let timestamped = Metric::counter("timestamped", points);
+            assert!(buffer.try_push(Event::Metric(timestamped.clone())).is_none());
+
+            buffer.retain_events::<EventD, _>(|_| true);
+            assert_eq!(buffer.timestamped_metrics, Some(true));
+            assert_eq!(buffer.extract_events::<Metric, _>(|_| false).count(), 0);
+            assert_eq!(buffer.timestamped_metrics, Some(true));
+            assert_eq!(
+                buffer
+                    .extract_events::<Metric, _>(|metric| metric.context().name() == "timestamped")
+                    .collect::<Vec<_>>(),
+                [timestamped]
+            );
+            assert_eq!(buffer.timestamped_metrics, Some(false));
+
+            {
+                let mut contexts = buffer.metric_contexts_mut();
+                *contexts.next().unwrap() = Context::from_static_parts("mapped", &[]);
+                assert!(contexts.next().is_none());
+            }
+            assert_eq!(buffer.timestamped_metrics, Some(false));
+            assert_eq!(buffer.events::<Metric>().next().unwrap().context().name(), "mapped");
+
+            for timestamp in [123, 0] {
+                buffer
+                    .events_mut::<Metric>()
+                    .next()
+                    .expect("the plain metric should remain")
+                    .values_mut()
+                    .set_timestamp(timestamp);
+                assert_eq!(buffer.has_timestamped_metrics(), timestamp != 0);
+                assert_eq!(buffer.clone().has_timestamped_metrics(), timestamp != 0);
+            }
+
+            for timestamp in [123, 0] {
+                buffer.retain_events::<Metric, _>(|metric| {
+                    metric.values_mut().set_timestamp(timestamp);
+                    true
+                });
+                assert_eq!(buffer.timestamped_metrics, Some(timestamp != 0));
+            }
         }
     }
 

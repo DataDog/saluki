@@ -67,11 +67,15 @@ use crate::{
         traces_forwarder_configuration,
     },
     components::{
-        apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
-        dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
-        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        liveness::LivenessConfiguration, metric_filter::MetricFilterConfiguration,
-        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration,
+        dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
+        dogstatsd_post_aggregate_filter::{DogStatsDPostAggregateFilterConfiguration, CLIENT_TELEMETRY_OUTPUT},
+        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration,
+        host_tags::HostTagsConfiguration,
+        liveness::LivenessConfiguration,
+        metric_filter::MetricFilterConfiguration,
+        ottl_filter_processor::OttlFilterConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration,
         tag_filterlist::TagFilterlistConfiguration,
     },
     config::{DataPlaneConfiguration, OtlpPlan},
@@ -220,20 +224,6 @@ async fn create_topology(
         blueprint.add_forwarder("dd_traces_out", dd_traces_forwarder_config)?;
     }
 
-    if dp.metrics_pipeline_required(otlp) {
-        let routing_targets =
-            routing_targets.ok_or_else(|| generic_error!("The metrics pipeline requires the Datadog forwarder."))?;
-        add_baseline_metrics_pipeline_to_blueprint(
-            &mut blueprint,
-            config_system,
-            remote_agent_client_config,
-            &shared,
-            &routing_targets,
-            env_provider,
-        )
-        .await?;
-    }
-
     if dp.logs_pipeline_required(otlp) {
         add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared, &config.domains.logs, env_provider).await?;
     }
@@ -246,6 +236,7 @@ async fn create_topology(
         add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &shared)?;
     }
 
+    let mut metrics_inputs = Vec::new();
     if dp.traces_pipeline_required(otlp) {
         add_baseline_traces_pipeline_to_blueprint(
             &mut blueprint,
@@ -255,6 +246,8 @@ async fn create_topology(
             semantic_registry.clone(),
         )
         .await?;
+        // The sampler emits sampling telemetry on a dedicated output. Send those metrics through the metrics pipeline.
+        metrics_inputs.push("trace_sampler.metrics");
     }
 
     // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
@@ -262,9 +255,10 @@ async fn create_topology(
     if !dp.standalone_mode() {
         let add_container_tags = config_system.config().shared.basic_telemetry.add_container_tags;
         add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags).await?;
+        metrics_inputs.push("liveness_in.metrics");
     }
 
-    // Now we move on to our actual data pipelines.
+    // Build the enabled inputs first so the shared metrics pipeline can connect their outputs together.
     if dp.checks_enabled() {
         add_checks_pipeline_to_blueprint(
             &mut blueprint,
@@ -273,9 +267,11 @@ async fn create_topology(
             env_provider,
         )
         .await?;
+        metrics_inputs.push("checks_ipc_in.metrics");
     }
 
     let dogstatsd_api = if dp.dogstatsd_enabled() {
+        metrics_inputs.push("dsd_post_agg_filter");
         Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?)
     } else {
         None
@@ -290,6 +286,9 @@ async fn create_topology(
             otlp,
         )
         .await?;
+        if otlp.routes().metrics == OtlpRoute::Internal {
+            metrics_inputs.push("otlp_in.metrics");
+        }
     }
 
     if dp.apm_enabled() {
@@ -303,10 +302,23 @@ async fn create_topology(
         .await?;
     }
 
+    // The shared back end routes and encodes metrics for all enabled producers.
+    if dp.metrics_pipeline_required(otlp) {
+        let routing_targets =
+            routing_targets.ok_or_else(|| generic_error!("The metrics pipeline requires the Datadog forwarder."))?;
+        add_baseline_metrics_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            remote_agent_client_config,
+            &shared,
+            &routing_targets,
+            env_provider,
+            &metrics_inputs,
+        )?;
+    }
+
     Ok((blueprint, dogstatsd_api))
 }
-
-const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
 
 async fn add_liveness_source_to_blueprint(
     blueprint: &mut TopologyBlueprint, env_provider: &RemoteAgentEnvironmentProvider, add_container_tags: bool,
@@ -315,7 +327,6 @@ async fn add_liveness_source_to_blueprint(
 
     blueprint
         .add_source("liveness_in", liveness_config)?
-        .connect_components("liveness_in.metrics", LIVENESS_METRICS_DESTINATION)?
         .connect_components("liveness_in.service_checks", "dd_service_checks_encode")?;
 
     Ok(())
@@ -336,7 +347,6 @@ async fn add_checks_pipeline_to_blueprint(
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
-        .connect_components("checks_ipc_in.metrics", "metrics_enrich")?
         .connect_components("checks_ipc_in.logs", logs_input)?
         .connect_components("checks_ipc_in.events", "dd_events_encode")?
         .connect_components("checks_ipc_in.service_checks", "dd_service_checks_encode")?;
@@ -344,26 +354,33 @@ async fn add_checks_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn add_baseline_metrics_pipeline_to_blueprint(
+fn add_baseline_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
     routing_targets: &Arc<RoutingTargetCatalog>, env_provider: &RemoteAgentEnvironmentProvider,
+    metrics_inputs: &[&str],
 ) -> Result<(), GenericError> {
-    // Create the back half of the metrics processing pipeline.
-    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
-    let mut metrics_enrich_config =
-        ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
-
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
-    if !dp.standalone_mode() {
+    let metrics_outputs_from = if dp.standalone_mode() {
+        // Metric contexts already carry their host. Standalone pipelines do not add Agent host tags.
+        metrics_inputs
+    } else {
         let client_config = remote_agent_client_config
             .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
+        let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
+        let mut metrics_enrich_config =
+            ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
         let host_tags_config = HostTagsConfiguration::new(client_config.clone(), shared.tags.expected_tags_duration);
         if host_tags_config.enabled() {
             metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
         }
-    }
+        blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
+        for input in metrics_inputs {
+            blueprint.connect_components(input, "metrics_enrich")?;
+        }
+        &["metrics_enrich"]
+    };
 
     let endpoint_routing = MetricsEndpointRoutingConfiguration::new(
         &config.domains.metrics_endpoint_routing.metric_allowlists,
@@ -371,18 +388,29 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         &shared.endpoints.primary_endpoint(),
         &shared.endpoints.additional_endpoints,
     )?;
-    blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
 
-    add_metrics_output_pipelines_to_blueprint(blueprint, shared, routing_targets, &endpoint_routing)?;
-    add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
+    add_metrics_output_pipelines_to_blueprint(
+        blueprint,
+        shared,
+        routing_targets,
+        &endpoint_routing,
+        metrics_outputs_from,
+    )?;
+    add_mrf_metrics_pipeline_to_blueprint(
+        blueprint,
+        config_system,
+        shared,
+        &config.domains.multi_region_failover,
+        metrics_outputs_from,
+    )?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared, metrics_outputs_from)?;
 
     Ok(())
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
-    mrf: &multi_region_failover::Domain,
+    mrf: &multi_region_failover::Domain, metrics_outputs_from: &[&str],
 ) -> Result<(), GenericError> {
     let mrf_config = mrf_configuration(mrf);
 
@@ -402,11 +430,6 @@ fn add_mrf_metrics_pipeline_to_blueprint(
     // Only send metrics to the MRF branch while metric mirroring is active. When MRF is disabled at startup, the
     // connection can never be active, so the branch is never built.
     let mirroring_config = config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring);
-    let mrf_condition = if mrf_config.is_enabled() {
-        live_condition(&mirroring_config, |mirroring| mirroring.enabled)
-    } else {
-        EdgeCondition::fixed(false)
-    };
     let mrf_gateway_config =
         MetricFilterConfiguration::for_mrf(mrf_config.is_enabled(), mirroring_config.map(metric_mirroring));
     let mrf_metrics_config = datadog_metrics_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
@@ -423,8 +446,15 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
         .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
         .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
-        .connect_components_when("metrics_enrich", "mrf_metrics_gateway", mrf_condition)?
         .connect_components_in_order(["mrf_metrics_gateway", "mrf_metrics_encode", "mrf_dd_out"])?;
+    for from in metrics_outputs_from {
+        let mrf_condition = if mrf_config.is_enabled() {
+            live_condition(&mirroring_config, |mirroring| mirroring.enabled)
+        } else {
+            EdgeCondition::fixed(false)
+        };
+        blueprint.connect_components_when(from, "mrf_metrics_gateway", mrf_condition)?;
+    }
 
     Ok(())
 }
@@ -433,7 +463,7 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 // filtered stream targets only its policy's endpoints. This applies to both series and sketches.
 fn add_metrics_output_pipelines_to_blueprint(
     blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, catalog: &Arc<RoutingTargetCatalog>,
-    routing: &MetricsEndpointRoutingConfiguration,
+    routing: &MetricsEndpointRoutingConfiguration, metrics_outputs_from: &[&str],
 ) -> Result<(), GenericError> {
     let mut dd_metrics_config = datadog_metrics_configuration(shared);
     if !routing.selected_endpoints().is_empty() {
@@ -441,7 +471,10 @@ fn add_metrics_output_pipelines_to_blueprint(
     }
     blueprint
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
+        .connect_components("dd_metrics_encode", "dd_out")?;
+    for from in metrics_outputs_from {
+        blueprint.connect_components(from, "dd_metrics_encode")?;
+    }
 
     // Each policy group needs unique component IDs; indices keep endpoint names out of those IDs.
     for (index, policy) in routing.policy_groups().iter().enumerate() {
@@ -457,14 +490,17 @@ fn add_metrics_output_pipelines_to_blueprint(
         blueprint
             .add_transform(filter_id.as_str(), filter_config)?
             .add_encoder(encoder_id.as_str(), metrics_config)?
-            .connect_components_in_order(["metrics_enrich", filter_id.as_str(), encoder_id.as_str(), "dd_out"])?;
+            .connect_components_in_order([filter_id.as_str(), encoder_id.as_str(), "dd_out"])?;
+        for from in metrics_outputs_from {
+            blueprint.connect_components(from, filter_id.as_str())?;
+        }
     }
 
     Ok(())
 }
 
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, metrics_outputs_from: &[&str],
 ) -> Result<(), GenericError> {
     let af_config = AutoscalingFailoverConfiguration::new(
         shared.autoscaling_failover.enabled,
@@ -505,12 +541,10 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
         .add_transform("af_metrics_gateway", af_gateway_config)?
         .add_encoder("af_metrics_encode", af_metrics_config)?
         .add_forwarder("cluster_agent_out", cluster_agent_forwarder_config)?
-        .connect_components_in_order([
-            "metrics_enrich",
-            "af_metrics_gateway",
-            "af_metrics_encode",
-            "cluster_agent_out",
-        ])?;
+        .connect_components_in_order(["af_metrics_gateway", "af_metrics_encode", "cluster_agent_out"])?;
+    for from in metrics_outputs_from {
+        blueprint.connect_components(from, "af_metrics_gateway")?;
+    }
 
     Ok(())
 }
@@ -701,9 +735,6 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         // Onboarding runs after sampling, so a service is only recorded as seen once one of its traces is kept.
         .connect_components_in_order(["traces_enrich", "trace_sampler", "apm_onboarding"])?
         .connect_components("apm_onboarding", ["dd_apm_stats", "dd_traces_encode"])?
-        // The sampler reports its sampling telemetry as metric events through this dedicated
-        // output, delivering the metrics through the metrics pipeline to the backend.
-        .connect_components("trace_sampler.metrics", "metrics_enrich")?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
         .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_traces_out")?;
 
@@ -1006,7 +1037,10 @@ async fn add_dsd_pipeline_to_blueprint(
             EdgeCondition::from_watch(dsd_stats_collection_active),
         )?
         // Post-aggregation client telemetry for RAR/COAT.
-        .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
+        .connect_components(
+            format!("dsd_post_agg_filter.{CLIENT_TELEMETRY_OUTPUT}"),
+            "dsd_client_telemetry_out",
+        )?;
 
     // Metrics.
     //
@@ -1024,7 +1058,6 @@ async fn add_dsd_pipeline_to_blueprint(
                 "dsd_tag_filterlist",
                 "dsd_agg",
                 "dsd_post_agg_filter",
-                "metrics_enrich",
             ])?
             // Timestamped metrics skip tag filtering and aggregation, rejoining the pipeline after the aggregate
             // transform.
@@ -1037,7 +1070,6 @@ async fn add_dsd_pipeline_to_blueprint(
             "dsd_tag_filterlist",
             "dsd_agg",
             "dsd_post_agg_filter",
-            "metrics_enrich",
         ])?;
     }
 
@@ -1146,16 +1178,14 @@ async fn add_otlp_pipeline_to_blueprint(
 /// Destination that drops what the OTLP source sends it.
 const OTLP_BLACKHOLE: &str = "otlp_out_blackhole";
 
-/// Returns the topology edges, as `(output, component)` pairs, that connect the OTLP source for `routes`.
+/// Returns the OTLP source edges as `(output, component)` pairs, except for the internal metrics route.
 ///
-/// Each internal signal goes to its pipeline, which the pipeline predicates build for the same routes. OTLP metrics go
-/// directly to the enrichment stage of the metrics pipeline, skipping aggregation, to avoid transforming counters into
-/// rates. OTLP logs go to `logs_input`, the component that logs enter the logs pipeline through. When no signal is
-/// internal, the source has no output path of its own, but a topology can't hold a component with no connections, so
-/// it connects to [`OTLP_BLACKHOLE`].
+/// Internal logs go to `logs_input`, the component that logs enter the logs pipeline through, and internal traces go
+/// to the traces pipeline. The shared metrics pipeline connects the OTLP metrics output with the other producers. OTLP
+/// metrics skip aggregation so their counters do not become rates. If no signal uses an internal pipeline, connect to
+/// [`OTLP_BLACKHOLE`]. The topology requires a connected source.
 fn otlp_source_edges(routes: OtlpRoutes, logs_input: &'static str) -> Vec<(&'static str, &'static str)> {
     let edges = [
-        (routes.metrics, "otlp_in.metrics", "metrics_enrich"),
         (routes.logs, "otlp_in.logs", logs_input),
         (routes.traces, "otlp_in.traces", "traces_enrich"),
     ]
@@ -1164,7 +1194,7 @@ fn otlp_source_edges(routes: OtlpRoutes, logs_input: &'static str) -> Vec<(&'sta
     .map(|(_, from, to)| (from, to))
     .collect::<Vec<_>>();
 
-    if edges.is_empty() {
+    if edges.is_empty() && routes.metrics != OtlpRoute::Internal {
         vec![("otlp_in.metrics", OTLP_BLACKHOLE)]
     } else {
         edges
@@ -1309,11 +1339,7 @@ mod tests {
             (
                 "internal only",
                 OtlpRoutes::ALL_INTERNAL,
-                vec![
-                    ("otlp_in.metrics", "metrics_enrich"),
-                    ("otlp_in.logs", "dd_logs_encode"),
-                    ("otlp_in.traces", "traces_enrich"),
-                ],
+                vec![("otlp_in.logs", "dd_logs_encode"), ("otlp_in.traces", "traces_enrich")],
             ),
             (
                 "mixed",
@@ -1323,11 +1349,9 @@ mod tests {
             (
                 "metrics and logs internal",
                 routes(Internal, Internal, Proxied),
-                vec![
-                    ("otlp_in.metrics", "metrics_enrich"),
-                    ("otlp_in.logs", "dd_logs_encode"),
-                ],
+                vec![("otlp_in.logs", "dd_logs_encode")],
             ),
+            ("only metrics internal", routes(Internal, Proxied, Disabled), vec![]),
             (
                 "all proxied",
                 routes(Proxied, Proxied, Proxied),
@@ -1377,10 +1401,12 @@ mod tests {
                 if !otlp.enabled() {
                     continue;
                 }
+                if routes.metrics == Internal {
+                    assert!(dp.metrics_pipeline_required(&otlp), "{row}: metrics output isn't built");
+                }
 
                 for (_, component) in otlp_source_edges(routes, logs_pipeline_input(&config.domains.logs)) {
                     let built = match component {
-                        "metrics_enrich" => dp.metrics_pipeline_required(&otlp),
                         "dd_logs_encode" | LOGS_PROCESS => dp.logs_pipeline_required(&otlp),
                         "traces_enrich" => dp.traces_pipeline_required(&otlp),
                         // The OTLP pipeline adds the blackhole itself.

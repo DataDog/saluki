@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce DogStatsD processing overhead when optional transforms are inactive or when client telemetry is enabled.
