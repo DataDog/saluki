@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce DogStatsD context-cache memory by tracking expiration directly in cache entries.
