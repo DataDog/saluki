@@ -145,6 +145,17 @@ pub fn host_fixture() -> Vec<u8> {
     request(resources)
 }
 
+/// The resource attributes of an AWS Lambda function. The function is the source of its metrics, so they have no host,
+/// although the resource has a `host.name`.
+fn aws_lambda_attributes() -> Vec<KeyValue> {
+    vec![
+        kv("cloud.provider", string("aws")),
+        kv("cloud.platform", string("aws_lambda")),
+        kv("faas.id", string(LAMBDA_ARN)),
+        kv("host.name", string("source-host")),
+    ]
+}
+
 /// Source cases for `host_fixture`, each named for its gauge.
 fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
     let azure = |platform: &str| {
@@ -195,14 +206,7 @@ fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
             "azure_container_apps_no_replica",
             with_host(azure("azure.container_apps")),
         ),
-        (
-            "aws_lambda",
-            with_host(vec![
-                kv("cloud.provider", string("aws")),
-                kv("cloud.platform", string("aws_lambda")),
-                kv("faas.id", string(LAMBDA_ARN)),
-            ]),
-        ),
+        ("aws_lambda", aws_lambda_attributes()),
         ("gcp_cloud_run", with_host(gcp("gcp_cloud_run"))),
         ("gcp_cloud_functions", with_host(gcp("gcp_cloud_functions"))),
         ("gcp_cloud_run_job", {
@@ -364,10 +368,24 @@ pub fn cumulative_monotonic_fixture() -> Vec<u8> {
 /// Shared by the `otlp-metrics-histogram-counters` and `otlp-metrics-histogram-nobuckets` cases, which differ only in
 /// histogram mode.
 pub fn histogram_fixture() -> Vec<u8> {
+    request(vec![resource_metrics(
+        None,
+        None,
+        vec![delta_histogram(
+            "otlp.histogram",
+            ONE_SECOND_NANOS,
+            2 * ONE_SECOND_NANOS,
+        )],
+    )])
+}
+
+/// A delta histogram with one point of count 6 and sum 23.5. The explicit bounds are 1 and 10, and the bucket counts are
+/// 1, 2 and 3. The point has no minimum or maximum.
+fn delta_histogram(name: &str, start_time_unix_nano: u64, time_unix_nano: u64) -> Metric {
     let histogram = Histogram {
         data_points: vec![HistogramDataPoint {
-            start_time_unix_nano: ONE_SECOND_NANOS,
-            time_unix_nano: 2 * ONE_SECOND_NANOS,
+            start_time_unix_nano,
+            time_unix_nano,
             count: 6,
             sum: Some(23.5),
             bucket_counts: vec![1, 2, 3],
@@ -376,11 +394,7 @@ pub fn histogram_fixture() -> Vec<u8> {
         }],
         aggregation_temporality: AggregationTemporality::Delta as i32,
     };
-    request(vec![resource_metrics(
-        None,
-        None,
-        vec![metric("otlp.histogram", Data::Histogram(histogram))],
-    )])
+    metric(name, Data::Histogram(histogram))
 }
 
 /// Two cumulative points of a summary with two quantiles, ten seconds apart.
@@ -459,4 +473,81 @@ pub fn control_fixture() -> Vec<u8> {
         })
         .collect();
     request(vec![resource_metrics(None, None, gauges)])
+}
+
+/// Series and sketches that a case sends over the v3 series and v3 sketches paths of an intake.
+///
+/// The fixture holds 3 series points whose names start with `otlpprobe.v3.series.`, and 2 sketch points whose names
+/// start with `otlpprobe.v3.sketch.`. The prefix tells a case which intake path the points must arrive on. A resource
+/// with a host holds a gauge, a delta monotonic sum and a histogram. A Lambda resource, which gives its metrics no
+/// host, holds a gauge and a histogram. So a series and a sketch each have a host and none. A probe that joins the
+/// fixture later takes one of the two prefixes, and the counts change.
+pub fn v3_fixture() -> Vec<u8> {
+    request(vec![
+        resource_metrics(
+            resource(vec![
+                kv("service.name", string("otlp-test")),
+                kv("host.name", string("v3-host")),
+            ]),
+            None,
+            vec![
+                gauge("otlpprobe.v3.series.gauge", vec![point(NOV_2023_NANOS, 1.5, vec![])]),
+                monotonic_sum(
+                    "otlpprobe.v3.series.count",
+                    AggregationTemporality::Delta,
+                    vec![point(NOV_2023_NANOS, 5.0, vec![])],
+                ),
+                delta_histogram(
+                    "otlpprobe.v3.sketch.histogram",
+                    NOV_2023_NANOS,
+                    NOV_2023_NANOS + 10 * ONE_SECOND_NANOS,
+                ),
+            ],
+        ),
+        resource_metrics(
+            resource(aws_lambda_attributes()),
+            None,
+            vec![
+                gauge("otlpprobe.v3.series.hostless", vec![point(NOV_2023_NANOS, 2.0, vec![])]),
+                delta_histogram(
+                    "otlpprobe.v3.sketch.hostless",
+                    NOV_2023_NANOS,
+                    NOV_2023_NANOS + 10 * ONE_SECOND_NANOS,
+                ),
+            ],
+        ),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v3_fixture_sends_series_and_histograms_under_their_own_prefixes() {
+        let request = ExportMetricsServiceRequest::decode(v3_fixture().as_slice()).unwrap();
+        let (mut series, mut sketches) = (0, 0);
+        for metric in request
+            .resource_metrics
+            .iter()
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+        {
+            match (&metric.data, metric.name.as_str()) {
+                (Some(Data::Gauge(Gauge { data_points })), name) if name.starts_with("otlpprobe.v3.series.") => {
+                    series += data_points.len();
+                }
+                (Some(Data::Sum(Sum { data_points, .. })), name) if name.starts_with("otlpprobe.v3.series.") => {
+                    series += data_points.len();
+                }
+                (Some(Data::Histogram(Histogram { data_points, .. })), name)
+                    if name.starts_with("otlpprobe.v3.sketch.") =>
+                {
+                    sketches += data_points.len();
+                }
+                (_, name) => panic!("'{}' is not a probe of its prefix", name),
+            }
+        }
+        assert_eq!((series, sketches), (3, 2));
+    }
 }
