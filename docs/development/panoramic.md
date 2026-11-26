@@ -557,6 +557,17 @@ When comparing stats, set `min_stats_groups` if you set span or trace expectatio
 This minimum counts the groups each intake holds. In spans-only mode (`otlp_direct_analysis_mode: true`), omit
 `min_stats_groups` and `require_ssi`.
 
+### When the intakes hold different sets
+
+Suppose ADP drops a span and changes the resource on another. `compare` reports the missing span by service, name
+and resource. It still pairs the remaining spans by span ID and reports the changed resource. It also checks APM
+stats when enabled, and reports stale known differences. For metrics, it lists the series on one side only and
+compares the values of the series the intakes have in common.
+
+A split trace need not lose any spans. If ADP puts a span in a different trace, the span ID still pairs it with the
+Agent's span, but `trace_id` differs. Neither `additional_span_ignore_fields` nor a known difference can hide that
+field, even with a wildcard in the known difference path.
+
 ## Known differences
 
 A correctness case compares the Agent's intake (`baseline`) with ADP's intake (`comparison`). A **gap** is a
@@ -587,10 +598,13 @@ logs:
 - **Stale:** Suppose both logs have status `info`. The status entry no longer matches a difference, so the step
   fails. Remove the entry when the gap is fixed.
 
-Logs, metrics and traces use the same ratchet to enforce this last rule. Each path in each entry must match
-at least once. If a path covers several fixtures, a match on one keeps it from going stale. Keep entries narrow.
+Logs, metrics and traces use the same ratchet to enforce this last rule. Without `when`, each path in an
+entry must match at least one difference. With `when`, each listed value must match a difference at each path.
 
-See `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` for the matching rules.
+A test in `bin/correctness/panoramic/src/steps/analysis/ratchet.rs` shows what happens when two fixtures have a
+status gap. The entry covers `envelope.status` with
+`when: {fixture_id: [severity-0, severity-1]}`. If ADP fixes `severity-0`, the step reports that path as stale for
+`severity-0`, even though `severity-1` still differs. Remove the fixed fixture from `when`; keep the other one.
 
 ### Choose what the entry covers
 
@@ -634,9 +648,8 @@ to their own intake. For example, a stats group can hold a hit count for a parti
 `compare` normally checks both outputs. The `otlp-traces-ottl-transform` case uses a collector as its baseline and
 sets `otlp_direct_analysis_mode: true`. That option checks spans only, so the step cannot declare a stats gap.
 
-If the trace counts or span IDs differ, the trace comparison stops before it checks stats. When it does compare
-stats, it checks every group, not just the first mismatch. Each entry under `traces.known_differences` needs an
-`issue`. Choose the path according to what differs:
+The stats comparison checks every group, not just the first mismatch. Each entry under `traces.known_differences`
+needs an `issue`. Choose the path according to what differs:
 
 - `stats.groups`: one intake has a group that the other lacks. Use `when` to identify the group by its fields, for
   example `{service: [api-gateway]}`.

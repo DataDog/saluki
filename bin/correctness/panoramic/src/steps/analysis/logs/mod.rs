@@ -82,8 +82,8 @@ pub struct LogsAnalysisOptions {
 
     /// Differences that are expected, each tagged with the gap that explains it.
     ///
-    /// A matching difference doesn't fail the case, but an entry path that matches nothing does, so that fixing a
-    /// gap requires removing its entries.
+    /// A matching difference doesn't fail the case, but an entry path that matches nothing for one of the values of
+    /// `when` does, so that fixing a gap requires removing its entries.
     ///
     /// An entry's `when` limits it to some logs, such as the logs of one fixture with `{fixture_id: [a]}`. It matches
     /// the fields of the baseline log's semantic view (see `stele::Log::semantic_view`). That view is one map of the

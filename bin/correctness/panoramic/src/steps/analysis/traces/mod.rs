@@ -15,7 +15,7 @@ use treediff::value::Key;
 
 use super::expectations::{ExpectedSpan, HeldTraces, TracesExpectations};
 use super::join_failures;
-use super::ratchet::{DiffKind, FieldDiff, KnownDifference, Ratchet};
+use super::ratchet::{path_matches, DiffKind, FieldDiff, KnownDifference, Ratchet};
 use crate::steps::analysis::TracesAnalysisOptions;
 use crate::steps::intake::CollectedData;
 
@@ -76,6 +76,10 @@ const STATS_PREFIX: &str = "stats.";
 /// The prefix of the paths of a traces known difference that cover the fields of a span on both sides.
 const SPAN_PREFIX: &str = "span.";
 
+/// The span field that a split or merged trace differs in, on the spans that both sides hold. Neither a known difference
+/// nor `additional_span_ignore_fields` may cover it.
+pub const TRACE_ID_FIELD: &str = "trace_id";
+
 /// The fields of a span that the view of a span holds, and that name it in a failure.
 const SPAN_VIEW_FIELDS: &[&str] = &["service", "name", "resource"];
 
@@ -90,8 +94,8 @@ pub struct TracesOptions {
     /// Trace statistics and span field differences that are expected, each tagged with the gap and the issue that
     /// explain it.
     ///
-    /// A matching difference doesn't fail the case, but an entry path that matches nothing does, so that fixing a gap
-    /// requires removing its entries.
+    /// A matching difference doesn't fail the case, but an entry path that matches nothing for one of the values of
+    /// `when` does, so that fixing a gap requires removing its entries.
     #[serde(default)]
     pub known_differences: Vec<KnownDifference>,
 
@@ -130,10 +134,11 @@ impl TracesOptions {
     ///
     /// # Errors
     ///
-    /// If an entry names no issue, has a path outside the trace statistics and the span fields, or has a span path
-    /// and doesn't scope itself to spans by service, name or resource, or if `otlp_direct_analysis_mode` skips the
-    /// statistics comparison that an option or an entry's path applies to, or if a step that compares stats sets
-    /// expectations or turns off `require_ssi` and sets no `min_stats_groups`, an error is returned.
+    /// If an entry names no issue, has a path outside the trace statistics and the span fields, has a path that covers
+    /// the trace ID of a span, or has a span path and doesn't scope itself to spans by service, name or resource, or if
+    /// `otlp_direct_analysis_mode` skips the statistics comparison that an option or an entry's path applies to, or if
+    /// a step that compares stats sets expectations or turns off `require_ssi` and sets no `min_stats_groups`, an error
+    /// is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
         if otlp_direct_analysis_mode {
             let compares_nothing = "which compares no stats";
@@ -186,6 +191,13 @@ impl TracesOptions {
                     "known difference '{}' has the path '{}': a traces known difference covers only '{}*' and '{}*' \
                      paths",
                     entry.gap, path, STATS_PREFIX, SPAN_PREFIX
+                ));
+            }
+            let trace_id = format!("{}{}", SPAN_PREFIX, TRACE_ID_FIELD);
+            if let Some(path) = entry.paths.iter().find(|path| path_matches(path, &trace_id)) {
+                return Err(format!(
+                    "known difference '{}' has the path '{}', which covers '{}': a split trace shows up only there",
+                    entry.gap, path, trace_id
                 ));
             }
             let scoped = !entry.when.is_empty()
@@ -326,116 +338,31 @@ impl TracesAnalyzer {
 
     /// Compares the spans, the stats and the SSI metadata of both sides.
     fn compare(self) -> Result<(), (GenericError, Vec<String>)> {
-        let mut error_count = 0;
         let mut diff_recorder = DifferenceRecorder::new(self.ignored_fields);
-        let mut span_samples: Vec<String> = Vec::new();
-        let mut stats_samples: Vec<String> = Vec::new();
-        let mut all_span_details: Vec<String> = Vec::new();
-        let mut all_stats_details: Vec<String> = Vec::new();
-
-        // We should have an identical number of traces and spans.
-        if self.baseline_total_traces != self.comparison_total_traces {
-            return Err((
-                generic_error!(
-                    "Number of traces do not match: {} (baseline) vs {} (comparison)",
-                    self.baseline_total_traces,
-                    self.comparison_total_traces
-                ),
-                vec![],
-            ));
-        }
-
-        if self.baseline_spans.len() != self.comparison_spans.len() {
-            return Err((
-                generic_error!(
-                    "Number of spans do not match: {} (baseline) vs {} (comparison)",
-                    self.baseline_spans.len(),
-                    self.comparison_spans.len()
-                ),
-                vec![],
-            ));
-        }
-
-        // We should have the same _set_ of spans in both the baseline and comparison targets.
-        let baseline_span_ids = self.baseline_spans.keys().collect::<HashSet<_>>();
-        let comparison_span_ids = self.comparison_spans.keys().collect::<HashSet<_>>();
-        if baseline_span_ids != comparison_span_ids {
-            let mut baseline_only_span_ids = baseline_span_ids.difference(&comparison_span_ids).collect::<Vec<_>>();
-            baseline_only_span_ids.sort_unstable();
-
-            let mut comparison_only_span_ids = comparison_span_ids.difference(&baseline_span_ids).collect::<Vec<_>>();
-            comparison_only_span_ids.sort_unstable();
-
-            return Err((
-                generic_error!(
-                    "Baseline and comparison targets have non-overlapped set of spans: {} baseline-only spans and {} comparison-only spans.",
-                    baseline_only_span_ids.len(),
-                    comparison_only_span_ids.len()
-                ),
-                vec![],
-            ));
-        }
 
         info!(
-            "Analyzing {} traces ({} spans) from baseline and comparison target.",
+            "Analyzing {} traces ({} spans) from baseline and {} traces ({} spans) from comparison target.",
             self.baseline_total_traces,
-            self.baseline_spans.len()
+            self.baseline_spans.len(),
+            self.comparison_total_traces,
+            self.comparison_spans.len()
         );
 
-        // Go through each baseline span, and look for a matching span (by ID) on the comparison target side.
-        //
-        // If found, compare the spans. A field difference that a known difference covers is left out.
+        // Every difference is reported: a span or a stats group on one side only does not stop the comparison of the
+        // spans and the groups that both sides hold. A field difference that a known difference covers is left out.
         let mut ratchet = Ratchet::new(&self.options.known_differences);
-        for (baseline_span_id, baseline_span) in self.baseline_spans.iter() {
-            match self.comparison_spans.get(baseline_span_id) {
-                Some(comparison_span) => {
-                    // We serialize both spans to JSON for deep comparison.
-                    let baseline_span_json = serde_json::to_value(baseline_span).unwrap();
-                    let comparison_span_json = serde_json::to_value(comparison_span).unwrap();
-
-                    diff_recorder.clear();
-                    treediff::diff(&baseline_span_json, &comparison_span_json, &mut diff_recorder);
-
-                    let view = span_view(&baseline_span_json);
-                    let unknown = diff_recorder
-                        .diffs()
-                        .iter()
-                        .filter(|recorded| {
-                            let diff = FieldDiff {
-                                path: format!("{}{}", SPAN_PREFIX, recorded.diff.path),
-                                ..recorded.diff.clone()
-                            };
-                            !ratchet.allows(&diff, &view)
-                        })
-                        .map(|recorded| format!("    {}", recorded))
-                        .collect::<Vec<_>>();
-
-                    if !unknown.is_empty() {
-                        let span = format!("span {} ({})", baseline_span_id, span_name(&view));
-                        error!("Detected mismatched {}:", span);
-                        for span_diff in &unknown {
-                            error!("-{}", span_diff);
-                        }
-                        error!("");
-
-                        error_count += 1;
-
-                        all_span_details.push(format!("  {}:\n{}", span, unknown.join("\n")));
-
-                        if span_samples.len() < SAMPLE_MISMATCH_LIMIT {
-                            let sample_diffs = unknown.iter().take(SAMPLE_DIFFS_PER_SPAN).cloned().collect::<Vec<_>>();
-                            span_samples.push(format!("  {}:\n{}", span, sample_diffs.join("\n")));
-                        }
-                    }
-                }
-                None => {
-                    error!("Failed to find matching comparison span ({}).", baseline_span_id);
-                    error_count += 1;
-                }
-            }
+        let span_mismatches = compare_spans(
+            &self.baseline_spans,
+            &self.comparison_spans,
+            &mut diff_recorder,
+            &mut ratchet,
+        );
+        for mismatch in &span_mismatches {
+            error!("Detected mismatched span:\n{}", mismatch.render(usize::MAX));
         }
 
         // Compare the baseline and comparison trace statistics when not in OTLP-direct mode.
+        let mut stats_mismatches = Vec::new();
         if !self.options.otlp_direct_analysis_mode {
             info!(
                 "Analyzing {} aggregated statistics groups from baseline and {} from comparison target.",
@@ -443,21 +370,17 @@ impl TracesAnalyzer {
                 self.comparison_trace_stats.len()
             );
 
-            let mismatches = compare_stats(
+            stats_mismatches = compare_stats(
                 &self.baseline_trace_stats,
                 &self.comparison_trace_stats,
                 &mut diff_recorder,
                 &mut ratchet,
             );
-            for mismatch in mismatches {
+            for mismatch in &stats_mismatches {
                 error!("Detected mismatched stats group:\n{}", mismatch.render(usize::MAX));
-                error_count += 1;
-                if stats_samples.len() < SAMPLE_MISMATCH_LIMIT {
-                    stats_samples.push(mismatch.render(SAMPLE_DIFFS_PER_SPAN));
-                }
-                all_stats_details.push(mismatch.render(usize::MAX));
             }
         }
+        let mut error_count = span_mismatches.len() + stats_mismatches.len();
 
         // A known difference that matched nothing is stale: its gap is fixed, or the entry is wrong.
         let stale = ratchet
@@ -488,26 +411,40 @@ impl TracesAnalyzer {
                 "{} mismatched span(s)/stats group(s) between baseline and comparison.",
                 error_count
             );
-            if !span_samples.is_empty() {
-                msg.push_str(&format!(
-                    "\n  (showing {} of {} mismatched span(s))",
-                    span_samples.len(),
-                    error_count
-                ));
-                for sample in span_samples {
-                    msg.push('\n');
-                    msg.push_str(&sample);
-                }
+            let mut all_details = Vec::new();
+            let only_in_baseline = self
+                .baseline_spans
+                .keys()
+                .filter(|span_id| !self.comparison_spans.contains_key(span_id))
+                .count();
+            let only_in_comparison = self
+                .comparison_spans
+                .keys()
+                .filter(|span_id| !self.baseline_spans.contains_key(span_id))
+                .count();
+            if only_in_baseline + only_in_comparison > 0 {
+                let counts = format!(
+                    "  {} span(s) only in baseline, {} only in comparison.",
+                    only_in_baseline, only_in_comparison
+                );
+                msg.push('\n');
+                msg.push_str(&counts);
+                all_details.push(counts);
             }
-            if !stats_samples.is_empty() {
+            for (mismatches, label) in [(&span_mismatches, "span(s)"), (&stats_mismatches, "stats group(s)")] {
+                if mismatches.is_empty() {
+                    continue;
+                }
+                let samples = mismatches.iter().take(SAMPLE_MISMATCH_LIMIT).collect::<Vec<_>>();
                 msg.push_str(&format!(
-                    "\n  (showing {} of {} mismatched stats group(s))",
-                    stats_samples.len(),
-                    error_count
+                    "\n  (showing {} of {} mismatched {})",
+                    samples.len(),
+                    mismatches.len(),
+                    label
                 ));
-                for sample in stats_samples {
+                for sample in samples {
                     msg.push('\n');
-                    msg.push_str(&sample);
+                    msg.push_str(&sample.render(SAMPLE_DIFFS_PER_SPAN));
                 }
             }
 
@@ -522,8 +459,12 @@ impl TracesAnalyzer {
                 }
             }
 
-            let mut all_details = all_span_details;
-            all_details.extend(all_stats_details);
+            all_details.extend(
+                span_mismatches
+                    .iter()
+                    .chain(&stats_mismatches)
+                    .map(|mismatch| mismatch.render(usize::MAX)),
+            );
             all_details.extend(stale);
 
             Err((generic_error!("{}", msg), all_details))
@@ -774,25 +715,96 @@ fn get_merged_trace_stats(
     Ok(merged_trace_stats)
 }
 
-/// A statistics group whose differences no known difference covers.
-struct StatsMismatch {
-    /// The group, named by its fields.
-    group: String,
+/// A span or a statistics group whose differences no known difference covers.
+struct Mismatch {
+    /// The span or the group, named by its fields.
+    subject: String,
 
     /// The differences, one line each.
     diffs: Vec<String>,
 }
 
-impl StatsMismatch {
-    /// Renders the group and up to `limit` of its differences.
+impl Mismatch {
+    /// Renders the subject and up to `limit` of its differences.
     fn render(&self, limit: usize) -> String {
-        let mut text = format!("  stats group {}:", self.group);
+        let mut text = format!("  {}:", self.subject);
         for diff in self.diffs.iter().take(limit) {
             text.push_str("\n    ");
             text.push_str(diff);
         }
         text
     }
+}
+
+/// Compares the spans of both sides by span ID, and returns the spans with differences that no entry of `ratchet`
+/// covers.
+///
+/// A span on one side only is a mismatch of its own, which does not stop the comparison of the other spans. These come
+/// first, named with their trace ID and in its order, so that the spans of a lost trace stay together. The spans whose
+/// fields differ follow, in the order of their IDs. A field that differs in a span on both sides is a difference at
+/// `span.<field>`. The view that an entry's `when` matches is the span's service, name and resource, from the baseline.
+fn compare_spans(
+    baseline: &HashMap<u64, Span>, comparison: &HashMap<u64, Span>, recorder: &mut DifferenceRecorder,
+    ratchet: &mut Ratchet<'_>,
+) -> Vec<Mismatch> {
+    let mut one_sided = Vec::new();
+    let only = |span: &Span, side: &str| {
+        let view = span_view(&serde_json::to_value(span).unwrap());
+        let mismatch = Mismatch {
+            subject: format!(
+                "span {} (trace_id={} {})",
+                span.span_id(),
+                span.trace_id(),
+                span_name(&view)
+            ),
+            diffs: vec![format!("only in {}", side)],
+        };
+        ((span.trace_id(), span.span_id()), mismatch)
+    };
+    let mut differing = Vec::new();
+    for (span_id, baseline_span) in baseline {
+        let Some(comparison_span) = comparison.get(span_id) else {
+            one_sided.push(only(baseline_span, "baseline"));
+            continue;
+        };
+        let baseline_span = serde_json::to_value(baseline_span).unwrap();
+        let comparison_span = serde_json::to_value(comparison_span).unwrap();
+        recorder.clear();
+        treediff::diff(&baseline_span, &comparison_span, recorder);
+        let view = span_view(&baseline_span);
+        let unknown = recorder
+            .diffs()
+            .iter()
+            .filter(|recorded| {
+                let diff = FieldDiff {
+                    path: format!("{}{}", SPAN_PREFIX, recorded.diff.path),
+                    ..recorded.diff.clone()
+                };
+                !ratchet.allows(&diff, &view)
+            })
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            let mismatch = Mismatch {
+                subject: format!("span {} ({})", span_id, span_name(&view)),
+                diffs: unknown,
+            };
+            differing.push((*span_id, mismatch));
+        }
+    }
+    for (span_id, comparison_span) in comparison {
+        if !baseline.contains_key(span_id) {
+            one_sided.push(only(comparison_span, "comparison"));
+        }
+    }
+
+    one_sided.sort_by_key(|(key, _)| *key);
+    differing.sort_by_key(|(span_id, _)| *span_id);
+    one_sided
+        .into_iter()
+        .map(|(_, mismatch)| mismatch)
+        .chain(differing.into_iter().map(|(_, mismatch)| mismatch))
+        .collect()
 }
 
 /// Compares the statistics groups of both sides, and returns the groups with differences that no entry of `ratchet`
@@ -804,7 +816,7 @@ impl StatsMismatch {
 fn compare_stats(
     baseline: &FastHashMap<AggregationKey, Value>, comparison: &FastHashMap<AggregationKey, Value>,
     recorder: &mut DifferenceRecorder, ratchet: &mut Ratchet<'_>,
-) -> Vec<StatsMismatch> {
+) -> Vec<Mismatch> {
     let mut mismatches = Vec::new();
     for (key, baseline_group) in baseline {
         let view = stats_group_view(baseline_group);
@@ -840,8 +852,8 @@ fn compare_stats(
             }
         };
         if !unknown.is_empty() {
-            mismatches.push(StatsMismatch {
-                group: stats_group_name(baseline_group),
+            mismatches.push(Mismatch {
+                subject: format!("stats group {}", stats_group_name(baseline_group)),
                 diffs: unknown,
             });
         }
@@ -858,14 +870,14 @@ fn compare_stats(
             comparison: Some(comparison_group.clone()),
         };
         if !ratchet.allows(&diff, &stats_group_view(comparison_group)) {
-            mismatches.push(StatsMismatch {
-                group: stats_group_name(comparison_group),
+            mismatches.push(Mismatch {
+                subject: format!("stats group {}", stats_group_name(comparison_group)),
                 diffs: vec!["only in comparison".to_string()],
             });
         }
     }
 
-    mismatches.sort_by(|a, b| a.group.cmp(&b.group));
+    mismatches.sort_by(|a, b| a.subject.cmp(&b.subject));
     mismatches
 }
 
@@ -1033,6 +1045,26 @@ mod tests {
         assert_eq!(mismatches.len(), 1, "{:?}", mismatches);
         assert!(mismatches[0].contains("resource=\"b\""), "{}", mismatches[0]);
         assert!(stale.is_empty(), "{:?}", stale);
+    }
+
+    #[test]
+    fn a_known_stats_difference_is_stale_for_each_named_group_that_no_longer_differs() {
+        let mut entry = known("gap/fewer-hits", &["stats.hits"], &["value"]);
+        entry.when = BTreeMap::from([("resource".to_string(), vec![json!("a"), json!("b")])]);
+
+        let (mismatches, stale) = compare(
+            &[(1, group("a", 2)), (2, group("b", 1))],
+            &[(1, group("a", 1)), (2, group("b", 1))],
+            &[entry],
+        );
+
+        assert!(mismatches.is_empty(), "{:?}", mismatches);
+        assert_eq!(stale.len(), 1, "{:?}", stale);
+        assert!(
+            stale[0].contains("path `stats.hits` when `resource` is \"b\""),
+            "{}",
+            stale[0]
+        );
     }
 
     #[test]

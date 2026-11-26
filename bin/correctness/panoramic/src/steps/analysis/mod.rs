@@ -5,7 +5,7 @@ pub use self::expectations::TracesExpectations;
 pub use self::logs::LogsAnalysisOptions;
 pub use self::metrics::MetricsOptions;
 use self::ratchet::KnownDifference;
-pub use self::traces::TracesOptions;
+pub use self::traces::{TracesOptions, TRACE_ID_FIELD};
 use crate::steps::intake::CollectedData;
 
 mod dogstatsd_forwarding;
