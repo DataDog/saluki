@@ -126,6 +126,10 @@ procedure:
             - {service: probe-sampling, name: otlpprobe.tsamp.037.string_root}
             - {service: probe-sampling, name: otlpprobe.tsamp.038.metric_root}
             - {service: probe-sampling, name: otlpprobe.tsamp.040.client_root}
+          # The Agent tags the root of the first trace that it keeps for a service with the install metadata. It handles
+          # the traces in a random order, and a trace of single span sampling keeps a child without its root, so a run
+          # can leave a side with no tagged span.
+          require_ssi: false
           # The Agent computes stats before it samples, so it holds 25 groups. ADP computes them from the traces that
           # it keeps, so it holds 15.
           min_stats_groups: 15
