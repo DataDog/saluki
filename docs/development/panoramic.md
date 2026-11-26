@@ -81,6 +81,7 @@ target/release/panoramic plan test/integration/cases/adp-cmd-host --subject-os l
 | `-v` | Print the details of every step. |
 | `--log-level <level>` | The log level of panoramic and its libraries. The default is `info`. |
 | `--kind-cluster-name <name>`, `--no-delete-kind-cluster` | The kind cluster of the cases that run pods, and whether to keep it after the run. |
+| `--kind-setup-timeout <duration>` | How long making the kind cluster and loading the images may take before the first case. The default is `30m`. |
 
 `PANORAMIC_SET` takes the `--set` entries as a comma-separated list. CI uses it to run the cases against the images a
 pipeline built. `NAME` is the reference exactly as the case or the participant type writes it. A name given twice is

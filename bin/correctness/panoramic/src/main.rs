@@ -268,6 +268,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let (tx, rx) = create_event_channel();
     let kind = participant_case::KindSetup {
         cluster: cmd.kind_cluster_name.clone(),
+        timeout: cmd.kind_setup_timeout,
         events: tx.clone(),
     };
     let mut kind_state = KindState::default();

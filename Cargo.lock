@@ -4645,6 +4645,7 @@ dependencies = [
  "colored",
  "crossterm",
  "futures",
+ "go-duration",
  "k8s-openapi",
  "kube",
  "panoramic-courier",
