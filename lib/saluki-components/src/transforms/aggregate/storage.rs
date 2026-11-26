@@ -184,8 +184,8 @@ enum SideSlot<T> {
 ///
 /// A row owns each live slot. Removing a value adds its slot to the head of the free list.
 /// Insertion reuses the most recently freed slot before it grows the pages.
-/// Slot numbers cannot change while a row owns one. A partly free store can retain its high-water allocation.
-/// When no live slots remain, trimming keeps only the allowed spare pages and clears the free list.
+/// Slot numbers cannot change while a row owns one. The store keeps its peak page allocation until all slots are
+/// free. Trimming then keeps only the allowed spare pages and clears the free list.
 struct SideStore<T> {
     slots: Pages<SideSlot<T>>,
     free: Option<u32>,
@@ -622,7 +622,7 @@ impl Storage {
 
     /// Estimates index backing bytes per row at growth.
     ///
-    /// Each hashbrown bucket holds one index entry and one control byte. Large tables grow at a 7/8 load factor.
+    /// Each `hashbrown` bucket holds one index entry and one control byte. Large tables grow at a 7/8 load factor.
     /// Doubling the bucket count leaves the new table just under half full.
     /// This estimate excludes the trailing control group and the temporary overlap with the old table.
     pub(super) const fn index_entry_bytes() -> usize {
@@ -937,6 +937,7 @@ impl Storage {
         header
     }
 
+    // The index keeps its allocation for reuse even after all rows expire.
     pub(super) fn trim_empty_side_stores(&mut self) {
         self.metadata.0.trim_if_empty();
         self.overflow.trim_if_empty();

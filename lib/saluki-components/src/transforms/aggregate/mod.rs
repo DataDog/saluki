@@ -410,8 +410,8 @@ impl MemoryBounds for AggregateConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // The context limit sizes the dense rows and the index, not all of the values a context can accumulate.
         // DogStatsD samples without timestamps collapse into one bucket. An inline scalar row can hold two buckets.
-        // Side-store pages for larger payloads or uncommon metadata are outside this estimate. The estimate also
-        // excludes heap storage that a context or an inline set bucket can own.
+        // This estimate excludes side-store pages for overflowing distributions, larger timestamped series, and
+        // uncommon metadata. It also excludes heap storage owned by contexts or inline set buckets.
 
         builder
             .minimum()
@@ -2313,5 +2313,46 @@ mod tests {
             recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
             Some(0.0)
         );
+    }
+
+    #[tokio::test]
+    async fn replacing_a_gauge_with_a_counter_moves_type_telemetry_until_expiry() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = Telemetry::new(&MetricsBuilder::default(), false);
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            1,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            telemetry,
+        );
+        let context = Context::from_static_name("type_change");
+        let size = context.size_of() as f64;
+        let assert_type = |kind, count, bytes| {
+            let labels = [("metric_type", kind)];
+            assert_eq!(
+                recorder.gauge(("aggregate_active_contexts_by_type", &labels)),
+                Some(count)
+            );
+            assert_eq!(
+                recorder.gauge(("aggregate_active_contexts_bytes_by_type", &labels)),
+                Some(bytes)
+            );
+        };
+
+        assert!(state.insert(insert_ts(1), Metric::gauge(context.clone(), 1.0)));
+        assert_type("gauge", 1.0, size);
+        assert_type("counter", 0.0, 0.0);
+
+        assert!(state.insert(insert_ts(1), Metric::counter(context, 1.0)));
+        assert_type("gauge", 0.0, 0.0);
+        assert_type("counter", 1.0, size);
+
+        let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_type("counter", 1.0, size);
+        let _ = get_flushed_metrics(flush_ts(4), &mut state).await;
+        assert!(state.is_empty());
+        assert_type("counter", 0.0, 0.0);
     }
 }
