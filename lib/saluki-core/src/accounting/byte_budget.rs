@@ -3,12 +3,12 @@
 //! # Design
 //!
 //! A topology can enable a budget when it has a memory limit. Without a budget, callers do not reserve bytes or start
-//! a sampler. The sampler reads cgroup usage when available, or process RSS otherwise.
+//! a sampler. The sampler reads process usage for a process limit and cgroup usage for a cgroup limit.
 //! It waits 25 ms between samples to keep observation off the admission fast path at the cost of feedback delay.
 //!
 //! The admission ceiling reserves one eighth of the limit, up to 128 MiB, for work that does not reserve bytes.
 //! This includes receive buffers, allocator rounding, and encoder workspaces. A budget reduces accepted growth under
-//! pressure but cannot guarantee a process or cgroup memory cap. The estimates and unmetered work depend on the workload.
+//! pressure but cannot guarantee a process or cgroup memory cap. The estimates and other work depend on the workload.
 //!
 //! Reservations use a shared atomic total, so concurrent callers cannot spend the same headroom.
 //! Each sample replaces the last observed usage and reconciles reservations that completed before the sample began.
@@ -20,9 +20,10 @@
 //! another pass when more idle memory becomes available.
 //!
 use std::{
+    mem::take,
     sync::{
         atomic::{
-            AtomicUsize,
+            AtomicU64, AtomicUsize,
             Ordering::{Acquire, Relaxed, Release},
         },
         Arc, Mutex, Weak,
@@ -30,6 +31,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+use super::cgroup::CgroupMemory;
 
 const MIB: usize = 1024 * 1024;
 const INGEST_CREDIT_BYTES: usize = 16 * 1024;
@@ -53,6 +56,8 @@ struct State {
     completed: AtomicUsize,
     observation: Mutex<Observation>,
     pressure: Mutex<Pressure>,
+    origin: Instant,
+    last_reclaim_ms: AtomicU64,
 }
 
 struct Observation {
@@ -62,7 +67,6 @@ struct Observation {
 
 #[derive(Default)]
 struct Pressure {
-    last_reclaim: Option<Instant>,
     reclaimers: Vec<Weak<Reclaimer>>,
 }
 
@@ -74,12 +78,41 @@ impl ByteBudget {
         Self::with_usage(ceiling, observed_bytes, None)
     }
 
-    /// Starts observing the process working set when no cgroup memory limit is available.
+    /// Starts observing the process working set against a process memory limit.
     ///
     /// Returns `None` if the initial observation or sampler startup fails.
     pub fn for_process_memory_limit(limit: usize) -> Option<Self> {
         let mut querier = process_memory::Querier::default();
         Self::for_memory_limit(limit, move || querier.resident_set_size())
+    }
+
+    /// Starts observing process and cgroup usage against their respective limits.
+    ///
+    /// The smaller remaining allowance constrains growth. Returns `None` if an initial observation or sampler
+    /// startup fails.
+    pub fn for_process_and_cgroup_memory_limits(limit: usize, cgroup: CgroupMemory) -> Option<Self> {
+        let mut querier = process_memory::Querier::default();
+        Self::for_independent_memory_limits(
+            limit,
+            cgroup.limit(),
+            move || querier.resident_set_size(),
+            move || cgroup.current(),
+        )
+    }
+
+    fn for_independent_memory_limits(
+        process_limit: usize, cgroup_limit: usize, mut process_usage: impl FnMut() -> Option<usize> + Send + 'static,
+        mut cgroup_usage: impl FnMut() -> Option<usize> + Send + 'static,
+    ) -> Option<Self> {
+        let process_ceiling = admission_ceiling(process_limit);
+        let cgroup_ceiling = admission_ceiling(cgroup_limit);
+        let ceiling = process_ceiling.min(cgroup_ceiling);
+        Self::observe(ceiling, move || {
+            // Express both observations against one ceiling. The higher charge leaves less headroom.
+            let process_charge = process_usage()?.saturating_sub(process_ceiling - ceiling);
+            let cgroup_charge = cgroup_usage()?.saturating_sub(cgroup_ceiling - ceiling);
+            Some(process_charge.max(cgroup_charge))
+        })
     }
 
     fn with_usage(ceiling: usize, bytes: usize, usage: Option<Usage>) -> Self {
@@ -89,19 +122,24 @@ impl ByteBudget {
             completed: AtomicUsize::new(0),
             observation: Mutex::new(Observation { bytes, usage }),
             pressure: Mutex::new(Pressure::default()),
+            origin: Instant::now(),
+            last_reclaim_ms: AtomicU64::new(0),
         }))
     }
 
-    /// Starts observing resident bytes against a memory limit, holding back headroom for unmetered work.
+    /// Starts observing resident bytes against a memory limit, leaving room for work without reservations.
     ///
     /// The caller supplies the usage observation, such as `memory.current` for a cgroup v2 limit.
     /// The ceiling leaves one eighth of the limit, up to 128 MiB, outside admission accounting.
     ///
     /// Returns `None` if the initial observation or sampler startup fails.
-    pub fn for_memory_limit(limit: usize, mut usage: impl FnMut() -> Option<usize> + Send + 'static) -> Option<Self> {
+    pub fn for_memory_limit(limit: usize, usage: impl FnMut() -> Option<usize> + Send + 'static) -> Option<Self> {
+        Self::observe(admission_ceiling(limit), usage)
+    }
+
+    fn observe(ceiling: usize, mut usage: impl FnMut() -> Option<usize> + Send + 'static) -> Option<Self> {
         let initial = usage()?;
-        let headroom = (limit / 8).min(128 * MIB);
-        let budget = Self::with_usage(limit - headroom, initial, Some(Box::new(usage)));
+        let budget = Self::with_usage(ceiling, initial, Some(Box::new(usage)));
         let weak = Arc::downgrade(&budget.0);
         thread::Builder::new()
             .name("byte-budget-sampler".into())
@@ -121,7 +159,7 @@ impl ByteBudget {
         let reclaim = Arc::new(reclaim) as Arc<Reclaimer>;
         let mut pressure = self.0.pressure.lock().unwrap();
         pressure.reclaimers.push(Arc::downgrade(&reclaim));
-        pressure.last_reclaim = None;
+        self.0.last_reclaim_ms.store(0, Relaxed);
         BudgetReclaimer { _reclaim: reclaim }
     }
 
@@ -160,27 +198,43 @@ impl ByteBudget {
 
     #[cold]
     fn reclaim_and_charge(&self, bytes: usize) -> bool {
-        let mut pressure = self.0.pressure.lock().unwrap();
+        if self.0.reclaim_is_cooling_down() {
+            return self.charge(bytes);
+        }
+        let Ok(mut pressure) = self.0.pressure.try_lock() else {
+            return self.charge(bytes);
+        };
         if self.charge(bytes) {
             return true;
         }
-        if pressure
-            .last_reclaim
-            .is_none_or(|last| last.elapsed() >= RECLAIM_INTERVAL)
-        {
+        if !self.0.reclaim_is_cooling_down() {
             pressure.reclaimers.retain(|reclaim| {
                 let Some(reclaim) = reclaim.upgrade() else { return false };
                 reclaim();
                 true
             });
             self.0.refresh_usage();
-            pressure.last_reclaim = Some(Instant::now());
+            self.0.last_reclaim_ms.store(self.0.reclaim_clock_ms(), Relaxed);
         }
         self.charge(bytes)
     }
 }
 
+fn admission_ceiling(limit: usize) -> usize {
+    limit - (limit / 8).min(128 * MIB)
+}
+
 impl State {
+    fn reclaim_clock_ms(&self) -> u64 {
+        // Zero denotes that no reclaim has run yet.
+        (self.origin.elapsed().as_millis() as u64).saturating_add(1)
+    }
+
+    fn reclaim_is_cooling_down(&self) -> bool {
+        let last = self.last_reclaim_ms.load(Relaxed);
+        last != 0 && self.reclaim_clock_ms().saturating_sub(last) < RECLAIM_INTERVAL.as_millis() as u64
+    }
+
     fn refresh_usage(&self) {
         let mut observation = self.observation.lock().unwrap();
         let Some(usage) = &mut observation.usage else { return };
@@ -246,8 +300,8 @@ impl ByteBudgetBatch {
     }
 
     fn publish(&mut self) {
-        let remaining = std::mem::take(&mut self.remaining);
-        let spent = std::mem::take(&mut self.spent);
+        let remaining = take(&mut self.remaining);
+        let spent = take(&mut self.spent);
         if remaining != 0 {
             self.budget.0.used.fetch_sub(remaining, Relaxed);
         }
@@ -283,7 +337,7 @@ impl Drop for ByteReservation<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::{atomic::AtomicBool, mpsc};
 
     use super::*;
 
@@ -361,5 +415,41 @@ mod tests {
         assert!(budget.try_reserve(10).is_some());
         assert!(reclaimed.load(Relaxed));
         assert!(budget.try_reserve(11).is_none());
+    }
+
+    #[test]
+    fn independent_limits_charge_rss_and_cgroup_usage_against_their_own_limits() {
+        for (group_usage, available) in [(500, 124), (1900, 20)] {
+            let budget = ByteBudget::for_independent_memory_limits(
+                256 * MIB,
+                2048 * MIB,
+                || Some(100 * MIB),
+                move || Some(group_usage * MIB),
+            )
+            .unwrap();
+            assert!(budget.try_reserve(available * MIB + 1).is_none());
+            assert!(budget.try_reserve(available * MIB).is_some());
+        }
+    }
+
+    #[test]
+    fn contended_reclaim_and_cooldown_retry_the_charge() {
+        let budget = ByteBudget::new(20, 0);
+        let pressure = budget.0.pressure.lock().unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::scope(|scope| {
+            let budget = &budget;
+            scope.spawn(move || {
+                let during_contention = budget.reclaim_and_charge(10);
+                budget.0.last_reclaim_ms.store(budget.0.reclaim_clock_ms(), Relaxed);
+                let during_cooldown = budget.reclaim_and_charge(10);
+                let over_limit = budget.reclaim_and_charge(1);
+                tx.send((during_contention, during_cooldown, over_limit)).unwrap();
+            });
+            // Release the lock even when the assertion would fail because a caller waited for it.
+            let result = rx.recv_timeout(Duration::from_secs(2));
+            drop(pressure);
+            assert_eq!(result, Ok((true, true, false)));
+        });
     }
 }

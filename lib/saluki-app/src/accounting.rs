@@ -72,10 +72,9 @@ pub struct MemoryBoundsConfiguration {
 /// When no memory limit is configured and `DOCKER_DD_AGENT` is set to a non-empty value, the limit is read from the
 /// process cgroup instead.
 ///
-/// When memory bounding is configured ([`MemoryMode::Permissive`] or [`MemoryMode::Strict`]), DogStatsD byte-budget
-/// admission uses the configured limit or the cgroup v2 limit, whichever is lower, independently of the bounds
-/// verification and backpressure settings. Under [`MemoryMode::Disabled`], no byte budget is attached, even inside a
-/// cgroup with a finite memory limit.
+/// In permissive and strict modes, an opt-in byte budget tracks configured process and finite cgroup v2 limits
+/// independently. The budget uses the smaller remaining allowance, even when cooperative backpressure is disabled.
+/// Disabled mode does not create a byte budget.
 ///
 /// See [`MemoryMode`] for details on the behavior of each mode.
 ///
@@ -116,42 +115,30 @@ pub fn initialize_memory_bounds(
         _ => MemoryLimiter::noop(),
     };
 
-    // Admission remains active even when the independently configured cooperative backoff is disabled, but only when
-    // memory bounding is configured: the default mode stays unbounded even inside a memory-limited cgroup.
-    let cgroup = match configuration.memory_mode {
-        MemoryMode::Disabled => None,
-        MemoryMode::Permissive | MemoryMode::Strict => CgroupMemory::detect(),
-    };
-    let budget_limit = byte_budget_limit(
-        configuration.memory_mode,
-        memory_limit.map(|limit| limit.as_u64() as usize),
-        cgroup.as_ref().map(CgroupMemory::limit),
-    );
-    let budget = match (budget_limit, cgroup) {
-        (None, _) => None,
-        (Some(limit), Some(cgroup)) => ByteBudget::for_memory_limit(limit, move || cgroup.current())
-            .ok_or_else(|| generic_error!("Cgroup memory usage cannot be monitored for byte-budget admission."))?
-            .into(),
-        (Some(limit), None) => ByteBudget::for_process_memory_limit(limit)
-            .ok_or_else(|| generic_error!("Process memory usage cannot be monitored for byte-budget admission."))?
-            .into(),
+    let budget = if configuration.memory_mode == MemoryMode::Disabled {
+        None
+    } else {
+        match (configuration.memory_limit, CgroupMemory::detect()) {
+            (Some(limit), Some(cgroup)) => Some(
+                ByteBudget::for_process_and_cgroup_memory_limits(limit.as_u64() as usize, cgroup)
+                    .ok_or_else(|| generic_error!("Process and cgroup memory usage cannot be monitored."))?,
+            ),
+            (None, Some(cgroup)) => Some(
+                ByteBudget::for_memory_limit(cgroup.limit(), move || cgroup.current()).ok_or_else(|| {
+                    generic_error!("Cgroup memory usage cannot be monitored for byte-budget admission.")
+                })?,
+            ),
+            (_, None) => memory_limit
+                .map(|limit| {
+                    ByteBudget::for_process_memory_limit(limit.as_u64() as usize).ok_or_else(|| {
+                        generic_error!("Process memory usage cannot be monitored for byte-budget admission.")
+                    })
+                })
+                .transpose()?,
+        }
     };
 
     Ok(limiter.with_byte_budget(budget))
-}
-
-/// Returns the byte-budget admission limit, or `None` when no budget should be attached.
-///
-/// A budget is attached only when memory bounding is configured, using the lower of the configured limit and the
-/// finite cgroup limit when both exist.
-fn byte_budget_limit(mode: MemoryMode, configured: Option<usize>, cgroup: Option<usize>) -> Option<usize> {
-    match mode {
-        MemoryMode::Disabled => None,
-        MemoryMode::Permissive | MemoryMode::Strict => match (configured, cgroup) {
-            (Some(configured), Some(cgroup)) => Some(configured.min(cgroup)),
-            (configured, cgroup) => configured.or(cgroup),
-        },
-    }
 }
 
 fn verify_bounds_for_mode(
@@ -482,25 +469,6 @@ mod tests {
             limiter.byte_budget().is_none(),
             "disabled mode leaves admission unbounded even with an explicit limit"
         );
-    }
-
-    #[test]
-    fn byte_budget_attaches_only_when_memory_bounding_is_configured() {
-        const GIB: usize = 1024 * 1024 * 1024;
-
-        // The default unbounded mode never attaches a budget, even inside a finite cgroup.
-        for (configured, cgroup) in [(None, Some(GIB)), (Some(GIB / 2), Some(GIB)), (Some(GIB), None)] {
-            assert_eq!(byte_budget_limit(MemoryMode::Disabled, configured, cgroup), None);
-        }
-
-        // Configured bounding uses the lower of the configured and finite cgroup limits.
-        for mode in [MemoryMode::Permissive, MemoryMode::Strict] {
-            assert_eq!(byte_budget_limit(mode, None, Some(GIB)), Some(GIB));
-            assert_eq!(byte_budget_limit(mode, Some(GIB / 2), None), Some(GIB / 2));
-            assert_eq!(byte_budget_limit(mode, Some(GIB / 2), Some(GIB)), Some(GIB / 2));
-            assert_eq!(byte_budget_limit(mode, Some(2 * GIB), Some(GIB)), Some(GIB));
-            assert_eq!(byte_budget_limit(mode, None, None), None);
-        }
     }
 
     #[test]

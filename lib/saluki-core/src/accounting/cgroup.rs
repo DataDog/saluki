@@ -2,7 +2,7 @@
 use std::{
     fs::{self, File},
     os::unix::fs::FileExt as _,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 /// A finite cgroup v2 memory limit and the usage charged against it.
@@ -78,10 +78,7 @@ fn cgroup_limits(groups: &str, mounts: &str, read: impl Fn(&Path) -> Option<Stri
             Err(_) if group == Path::new("/") => Path::new(""),
             Err(_) => continue,
         };
-        if relative
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
-        {
+        if relative.components().any(|part| matches!(part, Component::ParentDir)) {
             continue;
         }
         for directory in mountpoint
