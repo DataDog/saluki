@@ -87,7 +87,6 @@ subcommand(s?)
 onboard(ing|ed)
 freelist
 interner
-dereferences
 prepended
 middleware
 weighter(s?)
@@ -126,7 +125,7 @@ quantile(s?)
 partitioner
 hardcoded
 obfuscator
-dereference(d?)
+[Dd]ereferenc(e|ed|es|ing)
 serverless
 blackhole
 rehydrate(d?)
@@ -187,6 +186,7 @@ quantize(s?)
 reachability
 retriable
 routable
+sharded
 snapshotted
 snapshotting
 stringified
