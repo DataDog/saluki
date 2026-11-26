@@ -418,6 +418,14 @@ impl Header {
     fn symbols(&self) -> &SymbolTable {
         &self.domain.as_ref().expect("symbol has a resolver domain").symbols
     }
+
+    /// Returns the text of symbol `id`, and a hint that identifies the table and the ID.
+    fn symbol_text(&self, id: u32) -> (&str, Option<(usize, u32)>) {
+        let table = self.symbols();
+        // SAFETY: The context owns this symbol reference.
+        let text = unsafe { table.get_unchecked(id) };
+        (text, Some((std::ptr::from_ref(table).addr(), id)))
+    }
 }
 
 /// A strong reference to a packed context allocation.
@@ -652,6 +660,16 @@ impl Packed {
     /// gauge.
     pub(super) fn track_rewrite(&self) -> bool {
         self.header().has(TRACKED) && self.strong_count() == 1
+    }
+
+    /// Returns the name, and a symbol hint if the name is a symbol ID.
+    pub(super) fn name_with_symbol_id(&self) -> (&str, Option<(usize, u32)>) {
+        let header = self.header();
+        if header.has(NAME_ID) {
+            header.symbol_text(header.name)
+        } else {
+            (self.name(), None)
+        }
     }
 
     /// Returns the name.
@@ -965,7 +983,14 @@ impl<'a> Iterator for RawTags<'a> {
         // SAFETY: Construction copies each tag from a valid UTF-8 string.
         Some(RawTag::Inline(unsafe { str::from_utf8_unchecked(text) }))
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.count - self.index;
+        (remaining, Some(remaining))
+    }
 }
+
+impl ExactSizeIterator for RawTags<'_> {}
 
 /// An iterator over the instrumented tags of a packed context, as borrowed [`TagStr`] values.
 ///
@@ -977,6 +1002,25 @@ pub(super) struct TagIter<'a> {
 
     /// The raw records.
     raw: RawTags<'a>,
+}
+
+impl<'a> TagIter<'a> {
+    /// Returns an iterator over the tags, each with a symbol hint if the tag is a symbol ID.
+    ///
+    /// A hint is the address of the symbol table and the ID. Encoders use it to map a symbol to a payload ID without
+    /// hashing the tag.
+    pub(super) fn tags_with_symbol_ids(
+        self,
+    ) -> impl ExactSizeIterator<Item = (&'a TagStr, Option<(usize, u32)>)> + Clone {
+        let header = self.header;
+        self.raw.map(move |tag| match tag {
+            RawTag::Inline(text) => (TagStr::new(text), None),
+            RawTag::Id(id) => {
+                let (text, hint) = header.symbol_text(id);
+                (TagStr::new(text), hint)
+            }
+        })
+    }
 }
 
 impl<'a> Iterator for TagIter<'a> {
@@ -991,8 +1035,7 @@ impl<'a> Iterator for TagIter<'a> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.raw.count - self.raw.index;
-        (remaining, Some(remaining))
+        self.raw.size_hint()
     }
 }
 

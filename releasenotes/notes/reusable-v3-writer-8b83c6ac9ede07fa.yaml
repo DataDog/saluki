@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce CPU and memory allocation overhead when encoding V3 metric payloads.

@@ -21,7 +21,7 @@ pub(super) struct SketchShadowState<'a> {
     sampling_decided: bool,
     sampled_destinations: Option<Arc<[SketchShadowDestination]>>,
     metrics: Vec<Metric>,
-    ratio: V3CompressionRatio,
+    workspace: V3EncodingWorkspace,
 }
 
 impl<'a> SketchShadowState<'a> {
@@ -31,7 +31,7 @@ impl<'a> SketchShadowState<'a> {
             sampling_decided: false,
             sampled_destinations: None,
             metrics: Vec::new(),
-            ratio: V3CompressionRatio::default(),
+            workspace: V3EncodingWorkspace::default(),
         }
     }
 
@@ -69,15 +69,13 @@ impl<'a> SketchShadowState<'a> {
     pub async fn encode(
         &mut self, builder: &mut RequestBuilder<MetricsEndpointEncoder>, metric: Metric, context: V3FlushContext<'_>,
         tx: &mut Sender<Payload>,
-    ) -> Result<EncodeResult, GenericError> {
+    ) -> Result<bool, GenericError> {
         self.sample_batch();
         let mut copy = self.sampled_destinations.as_ref().map(|_| metric.clone());
-        let mut flushed = false;
         let result = match builder.encode(metric).await {
             Ok(Some(metric)) => {
                 // The rejected metric starts the next V2 batch; it must not enter the previous shadow.
                 self.flush(builder, context, tx).await?;
-                flushed = true;
                 self.sample_batch();
                 copy = self.sampled_destinations.as_ref().map(|_| metric.clone());
                 builder.encode(metric).await
@@ -89,12 +87,12 @@ impl<'a> SketchShadowState<'a> {
                 if let Some(metric) = copy {
                     self.metrics.push(metric);
                 }
-                Ok(EncodeResult::new(true, flushed))
+                Ok(true)
             }
             result => {
                 error!(?result, "Failed to encode sketch metric.");
                 context.telemetry.events_dropped_encoder().increment(1);
-                Ok(EncodeResult::new(false, flushed))
+                Ok(false)
             }
         }
     }
@@ -169,7 +167,7 @@ impl<'a> SketchShadowState<'a> {
                     ..context
                 },
                 "sketches",
-                &mut self.ratio,
+                &mut self.workspace,
                 tx,
                 Some(MetricsPayloadInfo::v3_sketches()),
                 Some(sampled_destinations),
