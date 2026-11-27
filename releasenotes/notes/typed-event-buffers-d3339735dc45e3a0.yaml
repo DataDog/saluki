@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce metric-batch memory by storing metrics without reserving space for other event types.
