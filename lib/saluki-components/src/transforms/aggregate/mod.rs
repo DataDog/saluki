@@ -561,7 +561,10 @@ impl Aggregate {
         match self.state.insert_at(timestamp, metric, slot) {
             InsertOutcome::Admitted => {}
             InsertOutcome::ContextLimit => self.record_rejected_metric(was_breached),
-            InsertOutcome::ByteBudget => self.byte_budget_refusals.increment(1),
+            InsertOutcome::ByteBudget => {
+                self.byte_budget_refusals.increment(1);
+                self.telemetry.increment_events_dropped();
+            }
         }
     }
 
