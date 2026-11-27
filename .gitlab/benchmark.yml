@@ -16,7 +16,7 @@
 # The settings that every SMP job needs, to get the SMP CLI and to configure AWS credentials.
 .setup-smp-cli-env: &setup-smp-cli-env
   - export AWS_NAMED_PROFILE=single-machine-performance
-  - export SMP_VERSION=0.29.1
+  - export SMP_VERSION=0.30.0
   - export RUST_LOG=info,aws_config::profile::credentials=error
 
 # The settings for the jobs that build images, or that talk to the SMP API.
