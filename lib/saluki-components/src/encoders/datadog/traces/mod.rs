@@ -52,6 +52,7 @@ use crate::common::otlp::util::{
     KEY_DATADOG_CONTAINER_TAGS,
 };
 use crate::common::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
+use crate::common::traces::{TAG_PROCESS_TAGS, TAG_SDK_OTLP_EXPORT};
 use crate::config::AgentEnv;
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
@@ -61,8 +62,6 @@ const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
 /// The version data tags are low cardinality, so a low cardinality lookup finds them.
 const VERSION_DATA_TAG_CARDINALITY: OriginTagCardinality = OriginTagCardinality::Low;
 
-const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
-const TAG_SDK_OTLP_EXPORT: &str = "_dd.sdk.otlp_export";
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 

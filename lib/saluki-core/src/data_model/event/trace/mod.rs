@@ -142,8 +142,8 @@ impl PayloadFields {
     }
 }
 
-/// Payload metadata that the receiver supplies from request headers, the connection, and the tagger, rather than
-/// decoding it from spans.
+/// Payload metadata that the receiver resolves from request headers, the connection, the tagger, and payload
+/// attributes.
 ///
 /// The trace-agent's receiver carries these alongside the tracer payload or, for the tags, sets them as tracer payload
 /// attributes.

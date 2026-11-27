@@ -202,7 +202,7 @@ const KEY_STATS_COMPUTED: &str = "_dd.stats_computed";
 
 /// Returns whether APM stats were already computed for a resource, as the trace-agent's OTLP receiver decides it.
 ///
-/// Any non-empty value other than `false` means computed. The trace-agent falls back to the
+/// Any non-empty value other than `false`, in any case, means computed. The trace-agent falls back to the
 /// `Datadog-Client-Computed-Stats` header when the attribute is absent; the OTLP source doesn't read that header, so
 /// absence means not computed.
 fn resolve_client_computed_stats(attributes: &[otlp_common::KeyValue]) -> bool {

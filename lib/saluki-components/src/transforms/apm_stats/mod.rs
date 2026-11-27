@@ -39,6 +39,7 @@ use crate::common::datadog::get_tracer_hostname;
 use crate::common::datadog::version_data::ContainerVersionData;
 use crate::common::otlp::util::extract_trace_container_tags;
 use crate::common::traces::normalize::normalized_tag_value;
+use crate::common::traces::TAG_PROCESS_TAGS;
 use crate::config::AgentEnv;
 
 mod aggregation;
@@ -58,9 +59,6 @@ use self::weight::weight;
 
 /// Default flush interval for the APM stats transform.
 const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(10);
-
-/// Tag key for process tags in span meta.
-const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
 
 /// Attribute key for the Git commit SHA, set on the tracer payload or in span meta.
 const TAG_GIT_COMMIT_SHA: &str = "_dd.git.commit.sha";

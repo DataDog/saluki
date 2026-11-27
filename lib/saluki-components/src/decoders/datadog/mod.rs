@@ -31,7 +31,7 @@ mod tests;
 
 pub use self::error::DecodeError;
 use self::string_table::StringTable;
-use crate::common::traces::attribute_as_string;
+use crate::common::traces::{attribute_as_string, TAG_PROCESS_TAGS, TAG_SDK_OTLP_EXPORT};
 
 /// Plausible minimum average wire size of a trace chunk containing a span list and 16-byte trace ID.
 const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
@@ -88,12 +88,6 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
 
     Ok(traces)
 }
-
-/// Payload attribute holding the process tags.
-const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
-
-/// Payload attribute recording whether the SDK exports its telemetry through OTLP.
-const TAG_SDK_OTLP_EXPORT: &str = "_dd.sdk.otlp_export";
 
 /// Returns the first span of the first non-empty trace, as the trace-agent's receiver picks it.
 pub fn first_span(traces: &[Trace]) -> Option<&Span> {

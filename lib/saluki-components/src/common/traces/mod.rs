@@ -6,6 +6,12 @@ use saluki_core::data_model::event::trace::AttributeValue;
 
 pub mod normalize;
 
+/// Payload or span attribute holding the process tags.
+pub(crate) const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
+
+/// Payload or span attribute recording whether the SDK exports its telemetry through OTLP.
+pub(crate) const TAG_SDK_OTLP_EXPORT: &str = "_dd.sdk.otlp_export";
+
 /// Formats an attribute value as a string, as the trace-agent does.
 pub fn attribute_as_string(value: &AttributeValue) -> Cow<'_, str> {
     match value {
