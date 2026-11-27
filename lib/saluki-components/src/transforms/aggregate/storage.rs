@@ -1066,7 +1066,7 @@ mod tests {
     fn warm_churn_reuses_empty_pages_and_the_thin_index() {
         let mut storage = Storage::default();
         let rows_per_page = Pages::<GaugeRow>::ROWS;
-        let contexts = (0..4 * rows_per_page)
+        let contexts = (0..5 * rows_per_page)
             .map(|i| Context::from_parts(format!("dense.churn.{i}"), TagSet::default()))
             .collect::<Vec<_>>();
         let insert = |storage: &mut Storage, context: &Context| {
@@ -1081,7 +1081,7 @@ mod tests {
         for context in &contexts {
             insert(&mut storage, context);
         }
-        let capacity = storage.index.capacity();
+        let index_bytes = storage.index.allocation_size();
         for context in &contexts[1..] {
             let slot = storage.find(context).unwrap();
             assert_eq!(storage.remove(slot).context, *context);
@@ -1089,14 +1089,14 @@ mod tests {
         assert_eq!(storage.len(), 1);
         assert_eq!(storage.rows.gauge.pages.len(), 1);
         assert_eq!(storage.rows.gauge.spare.len(), SPARE_PAGES);
-        assert!(storage.index.capacity() <= capacity);
+        assert!(storage.index.allocation_size() <= index_bytes);
         let spare = storage.rows.gauge.spare.last().unwrap().as_ptr();
         for context in &contexts[1..] {
             insert(&mut storage, context);
         }
         assert_eq!(storage.len(), contexts.len());
         assert_eq!(storage.rows.gauge.pages[1].as_ptr(), spare);
-        assert_eq!(storage.index.capacity(), capacity);
+        assert_eq!(storage.index.allocation_size(), index_bytes);
         for context in &contexts {
             assert_eq!(&storage.header(storage.find(context).unwrap()).context, context);
         }
