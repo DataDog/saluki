@@ -184,7 +184,8 @@ impl Default for Listeners {
 /// Origin detection and tag cardinality.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct OriginDetection {
-    /// Whether origin detection tags metrics with their source workload.
+    /// Whether the sender's UDS socket credentials are an origin to tag metrics with. Off by default. The origin
+    /// information that the client sends is used either way.
     pub detection: bool,
 
     /// Whether client-supplied origin information is honored.

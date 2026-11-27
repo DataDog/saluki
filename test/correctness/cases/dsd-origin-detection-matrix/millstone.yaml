@@ -55,9 +55,12 @@ corpus:
       container_ids:
         - "{{ self.container_id }}"
         - "this-is-not-a-real-container-id"
-      # Pool of External Data strings for the |e: extension field. The first holds the pod's real UID, so the Agent can
-      # resolve it to pod-level tags. The second is syntactically valid but refers to no real pod, exercising graceful
-      # handling of an unresolvable |e: value.
+      # Pool of External Data strings for the |e: extension field. The first names the load generator's own container
+      # by its pod's UID and container name, which the Agent and ADP resolve from the pods the Agent gets from the
+      # kubelet. The second is not well-formed External Data, exercising graceful handling of a malformed |e: value.
+      # The sender's socket credentials, where UDS origin detection is on, and a resolvable Local Data container ID both
+      # come before External Data, so External Data seldom decides the origin here: dsd-origin-detection-external-data
+      # covers that.
       external_data:
         - "pu-{{ self.pod_uid }},cn-load,it-false"
         - "this-is-not-valid-external-data"
