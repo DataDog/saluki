@@ -532,7 +532,7 @@ The `request` holds what the step sends:
 - `headers` are sent as written. Panoramic compares header names without regard to letter case, and a name given
   twice is an error. The client adds no `Content-Type`, `Content-Encoding` or `Accept-Encoding` of its own. It sets
   `Host`, `Content-Length` and `Accept: */*` itself, so a case cannot name `Host`, `Content-Length` or
-  `Transfer-Encoding`.
+  `Transfer-Encoding`. A value cannot start or end with white space, because a peer trims it.
 - `body` holds exactly one of `text`, `base64` or `file`. A `file` is relative to the case directory, and panoramic
   reads it when it plans the case. Without `body`, the body is empty.
 - `content_encoding: gzip` makes the step gzip the body and send `Content-Encoding: gzip`. A case that sets it cannot
@@ -540,13 +540,14 @@ The `request` holds what the step sends:
 
 The `expect` holds what the reply must meet:
 
-- `status` is the exact status. It is required.
+- `status` is the exact status, from 100 to 599. It is required.
 - `headers` gives the exact value of each header it names, or `null` for a header that the reply must not have. The
-  values of a repeated header are joined with `, `. The step ignores the headers that `expect` does not name.
+  values of a repeated header are joined with `, `. A value cannot start or end with white space, because the client
+  trims it from the reply. The step ignores the headers that `expect` does not name.
 - `body` gives the exact bytes of the body, from `text`, `base64` or `file`. The step compares the body as it
   arrives, and does not decompress it.
-- `body_contains` gives bytes that the body contains, from `text` or `base64`. A case sets `body` or `body_contains`,
-  not both.
+- `body_contains` gives bytes that the body contains, from `text` or `base64`. It cannot be empty, because every body
+  meets an empty check. A case sets `body` or `body_contains`, not both.
 
 A `known` entry records the reply that ADP gives because of an open gap. It needs `gap`, in the form `gap/<name>`, the
 `issue` and a `reason`. Its `expect` replaces some parts of the step's `expect`: the status, a header that `expect`

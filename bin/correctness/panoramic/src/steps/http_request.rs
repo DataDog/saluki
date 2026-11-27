@@ -106,6 +106,20 @@ impl BytesFields {
     }
 }
 
+/// The value `value` of the header `written` in the field `field`. A peer trims the white space at both ends of a
+/// value, so a value with some is not one that a request sends or a reply holds as written.
+fn checked_header_value(field: &str, written: &str, value: &str) -> Result<HeaderValue, String> {
+    let checked = HeaderValue::from_str(value)
+        .map_err(|_| format!("{}: the value of '{}' is not a header value", field, written))?;
+    if value.trim_ascii() != value {
+        return Err(format!(
+            "{}: the value of '{}' has white space at an end, which a peer trims",
+            field, written
+        ));
+    }
+    Ok(checked)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExpectFields {
@@ -122,6 +136,12 @@ impl ExpectFields {
     fn predicates(self, field: &str, dir: &Path) -> Result<Vec<Predicate>, String> {
         let mut predicates = Vec::new();
         if let Some(status) = self.status {
+            if !(100..=599).contains(&status) {
+                return Err(format!(
+                    "{}.status: {} is not an HTTP status, which is from 100 to 599",
+                    field, status
+                ));
+            }
             predicates.push(Predicate::Status(status));
         }
         let mut names = BTreeMap::new();
@@ -134,14 +154,21 @@ impl ExpectFields {
                     field, first, written
                 ));
             }
+            if let Some(value) = &value {
+                checked_header_value(&format!("{}.headers", field), &written, value)?;
+            }
             predicates.push(Predicate::Header(name, value));
         }
         match (self.body, self.body_contains) {
             (Some(_), Some(_)) => return Err(format!("{} takes 'body' or 'body_contains', not both", field)),
             (Some(body), None) => predicates.push(Predicate::Body(body.read(&format!("{}.body", field), Some(dir))?)),
-            (None, Some(part)) => predicates.push(Predicate::BodyContains(
-                part.read(&format!("{}.body_contains", field), None)?,
-            )),
+            (None, Some(part)) => {
+                let part = part.read(&format!("{}.body_contains", field), None)?;
+                if part.is_empty() {
+                    return Err(format!("{}.body_contains: is empty, so every body meets it", field));
+                }
+                predicates.push(Predicate::BodyContains(part));
+            }
             (None, None) => {}
         }
         Ok(predicates)
@@ -164,6 +191,7 @@ enum Predicate {
     /// The value of a header, or `None` when the reply must not have it.
     Header(HeaderName, Option<String>),
     Body(Vec<u8>),
+    /// A body that contains these bytes, which are not empty.
     BodyContains(Vec<u8>),
 }
 
@@ -188,7 +216,7 @@ impl Predicate {
                 _ => false,
             },
             Self::Body(body) => reply.body == *body,
-            Self::BodyContains(part) => part.is_empty() || reply.body.windows(part.len()).any(|window| window == part),
+            Self::BodyContains(part) => reply.body.windows(part.len()).any(|window| window == part),
         }
     }
 }
@@ -343,8 +371,7 @@ impl HttpRequest {
                     written
                 ));
             }
-            let value = HeaderValue::from_str(value)
-                .map_err(|_| format!("request.headers: the value of '{}' is not a header value", written))?;
+            let value = checked_header_value("request.headers", written, value)?;
             if headers.insert(name, value).is_some() {
                 return Err(format!(
                     "request.headers: '{}' names a header that another key names too",
@@ -667,6 +694,70 @@ mod tests {
             (
                 fields(POST, "{status: 200, body: {text: a}, body_contains: {text: a}}", None),
                 "takes 'body' or 'body_contains', not both",
+            ),
+            (
+                fields(POST, "{status: 2000}", None),
+                "expect.status: 2000 is not an HTTP status, which is from 100 to 599",
+            ),
+            (
+                fields(POST, "{status: 99}", None),
+                "expect.status: 99 is not an HTTP status",
+            ),
+            (
+                fields(POST, "{status: 200}", Some(&known("{status: 0}"))),
+                "known.expect.status: 0 is not an HTTP status",
+            ),
+            (
+                fields(POST, "{status: 200, headers: {'bad name': a}}", None),
+                "expect.headers: 'bad name' is not a header name",
+            ),
+            (
+                fields(POST, "{status: 200, headers: {x-a: \"a\\nb\"}}", None),
+                "expect.headers: the value of 'x-a' is not a header value",
+            ),
+            (
+                fields(POST, "{status: 200, headers: {content-type: \"text/plain \"}}", None),
+                "expect.headers: the value of 'content-type' has white space at an end",
+            ),
+            (
+                fields(
+                    POST,
+                    "{status: 200, headers: {content-type: a}}",
+                    Some(&known("{headers: {content-type: ' b'}}")),
+                ),
+                "known.expect.headers: the value of 'content-type' has white space at an end",
+            ),
+            (
+                fields("{method: GET, path: /, headers: {x-a: ' a'}}", "{status: 200}", None),
+                "request.headers: the value of 'x-a' has white space at an end",
+            ),
+            (
+                fields(
+                    "{method: GET, path: /, headers: {x-a: \"a \\t\"}}",
+                    "{status: 200}",
+                    None,
+                ),
+                "request.headers: the value of 'x-a' has white space at an end",
+            ),
+            (
+                fields(
+                    "{method: GET, path: /, headers: {x-a: \"a\\nb\"}}",
+                    "{status: 200}",
+                    None,
+                ),
+                "request.headers: the value of 'x-a' is not a header value",
+            ),
+            (
+                fields(POST, "{status: 200, body_contains: {text: ''}}", None),
+                "expect.body_contains: is empty, so every body meets it",
+            ),
+            (
+                fields(
+                    POST,
+                    "{status: 200, body: {text: a}}",
+                    Some(&known("{body_contains: {base64: ''}}")),
+                ),
+                "known.expect.body_contains: is empty, so every body meets it",
             ),
             (
                 fields(POST, "{status: 200}", Some(&known("{}"))),
