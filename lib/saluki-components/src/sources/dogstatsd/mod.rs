@@ -1693,6 +1693,9 @@ impl DogStatsDDecoder {
     }
 
     async fn flush_events(&mut self) {
+        if let Some(batch) = &mut self.admission_budget {
+            batch.release();
+        }
         if let Some(event_buffer) = self.event_buffer.consume() {
             dispatch_events(event_buffer, &self.source_context).await;
         }
@@ -2244,15 +2247,18 @@ fn packed_sample_bytes(frame: &[u8]) -> usize {
     let Some(value_end) = memchr::memchr(b'|', value_and_type) else {
         return 0;
     };
-    if !matches!(&value_and_type[value_end + 1..], [b'h' | b'd', ..] | [b'm', b's', ..]) {
+    if !matches!(
+        &value_and_type[value_end + 1..],
+        [b'c' | b'g' | b'h' | b'd', ..] | [b'm', b's', ..]
+    ) {
         return 0;
     }
     let separators = memchr::memchr_iter(b':', &value_and_type[..value_end]).count();
     if separators == 0 {
         return 0;
     }
-    // Histogram and timer samples hold a value and weight. Round up for collection growth, and use the same
-    // allowance per sample for distribution sketch storage.
+    // Scalar samples hold a timestamp and value. Histogram and timer samples hold a value and weight.
+    // Round up for collection growth and use the same allowance per sample for distribution sketches.
     (separators + 1)
         .next_power_of_two()
         .saturating_mul(size_of::<[f64; 2]>())

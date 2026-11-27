@@ -32,15 +32,18 @@ fn origin_detection_errors_key(reason: &str) -> Key {
 
 #[test]
 fn packed_numeric_frames_reserve_for_sample_storage() {
-    const SAMPLES: usize = 4093;
-    for metric_type in [b"h".as_slice(), b"ms", b"d"] {
+    for metric_type in [b"h".as_slice(), b"ms", b"d", b"c", b"g"] {
+        let samples = 4095 - metric_type.len();
         let mut line = b"x:".to_vec();
-        line.extend(b"1:".repeat(SAMPLES - 1));
+        line.extend(b"1:".repeat(samples - 1));
         line.extend(b"1|");
         line.extend(metric_type);
         let wire_bytes = line.len() + 1;
-        assert!((8190..=8192).contains(&wire_bytes));
-        assert!(estimate_frame_bytes(&line, wire_bytes, 0) >= SAMPLES * 16);
+        assert!((8191..=8192).contains(&wire_bytes));
+        assert!(
+            estimate_frame_bytes(&line, wire_bytes, 0) >= samples * 16,
+            "packed metric type {metric_type:?} needs space for {samples} samples"
+        );
     }
 
     // Colons outside the value segment, or inside a set member, are not sample separators.
