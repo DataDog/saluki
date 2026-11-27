@@ -2090,9 +2090,10 @@ mod tests {
         assert_eq!(decision_maker, "");
     }
 
-    // The Agent has no switch for the error sampler: its `runSamplers` in `pkg/trace/agent/agent.go` runs the error
-    // sampler on every trace that the other samplers drop, unless `errors_per_second` is 0. `error_sampling_enabled`
-    // is a setting of ADP only, so these tests pin what it covers.
+    // `error_sampling_enabled` (`apm_config.error_sampling_enabled`) is an ADP-only key. It defaults to `true`, which
+    // matches the Agent: `runSamplers` in `pkg/trace/agent/agent.go` runs the error sampler on every trace that the
+    // other samplers drop, and turns it off only with `errors_per_second: 0`, which ADP honors too. These tests pin
+    // what the extra key turns off.
 
     /// Samples an error trace that the OTLP receiver drops, with error sampling on or off, and returns whether the
     /// sampler forwards it, with the trace.
