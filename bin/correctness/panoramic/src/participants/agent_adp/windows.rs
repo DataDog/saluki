@@ -23,39 +23,6 @@ const ENTRYPOINT: &[u8] = include_bytes!("../../../../../../ci/tooling/windows-a
 const ADP_COMMAND: &str = "C:\\adp\\agent-data-plane.exe";
 const AGENT_COMMAND: &str = "C:\\Program Files\\Datadog\\Datadog Agent\\bin\\agent.exe";
 
-/// The flat name of each `DD_DATA_PLANE_` setting a case writes, and the nested name added beside it.
-///
-/// ADP reads the flat names, such as `DD_DATA_PLANE_API_LISTEN_ADDRESS` and `DD_DATA_PLANE_ENABLED`, and they stay set.
-/// Its environment reader binds no nested name, which has a double underscore between path levels. The table copies the
-/// legacy runner's `WINDOWS_ENV_ALIASES`, and lists only the names a case uses.
-const DATA_PLANE_NESTED_NAMES: &[(&str, &str)] = &[
-    ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
-    ("DD_DATA_PLANE_STANDALONE_MODE", "DD_DATA_PLANE__STANDALONE_MODE"),
-    (
-        "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT",
-        "DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT",
-    ),
-    (
-        "DD_DATA_PLANE_REMOTE_AGENT_ENABLED",
-        "DD_DATA_PLANE__REMOTE_AGENT_ENABLED",
-    ),
-    ("DD_DATA_PLANE_DOGSTATSD_ENABLED", "DD_DATA_PLANE__DOGSTATSD__ENABLED"),
-    ("DD_DATA_PLANE_OTLP_ENABLED", "DD_DATA_PLANE__OTLP__ENABLED"),
-    (
-        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES",
-        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__TRACES",
-    ),
-    (
-        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS",
-        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__METRICS",
-    ),
-    (
-        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS",
-        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__LOGS",
-    ),
-    ("DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE"),
-];
-
 /// The spec in a Windows container: the Agent and ADP, started by the harness's entrypoint.
 pub(super) fn spec(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
     let with: With = cx.with()?;
@@ -105,7 +72,7 @@ pub(super) fn spec(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
     };
     add_endpoints(cx, &mut spec)?;
     datadog_agent::set_defaults(cx, true, &mut spec)?;
-    add_nested_names(cx, &mut spec)?;
+    add_force_enable(cx, &mut spec)?;
     Ok(spec)
 }
 
@@ -113,14 +80,8 @@ fn parse_all(texts: &[&str]) -> Result<Vec<Template>, String> {
     texts.iter().copied().map(Template::parse).collect()
 }
 
-/// Gives ADP each nested name of a flat setting the case writes and not the nested name, and the Agent the flag that
-/// hands the data plane over when the case enables it.
-fn add_nested_names(cx: &SpecContext<'_>, spec: &mut ParticipantSpec) -> Result<(), String> {
-    for (flat, nested) in DATA_PLANE_NESTED_NAMES {
-        if let Some(template) = cx.case.env.get(*flat).filter(|_| !cx.case.env.contains_key(*nested)) {
-            spec.env.insert(nested.to_string(), template.clone());
-        }
-    }
+/// Gives the Agent the flag that hands the data plane over when the case enables it.
+fn add_force_enable(cx: &SpecContext<'_>, spec: &mut ParticipantSpec) -> Result<(), String> {
     // The Agent honors `data_plane.enabled` only on Linux, and on any other OS overrides it to false unless forced.
     // ADP then exits with "Agent Data Plane is not enabled."
     if cx
