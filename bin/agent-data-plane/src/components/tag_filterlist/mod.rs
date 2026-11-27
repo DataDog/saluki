@@ -179,6 +179,10 @@ impl CompiledFilters {
         self.key_filters.len() + self.value_prefix_filters.rule_count()
     }
 
+    fn is_empty(&self) -> bool {
+        self.key_filters.is_empty() && self.value_prefix_filters.0.is_empty()
+    }
+
     /// Returns the whole-tag rule for `metric_name`, compared in the form Datadog stores metric names in.
     fn key_filter(&self, metric_name: &str) -> Option<&CompiledKeyFilter> {
         if self.key_filters.is_empty() {
@@ -500,6 +504,10 @@ fn matching_filters<'a>(
     (key_filter.is_some() || value_filter.is_some()).then_some((key_filter, value_filter))
 }
 
+fn supports_tag_filtering(metric: &Metric) -> bool {
+    metric.values().is_sketch() || matches!(metric.values(), MetricValues::Counter(_))
+}
+
 impl TagFilterlist {
     fn filter_cached(&self, metric: &mut Metric, state: &mut TagSetMutViewState) -> FilterMetricTagsOutcome {
         if let Some(cached) = self.context_cache.get(metric.context()) {
@@ -544,11 +552,16 @@ impl Transform for TagFilterlist {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        for metric in events.events_mut::<Metric>() {
-                            if metric.values().is_sketch()
-                                || matches!(metric.values(), MetricValues::Counter(_))
-                            {
-                                self.telemetry.record(self.filter_cached(metric, &mut view_state));
+                        if self.filters.is_empty() {
+                            // An empty ruleset still records one miss per eligible metric.
+                            for _ in events.events::<Metric>().filter(|metric| supports_tag_filtering(metric)) {
+                                self.telemetry.record(FilterMetricTagsOutcome::RuleMiss);
+                            }
+                        } else {
+                            for metric in events.events_mut::<Metric>() {
+                                if supports_tag_filtering(metric) {
+                                    self.telemetry.record(self.filter_cached(metric, &mut view_state));
+                                }
                             }
                         }
                         if let Err(e) = context.dispatcher().dispatch(events).await {
@@ -1616,6 +1629,42 @@ mod tests {
 
         telemetry.increment_updates();
         assert_eq!(recorder.counter("tag_filterlist_updates_total"), Some(2));
+    }
+
+    #[tokio::test]
+    async fn empty_rules_pass_every_metric_and_count_only_eligible_misses() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let builder = TagFilterlistConfiguration::new(Live::new_fixed(Vec::new()), &[], 100);
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_component_id("tag_filterlist")
+            .transform(builder)
+            .await
+            .expect("tag filterlist should build");
+
+        let context = Context::from_static_parts("my.metric", &["host:h1"]);
+        control
+            .send_events(
+                [
+                    Metric::counter(context.clone(), [(100, 1.0), (110, 2.0)]),
+                    Metric::distribution(context.clone(), 1.0),
+                    Metric::gauge(context, 1.0),
+                ]
+                .map(Event::Metric),
+            )
+            .await;
+        control.shutdown().await.expect("tag filterlist run should succeed");
+
+        let forwarded = outputs.default_output().collect_events().await;
+        assert_eq!(forwarded.len(), 3);
+        for event in forwarded {
+            let metric = event.try_into_metric().expect("metric output");
+            assert_eq!(metric.context().name(), "my.metric");
+            assert_eq!(tag_names(&metric), ["host:h1"]);
+        }
+        let labels: &[(&str, &str)] = &[("component_id", "tag_filterlist"), ("component_type", "transform")];
+        assert_eq!(recorder.counter(("tag_filterlist_rule_misses_total", labels)), Some(2));
+        assert_eq!(recorder.counter(("tag_filterlist_rule_hits_total", labels)), Some(0));
     }
 
     #[tokio::test]

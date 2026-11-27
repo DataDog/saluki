@@ -86,9 +86,29 @@ enum ClientTelemetryMetric {
     DroppedWriter,
 }
 
+impl ClientTelemetryMetric {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "datadog.dogstatsd.client.bytes_sent" => Some(Self::Sent),
+            "datadog.dogstatsd.client.bytes_dropped" => Some(Self::Dropped),
+            "datadog.dogstatsd.client.bytes_dropped_queue" => Some(Self::DroppedQueue),
+            "datadog.dogstatsd.client.bytes_dropped_writer" => Some(Self::DroppedWriter),
+            _ => None,
+        }
+    }
+}
+
 /// Configuration for the DogStatsD client telemetry destination.
 #[derive(Default)]
 pub struct DogStatsDClientTelemetryConfiguration;
+
+impl DogStatsDClientTelemetryConfiguration {
+    /// Returns whether this destination consumes a rate metric with this exact name.
+    pub fn accepts_metric(metric: &Metric) -> bool {
+        matches!(metric.values(), MetricValues::Rate(..))
+            && ClientTelemetryMetric::from_name(metric.context().name()).is_some()
+    }
+}
 
 #[async_trait]
 impl DestinationBuilder for DogStatsDClientTelemetryConfiguration {
@@ -125,32 +145,29 @@ impl DogStatsDClientTelemetry {
     }
 
     pub(super) fn record_metric(&self, metric: &Metric) {
-        let metric_kind = match metric.context().name().as_ref() {
-            "datadog.dogstatsd.client.bytes_sent" => ClientTelemetryMetric::Sent,
-            "datadog.dogstatsd.client.bytes_dropped" => ClientTelemetryMetric::Dropped,
-            "datadog.dogstatsd.client.bytes_dropped_queue" => ClientTelemetryMetric::DroppedQueue,
-            "datadog.dogstatsd.client.bytes_dropped_writer" => ClientTelemetryMetric::DroppedWriter,
-            _ => return,
+        let MetricValues::Rate(values, _) = metric.values() else {
+            return;
+        };
+        let Some(metric_kind) = ClientTelemetryMetric::from_name(metric.context().name()) else {
+            return;
         };
 
-        if let MetricValues::Rate(values, _) = metric.values() {
-            // A delayed aggregate flush can contain several closed time buckets in one metric. Separate tag contexts
-            // arrive as separate metrics and accumulate into counters with their client dimensions preserved.
-            let tags = ClientTelemetryTags::from_metric(metric);
-            let counter = match metric_kind {
-                ClientTelemetryMetric::Sent => self.counters.bytes_sent(tags.client, tags.client_transport),
-                ClientTelemetryMetric::Dropped => self.counters.bytes_dropped(tags.client, tags.client_transport),
-                ClientTelemetryMetric::DroppedQueue => {
-                    self.counters.bytes_dropped_queue(tags.client, tags.client_transport)
-                }
-                ClientTelemetryMetric::DroppedWriter => {
-                    self.counters.bytes_dropped_writer(tags.client, tags.client_transport)
-                }
-            };
-            for (_, value) in values {
-                if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64 {
-                    counter.increment(value as u64);
-                }
+        // Select the counter by client tags so separate contexts keep their client dimensions.
+        let tags = ClientTelemetryTags::from_metric(metric);
+        let counter = match metric_kind {
+            ClientTelemetryMetric::Sent => self.counters.bytes_sent(tags.client, tags.client_transport),
+            ClientTelemetryMetric::Dropped => self.counters.bytes_dropped(tags.client, tags.client_transport),
+            ClientTelemetryMetric::DroppedQueue => {
+                self.counters.bytes_dropped_queue(tags.client, tags.client_transport)
+            }
+            ClientTelemetryMetric::DroppedWriter => {
+                self.counters.bytes_dropped_writer(tags.client, tags.client_transport)
+            }
+        };
+        // A delayed aggregate flush can carry several closed buckets for one context. Add each bucket's byte count.
+        for (_, value) in values {
+            if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64 {
+                counter.increment(value as u64);
             }
         }
     }

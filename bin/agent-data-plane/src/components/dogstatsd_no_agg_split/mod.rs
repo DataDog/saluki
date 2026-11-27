@@ -103,17 +103,11 @@ impl MemoryBounds for DogStatsDNoAggSplitConfiguration {
     }
 }
 
-fn has_timestamped_metrics(events: &EventsBuffer) -> bool {
-    events
-        .events::<Metric>()
-        .any(|metric| metric.values().any_timestamped())
-}
-
 fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<Metric>) {
     if metric.values().all_timestamped() {
         (Some(metric), None)
     } else if metric.values().any_timestamped() {
-        // Only _some_ of the values are timestamped, so we'll split the timestamped values into a new metric.
+        // A mixed metric sends its timestamped values to passthrough. The rest still need aggregation.
         let new_metric_values = metric.values_mut().split_timestamped();
         let new_metric = Metric::from_parts(metric.context().clone(), new_metric_values, metric.metadata().clone());
 
@@ -303,10 +297,9 @@ impl Transform for DogStatsDNoAggSplit {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
 
-                        // Fast path: when nothing in this buffer is timestamped -- overwhelmingly the common case,
-                        // since only clients using the timestamp extension produce them -- there's nothing to split
-                        // out, so forward the buffer as-is instead of moving every event into a new one.
-                        if !has_timestamped_metrics(&events) {
+                        // Only clients that use the timestamp extension need the split. Without timestamps, forward
+                        // the original buffer instead of moving each metric into a new one.
+                        if !events.has_timestamped_metrics() {
                             if let Err(e) = context.dispatcher().dispatch(events).await {
                                 error!(error = %e, "Failed to dispatch events.");
                             }
@@ -377,7 +370,10 @@ mod tests {
     use saluki_components::forwarders::OpwMetricsConfiguration;
     use saluki_core::{
         components::test_util::TestComponentDriver,
-        data_model::event::metric::{context::Context, ScalarPoints},
+        data_model::event::{
+            eventd::EventD,
+            metric::{context::Context, ScalarPoints},
+        },
     };
 
     use super::*;
@@ -641,19 +637,42 @@ mod tests {
         );
     }
 
-    #[test]
-    fn has_timestamped_metrics_detects_any_timestamped_value() {
+    #[tokio::test]
+    async fn timestamp_fast_path_preserves_default_events_and_detects_mutated_points() {
+        let config = DogStatsDNoAggSplitConfiguration::new(Duration::from_secs(60));
+        let (split, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("split transform should build");
+
+        let gauge = Event::Metric(Metric::gauge("metric1", 1.0));
+        let event = Event::EventD(EventD::new("title", "text"));
+        split.send_events([gauge.clone(), event.clone()]).await;
+
         let mut buffer = EventsBuffer::default();
-        assert!(!has_timestamped_metrics(&buffer));
+        assert!(buffer
+            .try_push(Event::Metric(Metric::counter("metric2", 2.0)))
+            .is_none());
+        let metric = buffer
+            .events_mut::<Metric>()
+            .next()
+            .expect("buffer should hold a metric");
+        *metric.values_mut() =
+            MetricValues::counter(ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(123), 3.0)]));
+        split.send(buffer).await;
+        split.shutdown().await.expect("split transform should stop cleanly");
 
-        assert!(buffer.try_push(Event::Metric(Metric::gauge("metric1", 1.0))).is_none());
-        assert!(!has_timestamped_metrics(&buffer));
-
-        // A metric where only _some_ values are timestamped still has to take the splitting path.
-        let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(123), 3.0)]);
-        let mixed_metric = Metric::counter(Context::from_static_name("metric2"), mixed_values);
-        assert!(buffer.try_push(Event::Metric(mixed_metric)).is_none());
-        assert!(has_timestamped_metrics(&buffer));
+        assert_eq!(
+            outputs.default_output().collect_events().await,
+            [gauge, event, Event::Metric(Metric::counter("metric2", 2.0))]
+        );
+        assert_eq!(
+            outputs.named_output(PASSTHROUGH_OUTPUT).collect_events().await,
+            [Event::Metric(Metric::rate(
+                "metric2",
+                (123, 3.0),
+                Duration::from_secs(10)
+            ))],
+        );
     }
 
     #[test]
@@ -674,6 +693,7 @@ mod tests {
 
     #[test]
     fn split_mixed_timestamped_values_go_to_both_outputs() {
+        // A single timestamped value is enough to take the split path, even within a mixed metric.
         let context = Context::from_static_name("metric1");
         let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(123), 3.0)]);
         let metric = Metric::counter(context.clone(), mixed_values);

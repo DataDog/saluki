@@ -1,9 +1,11 @@
 //! DogStatsD post-aggregate metric filter transform.
 //!
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
+use std::sync::LazyLock;
+
 use async_trait::async_trait;
 use saluki_common::sync::live::Live;
-use saluki_components::transforms::HistogramConfiguration;
+use saluki_components::{destinations::DogStatsDClientTelemetryConfiguration, transforms::HistogramConfiguration};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
@@ -12,7 +14,7 @@ use saluki_core::{
     },
     data_model::event::{
         metric::{Metric, MetricValues},
-        EventType,
+        Event, EventType,
     },
     observability::ComponentMetricsExt,
     topology::{EventsBuffer, OutputDefinition},
@@ -28,6 +30,8 @@ use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist, 
 mod telemetry;
 
 use self::telemetry::Telemetry;
+
+pub(crate) const CLIENT_TELEMETRY_OUTPUT: &str = "client_telemetry";
 
 /// DogStatsD post-aggregate metric filter configuration.
 ///
@@ -59,8 +63,13 @@ impl TransformBuilder for DogStatsDPostAggregateFilterConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
-        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::Metric)];
-        OUTPUTS
+        static OUTPUTS: LazyLock<[OutputDefinition<EventType>; 2]> = LazyLock::new(|| {
+            [
+                OutputDefinition::default_output(EventType::Metric),
+                OutputDefinition::named_output(CLIENT_TELEMETRY_OUTPUT, EventType::Metric),
+            ]
+        });
+        &*OUTPUTS
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
@@ -150,6 +159,10 @@ impl DogStatsDPostAggregateFilter {
     }
 
     fn transform_buffer(&self, buffer: &mut EventsBuffer) {
+        if self.matcher.len() == 0 {
+            return;
+        }
+
         buffer.retain_events::<Metric, _>(|metric| {
             let should_filter = self.should_filter_metric(metric);
             if should_filter {
@@ -169,12 +182,30 @@ impl Transform for DogStatsDPostAggregateFilter {
 
         debug!("DogStatsD post-aggregate filter transform started.");
 
+        let mirror_client_telemetry = context.dispatcher().is_named_output_connected(CLIENT_TELEMETRY_OUTPUT);
+        let mut client_telemetry_buffer = context.dispatcher().event_buffer_manager();
+
         loop {
             select! {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
                         self.transform_buffer(&mut events);
+
+                        // Mirror only the rates consumed by the telemetry destination, after applying the filter.
+                        if mirror_client_telemetry {
+                            for metric in events.events::<Metric>().filter(|metric| {
+                                DogStatsDClientTelemetryConfiguration::accepts_metric(metric)
+                            }) {
+                                let full = client_telemetry_buffer.try_push(Event::Metric(metric.clone()));
+                                assert!(full.is_none(), "a subset of the input buffer fits in one buffer");
+                            }
+                            if let Some(telemetry) = client_telemetry_buffer.consume() {
+                                if let Err(e) = context.dispatcher().dispatch_named(CLIENT_TELEMETRY_OUTPUT, telemetry).await {
+                                    error!(error = %e, "Failed to dispatch client telemetry events.");
+                                }
+                            }
+                        }
 
                         if let Err(e) = context.dispatcher().dispatch(events).await {
                             error!(error = %e, "Failed to dispatch events.");
@@ -212,6 +243,50 @@ mod tests {
 
     use super::*;
     use crate::components::dogstatsd_post_aggregate_filter::telemetry::FILTERED_METRICS_METRIC;
+
+    #[tokio::test]
+    async fn mirrors_only_supported_rates_that_survive_the_post_aggregate_filter() {
+        const SENT: &str = "datadog.dogstatsd.client.bytes_sent";
+        const DROPPED: &str = "datadog.dogstatsd.client.bytes_dropped_queue";
+        let rate = |name: &'static str| {
+            let context = Context::from_static_parts(name, &["client:go", "client_transport:uds"]);
+            Metric::rate(context, [(100, 7.0), (110, 3.0)], Duration::from_secs(10))
+        };
+        let input = [
+            Metric::gauge(SENT, 1.0),
+            rate(SENT),
+            rate(DROPPED),
+            rate("datadog.dogstatsd.client.bytes_unknown"),
+            Metric::gauge("app.requests", 1.0),
+        ];
+        for blocked in [false, true] {
+            let filter = MetricNameFilter {
+                values: if blocked { vec![DROPPED.to_string()] } else { vec![] },
+                match_prefix: true,
+                prefix_rules: vec![],
+            };
+            let builder = DogStatsDPostAggregateFilterConfiguration::new(Live::new_fixed(filter), &[], &[]);
+            let (control, mut outputs) = TestComponentDriver::transform(builder).await.unwrap();
+            control.send_events(input.iter().cloned().map(Event::Metric)).await;
+            control.shutdown().await.unwrap();
+
+            let primary = outputs.default_output().collect_events().await;
+            let telemetry = outputs.named_output(CLIENT_TELEMETRY_OUTPUT).collect_events().await;
+            let into_metrics = |events: Vec<Event>| {
+                events
+                    .into_iter()
+                    .map(|event| event.try_into_metric().expect("metric output"))
+                    .collect::<Vec<_>>()
+            };
+            let mut expected_primary = input.to_vec();
+            if blocked {
+                expected_primary.remove(2);
+            }
+            let expected_telemetry = if blocked { &input[1..2] } else { &input[1..3] };
+            assert_eq!(into_metrics(primary), expected_primary, "blocked: {blocked}");
+            assert_eq!(into_metrics(telemetry), expected_telemetry, "blocked: {blocked}");
+        }
+    }
 
     fn filter_with(
         values: Vec<&str>, match_prefix: bool, histogram_aggregates: Vec<&str>, histogram_percentiles: Vec<&str>,
