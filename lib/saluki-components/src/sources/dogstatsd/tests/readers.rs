@@ -18,6 +18,8 @@ use tokio::{
 };
 
 use super::*;
+#[cfg(target_os = "linux")]
+use crate::common::dogstatsd_capture::CapturedTaggerHandle;
 use crate::sources::dogstatsd::should_drop_oversized_named_pipe_frame;
 #[cfg(unix)]
 use crate::sources::dogstatsd::{
@@ -26,8 +28,7 @@ use crate::sources::dogstatsd::{
 };
 #[cfg(target_os = "linux")]
 use crate::sources::dogstatsd::{
-    handle_metric_packet, replay::CapturedTaggerHandle, DogStatsDOriginTagResolver, Listener,
-    OriginEnrichmentConfiguration, ProcessOrigin,
+    handle_metric_packet, DogStatsDOriginTagResolver, Listener, OriginEnrichmentConfiguration, ProcessOrigin,
 };
 
 #[cfg(unix)]
