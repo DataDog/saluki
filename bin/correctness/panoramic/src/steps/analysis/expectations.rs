@@ -25,10 +25,11 @@ pub(super) const BASELINE: &str = "baseline";
 /// What an unmet expectation calls the side that holds the comparison's data.
 pub(super) const COMPARISON: &str = "comparison";
 
-/// Most series with the expected name, or span names of the expected service, that an unmet expectation lists.
+/// The maximum number of series with the expected name, or span names of the expected service, that an unmet
+/// expectation lists.
 const MAX_LISTED: usize = 3;
 
-/// Most characters of a tag value that an unmet expectation shows.
+/// The maximum number of characters of a tag value that an unmet expectation shows.
 const MAX_SHOWN_CHARS: usize = 160;
 
 /// What each side must hold of metrics. The `metrics` section of a `compare` step sets these fields.
@@ -37,7 +38,7 @@ const MAX_SHOWN_CHARS: usize = 160;
 /// internal-name filter, so internal telemetry never counts toward it.
 #[derive(Clone, Debug, Default)]
 pub struct MetricsExpectations {
-    /// Fewest series that each side holds after the internal-name filter.
+    /// The minimum number of series that each side is expected to hold after the internal-name filter.
     pub min_series: Option<NonZeroUsize>,
 
     /// Criteria that one series of each side must meet, one entry for each. A criterion names a metric, and it can add
@@ -92,16 +93,16 @@ impl MetricsExpectations {
 /// Every field is optional. A trace is a distinct trace ID among the spans of a side.
 #[derive(Clone, Debug, Default)]
 pub struct TracesExpectations {
-    /// Fewest traces that each side holds.
+    /// The minimum number of traces that each side is expected to hold.
     pub min_traces: Option<NonZeroUsize>,
 
-    /// Most traces that each side holds.
+    /// The maximum number of traces that each side is expected to hold.
     pub max_traces: Option<NonZeroUsize>,
 
-    /// Fewest spans that each side holds.
+    /// The minimum number of spans that each side is expected to hold.
     pub min_spans: Option<NonZeroUsize>,
 
-    /// Most spans that each side holds.
+    /// The maximum number of spans that each side is expected to hold.
     pub max_spans: Option<NonZeroUsize>,
 
     /// Spans that each side must hold, one entry for each. A span of the side must meet every field of an entry.
@@ -110,7 +111,8 @@ pub struct TracesExpectations {
     /// Spans that neither side may hold, one entry for each. No span of a side may meet every field of an entry.
     pub absent: Vec<AbsentSpan>,
 
-    /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
+    /// The minimum number of APM stats groups that each side is expected to hold. A group is one aggregation key,
+    /// whatever its buckets.
     ///
     /// It applies only when the step compares stats.
     pub min_stats_groups: Option<NonZeroUsize>,

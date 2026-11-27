@@ -110,20 +110,22 @@ pub struct TracesOptions {
     #[serde(default)]
     pub require_ssi: Option<bool>,
 
-    /// Fewest traces that each side holds. A trace is a distinct trace ID among the spans of a side.
+    /// The minimum number of traces that each side is expected to hold. A trace is a distinct trace ID among the spans
+    /// of a side.
     #[serde(default)]
     pub min_traces: Option<NonZeroUsize>,
 
-    /// Most traces that each side holds. Set it for a case where a sampler drops traces, so that a side that keeps
-    /// every trace fails even when the baseline does the same.
+    /// The maximum number of traces that each side is expected to hold. Set it for a case where a sampler drops traces,
+    /// so that a side that keeps every trace fails even when the baseline does the same.
     #[serde(default)]
     pub max_traces: Option<NonZeroUsize>,
 
-    /// Fewest spans that each side holds.
+    /// The minimum number of spans that each side is expected to hold.
     #[serde(default)]
     pub min_spans: Option<NonZeroUsize>,
 
-    /// Most spans that each side holds. Like `max_traces`, it fails a side that keeps what a sampler should drop.
+    /// The maximum number of spans that each side is expected to hold. Like `max_traces`, it fails a side that keeps
+    /// what a sampler should drop.
     #[serde(default)]
     pub max_spans: Option<NonZeroUsize>,
 
@@ -144,7 +146,8 @@ pub struct TracesOptions {
     #[serde(default)]
     pub absent: Vec<AbsentSpan>,
 
-    /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
+    /// The minimum number of APM stats groups that each side is expected to hold. A group is one aggregation key,
+    /// whatever its buckets.
     ///
     /// A step that compares stats and sets other expectations, or sets `require_ssi` to `false`, must set it, so that two
     /// sides with no stats do not match. It has no effect with `otlp_direct_analysis_mode`, so the step rejects it there.
