@@ -10,6 +10,8 @@ use metrics::Gauge;
 use saluki_common::collections::{ContiguousBitSet, PrehashedHashSet};
 use stringtheory::MetaString;
 
+mod context_cache;
+
 mod hash;
 use self::hash::{hash_context, hash_context_with_host_and_seen};
 pub use self::hash::{hash_context_with_host, ContextKey};

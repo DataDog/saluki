@@ -21,7 +21,7 @@ type RawCache<K, V, W, H> = quick_cache::sync::Cache<K, V, WrappedWeighter<W>, H
 
 #[static_metrics(prefix = cache, labels(cache_id))]
 #[derive(Clone)]
-struct Telemetry {
+pub(crate) struct Telemetry {
     current_items: Gauge,
     current_weight: Gauge,
     weight_limit: Gauge,

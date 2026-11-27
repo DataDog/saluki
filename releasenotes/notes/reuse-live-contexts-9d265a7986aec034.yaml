@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reuse DogStatsD metric contexts that remain in use after context-cache eviction.
