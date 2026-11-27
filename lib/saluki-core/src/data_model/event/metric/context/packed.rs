@@ -469,13 +469,14 @@ impl Packed {
         };
         let name_symbol = intern(name);
         let host_symbol = host.and_then(intern);
-        let mut prepared: SmallVec<[(&str, Option<Symbol<'_>>); INLINE_TAG_CAPACITY]> = SmallVec::new();
+        let tags = tags.into_iter();
+        let min_tags = tags.size_hint().0;
+        let mut prepared = SmallVec::<[(&str, Option<Symbol<'_>>); INLINE_TAG_CAPACITY]>::with_capacity(min_tags);
         let mut ids = 0;
         let mut all_inline_bytes = 0;
         let mut tag_bytes = 0;
-        let tags = tags.into_iter();
-        let mut seen = (metadata.deduplicate && tags.size_hint().0 > INLINE_TAG_CAPACITY)
-            .then(HashSet::<&str, FastBuildHasher>::default);
+        let mut seen = (metadata.deduplicate && min_tags > INLINE_TAG_CAPACITY)
+            .then(|| HashSet::<&str, FastBuildHasher>::with_capacity_and_hasher(min_tags, FastBuildHasher::default()));
         for text in tags {
             if metadata.deduplicate {
                 let duplicate = match &mut seen {

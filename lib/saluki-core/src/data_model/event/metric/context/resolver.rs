@@ -471,7 +471,7 @@ impl ContextResolver {
 
     fn create_context_key_with_host<N, H, I, I2, T, T2>(
         &mut self, name: N, host: Option<&H>, tags: I, origin_tags: I2,
-    ) -> (ContextKey, TagSetKey)
+    ) -> (ContextKey, TagSetKey, bool)
     where
         N: AsRef<str>,
         H: AsRef<str>,
@@ -490,7 +490,7 @@ impl ContextResolver {
     }
 
     fn create_context<N, H, I, T>(
-        &self, keys: (ContextKey, TagSetKey), name: N, host: Option<H>, tags: I, origin: SharedTagSet,
+        &self, keys: (ContextKey, TagSetKey, bool), name: N, host: Option<H>, tags: I, origin: SharedTagSet,
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
@@ -498,7 +498,7 @@ impl ContextResolver {
         I: IntoIterator<Item = T>,
         T: AsRef<str> + CheapMetaString,
     {
-        let (key, tagset_key) = keys;
+        let (key, tagset_key, tags_may_repeat) = keys;
         let origin = TagSet::from(origin);
         let inner = if self.use_packed_strings {
             // Packed contexts own their tags and bypass the tag-set cache.
@@ -512,7 +512,7 @@ impl ContextResolver {
                     domain: Some(&self.domain),
                     tracked: true,
                     metadata: TagMetadata {
-                        deduplicate: true,
+                        deduplicate: tags_may_repeat,
                         ..TagMetadata::default()
                     },
                     lease: None,
@@ -689,9 +689,9 @@ impl ContextResolver {
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
-        let (context_key, tagset_key) =
-            self.create_context_key_with_host(&name, host.as_ref(), tags.clone(), &origin_tags);
-        let create = || self.create_context((context_key, tagset_key), name, host, tags, origin_tags);
+        let keys = self.create_context_key_with_host(&name, host.as_ref(), tags.clone(), &origin_tags);
+        let context_key = keys.0;
+        let create = || self.create_context(keys, name, host, tags, origin_tags);
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         let Some(cache) = &self.context_cache else {
