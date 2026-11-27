@@ -10,7 +10,7 @@ use metrics::{counter, gauge, Counter};
 use process_memory::Querier;
 use tracing::{debug, info, warn};
 
-use super::MemoryGrant;
+use super::{ByteBudget, MemoryGrant};
 
 /// How often the checker thread samples the process's memory usage.
 const CHECK_INTERVAL: Duration = Duration::from_millis(250);
@@ -37,6 +37,7 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(250);
 pub struct MemoryLimiter {
     active_backoff_nanos: Arc<AtomicU64>,
     throttle_counters: Arc<OnceLock<ThrottleCounters>>,
+    byte_budget: Option<ByteBudget>,
 }
 
 /// Counters for the calls that the memory limiter throttles.
@@ -92,6 +93,7 @@ impl MemoryLimiter {
         Some(Self {
             active_backoff_nanos,
             throttle_counters: Arc::new(OnceLock::new()),
+            byte_budget: None,
         })
     }
 
@@ -102,7 +104,19 @@ impl MemoryLimiter {
         Self {
             active_backoff_nanos: Arc::new(AtomicU64::new(0)),
             throttle_counters: Arc::new(OnceLock::new()),
+            byte_budget: None,
         }
+    }
+
+    /// Sets the shared allocation budget independently of cooperative backpressure.
+    pub fn with_byte_budget(mut self, budget: Option<ByteBudget>) -> Self {
+        self.byte_budget = budget;
+        self
+    }
+
+    /// Returns the shared allocation budget if memory is limited.
+    pub fn byte_budget(&self) -> Option<&ByteBudget> {
+        self.byte_budget.as_ref()
     }
 
     /// Waits a short period of time based on the available memory.

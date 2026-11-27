@@ -1,0 +1,4 @@
+features:
+  - |
+    Introduce an opt-in byte budget for DogStatsD admission under ``permissive`` and ``strict`` memory modes.
+    The budget tracks a configured process limit and a finite Linux cgroup v2 limit independently when both exist.

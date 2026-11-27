@@ -353,7 +353,10 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              no memory limiting; `permissive` logs a warning when the bounds do not fit within the \
              limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, \
              the global memory limiter is active only when a limit is in effect (configured or \
-             detected from cgroups) and `enable_global_limiter` is `true`.",
+             detected from cgroups) and `enable_global_limiter` is `true`. These modes also \
+             enable a byte budget for admission independently of the global limiter. It tracks \
+             the configured process limit and the Linux cgroup v2 limit separately when both \
+             exist. The `disabled` mode does not create a byte budget.",
         ),
     },
 ];
