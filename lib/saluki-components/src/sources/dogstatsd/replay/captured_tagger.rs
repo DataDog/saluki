@@ -15,8 +15,6 @@ use saluki_core::data_model::{
 };
 use saluki_env::workload::EntityId;
 
-use super::writer::parse_entity_id_str;
-
 /// Per-entity captured tags, split by cardinality level.
 ///
 /// Tags are stored as the writer recorded them: each level holds only the tags that belong to *that* level (not
@@ -68,7 +66,7 @@ impl CapturedTaggerStore {
 
         let mut by_entity = FastHashMap::with_capacity_and_hasher(entities.len(), Default::default());
         for (raw_entity_id, proto_entity) in entities {
-            let Some(entity_id) = parse_entity_id_str(&raw_entity_id) else {
+            let Some(entity_id) = raw_entity_id.parse::<EntityId>().ok() else {
                 continue;
             };
             by_entity.insert(
@@ -83,7 +81,7 @@ impl CapturedTaggerStore {
 
         let mut by_pid = FastHashMap::with_capacity_and_hasher(pid_map.len(), Default::default());
         for (pid, raw_entity_id) in pid_map {
-            let Some(entity_id) = parse_entity_id_str(&raw_entity_id) else {
+            let Some(entity_id) = raw_entity_id.parse::<EntityId>().ok() else {
                 continue;
             };
             by_pid.insert(pid, entity_id);
