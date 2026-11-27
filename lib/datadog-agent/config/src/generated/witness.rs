@@ -224,6 +224,7 @@ pub trait DatadogConfigWitness {
     fn consume_origin_detection_unified(&mut self, value: bool);
     fn consume_otlp_config_debug_verbosity(&mut self, value: String);
     fn consume_otlp_config_logs_enabled(&mut self, value: bool);
+    fn consume_otlp_config_logs_infra_attributes_tags_as_ddtags(&mut self, value: bool);
     fn consume_otlp_config_metrics_delta_ttl(&mut self, value: i64);
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool);
     fn consume_otlp_config_metrics_histograms_mode(&mut self, value: String);
@@ -620,6 +621,9 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_origin_detection_unified(config.origin_detection_unified.clone());
     consumer.consume_otlp_config_debug_verbosity(config.otlp_config.debug.verbosity.clone());
     consumer.consume_otlp_config_logs_enabled(config.otlp_config.logs.enabled.clone());
+    consumer.consume_otlp_config_logs_infra_attributes_tags_as_ddtags(
+        config.otlp_config.logs.infra_attributes.tags_as_ddtags.clone(),
+    );
     consumer.consume_otlp_config_metrics_delta_ttl(config.otlp_config.metrics.delta_ttl.clone());
     consumer.consume_otlp_config_metrics_enabled(config.otlp_config.metrics.enabled.clone());
     consumer.consume_otlp_config_metrics_histograms_mode(config.otlp_config.metrics.histograms.mode.clone());

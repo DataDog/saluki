@@ -8,16 +8,17 @@
 //! 2. The tags of each entity, and then the global tags, give one value for each tag key. The first value wins.
 //! 3. Each unified service tag (`service`, `env`, `version`) fills its OpenTelemetry attribute only when the resource
 //!    has none of the attributes for that tag.
-//! 4. Every other tag follows the container tag promotion mode, as `writeTagAttribute` does. A key with the
+//! 4. Every other tag goes where [`CustomTags`] says, as `writeTagAttribute` does. A key with the
 //!    `datadog.container.tag.` prefix, or a known convention key, always overwrites the resource attribute with
 //!    that key.
 //!
 //! Each signal's translator then turns the resource attributes into tags, as it does for any resource attribute.
 
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
-use saluki_core::data_model::origin::OriginTagCardinality;
+use saluki_core::data_model::{origin::OriginTagCardinality, tags::Tag};
 use saluki_env::workload::EntityId;
 
+use super::attributes::is_kubernetes_dd_tag;
 use super::origin::OtlpOriginTagResolver;
 use super::util::{
     first_attribute, is_custom_container_tag_key, is_known_convention_key, put_str_attribute,
@@ -57,18 +58,30 @@ pub enum ContainerTagPromotion {
     Rename,
 }
 
+/// Where [`process_tags`] puts a custom tag: a tag that isn't a unified service tag, has no `datadog.container.tag.`
+/// prefix, and isn't a known convention key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CustomTags {
+    /// Writes custom tags into the resource attributes, promoted as the mode says. A prefixed copy never replaces an
+    /// attribute that the resource already has.
+    Attributes(ContainerTagPromotion),
+
+    /// Returns custom tags for the caller to send as `ddtags`, as the Agent's logs pipeline can do. A Kubernetes Datadog
+    /// tag key still goes into the resource attributes.
+    DdTags,
+}
+
 /// Writes the entity and global tags of an OTLP resource into its attributes, as `ProcessTags` does.
 ///
-/// A custom tag, one that isn't a unified service tag, has no `datadog.container.tag.` prefix, and isn't a known
-/// convention key, is promoted as `promotion` says. A prefixed copy never replaces an attribute that the resource
-/// already has.
+/// Returns the custom tags that [`CustomTags::DdTags`] keeps out of the attributes, in resolution order. The result is
+/// empty for [`CustomTags::Attributes`].
 ///
 /// When the resource has no `container.id`, the container that the origin attributes identify comes first.
 /// TODO: detect `container.id` and write it into the attributes, as the Agent does.
 pub fn process_tags(
     attributes: &mut Vec<KeyValue>, resolver: &OtlpOriginTagResolver, cardinality: OriginTagCardinality,
-    promotion: ContainerTagPromotion,
-) {
+    custom_tags: CustomTags,
+) -> Vec<Tag> {
     // As in the Agent, any `container.id` attribute stops the origin lookup, even an empty or unknown one. The Agent
     // detects the container ID only when `Map.Get` finds no `container.id`.
     let origin_container = match first_attribute(attributes, CONTAINER_ID) {
@@ -79,8 +92,9 @@ pub fn process_tags(
         .into_iter()
         .chain(entity_ids_from_attributes(attributes));
     let tags = resolver.resolve_ordered_tags(entity_ids, cardinality);
+    let mut ddtags = Vec::new();
 
-    for tag in &tags {
+    for tag in tags {
         let Some((key, value)) = tag.as_str().split_once(':') else {
             continue;
         };
@@ -93,25 +107,36 @@ pub fn process_tags(
                     put_str_attribute(attributes, otel_keys[0], value);
                 }
             }
-            None => write_tag_attribute(attributes, key, value, promotion),
+            None => {
+                if write_tag_attribute(attributes, key, value, custom_tags) {
+                    ddtags.push(tag);
+                }
+            }
         }
     }
+
+    ddtags
 }
 
 /// Writes a tag that isn't a unified service tag, as `writeTagAttribute` does.
-fn write_tag_attribute(attributes: &mut Vec<KeyValue>, key: &str, value: &str, promotion: ContainerTagPromotion) {
+///
+/// Returns `true` if the tag goes to `ddtags` instead.
+fn write_tag_attribute(attributes: &mut Vec<KeyValue>, key: &str, value: &str, custom_tags: CustomTags) -> bool {
     if is_custom_container_tag_key(key) || is_known_convention_key(key) {
         put_str_attribute(attributes, key, value);
-        return;
+        return false;
     }
-    match promotion {
-        ContainerTagPromotion::Off => put_str_attribute(attributes, key, value),
-        ContainerTagPromotion::Duplicate => {
+    match custom_tags {
+        CustomTags::DdTags if is_kubernetes_dd_tag(key) => put_str_attribute(attributes, key, value),
+        CustomTags::DdTags => return true,
+        CustomTags::Attributes(ContainerTagPromotion::Off) => put_str_attribute(attributes, key, value),
+        CustomTags::Attributes(ContainerTagPromotion::Duplicate) => {
             put_str_attribute(attributes, key, value);
             put_prefixed_str_if_absent(attributes, key, value);
         }
-        ContainerTagPromotion::Rename => put_prefixed_str_if_absent(attributes, key, value),
+        CustomTags::Attributes(ContainerTagPromotion::Rename) => put_prefixed_str_if_absent(attributes, key, value),
     }
+    false
 }
 
 /// Writes the `datadog.container.tag.` copy of a tag unless the resource has that attribute (`putStrIfAbsent`).
@@ -176,12 +201,13 @@ mod tests {
 
     fn apply(provider: TestWorkloadProvider, mut attributes: Vec<KeyValue>) -> Vec<KeyValue> {
         let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
-        process_tags(
+        let ddtags = process_tags(
             &mut attributes,
             &resolver,
             OriginTagCardinality::Low,
-            ContainerTagPromotion::Off,
+            CustomTags::Attributes(ContainerTagPromotion::Off),
         );
+        assert!(ddtags.is_empty());
         attributes
     }
 
@@ -279,7 +305,7 @@ mod tests {
                 &mut attributes,
                 &origin_tag_resolver,
                 OriginTagCardinality::Low,
-                ContainerTagPromotion::Off,
+                CustomTags::Attributes(ContainerTagPromotion::Off),
             );
             assert_eq!(as_map(&attributes), as_map(&expected), "case: {name}");
         }
@@ -577,12 +603,13 @@ mod tests {
         for (promotion, expected) in cases {
             let provider = TestWorkloadProvider::with_entity(EntityId::Global, &tagger_tags);
             let mut attributes = existing();
-            process_tags(
+            let ddtags = process_tags(
                 &mut attributes,
                 &OtlpOriginTagResolver::new(Arc::new(provider)),
                 OriginTagCardinality::Low,
-                promotion,
+                CustomTags::Attributes(promotion),
             );
+            assert!(ddtags.is_empty(), "promotion: {promotion:?}");
             assert_eq!(as_map(&attributes), string_map(&expected), "promotion: {promotion:?}");
         }
     }
@@ -596,5 +623,42 @@ mod tests {
             &["high:present"],
         );
         assert_eq!(as_map(&apply(provider, vec![])), string_map(&[("low", "present")]));
+    }
+
+    #[test]
+    fn tags_as_ddtags_keeps_known_and_prefixed_keys_as_resource_attributes() {
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Global,
+            &[
+                "datadog.container.tag.team:prefixed",
+                "k8s.pod.name:convention-key",
+                "kube_namespace:convention-name",
+                "container.image.tags:image-tags",
+                "eks_cluster_arn:eks",
+                "env:prod",
+                "custom:diverted",
+            ],
+        );
+        let mut attributes = vec![];
+        let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
+        let ddtags = process_tags(
+            &mut attributes,
+            &resolver,
+            OriginTagCardinality::Low,
+            CustomTags::DdTags,
+        );
+
+        assert_eq!(ddtags, [Tag::from("custom:diverted")]);
+        assert_eq!(
+            as_map(&attributes),
+            string_map(&[
+                ("datadog.container.tag.team", "prefixed"),
+                ("k8s.pod.name", "convention-key"),
+                ("kube_namespace", "convention-name"),
+                ("container.image.tags", "image-tags"),
+                ("eks_cluster_arn", "eks"),
+                ("deployment.environment", "prod"),
+            ])
+        );
     }
 }

@@ -54,6 +54,7 @@ use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use self::debug_output::OtlpDebugOutput;
 pub use self::debug_output::OtlpDebugVerbosity;
 use self::logs::render::{CONTENT_BUFFER_RETENTION_LIMIT_BYTES, CONTENT_FIELDS_RETENTION_LIMIT_BYTES};
+pub use self::logs::translator::OtlpLogsSettings;
 use self::logs::translator::OtlpLogsTranslator;
 pub use self::metrics::config::{
     CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, OtlpMetricsSettings, SummaryMode,
@@ -108,6 +109,9 @@ pub struct OtlpConfiguration {
     /// The source checks them only when it translates metrics.
     pub metrics: OtlpMetricsSettings,
 
+    /// Logs translation settings.
+    pub logs: OtlpLogsSettings,
+
     /// Trace translation settings.
     pub traces: OtlpTracesSettings,
 
@@ -149,6 +153,11 @@ impl OtlpConfiguration {
             origin_tag_resolver,
         )
         .with_default_hostname(self.default_hostname.clone())
+    }
+
+    /// Builds the logs translator from the logs settings.
+    fn logs_translator(&self, origin_tag_resolver: OtlpOriginTagResolver) -> OtlpLogsTranslator {
+        OtlpLogsTranslator::new(self.logs.clone(), origin_tag_resolver)
     }
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
@@ -220,7 +229,7 @@ impl SourceBuilder for OtlpConfiguration {
             None
         };
         let logs_translator =
-            (self.routes.logs == OtlpRoute::Internal).then(|| OtlpLogsTranslator::new(origin_tag_resolver.clone()));
+            (self.routes.logs == OtlpRoute::Internal).then(|| self.logs_translator(origin_tag_resolver.clone()));
         let traces_translator =
             (self.routes.traces == OtlpRoute::Internal).then(|| self.traces_translator(origin_tag_resolver.clone()));
 
@@ -662,6 +671,7 @@ mod tests {
             routes: OtlpRoutes::ALL_INTERNAL,
             proxy_destinations: None,
             metrics: metrics_settings(),
+            logs: super::OtlpLogsSettings::default(),
             traces: traces_settings(),
             contexts: OtlpContextSettings {
                 allow_context_heap_allocs: true,
@@ -705,6 +715,52 @@ mod tests {
         assert_eq!(translate_custom_status_code(&mut translator, &metrics), Some(418.0));
     }
 
+    #[test]
+    fn logs_tags_as_ddtags_reaches_the_logs_translator() {
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
+
+        for tags_as_ddtags in [false, true] {
+            let mut config = source_configuration();
+            config.logs = super::OtlpLogsSettings { tags_as_ddtags };
+            config.workload_provider = Arc::new(TestWorkloadProvider::with_entity(
+                EntityId::Global,
+                &["team:platform", "kube_namespace:ns"],
+            ));
+            let mut translator =
+                config.logs_translator(OtlpOriginTagResolver::new(Arc::clone(&config.workload_provider)));
+            let record = LogRecord {
+                attributes: vec![KeyValue {
+                    key: "ddtags".into(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("user_set:tag".into())),
+                    }),
+                }],
+                ..Default::default()
+            };
+            let resource_logs = ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![record],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+
+            let metrics = Metrics::for_tests();
+            let logs = translator.translate_logs(resource_logs, &metrics).collect::<Vec<_>>();
+            assert_eq!(logs.len(), 1);
+            let content: serde_json::Value = serde_json::from_str(logs[0].message()).expect("content should be JSON");
+            let tags = logs[0].tags();
+
+            assert!(tags.has_tag("user_set:tag"), "tags_as_ddtags: {tags_as_ddtags}");
+            assert!(tags.has_tag("kube_namespace:ns"), "tags_as_ddtags: {tags_as_ddtags}");
+            assert_eq!(content["kube_namespace"], "ns", "tags_as_ddtags: {tags_as_ddtags}");
+            assert_eq!(tags.has_tag("team:platform"), tags_as_ddtags);
+            assert_eq!(content.get("team").is_some(), !tags_as_ddtags, "content: {content}");
+        }
+    }
+
     /// The logs translator uses low-cardinality tags, as the Agent's logs pipeline does: it never sets the processor's
     /// cardinality.
     #[test]
@@ -718,7 +774,10 @@ mod tests {
             &["orchestrator:present"],
             &["high:present"],
         );
-        let mut translator = super::OtlpLogsTranslator::new(OtlpOriginTagResolver::new(Arc::new(provider)));
+        let mut translator = super::OtlpLogsTranslator::new(
+            super::OtlpLogsSettings::default(),
+            OtlpOriginTagResolver::new(Arc::new(provider)),
+        );
         let resource_logs = ResourceLogs {
             scope_logs: vec![ScopeLogs {
                 log_records: vec![LogRecord::default()],

@@ -3412,23 +3412,18 @@ inventory:
     issue: "#2969"
 
   otlp_config.logs.infra_attributes.tags_as_ddtags:
-    support: none
-    severity: medium
-    planned: true
-    issue: "#2972"
+    support: full
     pipelines: [logs]
     description: "Write infra tags as `ddtags` on OTLP logs"
     documentation: |-
-      In the core Agent's OTLP logs path: when logs are enabled, sets `logs_tags_as_ddtags` on the
-      infraattributes processor, so custom tagger tags, such as Kubernetes labels that the tagger adds
-      as tags, become the `ddtags` log attribute instead of resource attributes.
+      Controls whether custom infrastructure tags on OTLP logs become the `ddtags` of each log record instead of
+      resource attributes. The default `false` writes every tag as a resource attribute, so a custom tag, such as a
+      Kubernetes label that the tagger adds, becomes a log attribute. When `true`, custom tags become log tags.
+      Unified service tags, convention keys, Kubernetes Datadog tag keys, and keys with the `datadog.container.tag.`
+      prefix stay resource attributes in both cases.
 
-      ADP ignores this key. This only matters when ADP handles OTLP logs itself: in proxy mode, the core
-      Agent processes the logs and applies this key.
-
-      The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
-      ADP runs only checks and the core Agent handles OTLP logs. Narrowing the warning to native OTLP
-      logs is revisited with OTLP signal gating (#2969).
+      This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent processes the logs and
+      applies this key.
 
   otlp_config.metrics.batch.flush_timeout:
     support: none

@@ -14,30 +14,42 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
-use crate::common::otlp::infra_attributes::{process_tags, ContainerTagPromotion};
+use crate::common::otlp::infra_attributes::{process_tags, ContainerTagPromotion, CustomTags};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::hostname_from_source_attributes;
 use crate::common::otlp::util::first_attribute;
 use crate::common::otlp::value::otlp_value_as_string;
 use crate::common::otlp::Metrics;
+use crate::sources::otlp::logs::ddtags::ddtags_value;
 use crate::sources::otlp::logs::render::OtlpLogsRenderer;
 use crate::sources::otlp::logs::transform::transform_log_record;
 
 static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
+
+/// OTLP logs translation settings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OtlpLogsSettings {
+    /// Whether custom infra tags become the `ddtags` of each log record instead of resource attributes.
+    ///
+    /// Defaults to `false`.
+    pub tags_as_ddtags: bool,
+}
 
 /// A translator for converting OTLP logs into DD native logs.
 ///
 /// Translation ends with rendering each log into its content, so the logs it produces are ready for the envelope. The
 /// translator keeps its render buffers between logs.
 pub struct OtlpLogsTranslator {
+    settings: OtlpLogsSettings,
     origin_tag_resolver: OtlpOriginTagResolver,
     renderer: OtlpLogsRenderer,
 }
 
 impl OtlpLogsTranslator {
     /// Creates a new `OtlpLogsTranslator`.
-    pub fn new(origin_tag_resolver: OtlpOriginTagResolver) -> Self {
+    pub fn new(settings: OtlpLogsSettings, origin_tag_resolver: OtlpOriginTagResolver) -> Self {
         Self {
+            settings,
             origin_tag_resolver,
             renderer: OtlpLogsRenderer::default(),
         }
@@ -49,7 +61,7 @@ impl OtlpLogsTranslator {
     pub fn translate_logs<'a>(
         &'a mut self, resource_logs: OtlpResourceLogs, metrics: &'a Metrics,
     ) -> impl Iterator<Item = Log> + 'a {
-        ResourceLogsIter::new(resource_logs, &self.origin_tag_resolver).filter_map(|log| {
+        ResourceLogsIter::new(resource_logs, &self.settings, &self.origin_tag_resolver).filter_map(|log| {
             metrics.logs_received().increment(1);
             match log {
                 Ok(log) => self.renderer.render(log, metrics),
@@ -65,6 +77,7 @@ impl OtlpLogsTranslator {
 /// An iterator over the logs of an OTLP resource, translated but not yet rendered.
 pub(super) struct ResourceLogsIter {
     resource: Resource,
+    ddtags: Option<String>,
     host: Option<MetaString>,
     service: Option<MetaString>,
     attribute_tags: TagSet,
@@ -73,16 +86,23 @@ pub(super) struct ResourceLogsIter {
 }
 
 impl ResourceLogsIter {
-    pub(super) fn new(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
+    pub(super) fn new(
+        resource_logs: OtlpResourceLogs, settings: &OtlpLogsSettings, origin_tag_resolver: &OtlpOriginTagResolver,
+    ) -> Self {
         let mut resource = resource_logs.resource.unwrap_or_default();
         // The Agent's logs pipeline never sets the processor's cardinality, and its default is low (`factory.go`).
         // Container tag promotion only feeds the trace agent, so logs always turn it off.
-        process_tags(
+        let custom_tags = if settings.tags_as_ddtags {
+            CustomTags::DdTags
+        } else {
+            CustomTags::Attributes(ContainerTagPromotion::Off)
+        };
+        let ddtags = ddtags_value(process_tags(
             &mut resource.attributes,
             origin_tag_resolver,
             OriginTagCardinality::Low,
-            ContainerTagPromotion::Off,
-        );
+            custom_tags,
+        ));
         // An empty host or service counts as missing, so the record fallbacks still apply.
         let host = host_from_attributes(&resource.attributes);
 
@@ -92,6 +112,7 @@ impl ResourceLogsIter {
 
         Self {
             resource,
+            ddtags,
             host,
             service,
             attribute_tags,
@@ -136,6 +157,7 @@ impl ResourceLogsIter {
                         self.host.clone(),
                         self.service.clone(),
                         self.attribute_tags.clone(),
+                        self.ddtags.as_deref(),
                     )
                     .map(|log| log.with_ingestion_timestamp(get_unix_timestamp_nanos()));
 
@@ -186,7 +208,7 @@ mod tests {
     use serde_json::Value as JsonValue;
 
     use super::SERVICE_NAME;
-    use super::{OtlpLogsTranslator, ResourceLogsIter};
+    use super::{OtlpLogsSettings, OtlpLogsTranslator, ResourceLogsIter};
     use crate::common::otlp::build_metrics;
     use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::sources::otlp::logs::transform::DDTAGS_ATTR;
@@ -244,6 +266,13 @@ mod tests {
         lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource,
         scope: Option<otlp_common::InstrumentationScope>, provider: TestWorkloadProvider,
     ) -> Log {
+        translate_log_with_settings(lr, resource, scope, provider, OtlpLogsSettings::default())
+    }
+
+    fn translate_log_with_settings(
+        lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource,
+        scope: Option<otlp_common::InstrumentationScope>, provider: TestWorkloadProvider, settings: OtlpLogsSettings,
+    ) -> Log {
         let scope_logs = otlp_logs_v1::ScopeLogs {
             scope,
             log_records: vec![lr],
@@ -257,6 +286,7 @@ mod tests {
 
         let translator = ResourceLogsIter::new(
             resource_logs,
+            &settings,
             &OtlpOriginTagResolver::new(std::sync::Arc::new(provider)),
         );
 
@@ -444,6 +474,29 @@ mod tests {
         assert!(!log.tags().has_tag("service:tag-service"));
     }
 
+    /// Duplicate `ddtags` record attributes, which the OTLP spec forbids, lose the infra tags. The tags merge into the
+    /// first attribute, but the transform reads the last one. The Agent drops them the same way:
+    /// `writeDdtagsToLogRecords` updates the first attribute (`Map.Get`), and the translator keeps the last one that it
+    /// visits
+    /// (<https://github.com/DataDog/datadog-agent/blob/d22eedcd06ef9fcedad3d43bcab45795068b8ecc/pkg/opentelemetry-mapping-go/otlp/logs/transform.go#L133-L136>).
+    #[test]
+    fn duplicate_ddtags_use_the_last_record_attribute_as_the_agent_does() {
+        let provider = TestWorkloadProvider::with_entity(saluki_env::workload::EntityId::Global, &["team:platform"]);
+        let record = otlp_logs_v1::LogRecord {
+            attributes: vec![
+                key_value_string_to_otlp_common_key_value(DDTAGS_ATTR, "first:tag"),
+                key_value_string_to_otlp_common_key_value(DDTAGS_ATTR, "last:tag"),
+            ],
+            ..Default::default()
+        };
+        let settings = OtlpLogsSettings { tags_as_ddtags: true };
+        let log = translate_log_with_settings(record, empty_resource(), None, provider, settings);
+
+        let tags = log.tags();
+        assert!(tags.has_tag("last:tag"));
+        assert!(!tags.has_tag("first:tag") && !tags.has_tag("team:platform"));
+    }
+
     #[test]
     fn resource_host_uses_the_full_source_resolution() {
         let resource = |attributes: Vec<(&str, &str)>| otlp_resource_v1::Resource {
@@ -532,6 +585,7 @@ mod tests {
 
         ResourceLogsIter::new(
             resource_logs,
+            &OtlpLogsSettings::default(),
             &OtlpOriginTagResolver::new(std::sync::Arc::new(
                 saluki_env::workload::providers::NoopWorkloadProvider,
             )),
@@ -1141,9 +1195,12 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut translator = OtlpLogsTranslator::new(OtlpOriginTagResolver::new(std::sync::Arc::new(
-            saluki_env::workload::providers::NoopWorkloadProvider,
-        )));
+        let mut translator = OtlpLogsTranslator::new(
+            OtlpLogsSettings::default(),
+            OtlpOriginTagResolver::new(std::sync::Arc::new(
+                saluki_env::workload::providers::NoopWorkloadProvider,
+            )),
+        );
 
         let contents = translator
             .translate_logs(resource_logs, &metrics)

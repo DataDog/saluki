@@ -25,8 +25,8 @@ pub(crate) use self::datadog::{
 pub(crate) use self::dogstatsd::{metric_mirroring, metric_name_filter, tag_filter_entries, tag_value_allowlist};
 pub(crate) use self::logs::logs_processing_rules;
 pub(crate) use self::otlp::{
-    otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_proxy_destinations, otlp_receiver,
-    otlp_traces_settings,
+    otlp_context_settings, otlp_debug_verbosity, otlp_logs_settings, otlp_metrics_settings, otlp_proxy_destinations,
+    otlp_receiver, otlp_traces_settings,
 };
 pub(crate) use self::static_tags::resolve_static_tags;
 pub(crate) use self::traces::{

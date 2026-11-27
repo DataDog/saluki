@@ -34,7 +34,7 @@ use saluki_env::workload::providers::NoopWorkloadProvider;
 use serde_json::{json, Map, Value};
 
 use super::render::ContentRenderer;
-use super::translator::ResourceLogsIter;
+use super::translator::{OtlpLogsSettings, ResourceLogsIter};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 
 /// A translated log, as the reference tests compare it: the JSON of the `datadogV2.HTTPLogItem`.
@@ -108,7 +108,7 @@ fn translate_records(resource: &Resource, scope: &InstrumentationScope, records:
         ..Default::default()
     };
     let resolver = OtlpOriginTagResolver::new(std::sync::Arc::new(NoopWorkloadProvider));
-    ResourceLogsIter::new(resource_logs, &resolver)
+    ResourceLogsIter::new(resource_logs, &OtlpLogsSettings::default(), &resolver)
         .collect::<Result<_, _>>()
         .expect("every record should transform")
 }

@@ -880,13 +880,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         presence_matters: false,
     },
     ClassifierEntry {
-        yaml_path: "otlp_config.logs.infra_attributes.tags_as_ddtags",
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
-        default: DefaultValue::Json("false"),
-        presence_matters: false,
-    },
-    ClassifierEntry {
         yaml_path: "otlp_config.metrics.batch.flush_timeout",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),

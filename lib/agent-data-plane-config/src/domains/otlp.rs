@@ -19,6 +19,9 @@ pub struct Domain {
     /// OTLP metrics translation settings.
     pub metrics: Metrics,
 
+    /// OTLP logs translation settings.
+    pub logs: Logs,
+
     /// OTLP trace ingestion settings.
     pub traces: Traces,
 
@@ -306,6 +309,15 @@ impl FromStr for GrpcTransport {
             ))),
         }
     }
+}
+
+/// OTLP logs translation settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Logs {
+    /// Whether custom infra tags become the `ddtags` of OTLP log records instead of resource attributes.
+    ///
+    /// Defaults to `false`.
+    pub tags_as_ddtags: bool,
 }
 
 /// OTLP receiver transports and per-signal activation.

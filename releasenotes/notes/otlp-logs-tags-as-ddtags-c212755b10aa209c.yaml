@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    OTLP logs handled natively now support ``otlp_config.logs.infra_attributes.tags_as_ddtags``. When it's ``true``,
+    custom infra tags become the ``ddtags`` of each log record instead of resource attributes, as in the Datadog Agent.
+    Unified service tags, convention keys, Kubernetes Datadog tag keys, and keys with the ``datadog.container.tag.``
+    prefix stay resource attributes. The default is ``false``.

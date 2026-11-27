@@ -1,0 +1,56 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive OTLP logs over gRPC, and enrich them with infra attributes, with
+  `otlp_config.logs.infra_attributes.tags_as_ddtags` on: the custom global tag `provider_kind` becomes a log tag.
+  Their intakes must hold the same logs, apart from known differences.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      # The tagger's global entity carries `provider_kind`. On Linux, outside ECS and the Cluster Agent, it's the only
+      # global tag, so it's the global tag that the infra attributes processor adds to OTLP logs.
+      DD_PROVIDER_KIND: gke-autopilot
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "false"
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"
+      DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "false"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_PROVIDER_KIND: gke-autopilot
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up.
+  - {step: process_stable_for, on: load, duration: 32s}
+  - step: compare
+    telemetry: logs
+    comparison: intake-adp
+    baseline: intake-agent
+    logs:
+      # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
+      identity_fields: ["fixture_id"]
+      min_count: 27

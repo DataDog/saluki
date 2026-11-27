@@ -18,7 +18,7 @@ pub use self::heartbeat::HeartbeatConfiguration;
 mod otlp;
 pub use self::otlp::{
     CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings,
-    OtlpDebugVerbosity, OtlpMetricsSettings, SummaryMode,
+    OtlpDebugVerbosity, OtlpLogsSettings, OtlpMetricsSettings, SummaryMode,
 };
 pub use crate::common::otlp::{
     infra_attributes::ContainerTagPromotion,
