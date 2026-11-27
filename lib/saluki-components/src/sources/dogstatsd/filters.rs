@@ -60,6 +60,7 @@ mod tests {
         },
         tags::RawTags,
     };
+    use saluki_io::deser::codec::dogstatsd::ClientOrigin;
 
     use super::*;
 
@@ -70,9 +71,7 @@ mod tests {
             values,
             num_points: 1,
             timestamp: None,
-            local_data: None,
-            external_data: None,
-            cardinality: None,
+            origin: ClientOrigin::default(),
             unit: None,
         }
     }
@@ -88,9 +87,7 @@ mod tests {
             alert_type: None,
             source_type_name: None,
             tags: RawTags::empty(),
-            local_data: None,
-            external_data: None,
-            cardinality: None,
+            origin: ClientOrigin::default(),
         }
     }
 
@@ -101,9 +98,7 @@ mod tests {
             message: "message".into(),
             tags: RawTags::empty(),
             hostname: None,
-            local_data: None,
-            external_data: None,
-            cardinality: None,
+            origin: ClientOrigin::default(),
             timestamp: None,
         }
     }
