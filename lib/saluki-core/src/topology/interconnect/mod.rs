@@ -1,7 +1,8 @@
 //! Component interconnects.
 
 mod event_buffer;
-pub use self::event_buffer::{EventBufferManager, FixedSizeEventBuffer};
+pub(crate) use self::event_buffer::EventStorage;
+pub use self::event_buffer::{EventBufferIntoIter, EventBufferManager, FixedSizeEventBuffer};
 
 mod consumer;
 pub use self::consumer::Consumer;
