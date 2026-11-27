@@ -61,6 +61,11 @@ impl TransformContext {
         &mut self.consumer
     }
 
+    /// Borrows the consumer and dispatcher separately so an input wait can overlap a send.
+    pub fn interconnect(&mut self) -> (&mut EventsConsumer, &EventsDispatcher) {
+        (&mut self.consumer, &self.dispatcher)
+    }
+
     /// Returns a mutable reference to the component registry.
     pub fn component_registry(&self) -> &ComponentRegistry {
         &self.component_registry

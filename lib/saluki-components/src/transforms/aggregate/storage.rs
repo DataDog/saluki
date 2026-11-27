@@ -62,7 +62,7 @@ impl Kind {
         Self::Distribution,
     ];
 
-    const fn index(self) -> usize {
+    pub(super) const fn index(self) -> usize {
         match self {
             Self::Gauge => 0,
             Self::Counter => 1,
@@ -150,6 +150,18 @@ impl<T> Pages<T> {
         }
         self.pages[self.len / Self::ROWS].push(value);
         self.len += 1;
+    }
+
+    // The first row must precede the second row when the rows occupy different pages.
+    fn swap(&mut self, first: usize, second: usize) {
+        let (first_page, first_row) = (first / Self::ROWS, first % Self::ROWS);
+        let (second_page, second_row) = (second / Self::ROWS, second % Self::ROWS);
+        if first_page == second_page {
+            self.pages[first_page].swap(first_row, second_row);
+        } else {
+            let (before, after) = self.pages.split_at_mut(second_page);
+            mem::swap(&mut before[first_page][first_row], &mut after[0][second_row]);
+        }
     }
 
     fn swap_remove(&mut self, index: usize) -> T {
@@ -554,6 +566,17 @@ impl Rows {
         }
     }
 
+    fn swap(&mut self, kind: Kind, first: usize, second: usize) {
+        match kind {
+            Kind::Gauge => self.gauge.swap(first, second),
+            Kind::Counter => self.count.swap(first, second),
+            Kind::Rate => self.rate.swap(first, second),
+            Kind::Set => self.set.swap(first, second),
+            Kind::Histogram => self.histogram.swap(first, second),
+            Kind::Distribution => self.distribution.swap(first, second),
+        }
+    }
+
     fn swap_remove(&mut self, slot: Slot) -> Header {
         let i = slot.index();
         match slot.kind() {
@@ -760,6 +783,18 @@ impl Storage {
         }
     }
 
+    pub(super) fn single_packed_gauge(&self, slot: Slot) -> Option<(u64, f64)> {
+        if slot.kind() != Kind::Gauge {
+            return None;
+        }
+        let row = self.rows.gauge.get(slot.index());
+        if row.header.flags != 1 {
+            return None;
+        }
+        let epoch = self.epoch.expect("a live row has an epoch");
+        Some((epoch + u64::from(row.payload.timestamps[0]), row.payload.values[0]))
+    }
+
     /// Takes the values without removing the row or its metadata.
     ///
     /// This clears the flags and returns any overflow slot to the free list.
@@ -935,6 +970,20 @@ impl Storage {
                 .expect("a moved row is indexed") = slot.0;
         }
         header
+    }
+
+    /// Exchanges two live positions of one kind and updates both index entries.
+    ///
+    /// Pass the earlier position first. The backing pages use this order to borrow two rows at once.
+    pub(super) fn swap(&mut self, first: Slot, second: Slot) {
+        let slots = [first, second];
+        let hashes = slots.map(|slot| self.hash_builder.hash_one(&self.header(slot).context));
+        let entries = self.index.get_disjoint_mut(hashes, |i, &id| id == slots[i].0);
+        let [Some(first_entry), Some(second_entry)] = entries else {
+            unreachable!("both live rows are indexed");
+        };
+        mem::swap(first_entry, second_entry);
+        self.rows.swap(first.kind(), first.index(), second.index());
     }
 
     // The index keeps its allocation for reuse even after all rows expire.

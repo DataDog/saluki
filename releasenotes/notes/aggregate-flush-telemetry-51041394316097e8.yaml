@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Report per-flush duration through the ``adp.aggregate_flush_duration_seconds`` metric.
