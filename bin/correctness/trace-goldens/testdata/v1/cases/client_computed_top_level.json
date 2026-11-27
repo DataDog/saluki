@@ -1,0 +1,38 @@
+{
+  "comment": "Client-computed top level: tracer already marked top-level spans (_dd.top_level on the root only), so the agent skips ComputeTopLevelV1 and trusts the tracer markers.",
+  "headers": {
+    "Datadog-Client-Computed-Top-Level": "true"
+  },
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /toplevel",
+            "type": "web",
+            "start": "-2s",
+            "duration": "70ms",
+            "attributes": {
+              "_dd.top_level": 1
+            }
+          },
+          {
+            "span_id": 2,
+            "parent_id": 1,
+            "service": "web",
+            "name": "child.span",
+            "resource": "child",
+            "start": "-1.995s",
+            "duration": "10ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "client_computed_top_level"
+}

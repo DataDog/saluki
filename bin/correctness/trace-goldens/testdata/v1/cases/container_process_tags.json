@@ -1,0 +1,27 @@
+{
+  "comment": "Container ID + process tags: pins the aggregation key fields (containerID, processTagsHash) and their propagation into the ClientStatsPayload.",
+  "headers": {
+    "Datadog-Container-ID": "abcdef0123456789abcdef0123456789",
+    "X-Datadog-Process-Tags": "env:golden,team:apm"
+  },
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /container",
+            "type": "web",
+            "start": "-2s",
+            "duration": "30ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "container_process_tags"
+}

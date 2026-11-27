@@ -1,0 +1,83 @@
+[{
+  "agentEnv": "none",
+  "agentHostname": "agent-host",
+  "agentVersion": "",
+  "clientComputed": false,
+  "splitPayload": false,
+  "stats": [
+    {
+      "agentAggregation": "",
+      "containerID": "",
+      "env": "prod",
+      "gitCommitSha": "",
+      "hostname": "agent-host",
+      "imageTag": "",
+      "lang": "python",
+      "processTags": "",
+      "processTagsHash": "0",
+      "runtimeID": "",
+      "sequence": "0",
+      "service": "",
+      "stats": [
+        {
+          "agentTimeShift": "0",
+          "duration": "10000000000",
+          "start": "\u003cbucket\u003e",
+          "stats": [
+            {
+              "DBType": "",
+              "GRPCStatusCode": "",
+              "HTTPEndpoint": "",
+              "HTTPMethod": "",
+              "HTTPStatusCode": 0,
+              "additionalMetricTags": [],
+              "duration": "20000000",
+              "errorSummary": "CgkJ/UqBWr9S8D8SABoA",
+              "errors": "0",
+              "hits": "1",
+              "isTraceRoot": "TRUE",
+              "name": "http.invalid",
+              "okSummary": "CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YkA0aAA==",
+              "peerTags": [],
+              "resource": "http.invalid",
+              "service": "web",
+              "serviceSource": "",
+              "spanDerivedPrimaryTags": [],
+              "spanKind": "unknown",
+              "synthetics": false,
+              "topLevelHits": "1",
+              "type": "web"
+            },
+            {
+              "DBType": "",
+              "GRPCStatusCode": "",
+              "HTTPEndpoint": "",
+              "HTTPMethod": "",
+              "HTTPStatusCode": 201,
+              "additionalMetricTags": [],
+              "duration": "20000000",
+              "errorSummary": "CgkJ/UqBWr9S8D8SABoA",
+              "errors": "0",
+              "hits": "1",
+              "isTraceRoot": "TRUE",
+              "name": "http.ok",
+              "okSummary": "CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YkA0aAA==",
+              "peerTags": [],
+              "resource": "http.ok",
+              "service": "web",
+              "serviceSource": "",
+              "spanDerivedPrimaryTags": [],
+              "spanKind": "unknown",
+              "synthetics": false,
+              "topLevelHits": "1",
+              "type": "web"
+            }
+          ]
+        }
+      ],
+      "tags": [],
+      "tracerVersion": "",
+      "version": "1.2.3"
+    }
+  ]
+}]

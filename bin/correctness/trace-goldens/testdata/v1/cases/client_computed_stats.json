@@ -1,0 +1,26 @@
+{
+  "comment": "Client-computed stats: the tracer computed its own stats, so the agent does NOT concentrate this payload (empty concentrator output, dropped before the wire).",
+  "headers": {
+    "Datadog-Client-Computed-Stats": "true"
+  },
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /clientstats",
+            "type": "web",
+            "start": "-2s",
+            "duration": "30ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "client_computed_stats"
+}

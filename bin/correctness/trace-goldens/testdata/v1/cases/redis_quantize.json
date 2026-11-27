@@ -1,0 +1,26 @@
+{
+  "comment": "Redis branch: resource quantization + redis.raw_command obfuscation for redis/valkey span types.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "cache",
+            "name": "redis.command",
+            "resource": "SET key value EX 10",
+            "type": "redis",
+            "start": "-2s",
+            "duration": "5ms",
+            "attributes": {
+              "redis.raw_command": "SET foo bar EX 10"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "redis_quantize"
+}
