@@ -2410,7 +2410,7 @@ procedure:
         let plan = plan_case(CASE).unwrap_or_else(|errors| panic!("{}", errors.join("\n")));
         let planned: Vec<_> = plan.procedure.iter().flat_map(|node| node.steps()).collect();
         for step in &planned {
-            let on = step.fields.0["on"].as_str().unwrap();
+            let on = step.fields.values["on"].as_str().unwrap();
             assert_eq!(
                 step.needs,
                 [Need::Endpoint(
@@ -2424,7 +2424,7 @@ procedure:
         // `intake` alone.
         let steps: Vec<_> = planned
             .into_iter()
-            .filter(|step| step.fields.0["on"] == "intake")
+            .filter(|step| step.fields.values["on"] == "intake")
             .collect();
 
         // The client of the handle needs the process-wide crypto provider, which `main` installs at startup.
