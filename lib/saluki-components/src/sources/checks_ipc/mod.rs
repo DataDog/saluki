@@ -8,8 +8,9 @@ use datadog_protos::checks::{
     event::{AlertType as ProtoAlertType, Event as ProtoEvent, Priority as ProtoPriority},
     log::{Log as ProtoLog, LogLevel},
     metric::{Metric as ProtoMetric, MetricType},
+    opaque::Opaque as ProtoOpaque,
     service_check::{ServiceCheck as ProtoServiceCheck, Status as ServiceCheckStatus},
-    SendCheckPayloadRequest, SendCheckPayloadResponse,
+    SendCheckPayloadRequest, SendCheckPayloadResponse, MAX_MESSAGE_SIZE,
 };
 use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_core::{
@@ -20,6 +21,7 @@ use saluki_core::{
             eventd::{AlertType, EventD, Priority},
             log::Log,
             metric::{context::Context, Metric},
+            opaque::Opaque,
             service_check::{CheckStatus, ServiceCheck},
             Event, EventType,
         },
@@ -65,6 +67,7 @@ impl SourceBuilder for ChecksIPCConfiguration {
                 OutputDefinition::named_output("logs", EventType::Log),
                 OutputDefinition::named_output("events", EventType::EventD),
                 OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
+                OutputDefinition::named_output("opaque", EventType::Opaque),
             ]
         });
 
@@ -110,10 +113,13 @@ impl Source for ChecksIPC {
         // This endpoint only ever speaks gRPC, so it is restricted to HTTP/2: an HTTP/1.1 caller here is a client bug,
         // and rejecting it at the protocol level says so more clearly than routing it and answering with a 404.
         let grpc_server = HttpServer::from_listen_address(ListenAddress::Tcp(grpc_socket_addr))
-            .add_grpc_service(ChecksServer::new(ChecksService {
-                events_tx,
-                default_hostname,
-            }))
+            .add_grpc_service(
+                ChecksServer::new(ChecksService {
+                    events_tx,
+                    default_hostname,
+                })
+                .max_decoding_message_size(MAX_MESSAGE_SIZE),
+            )
             .with_http2_only()
             .with_http2_config(Http2Config::grpc_defaults())
             .with_worker_pool(context.topology_context().global_thread_pool().clone());
@@ -141,6 +147,7 @@ impl Source for ChecksIPC {
                         Event::Log(_) => "logs",
                         Event::EventD(_) => "events",
                         Event::ServiceCheck(_) => "service_checks",
+                        Event::Opaque(_) => "opaque",
                         _ => continue,
                     };
 
@@ -307,6 +314,10 @@ fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Optio
             }
             Some(Event::ServiceCheck(service_check))
         }
+        Data::Opaque(opaque) => {
+            let ProtoOpaque { type_name, data } = opaque;
+            Some(Event::Opaque(Opaque::new(type_name, data)))
+        }
     }
 }
 
@@ -356,8 +367,11 @@ mod logs_on_the_wire;
 
 #[cfg(test)]
 mod tests {
+    use std::net::{SocketAddr, TcpListener};
     use std::num::NonZeroUsize;
 
+    use bytes::Bytes;
+    use datadog_agent_event_platform::{EventPlatformEvent, Origin, TRACKS};
     use datadog_protos::checks::{
         check_data::Data,
         checks_client::ChecksClient,
@@ -369,6 +383,7 @@ mod tests {
     };
     use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::data_model::event::metric::MetricValues;
+    use tonic::transport::{Channel, Endpoint};
 
     use super::*;
 
@@ -419,6 +434,27 @@ mod tests {
 
     fn check_data_to_event_for_tests(check_data: Data) -> Option<Event> {
         check_data_to_event(check_data, &MetaString::from_static("default-host"))
+    }
+
+    fn reserve_address() -> SocketAddr {
+        TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("should reserve an ephemeral port")
+    }
+
+    /// Connects to the gRPC server of the source, and retries until the server listens.
+    async fn connect(address: SocketAddr) -> Channel {
+        let endpoint = Endpoint::from_shared(format!("http://{address}")).expect("endpoint should parse");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match endpoint.connect().await {
+                    Ok(channel) => return channel,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .expect("the gRPC server should start listening")
     }
 
     #[test]
@@ -771,9 +807,7 @@ mod tests {
         // More than the internal channel holds.
         const METRICS: usize = 64;
 
-        let address = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|listener| listener.local_addr())
-            .expect("should reserve an ephemeral port");
+        let address = reserve_address();
 
         // The output holds one buffer, so the request is still being handled when the source is told to stop.
         let (mut control, mut outputs) = TestComponentDriver::options()
@@ -782,19 +816,7 @@ mod tests {
             .await
             .expect("source should build");
         let mut metrics = outputs.take_named_output("metrics");
-
-        let endpoint =
-            tonic::transport::Endpoint::from_shared(format!("http://{address}")).expect("endpoint should parse");
-        let channel = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match endpoint.connect().await {
-                    Ok(channel) => return channel,
-                    Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
-                }
-            }
-        })
-        .await
-        .expect("the gRPC server should start listening");
+        let channel = connect(address).await;
 
         let request = SendCheckPayloadRequest {
             data: (0..METRICS)
@@ -826,5 +848,47 @@ mod tests {
             METRICS,
             "every accepted metric must be dispatched"
         );
+    }
+
+    #[tokio::test]
+    async fn the_largest_event_platform_event_reaches_the_opaque_output() {
+        // The largest event that the Datadog Agent forwards by default. It is larger than the default limit of gRPC.
+        let track = TRACKS
+            .iter()
+            .max_by_key(|track| track.default_batch_max_content_size)
+            .expect("should have tracks");
+        let origin = Origin {
+            version: "7.70.0",
+            hostname: "test-host",
+            ecs_task_arn: None,
+        };
+        let body = Bytes::from(vec![b'x'; track.default_batch_max_content_size]);
+        let opaque = Opaque::encode(&EventPlatformEvent::new(track.event_type, track.headers(&origin), body));
+
+        let address = reserve_address();
+        let (mut control, mut outputs) =
+            TestComponentDriver::source(ChecksIPCConfiguration::new(ListenAddress::Tcp(address), "test-host"))
+                .await
+                .expect("source should build");
+        let mut opaque_output = outputs.take_named_output("opaque");
+
+        let request = SendCheckPayloadRequest {
+            data: vec![CheckData {
+                data: Some(Data::Opaque(ProtoOpaque {
+                    type_name: opaque.type_name().to_string(),
+                    data: opaque.data().clone(),
+                })),
+            }],
+        };
+        ChecksClient::new(connect(address).await)
+            .send_check_payload(request)
+            .await
+            .expect("the server should accept the event");
+
+        let events = opaque_output.next().await.expect("the event should arrive");
+        assert_eq!(events.into_iter().collect::<Vec<_>>(), vec![Event::Opaque(opaque)]);
+
+        control.signal_shutdown();
+        control.wait().await.expect("source should stop cleanly");
     }
 }

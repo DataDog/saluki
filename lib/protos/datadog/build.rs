@@ -246,6 +246,7 @@ fn main() {
     tonic_prost_build::configure()
         .build_server(true)
         .include_file("checks.mod.rs")
+        .bytes(".datadog.checks.v1.opaque.Opaque.data")
         .compile_protos(
             &[
                 "proto/checks/v1/checks.proto",
@@ -253,6 +254,7 @@ fn main() {
                 "proto/checks/v1/log.proto",
                 "proto/checks/v1/service_check.proto",
                 "proto/checks/v1/event.proto",
+                "proto/checks/v1/opaque.proto",
             ],
             &["proto"],
         )

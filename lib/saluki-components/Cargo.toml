@@ -104,6 +104,7 @@ zstd = { workspace = true }
 async-compression = { workspace = true, features = ["gzip", "tokio"] }
 axum = { workspace = true, features = ["http2"] }
 datadog-agent-apm = { workspace = true, features = ["test-util"] }
+datadog-agent-event-platform = { workspace = true }
 proptest = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }

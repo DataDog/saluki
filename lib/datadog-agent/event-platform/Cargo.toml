@@ -1,0 +1,16 @@
+[package]
+name = "datadog-agent-event-platform"
+version = "0.1.0"
+description = "Event platform events, and the tracks of the Datadog intake that carry them"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+bytes = { workspace = true }
+prost = { workspace = true, features = ["derive", "std"] }
+saluki-common = { workspace = true }
+saluki-error = { workspace = true }
+
+[lints]
+workspace = true

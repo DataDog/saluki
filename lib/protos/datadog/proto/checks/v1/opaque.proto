@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package datadog.checks.v1.opaque;
+
+// A payload that the checks protocol doesn't model: the encoded bytes of a value, and the name of its type.
+//
+// The server forwards the payload without decoding it. Only a reader that knows the type name decodes the data.
+message Opaque {
+    string type_name = 1;
+    bytes data = 2;
+}

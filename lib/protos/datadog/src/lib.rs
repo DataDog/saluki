@@ -97,6 +97,9 @@ pub mod sketches {
 /// Checks definitions.
 pub mod checks {
     pub use super::checks_include::datadog::checks::v1::*;
+
+    /// The largest message, in bytes, that a server of the checks protocol accepts.
+    pub const MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
 }
 
 #[cfg(test)]

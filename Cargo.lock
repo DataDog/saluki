@@ -1431,6 +1431,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-agent-event-platform"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "saluki-common",
+ "saluki-error",
+]
+
+[[package]]
 name = "datadog-agent-metrics-v3"
 version = "0.1.0"
 dependencies = [
@@ -5799,6 +5809,7 @@ dependencies = [
  "bytesize",
  "datadog-agent-apm",
  "datadog-agent-commons",
+ "datadog-agent-event-platform",
  "datadog-agent-metrics-v3",
  "datadog-protos",
  "ddsketch",
