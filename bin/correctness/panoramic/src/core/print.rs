@@ -46,7 +46,7 @@ impl fmt::Display for CasePlan {
                     ProcedureNode::Parallel(_) => format!("{}.{}", index + 1, member + 1),
                 };
                 let mut line = format!("  {:<5}{}", label, step.name);
-                for (key, value) in &step.fields.0 {
+                for (key, value) in &step.fields.values {
                     let _ = write!(line, "  {} {}", key, value);
                 }
                 writeln!(f, "{}", line)?;

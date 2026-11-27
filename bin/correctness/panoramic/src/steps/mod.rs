@@ -20,6 +20,7 @@ mod exec;
 mod exits_with;
 mod file_contains;
 mod http_check;
+mod http_request;
 pub(crate) mod intake;
 mod intake_has_metric;
 mod log;
@@ -47,6 +48,7 @@ pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(exits_with::ExitsWithFactory));
     registry.add_step(Box::new(file_contains::FileContainsFactory));
     registry.add_step(Box::new(http_check::HttpCheckFactory));
+    registry.add_step(Box::new(http_request::HttpRequestFactory));
     registry.add_step(Box::new(intake::IntakeFromFactory));
     registry.add_step(Box::new(intake_has_metric::IntakeHasMetricFactory));
     registry.add_step(Box::new(log::LogContainsFactory));
@@ -258,7 +260,7 @@ procedure: []
             ),
         ]);
 
-        let fields = StepFields(serde_saphyr::from_str(fields).unwrap());
+        let fields = StepFields::of(serde_saphyr::from_str(fields).unwrap());
         let step = factory.build(&fields).unwrap();
         let kept = Kept::new(&suite.path().join("logs"));
         // A step whose budget is what remains of the case gets the case's.

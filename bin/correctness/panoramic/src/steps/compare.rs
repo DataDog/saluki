@@ -337,7 +337,7 @@ mod tests {
     fn an_option_for_other_telemetry_is_rejected() {
         let fields = "{telemetry: metrics, comparison: app, baseline: peer, logs: {min_count: 1}}";
         let error = CompareFactory
-            .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
+            .build(&StepFields::of(serde_saphyr::from_str(fields).unwrap()))
             .unwrap_err();
         assert_eq!(error, "'logs' is an option for logs, not metrics");
     }
@@ -349,7 +349,7 @@ mod tests {
                 "{{telemetry: traces, comparison: app, baseline: peer, {} traces: {{known_differences: [{}]}}}}",
                 options, entry
             );
-            CompareFactory.build(&StepFields(serde_saphyr::from_str(&fields).unwrap()))
+            CompareFactory.build(&StepFields::of(serde_saphyr::from_str(&fields).unwrap()))
         };
 
         assert!(build("", "{gap: gap/a, issue: 1, paths: [stats.hits], reason: r}").is_ok());
@@ -434,7 +434,7 @@ mod tests {
 
         let fields = "{telemetry: metrics, comparison: app, baseline: peer, traces: {}}";
         let error = CompareFactory
-            .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
+            .build(&StepFields::of(serde_saphyr::from_str(fields).unwrap()))
             .unwrap_err();
         assert_eq!(error, "'traces' is an option for traces, not metrics");
     }
@@ -682,7 +682,7 @@ mod tests {
         ];
         for (fields, expected) in cases {
             let error = CompareFactory
-                .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
+                .build(&StepFields::of(serde_saphyr::from_str(fields).unwrap()))
                 .unwrap_err();
             assert!(error.contains(expected), "{}: {}", fields, error);
         }
@@ -1125,7 +1125,7 @@ mod tests {
                 path
             );
             CompareFactory
-                .build(&StepFields(serde_saphyr::from_str(&fields).unwrap()))
+                .build(&StepFields::of(serde_saphyr::from_str(&fields).unwrap()))
                 .map(|_| ())
         };
 
@@ -1902,7 +1902,7 @@ mod tests {
         ];
         for (fields, expected) in cases {
             let error = CompareFactory
-                .build(&StepFields(serde_saphyr::from_str(fields).unwrap()))
+                .build(&StepFields::of(serde_saphyr::from_str(fields).unwrap()))
                 .unwrap_err();
             assert!(error.contains(expected), "{}: {}", fields, error);
         }

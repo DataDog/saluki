@@ -310,17 +310,7 @@ impl CaseSources {
     /// Reads `from`, relative to `dir`, once.
     fn read(&mut self, dir: &Path, suite: &Path, from: &Path, template: bool) -> Result<(), String> {
         if !self.sources.contains_key(from) {
-            let path = dir.join(from);
-            let real = path
-                .canonicalize()
-                .map_err(|e| format!("file source '{}' cannot be read: {}", from.display(), e))?;
-            if !real.starts_with(suite) {
-                return Err(format!(
-                    "file source '{}' is outside the suite directory {}",
-                    from.display(),
-                    suite.display()
-                ));
-            }
+            let real = resolve(dir, suite, from)?;
             let source = if real.is_dir() {
                 let mut files = Vec::new();
                 read_dir(suite, &real, &real, &mut vec![real.clone()], &mut files)
@@ -341,6 +331,44 @@ impl CaseSources {
         }
         Ok(())
     }
+}
+
+/// The suite directory above the case directory `dir`: the directory that holds every file a case can read.
+fn suite_of(dir: &Path) -> Option<PathBuf> {
+    dir.canonicalize().ok()?.parent().map(Path::to_path_buf)
+}
+
+/// The real path of the source `from`, relative to the case directory `dir`, which must be inside `suite`.
+fn resolve(dir: &Path, suite: &Path, from: &Path) -> Result<PathBuf, String> {
+    let real = dir
+        .join(from)
+        .canonicalize()
+        .map_err(|e| format!("file source '{}' cannot be read: {}", from.display(), e))?;
+    if !real.starts_with(suite) {
+        return Err(format!(
+            "file source '{}' is outside the suite directory {}",
+            from.display(),
+            suite.display()
+        ));
+    }
+    Ok(real)
+}
+
+/// Reads the file `from`, relative to the case directory `dir`, as the source of a step's field. Like every source, it
+/// must be inside the suite directory above `dir`.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or is outside the suite directory.
+pub(crate) fn read_step_source(dir: &Path, from: &Path) -> Result<Vec<u8>, String> {
+    let suite = suite_of(dir).ok_or_else(|| {
+        format!(
+            "file source '{}': the case directory has no suite directory above it",
+            from.display()
+        )
+    })?;
+    let real = resolve(dir, &suite, from)?;
+    fs::read(&real).map_err(|e| format!("file source '{}' cannot be read: {}", from.display(), e))
 }
 
 /// Reads every file under `dir` into `out`, keyed by its path relative to `root`.
@@ -487,16 +515,12 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
 
     let text = fs::read_to_string(&file).map_err(|e| vec![error(None, format!("cannot be read: {}", e))])?;
     let case: CaseFile = serde_saphyr::from_str(&text).map_err(|e| vec![error(None, e.to_string())])?;
-    let suite = dir
-        .canonicalize()
-        .ok()
-        .and_then(|dir| dir.parent().map(Path::to_path_buf))
-        .ok_or_else(|| {
-            vec![error(
-                None,
-                "the case directory has no suite directory above it".to_string(),
-            )]
-        })?;
+    let suite = suite_of(dir).ok_or_else(|| {
+        vec![error(
+            None,
+            "the case directory has no suite directory above it".to_string(),
+        )]
+    })?;
 
     let mut errors = Vec::new();
     if case.subject_os.is_empty() {
@@ -599,7 +623,7 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
 
     let mut procedure = Vec::new();
     for (index, node) in case.procedure.into_iter().enumerate() {
-        match StepEntry::decode_node(node) {
+        match StepEntry::decode_node(node, dir) {
             Ok(node) => procedure.push(node),
             Err(message) => errors.push(error(Some(format!("step {}", index + 1)), message)),
         }

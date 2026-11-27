@@ -476,7 +476,7 @@ case from `test/integration/cases` that uses the same steps.
 - Before a `send` to a UDP endpoint, wait for the listener's own startup log with `log_contains`. A probe cannot
   confirm a UDP listener, so `port_listening` is not a readiness gate for it.
 - Use `config_key_equals`, `config_set` or an `exec` of the `adp` command for the privileged API of ADP.
-  `http_check` cannot reach it.
+  `http_check` and `http_request` cannot reach it.
 - List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
   See [Files](#files).
 
@@ -490,6 +490,79 @@ flushes, merges sketches and takes the latest gauge value. Ask for the total: a 
 With the default `tags_match: subset`, the series can have more tags than the case names. Use `exact` to compare the
 full tag sets, without regard to order or duplicates. With `exact`, `tags: []` means no tags and no host. Even an
 exact match does not rule out other series. A mismatch message shows the series with that name, or other names it found.
+
+### Checking the reply to an HTTP request
+
+`http_check` sends a `GET` until the reply has the status it wants. To check the reply to one exact request, use
+`http_request`. It sends the request once, and it does not retry, poll or follow a redirect. Wait for the endpoint
+with an earlier step, such as `log_contains` or `port_listening`. `http_request` is an action, so it cannot be in a
+`parallel` block. It cannot reach a Windows container, because the courier there sends only a `GET`. It cannot reach an
+endpoint with `tls: true`, because its client does not trust a test certificate.
+
+This example sends an OTLP payload and checks for an empty protobuf reply:
+
+```yaml
+- step: http_request
+  on: adp
+  endpoint: otlp_http
+  request:
+    method: POST
+    path: /v1/metrics
+    headers: {Content-Type: application/x-protobuf, Accept-Encoding: gzip}
+    body: {file: bodies/metrics_protobuf.pb}
+  expect:
+    status: 200
+    headers: {content-type: application/x-protobuf, content-encoding: null}
+    body: {base64: CgA=}
+  known:
+    gap: gap/otlp-http-response-format
+    issue: 3482
+    reason: ADP answers a plain-text OK instead of an empty ExportMetricsServiceResponse.
+    expect:
+      headers: {content-type: "text/plain; charset=utf-8"}
+      body: {text: OK}
+  timeout: 10s
+```
+
+The `request` holds what the step sends:
+
+- `method` is any HTTP method. `path` starts with `/` and can hold a query. The step sends the path as written, so the
+  plan rejects a path that the URL parser would change. Examples are a `.` or `..` segment, a space, a `#`, and a
+  character that needs a percent escape. Write the escape in the path yourself.
+- `headers` are sent as written. Panoramic compares header names without regard to letter case, and a name given
+  twice is an error. The client adds no `Content-Type`, `Content-Encoding` or `Accept-Encoding` of its own. It sets
+  `Host`, `Content-Length` and `Accept: */*` itself, so a case cannot name `Host`, `Content-Length` or
+  `Transfer-Encoding`. A value cannot start or end with white space, because a peer trims it.
+- `body` holds exactly one of `text`, `base64` or `file`. A `file` is relative to the case directory, and panoramic
+  reads it when it plans the case. Without `body`, the body is empty.
+- `content_encoding: gzip` makes the step gzip the body and send `Content-Encoding: gzip`. A case that sets it cannot
+  name `Content-Encoding` in `headers`.
+
+The `expect` holds what the reply must meet:
+
+- `status` is the exact status, from 100 to 599. It is required.
+- `headers` gives the exact value of each header it names, or `null` for a header that the reply must not have. The
+  values of a repeated header are joined with `, `. A value cannot start or end with white space, because the client
+  trims it from the reply. The step ignores the headers that `expect` does not name.
+- `body` gives the exact bytes of the body, from `text`, `base64` or `file`. The step compares the body as it
+  arrives, and does not decompress it.
+- `body_contains` gives bytes that the body contains, from `text` or `base64`. It cannot be empty, because every body
+  meets an empty check. A case sets `body` or `body_contains`, not both.
+
+A `known` entry records the reply that ADP gives because of an open gap. It needs `gap`, in the form `gap/<name>`, the
+`issue` and a `reason`. Its `expect` replaces some parts of the step's `expect`: the status, a header that `expect`
+names, or the body check. The step keeps the other parts. It is an error for the entry to replace nothing, to replace
+a part with the same value, or to check a part that `expect` does not check.
+
+- **Known:** the reply meets `expect` with the replacements, and none of the replaced parts of `expect`. The step
+  passes, and its message names the gap and the issue.
+- **Stale:** the reply meets a replaced part of `expect`. The gap is fixed there, so the step fails. Remove that part
+  from the entry, or remove the entry.
+- **Unexpected:** the reply meets neither. The step fails, and lists each part of `expect` and of the entry that
+  the reply does not meet.
+
+A request that gets no reply in time fails, and a known entry does not cover it. Each message shows the method, the
+path, the status, the value of each header that `expect` names, and the first 200 bytes of the body.
 
 ## Writing a comparison case
 

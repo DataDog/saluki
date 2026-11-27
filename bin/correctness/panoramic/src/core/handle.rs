@@ -14,6 +14,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::Bytes;
+use reqwest::header::HeaderMap;
+use reqwest::Method;
 use saluki_error::GenericError;
 use serde_json::Value;
 use tokio::sync::watch;
@@ -57,6 +59,50 @@ pub(crate) struct Exited {
     pub(crate) code: i64,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
+}
+
+/// An HTTP request as [`Handle::http_request`] sends it.
+#[derive(Clone, Debug)]
+pub(crate) struct HttpRequestSpec {
+    pub(crate) method: Method,
+    /// The path and query, which start with `/`.
+    pub(crate) path: String,
+    /// The headers sent in addition to the client's own `Host`, `Accept` and framing headers.
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Vec<u8>,
+}
+
+impl HttpRequestSpec {
+    /// The URL of the request to `port` of the loopback address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path would not reach the server as written: it does not start with `/`, or the URL
+    /// parser rewrites or drops part of it, as it does for a dot segment, a space or a fragment.
+    pub(crate) fn url(&self, port: u16) -> Result<reqwest::Url, String> {
+        let path = &self.path;
+        if !path.starts_with('/') {
+            return Err(format!("the path '{}' does not start with '/'", path));
+        }
+        let url = reqwest::Url::parse(&format!("http://127.0.0.1:{}{}", port, path))
+            .map_err(|e| format!("the path '{}' is not a URL path: {}", path, e))?;
+        let sent = match url.query() {
+            Some(query) => format!("{}?{}", url.path(), query),
+            None => url.path().to_string(),
+        };
+        if sent != *path {
+            return Err(format!("the path '{}' would be sent as '{}'", path, sent));
+        }
+        Ok(url)
+    }
+}
+
+/// A reply to an HTTP request, as it arrived: the body is not decoded.
+#[derive(Clone, Debug)]
+pub(crate) struct HttpReply {
+    pub(crate) status: u16,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Vec<u8>,
 }
 
 /// What a step acts on one started participant through.
@@ -381,6 +427,63 @@ impl<'a> Handle<'a> {
         }
     }
 
+    /// Sends `request` to the endpoint once, and reads the whole reply within `limit`. Any status is a reply. The plan
+    /// refuses an endpoint that serves TLS.
+    ///
+    /// The client adds no `Content-Type`, `Content-Encoding` or `Accept-Encoding` header, and it does not decode the
+    /// reply body. It follows no redirect and keeps no connection open, so each request goes on a new connection and is
+    /// never sent again.
+    ///
+    /// # Errors
+    ///
+    /// Returns a software error if no whole reply arrives within `limit`, and a harness error if the endpoint cannot be
+    /// requested.
+    pub(crate) async fn http_request(
+        &self, endpoint: &str, request: &HttpRequestSpec, limit: Duration,
+    ) -> Result<HttpReply, HandleError> {
+        let (_, route) = self.route(endpoint, EndpointOperation::Exchange)?;
+        if route == Reach::CourierInServer {
+            return Err(HandleError::Harness(format!(
+                "no HTTP request is routed through {:?}",
+                route
+            )));
+        }
+        let url = request.url(self.runner_port(endpoint)?).map_err(HandleError::Harness)?;
+        static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+        let client = match CLIENT.get() {
+            Some(client) => client,
+            None => {
+                // Panoramic turns on the `zstd` feature of reqwest, and other crates in the build can turn on more.
+                // Each one would add `Accept-Encoding` and decode the reply body, so the client turns them all off.
+                // The same goes for the default retry of a protocol NACK, which `http2` would turn on.
+                let client = reqwest::Client::builder()
+                    .no_proxy()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .retry(reqwest::retry::never())
+                    .no_gzip()
+                    .no_brotli()
+                    .no_zstd()
+                    .no_deflate()
+                    .pool_max_idle_per_host(0)
+                    .build()
+                    .map_err(harness)?;
+                CLIENT.get_or_init(|| client)
+            }
+        };
+        let response = client
+            .request(request.method.clone(), url)
+            .headers(request.headers.clone())
+            .body(request.body.clone())
+            .timeout(limit)
+            .send()
+            .await
+            .map_err(request_failed)?;
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response.bytes().await.map_err(request_failed)?.to_vec();
+        Ok(HttpReply { status, headers, body })
+    }
+
     /// The endpoint `name`, and how the runner reaches it to do `operation`.
     fn route(&self, name: &str, operation: EndpointOperation) -> Result<(&'a PlannedEndpoint, Reach), HandleError> {
         let endpoint =
@@ -460,13 +563,7 @@ impl<'a> Handle<'a> {
     async fn published_get(
         &self, endpoint: &str, tls: bool, path: &str, skip_verify: bool, read_body: bool, limit: Duration,
     ) -> Result<HttpResponse, HandleError> {
-        let port = self.realized.host_port(endpoint).ok_or_else(|| {
-            HandleError::Software(format!(
-                "endpoint '{}' of participant '{}' has no published port: the participant had exited by the time its \
-                 ports were read",
-                endpoint, self.name
-            ))
-        })?;
+        let port = self.runner_port(endpoint)?;
         // One client of each kind for the process, so requests share their connection pools.
         static VERIFYING: OnceLock<reqwest::Client> = OnceLock::new();
         static NOT_VERIFYING: OnceLock<reqwest::Client> = OnceLock::new();
@@ -483,27 +580,40 @@ impl<'a> Handle<'a> {
                 cell.get_or_init(|| client)
             }
         };
-        let failed = |e: reqwest::Error| {
-            if e.is_builder() {
-                harness(e)
-            } else {
-                HandleError::Software(format!("{:#}", GenericError::from(e)))
-            }
-        };
         let scheme = if tls { "https" } else { "http" };
         let response = client
             .get(format!("{}://127.0.0.1:{}{}", scheme, port, path))
             .timeout(limit)
             .send()
             .await
-            .map_err(failed)?;
+            .map_err(request_failed)?;
         let status = response.status().as_u16();
         let body = if read_body {
-            response.bytes().await.map_err(failed)?.to_vec()
+            response.bytes().await.map_err(request_failed)?.to_vec()
         } else {
             Vec::new()
         };
         Ok(HttpResponse { status, body })
+    }
+
+    /// The port on the runner's loopback address that reaches `endpoint`: published, forwarded, or the endpoint's own.
+    fn runner_port(&self, endpoint: &str) -> Result<u16, HandleError> {
+        self.realized.host_port(endpoint).ok_or_else(|| {
+            HandleError::Software(format!(
+                "endpoint '{}' of participant '{}' has no published port: the participant had exited by the time its \
+                 ports were read",
+                endpoint, self.name
+            ))
+        })
+    }
+}
+
+/// Blames a request that failed on the client's setup, or else on the software.
+fn request_failed(error: reqwest::Error) -> HandleError {
+    if error.is_builder() {
+        harness(error)
+    } else {
+        HandleError::Software(format!("{:#}", GenericError::from(error)))
     }
 }
 

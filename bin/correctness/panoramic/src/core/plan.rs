@@ -378,7 +378,7 @@ fn build_procedure(
                 continue;
             }
             let template_fields = factory.template_fields();
-            for (field, value) in &entry.fields.0 {
+            for (field, value) in &entry.fields.values {
                 let holds_reference = strings(value).iter().any(|text| text.contains("{{"));
                 if holds_reference && !template_fields.contains(&field.as_str()) {
                     problems.push(
@@ -401,7 +401,7 @@ fn build_procedure(
             if let (Some(participants), Some(values)) = (participants, &values) {
                 let mut found = check_needs(step.as_ref(), &at, participants, unwired, &mut reach);
                 for field in template_fields {
-                    for text in entry.fields.0.get(*field).map(strings).unwrap_or_default() {
+                    for text in entry.fields.values.get(*field).map(strings).unwrap_or_default() {
                         match Template::parse(text) {
                             Ok(template) => found.extend(
                                 reference::check_step_template(values, &template)
