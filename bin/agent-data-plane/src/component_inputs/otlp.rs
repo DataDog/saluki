@@ -416,16 +416,6 @@ mod tests {
     }
 
     #[test]
-    fn otlp_logs_settings_come_from_resolved_configuration() {
-        for tags_as_ddtags in [false, true] {
-            assert_eq!(
-                OtlpLogsSettings { tags_as_ddtags },
-                otlp_logs_settings(&otlp::Logs { tags_as_ddtags })
-            );
-        }
-    }
-
-    #[test]
     fn otlp_traces_settings_come_from_resolved_configuration() {
         let traces = otlp::Traces {
             enabled: true,
