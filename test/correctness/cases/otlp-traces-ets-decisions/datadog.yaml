@@ -17,8 +17,8 @@ process_config:
   container_collection:
     enabled: false
 
-# Enable Error Tracking Standalone mode so that only error traces are kept.
-# Non-error traces will be forwarded with DroppedTrace=true.
+# Error Tracking Standalone mode keeps the error traces, and forwards the other traces with
+# DroppedTrace=true.
 #
 # We keep target_traces_per_second and errors_per_second very high to prevent
 # the error sampler's TPS limit from being a variable in the comparison.
