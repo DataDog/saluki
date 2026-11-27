@@ -711,10 +711,10 @@ impl IntakeFrom {
     ///
     /// # Errors
     ///
-    /// Returns an error if the selection does not suit the telemetry, `count` is not `0` for `trace_stats`, `path` does
-    /// not start with `/`, `api_keys` is empty, holds an empty or repeated key, gives a count of `0` or a count for
-    /// `trace_stats`, or comes with `count`, `sender` is missing or given with `count: 0`, or `path` is given or
-    /// `settle` is missing with `count: 0`.
+    /// Returns an error if the selection does not suit the telemetry, or `path` does not start with `/`. Also returns an
+    /// error if `count` is not `0` for `trace_stats`, or if `sender` is missing without `count: 0`. With `count: 0`, it
+    /// returns an error if `sender` or `path` is given, or if `settle` is missing. It returns an error if `api_keys` is
+    /// empty, holds an empty or repeated key, gives a count of `0` or a count for `trace_stats`, or comes with `count`.
     fn new(fields: Fields) -> Result<Self, String> {
         let Fields {
             on,
