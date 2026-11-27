@@ -81,23 +81,38 @@ procedure:
               side: baseline
               priority: -128
               dropped_trace: false
-            # The error sampler keeps an error trace that another sampler dropped. The priority that it leaves differs,
-            # so no entry sets it.
-            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue, dropped_trace: false}
-            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue_child_root, dropped_trace: false}
-            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue_child, dropped_trace: false}
-            - {service: probe-sampling, name: otlpprobe.tsamp.012.user_zero, dropped_trace: false}
-            - {service: probe-sampling, name: otlpprobe.tsamp.013.rescued, dropped_trace: false}
+            # The error sampler keeps an error trace that another sampler dropped. The Agent leaves the priority 0 and
+            # ADP sets 1 (gap/otlp-error-rescue-priority), so each side has its own entry.
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue, side: baseline, priority: 0,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue, side: comparison, priority: 1,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue_child_root, side: baseline, priority: 0,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue_child_root, side: comparison, priority: 1,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue_child, side: baseline, priority: 0,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.011.rescue_child, side: comparison, priority: 1,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.012.user_zero, side: baseline, priority: 0,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.012.user_zero, side: comparison, priority: 1,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.013.rescued, side: baseline, priority: 0,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.013.rescued, side: comparison, priority: 1,
+               dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr, priority: 1, dropped_trace: false}
-            - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr_rescue, dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr_rescue, side: baseline, priority: 0,
+               dropped_trace: false}
+            - {service: probe-sampling, name: otlpprobe.tsamp.028.prob_sr_rescue, side: comparison, priority: 1,
+               dropped_trace: false}
             # Single span sampling keeps the span that asks for it, with the priority 2.
             - {service: probe-sampling, name: otlpprobe.tsamp.035.sss, priority: 2, dropped_trace: false}
             - {service: probe-sampling, name: otlpprobe.tsamp.037.int, priority: 2, dropped_trace: false}
-            - service: probe-sampling
-              name: otlpprobe.tsamp.037.string
-              side: comparison
-              priority: 2
-              dropped_trace: false
+            - {service: probe-sampling, name: otlpprobe.tsamp.037.string, side: comparison, priority: 2,
+               dropped_trace: false}
             # A dropped trace sends its events alone, marked as dropped, and a kept trace sends them with the other
             # spans.
             - {service: probe-sampling, name: otlpprobe.tsamp.038.metric, priority: 0, dropped_trace: true}
