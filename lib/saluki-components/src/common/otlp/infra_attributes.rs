@@ -76,7 +76,8 @@ pub enum CustomTags {
 /// Returns the custom tags that [`CustomTags::DdTags`] keeps out of the attributes, in resolution order. The result is
 /// empty for [`CustomTags::Attributes`].
 ///
-/// Container ID detection comes later. Until then, the container found from the origin attributes comes first.
+/// When the resource has no `container.id`, the container that the origin attributes identify comes first.
+/// TODO: detect `container.id` and write it into the attributes, as the Agent does.
 pub fn process_tags(
     attributes: &mut Vec<KeyValue>, resolver: &OtlpOriginTagResolver, cardinality: OriginTagCardinality,
     custom_tags: CustomTags,
