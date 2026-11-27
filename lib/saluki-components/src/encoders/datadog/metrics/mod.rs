@@ -3017,6 +3017,62 @@ mod tests {
         assert_contains_bytes(&payload, &expected_resource_dict);
     }
 
+    #[test]
+    fn v3_sketch_writes_a_host_resource_only_for_a_non_empty_host() {
+        // The Agent writes the host resource of a sketch only when the host is not empty
+        // (`pkg/serializer/internal/metrics/iterable_series_v3.go:581` at `92824ec3d3`).
+        let host_a_dict: &[u8] = &[0x04, b'h', b'o', b's', b't', 0x06, b'h', b'o', b's', b't', b'-', b'a'];
+        let cases: [(Option<&'static str>, &[u8]); 3] = [(None, &[]), (Some(""), &[]), (Some("host-a"), host_a_dict)];
+
+        for (host, expected_dict) in cases {
+            let mut sketch = DDSketch::default();
+            sketch.insert_n(1.0, 6);
+            let context =
+                Context::from_static_parts("sketch.resources", &[]).with_host(host.map(MetaString::from_static));
+            let metric = Metric::from_parts(
+                context,
+                MetricValues::distribution((123_u64, sketch)),
+                MetricMetadata::default(),
+            );
+
+            let encoded =
+                encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).expect("V3 sketch should encode");
+            let metric_data = V3MetricData::parse_from_bytes(&encoded.payload).expect("V3 metric data should decode");
+
+            assert_eq!(metric_data.dictResourceStr, expected_dict, "host {host:?}");
+        }
+    }
+
+    #[test]
+    fn v3_series_and_sketch_without_origin_write_no_source_type_name() {
+        // The Agent keeps an empty source type name out of the dictionary, and sets none on an OTLP series
+        // (`iterable_series_v3.go:1176` and `serializerexporter/consumer.go:384-391` at `92824ec3d3`).
+        let mut sketch = DDSketch::default();
+        sketch.insert_n(1.0, 6);
+        let metrics = [
+            Metric::from_parts(
+                Context::from_static_parts("otlp.series", &[]),
+                MetricValues::gauge([1.0_f64]),
+                MetricMetadata::default(),
+            ),
+            Metric::from_parts(
+                Context::from_static_parts("otlp.sketch", &[]),
+                MetricValues::distribution((123_u64, sketch)),
+                MetricMetadata::default(),
+            ),
+        ];
+
+        for metric in metrics {
+            let name = metric.context().name().to_string();
+            let encoded =
+                encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).expect("V3 metric should encode");
+            let metric_data = V3MetricData::parse_from_bytes(&encoded.payload).expect("V3 metric data should decode");
+
+            assert!(metric_data.dictSourceTypeName.is_empty(), "{name}");
+            assert!(metric_data.sourceTypeNameRefs.iter().all(|index| *index == 0), "{name}");
+        }
+    }
+
     /// Distinct inputs for a [`run_request_builder`] integration test.
     struct RequestBuilderScenario {
         series_mode: MetricsEncoderMode,

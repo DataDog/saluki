@@ -522,6 +522,10 @@ A comparison answers two questions:
    fails. The failure lists unmet expectations by side first, then differences from the comparison. A
    [known difference](#known-differences) cannot excuse an unmet expectation.
 
+`compare` does not see the encoding or the endpoint of a request. A side that falls back from V3 to V2 sends the same
+series and sketches, so `compare` passes it. A case about the encoding must assert the request path with `intake_from`
+and `path`, as `otlp-metrics-v3` and `dsd-plain-v3` do.
+
 For logs, `logs.min_count` sets the minimum number of records per intake. If you include a `metrics` section, set
 `min_series`, `series` or both, even if the step also declares a known difference:
 

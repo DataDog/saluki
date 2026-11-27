@@ -1,0 +1,90 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive OTLP series and sketches, and each sends them to its intake with the
+  V3 metrics encoding, on the V3 series and sketches paths.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+      DD_AGGREGATE_CONTEXT_LIMIT: "500000"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they aggregated. Waiting slightly longer than an aggregation bucket, with the load running,
+  # lets the Agent and ADP flush.
+  - {step: process_stable_for, on: load, duration: 32s}
+  # ADP sends the fixture's metrics itself, and does not proxy them to the Agent. A side that falls back to V2 sends
+  # the same series and sketches, so `compare` passes it. Only the path steps catch the fallback.
+  - parallel:
+      - step: compare
+        telemetry: metrics
+        comparison: intake-adp
+        baseline: intake-agent
+        # The fixture has three series and two sketches.
+        metrics:
+          min_series: 5
+          series:
+            - {name: otlpprobe.v3.series.gauge, metric_type: gauge, value: 1.5, tags: ["host:v3-host"]}
+            - {name: otlpprobe.v3.series.count, metric_type: count, value: 5, tags: ["host:v3-host"]}
+            - {name: otlpprobe.v3.series.hostless, metric_type: gauge, value: 2}
+            - {name: otlpprobe.v3.sketch.histogram, metric_type: sketch, tags: ["host:v3-host"]}
+            - {name: otlpprobe.v3.sketch.hostless, metric_type: sketch}
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlpprobe.v3.series."}
+        sender: adp
+        path: /api/intake/metrics/v3/series
+        count: 3
+        timeout: 1m
+      - step: intake_from
+        on: intake-adp
+        telemetry: metrics
+        select: {name_prefix: "otlpprobe.v3.sketch."}
+        sender: adp
+        path: /api/intake/metrics/v3/sketches
+        count: 2
+        timeout: 1m
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "otlpprobe.v3.series."}
+        sender: agent
+        path: /api/intake/metrics/v3/series
+        count: 3
+        timeout: 1m
+      - step: intake_from
+        on: intake-agent
+        telemetry: metrics
+        select: {name_prefix: "otlpprobe.v3.sketch."}
+        sender: agent
+        path: /api/intake/metrics/v3/sketches
+        count: 2
+        timeout: 1m
