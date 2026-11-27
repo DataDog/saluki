@@ -1,0 +1,13 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "{{ self.connections.adp.url }}/v1/traces"
+# Millstone cannot tell that a static payload is OTLP, and the Agent answers 415 to an OTLP/HTTP body that is not
+# labeled as protobuf.
+content_type: "application/x-protobuf"
+volume: 1
+corpus:
+  size: 1
+  payload:
+    # ExportTraceServiceRequest with three traces of four spans, each with a SQL statement that starts with a
+    # comment, built by bin/correctness/otlp-fixtures.
+    # Regenerate it with `make generate-correctness-fixtures` rather than editing it here.
+    static_base64: "CqIECisKKQoMc2VydmljZS5uYW1lEhkKF290bHAtdHJhY2VzLWhhemFyZHMtc3FsEvIDEkwKEAAAAAAAAAAAAAAAAAAADwESCAAADwEAAAABKhpvdGxwcHJvYmUuaGF6YXJkcy5zcWwucm9vdDACOQAAKjb+nJcXQUBLdjb+nJcXEowBChAAAAAAAAAAAAAAAAAAAA8BEggAAA8BAAAAAiIIAAAPAQAAAAEqG290bHBwcm9iZS5oYXphcmRzLnNxbC5teXNxbDADOYCWwjb+nJcXQcDhDjf+nJcXShQKCWRiLnN5c3RlbRIHCgVteXNxbEodCgxkYi5zdGF0ZW1lbnQSDQoLI2MKU0VMRUNUIDESjAEKEAAAAAAAAAAAAAAAAAAADwISCAAADwIAAAABKiBvdGxwcHJvYmUuaGF6YXJkcy5zcWwucG9zdGdyZXNxbDADOQAAKjb+nJcXQUBLdjb+nJcXShkKCWRiLnN5c3RlbRIMCgpwb3N0Z3Jlc3FsSh0KDGRiLnN0YXRlbWVudBINCgsjYwpTRUxFQ1QgMhKDAQoQAAAAAAAAAAAAAAAAAAAPAxIIAAAPAwAAAAEqG290bHBwcm9iZS5oYXphcmRzLnNxbC5zcGFjZTADOQAAKjb+nJcXQUBLdjb+nJcXShQKCWRiLnN5c3RlbRIHCgVteXNxbEoeCgxkYi5zdGF0ZW1lbnQSDgoMICNjClNFTEVDVCAz"

@@ -1,0 +1,182 @@
+description: >-
+  ADP and the Agent receive OTLP traces that are hard to handle, and each must go on to deliver a healthy trace. One
+  request holds SQL statements that start with a `#` comment. Another holds a trace of 301 spans that is too large for
+  ADP to send in one request, next to a small control trace. After the hazards, a control trace goes to the same
+  receiver. The control of each arm must reach its intake, and neither process may crash. The Agent delivers the large
+  trace. ADP drops it, which `oversized_trace.py` reports as a known difference with a gap and an issue.
+# The script keeps this known difference, and not a `known_differences` list, because panoramic has no step that sends
+# an arbitrary HTTP request or reads an intake in a script. The docstring of `oversized_trace.py` describes how the
+# script checks it.
+timeout: 4m
+subject_os: [linux]
+
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-traces-hazards-adp"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      # ADP and the Agent read this. The endpoint is the harness's, not the default one. ADP handles OTLP traces itself,
+      # because it proxies none of them to the Agent by default.
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
+    files:
+      /otlp-traces-hazards/oversized_trace.py: oversized_trace.py
+      /otlp-traces-hazards/test_oversized_trace.py: test_oversized_trace.py
+    connect: {intake: intake-adp.api}
+  # The Agent on its own, with the receiver that its default environment binds at `agent_otlp_http`.
+  agent:
+    type: agent
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-otlp-traces-hazards-agent"
+    files:
+      /otlp-traces-hazards/oversized_trace.py: oversized_trace.py
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  # The sender waits idle. The procedure runs millstone in it once the receivers of ADP and of the Agent listen.
+  sender:
+    image: saluki-images/correctness-tools:latest
+    command: [sleep, infinity]
+    files:
+      /etc/millstone/sql-adp.yaml: {from: millstone-sql-adp.yaml, template: true}
+      /etc/millstone/sql-agent.yaml: {from: millstone-sql-agent.yaml, template: true}
+      /etc/millstone/control-adp.yaml: {from: millstone-control-adp.yaml, template: true}
+      /etc/millstone/control-agent.yaml: {from: millstone-control-agent.yaml, template: true}
+    connect: {adp: adp.otlp_http, agent: agent.agent_otlp_http}
+
+procedure:
+  # The script checks its own logic first.
+  - step: exec
+    on: adp
+    command: ["/opt/datadog-agent/embedded/bin/python3", "/otlp-traces-hazards/test_oversized_trace.py"]
+    timeout: 60s
+  # ADP listens, and its Agent leaves OTLP to ADP. The independent Agent starts its own OTLP pipeline.
+  - parallel:
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: 'listen_addr:"tcp://0.0.0.0:{{ adp.endpoints.otlp_http.port }}",tls_enabled:false | HTTP server started.'
+        timeout: 60s
+      - step: log_contains
+        on: adp
+        process: agent
+        pattern: "Not starting the OTLP ingest pipeline because the data plane handles OTLP ingest"
+        timeout: 60s
+      - step: log_contains
+        on: agent
+        process: agent
+        pattern: "Everything is ready. Begin running and processing data."
+        timeout: 60s
+  # The SQL hazard goes first, and each receiver must deliver all its spans before the large trace goes in. ADP can drop
+  # other traces that its encoder holds next to a trace that is too large for one request (#3488). A SQL request that is
+  # still in the encoder would lose spans, and the case could not tell which hazard caused the loss. This case does not
+  # cover that loss. Once #3488 is fixed, add a step that sends traces in the same batch as the large trace, and remove
+  # this wait if it is no longer needed.
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/sql-adp.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/sql-agent.yaml], timeout: 2m}
+  - parallel:
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: otlp-traces-hazards-sql}
+        sender: adp
+        count: 4
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-traces-hazards-sql}
+        sender: trace-agent
+        count: 4
+        timeout: 2m
+  # The large trace goes next. The script builds it when it runs, and requires the answer 200 from the receiver of its
+  # container. The request also holds a small trace, which each receiver must deliver.
+  - step: exec
+    on: adp
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/otlp-traces-hazards/oversized_trace.py"
+      - "--port"
+      - "{{ adp.endpoints.otlp_http.port }}"
+    timeout: 2m
+  - step: exec
+    on: agent
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/otlp-traces-hazards/oversized_trace.py"
+      - "--port"
+      - "{{ agent.endpoints.agent_otlp_http.port }}"
+    timeout: 2m
+  # The small trace of the oversized request must reach each intake before the control goes in, and so must the 301 spans
+  # that the Agent delivers. ADP's encoder drops the large trace, or splits it from the small one, before it sends the
+  # small trace, so the arrival of the small trace shows that the large one has left the encoder. The control then goes
+  # in a later batch, and cannot share one with the large trace. A control in the same batch could land on the side of
+  # the split that ADP drops, because the translator hands traces to the encoder in hash-map order.
+  - parallel:
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: otlp-traces-hazards-oversized-control}
+        sender: adp
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-traces-hazards-oversized-control}
+        sender: trace-agent
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-traces-hazards-oversized}
+        sender: trace-agent
+        count: 301
+        timeout: 2m
+  # The control goes last on each arm, after every hazard.
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/control-adp.yaml], timeout: 2m}
+  - {step: exec, on: sender, command: [/usr/local/bin/millstone, /etc/millstone/control-agent.yaml], timeout: 2m}
+  # Each receiver delivers the control. The exact counts show that nothing else arrived. The wait above has shown that
+  # each receiver delivers the small trace that travels with the large one, and that the Agent delivers the large trace,
+  # which proves that the intake can decode it.
+  - parallel:
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: otlp-traces-hazards-control}
+        sender: adp
+        count: 2
+        timeout: 2m
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-traces-hazards-control}
+        sender: trace-agent
+        count: 2
+        timeout: 2m
+  # ADP drops a trace that is too large for one request, and the case does not assert that it arrives or that it is
+  # absent. The script reads the intake of ADP, requires the control to be there, and reports the known difference, or
+  # fails when ADP delivers the trace in full or in part. The control of the same request has arrived by now.
+  - step: exec
+    on: adp
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/otlp-traces-hazards/oversized_trace.py"
+      - "--check"
+      - "--intake-url"
+      - "http://intake-adp:{{ intake-adp.endpoints.api.port }}"
+    timeout: 2m
+  - parallel:
+      - {step: process_stable_for, on: adp, duration: 10s}
+      - {step: process_stable_for, on: agent, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
+      - {step: log_not_contains, on: agent, pattern: "panicked at|panic: |PANIC", regex: true, during: 10s}
+      # An intake that fails to decode a payload logs it, and tells that failure apart from a drop of ADP.
+      - {step: log_not_contains, on: intake-adp, pattern: "Failed to (parse|merge)", regex: true, during: 10s}
+      - {step: log_not_contains, on: intake-agent, pattern: "Failed to (parse|merge)", regex: true, during: 10s}

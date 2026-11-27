@@ -235,6 +235,118 @@ procedure:
       headers: {content-type: application/json}
       body: {text: '{"partialSuccess":{}}'}
     timeout: 10s
+  # traces-short-trace-id: A protobuf traces request with a valid trace, and a span whose trace ID has 8 bytes.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/traces_short_trace_id.pb}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+      body_contains: {text: "invalid TraceID length"}
+    known:
+      gap: gap/otlp-http-id-length
+      issue: 3487
+      reason: >-
+        ADP accepts a trace ID of 8 bytes. It drops the trace of that span, and delivers the others. The Agent refuses
+        the whole request, with status 400, because a trace ID is 16 bytes.
+      expect:
+        status: 200
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/traces_short_trace_id.pb}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+      body_contains: {text: "invalid TraceID length"}
+    timeout: 10s
+  # traces-short-span-id: A protobuf traces request with a valid trace, and a span whose span ID has 4 bytes.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/traces_short_span_id.pb}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+      body_contains: {text: "invalid SpanID length"}
+    known:
+      gap: gap/otlp-http-id-length
+      issue: 3487
+      reason: >-
+        ADP accepts a span ID of 4 bytes. It reads the ID as zero and drops the trace of that span, and delivers the
+        others. The Agent refuses the whole request, with status 400, because a span ID is 8 bytes.
+      expect:
+        status: 200
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/traces_short_span_id.pb}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+      body_contains: {text: "invalid SpanID length"}
+    timeout: 10s
+  # traces-short-parent-id: A protobuf traces request with a root, a child whose parent ID has 4 bytes, and a child whose parent ID has 9 bytes.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/traces_short_parent_id.pb}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+      body_contains: {text: "invalid SpanID length"}
+    known:
+      gap: gap/otlp-http-id-length
+      issue: 3487
+      reason: >-
+        ADP accepts a parent span ID of 4 or 9 bytes. It reads the ID as zero, so the span becomes a root, and it
+        delivers every span. The Agent refuses the whole request, with status 400, because a parent span ID is 8
+        bytes.
+      expect:
+        status: 200
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/traces_short_parent_id.pb}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+      body_contains: {text: "invalid SpanID length"}
+    timeout: 10s
   # metrics-gzip: A protobuf metrics request with a gzip body and the matching `Content-Encoding`.
   - step: http_request
     on: adp
@@ -484,8 +596,9 @@ procedure:
     timeout: 10s
   # Each request that a receiver accepts reaches the intake from its own sender, and a request that it refuses does not.
   # The metric of each metrics body has the name of the body, so each step selects one request. The exact totals show
-  # that no other request delivered. The counts follow from the known differences of ADP: when one goes stale, its count
-  # changes first.
+  # that no other request delivered. The spans of each body with an identifier of the wrong length have a service of
+  # their own, so that each count shows what ADP kept of that body. The counts follow from the known differences of ADP:
+  # when one goes stale, its count changes first.
   - parallel:
       # The Agent delivers the four metrics requests that it accepts, and both traces requests.
       - step: intake_from
@@ -531,7 +644,10 @@ procedure:
         count: 2
         timeout: 2m
       # ADP delivers the five metrics requests that it accepts, and the protobuf traces request. It decodes a JSON body
-      # as protobuf, and fails it.
+      # as protobuf, and fails it. It also accepts the three traces requests with an identifier of the wrong length. It
+      # drops the trace of a span with a trace ID that is not 16 bytes long or a span ID that is not 8 bytes long, and
+      # delivers the other trace. A parent ID that is not 8 bytes long becomes no parent, so ADP delivers the three
+      # spans as roots.
       - step: intake_from
         on: intake-adp
         telemetry: metrics
@@ -581,6 +697,52 @@ procedure:
         sender: adp
         count: 1
         timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: otlp-rcv-http-traces-short-trace-id}
+        sender: adp
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: otlp-rcv-http-traces-short-span-id}
+        sender: adp
+        count: 1
+        timeout: 2m
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: otlp-rcv-http-traces-short-parent-id}
+        sender: adp
+        count: 3
+        timeout: 2m
+  # The Agent refuses the requests with an identifier of the wrong length, so no span reaches its intake. The valid trace
+  # in each request would show that the Agent accepted a part of it. The deliveries above show that the intake receives
+  # spans from the Agent, and the settle covers the flush of the trace-agent.
+  - parallel:
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-rcv-http-traces-short-trace-id}
+        count: 0
+        settle: 20s
+        timeout: 1m
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-rcv-http-traces-short-span-id}
+        count: 0
+        settle: 20s
+        timeout: 1m
+      - step: intake_from
+        on: intake-agent
+        telemetry: spans
+        select: {service: otlp-rcv-http-traces-short-parent-id}
+        count: 0
+        settle: 20s
+        timeout: 1m
   - parallel:
       - {step: process_stable_for, on: adp, duration: 10s}
       - {step: process_stable_for, on: agent, duration: 10s}
