@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::core::backend::KUBELET;
 use crate::core::participant::{Enclosure, Os, SpecContext};
 use crate::core::spec::{
     Address, Consumed, EndpointSpec, ExitChannel, FileSource, FileSpec, HostMount, OutputChannel, ParticipantSpec,
@@ -115,6 +116,14 @@ const HOST_VIEW_ENV: &[DefaultEnv] = &[
         "/host/sys/fs/cgroup",
     ),
 ];
+
+/// Kubelet access in a pod, as the Datadog Helm chart sets it up: the kubelet on the pod's node, reached by its address,
+/// without verifying the certificate it serves, which a kind node signs itself. The pod's service account may read the
+/// kubelet API with the realization option `kubelet`, which a pod has unless the case turns it off.
+const KUBELET_HOST_ENV: &str = "DD_KUBERNETES_KUBELET_HOST";
+const KUBELET_HOST_KEY: &str = "kubernetes_kubelet_host";
+const KUBELET_HOST_FIELD: &str = "status.hostIP";
+const KUBELET_ENV: &[DefaultEnv] = &[env("DD_KUBELET_TLS_VERIFY", "kubelet_tls_verify", "false")];
 
 /// One listener the software can open, as an endpoint.
 pub(super) struct Listener {
@@ -297,8 +306,8 @@ pub(super) fn add_endpoints(
     Ok(())
 }
 
-/// Sets the default environment, with or without the entries only ADP reads, and the host view when `with` asks for it,
-/// withdrawing each entry the case sets itself.
+/// Sets the default environment, with or without the entries only ADP reads, the host view when `with` asks for it, and
+/// kubelet access in a pod unless the case turns it off, withdrawing each entry the case sets itself.
 pub(super) fn set_defaults(cx: &SpecContext<'_>, data_plane: bool, spec: &mut ParticipantSpec) -> Result<(), String> {
     let with: With = cx.with()?;
     let mut defaults: Vec<&DefaultEnv> = DEFAULT_ENV
@@ -319,6 +328,13 @@ pub(super) fn set_defaults(cx: &SpecContext<'_>, data_plane: bool, spec: &mut Pa
                 })
                 .collect(),
         );
+    }
+    if cx.realization.enclosure == Enclosure::KubernetesPod && cx.options.get(KUBELET) != Some(&false) {
+        spec.options.insert(KUBELET, true);
+        defaults.extend(KUBELET_ENV);
+        if !case_sets(cx, KUBELET_HOST_ENV, KUBELET_HOST_KEY)? {
+            spec.field_env.insert(KUBELET_HOST_ENV.to_string(), KUBELET_HOST_FIELD);
+        }
     }
     withdraw_defaults(cx, &defaults, spec)
 }
@@ -415,7 +431,81 @@ fn sets(node: &Value, path: &[&str]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::core::case::CASE_FILE;
+    use crate::core::plan::PlannedParticipant;
+
+    /// Plans for Linux a case of one `agent` participant, realized as `realization`, with `extra` as more of its
+    /// fields, and calls `check` with the plan of the participant.
+    fn plan_agent(realization: &str, extra: &str, check: impl FnOnce(&PlannedParticipant)) {
+        let config = format!(
+            "timeout: 1m\nsubject_os: [linux]\nparticipants:\n  agent:\n    type: agent\n    subject: true\n    \
+             realization: {}\n{}procedure: []\n",
+            realization, extra
+        );
+        let suite = tempfile::tempdir().unwrap();
+        let dir = suite.path().join("case");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join(CASE_FILE), config).unwrap();
+        let mut plans = crate::load_and_plan(&dir, &BTreeMap::new()).unwrap_or_else(|errors| {
+            panic!(
+                "the case should plan: {:?}",
+                errors.iter().map(ToString::to_string).collect::<Vec<_>>()
+            )
+        });
+        let plan = plans.remove(&Os::Linux).unwrap();
+        check(&plan.participants["agent"]);
+    }
+
+    #[test]
+    fn an_agent_pod_reaches_the_kubelet_unless_the_case_turns_it_off() {
+        plan_agent("{enclosure: kubernetes-pod}", "", |agent| {
+            assert_eq!(agent.options.get(KUBELET), Some(&true));
+            assert_eq!(
+                agent.field_env.get("DD_KUBERNETES_KUBELET_HOST").copied(),
+                Some("status.hostIP")
+            );
+            assert_eq!(
+                agent
+                    .env
+                    .get("DD_KUBELET_TLS_VERIFY")
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some("false")
+            );
+        });
+
+        plan_agent("{enclosure: kubernetes-pod, options: {kubelet: false}}", "", |agent| {
+            assert_eq!(agent.options.get(KUBELET), Some(&false));
+            assert!(agent.field_env.is_empty());
+            assert!(!agent.env.contains_key("DD_KUBELET_TLS_VERIFY"));
+        });
+
+        // A setting the case makes itself replaces the default.
+        plan_agent(
+            "{enclosure: kubernetes-pod}",
+            "    env: {DD_KUBERNETES_KUBELET_HOST: \"10.0.0.1\", DD_KUBELET_TLS_VERIFY: \"true\"}\n",
+            |agent| {
+                assert!(agent.field_env.is_empty());
+                assert_eq!(
+                    agent
+                        .env
+                        .get("DD_KUBELET_TLS_VERIFY")
+                        .map(ToString::to_string)
+                        .as_deref(),
+                    Some("true")
+                );
+            },
+        );
+
+        plan_agent("{enclosure: linux-container}", "", |agent| {
+            assert!(!agent.options.contains_key(KUBELET));
+            assert!(agent.field_env.is_empty());
+            assert!(!agent.env.contains_key("DD_KUBELET_TLS_VERIFY"));
+        });
+    }
 
     #[test]
     fn container_scripts_keep_unix_line_endings() {

@@ -59,6 +59,13 @@ pub(crate) struct ParticipantSpec {
     /// endpoint.
     #[serde(skip)]
     pub(crate) wiring: BTreeMap<String, Wiring>,
+    /// Realization options the participant type sets unless the case sets them.
+    #[serde(skip)]
+    pub(crate) options: BTreeMap<&'static str, bool>,
+    /// Environment that a pod fills from one of its own fields, such as `status.hostIP`, by variable. An entry of
+    /// `env` with the same name replaces it.
+    #[serde(skip)]
+    pub(crate) field_env: BTreeMap<String, &'static str>,
 }
 
 impl ParticipantSpec {
@@ -67,8 +74,8 @@ impl ParticipantSpec {
     /// A layer that sets `command` and not `args` also removes the `args` below, so a new program does not inherit
     /// the old program's arguments.
     ///
-    /// Only a participant type declares `aliases`, `consumes` and `operations`, so a case layer never sets them and
-    /// they are never laid over.
+    /// Only a participant type declares `aliases`, `consumes`, `operations`, `options` and `field_env`, so a case layer
+    /// never sets them and they are never laid over.
     pub(crate) fn lay(&mut self, over: ParticipantSpec) {
         if over.command.is_some() && over.args.is_none() {
             self.args = None;

@@ -42,6 +42,8 @@ pub(crate) const HOST_PID: &str = "host_pid";
 pub(crate) const HOST_CGROUP_NAMESPACE: &str = "host_cgroup_namespace";
 /// The realization option that mounts the container runtime's socket of the kind node in a pod.
 pub(crate) const CRI_SOCKET: &str = "cri_socket";
+/// The realization option that lets a pod's service account read the kubelet API of the kind node.
+pub(crate) const KUBELET: &str = "kubelet";
 
 /// What planning knows of one realization backend.
 pub(crate) struct Facts {
@@ -169,7 +171,8 @@ const KUBERNETES_POD: Facts = Facts {
     mounts: true,
     exec_input_ends: true,
     // `host_pid`: the pod shares the node's PID namespace. `cri_socket`: the pod mounts the node's containerd socket.
-    options: &[HOST_PID, CRI_SOCKET],
+    // `kubelet`: the pod runs as a service account that may read the node's kubelet API.
+    options: &[HOST_PID, CRI_SOCKET, KUBELET],
 };
 
 // One path for every case and runner host, so it is short enough for a macOS socket address, which the system's

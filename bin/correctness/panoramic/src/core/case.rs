@@ -215,6 +215,8 @@ impl ParticipantEntry {
             consumes: BTreeMap::new(),
             operations: &[],
             wiring: BTreeMap::new(),
+            options: BTreeMap::new(),
+            field_env: BTreeMap::new(),
         };
         (placement, spec)
     }

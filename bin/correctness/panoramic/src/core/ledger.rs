@@ -11,6 +11,7 @@ use airlock::host::HostProcess;
 use airlock::scope::CaseScope;
 use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
+use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::api::{Api, DeleteParams};
 use kube::Client;
 use rand::RngExt as _;
@@ -79,6 +80,10 @@ enum Resource {
     HostProcess(HostProcess),
     /// A Kubernetes namespace, removed through the client that created it.
     Namespace { name: String, client: Client },
+    /// A ClusterRole and the ClusterRoleBinding of the same name, removed through the client that created them. The
+    /// case's namespace owns them, and the ledger deletes them itself so that reclaim does not wait for the garbage
+    /// collector.
+    ClusterRole { name: String, client: Client },
     /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),
     /// A directory on a kind node, removed through the node's container once every namespace of the walk is gone, so a
@@ -121,6 +126,27 @@ impl Resource {
                     Err(e) => Err(generic_error!("Failed to delete namespace '{}': {}", name, e)),
                 }
             }
+            Self::ClusterRole { name, client } => {
+                let bindings = Api::<ClusterRoleBinding>::all(client.clone());
+                let roles = Api::<ClusterRole>::all(client);
+                for (kind, deleted) in [
+                    (
+                        "ClusterRoleBinding",
+                        bindings.delete(&name, &DeleteParams::default()).await.map(|_| ()),
+                    ),
+                    (
+                        "ClusterRole",
+                        roles.delete(&name, &DeleteParams::default()).await.map(|_| ()),
+                    ),
+                ] {
+                    match deleted {
+                        Ok(()) => {}
+                        Err(kube::Error::Api(status)) if status.is_not_found() => {}
+                        Err(e) => return Err(generic_error!("Failed to delete {} '{}': {}", kind, name, e)),
+                    }
+                }
+                Ok(None)
+            }
             Self::Directory(path) => match tokio::fs::remove_dir_all(&path).await {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 removed => removed
@@ -151,12 +177,16 @@ impl Resource {
 }
 
 impl fmt::Debug for Resource {
-    /// Omits a namespace's client, which isn't `Debug`, and names a case scope by its resource name.
+    /// Omits the client of a namespace or ClusterRole, which isn't `Debug`, and names a case scope by its resource name.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CaseScope(scope) => f.debug_tuple("CaseScope").field(&scope.resource_name()).finish(),
             Self::HostProcess(process) => f.debug_tuple("HostProcess").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
+            Self::ClusterRole { name, .. } => f
+                .debug_struct("ClusterRole")
+                .field("name", name)
+                .finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
             Self::NodeDirectory { node, path } => f
                 .debug_struct("NodeDirectory")
@@ -174,6 +204,7 @@ impl fmt::Display for Resource {
             Self::CaseScope(scope) => write!(f, "case_scope:{}", scope.resource_name()),
             Self::HostProcess(process) => write!(f, "host_process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
+            Self::ClusterRole { name, .. } => write!(f, "cluster_role:{}", name),
             Self::Directory(path) => write!(f, "directory:{}", path.display()),
             Self::NodeDirectory { path, .. } => write!(f, "node_directory:{}", path),
         }
@@ -244,6 +275,12 @@ impl ResourceLedger {
         self.register(Resource::Namespace { name, client });
     }
 
+    /// Registers a ClusterRole and the ClusterRoleBinding of the same name, which reclaim deletes through `client`.
+    /// Call it before creating either.
+    pub(crate) fn cluster_role(&self, client: Client, name: String) {
+        self.register(Resource::ClusterRole { name, client });
+    }
+
     /// Registers a directory the case created. Call it before creating the directory.
     pub(crate) fn directory(&self, path: PathBuf) {
         self.register(Resource::Directory(path));
@@ -255,12 +292,20 @@ impl ResourceLedger {
         self.register(Resource::NodeDirectory { node, path });
     }
 
+    /// The labels of the registered resources, as reclaim reports them, in registration order.
+    #[cfg(test)]
+    pub(crate) fn labels(&self) -> Vec<String> {
+        self.lock().iter().map(|entry| entry.resource.to_string()).collect()
+    }
+
     /// Marks a creation request cut short: the runtime may finish creating the resource after removal.
     fn mark_unsettled(&self, name: &str) {
         for entry in self.lock().iter_mut() {
             let named = match &entry.resource {
                 Resource::CaseScope(scope) => scope.resource_name() == name,
-                Resource::Namespace { name: namespace, .. } => namespace == name,
+                Resource::Namespace { name: namespace, .. } | Resource::ClusterRole { name: namespace, .. } => {
+                    namespace == name
+                }
                 Resource::NodeDirectory { path, .. } => path == name,
                 Resource::HostProcess(_) | Resource::Directory(_) => false,
             };
@@ -270,7 +315,7 @@ impl ResourceLedger {
         }
     }
 
-    /// Runs a creation request for the registered case scope, namespace or node directory `name`. A
+    /// Runs a creation request for the registered case scope, namespace, ClusterRole or node directory `name`. A
     /// case scope's name is its resource name, and a node directory's is its path. A write into a node directory counts
     /// as creating it.
     ///

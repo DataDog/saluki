@@ -187,7 +187,9 @@ that would fail without a message:
   would win over the delivered one.
 
 `realization.options` are booleans. A Linux container takes `host_pid` and `host_cgroup_namespace`. A pod takes
-`host_pid` and `cri_socket`.
+`host_pid`, `cri_socket` and `kubelet`. With `kubelet`, the pod runs as a service account that may read the kubelet API
+of the kind node, as the Datadog Helm chart sets up the Agent. A participant type can turn an option on, and a case
+that sets the option itself wins.
 
 ### Files
 
@@ -297,6 +299,12 @@ case sets `ADP_DD_<NAME>` for `DD_<NAME>`, or another name that the software rea
   one, and points the software at them. It is not for host processes or Windows. `own_ip: {env: [...], hosts: [...]}`
   sets each variable in `env` to the address of the participant, and maps each name in `hosts` to it. It is for
   `agent-adp` in a container.
+- *Kubelet.* In a pod, both types turn on the realization option `kubelet`. They set `DD_KUBERNETES_KUBELET_HOST` to
+  the address of the pod's node, and `DD_KUBELET_TLS_VERIFY` to `false`, because a kind node signs the certificate of
+  its kubelet itself. The Agent then gets the pods of the node from the kubelet, and resolves External Data from them.
+  A case that does not want this sets `kubelet: false`. A case that sets either setting itself replaces the default.
+  The service account may read the kubelet API only. With no Cluster Agent, the Agent also asks the API server for
+  node labels and endpoints, and logs that the API server forbids it. Both sides lose the same tags.
 - *Files.* In a Linux container or pod, `datadog.yaml` is a name that stands for the file the software reads. `agent`
   also has `otel-config.yaml`. Other realizations take a destination. See [Files](#files).
 - *Processes.* `agent-adp` has `adp` and `agent`. `agent` has `agent`.
@@ -458,7 +466,9 @@ An `errored` step could not be evaluated. Read the `error`, `timeout`, `cause` a
 **Cleanup.** After every case, panoramic removes what the case made and records each resource as `reclaimed`,
 `leaked` or `unsettled`, under `reclaim` in `result.json`. A container case has one `case_scope` entry for its
 containers, network and volume. Host processes have `host_process` entries, and the state directory has a `directory`
-entry. A pod case has a `namespace` entry and a `node_directory` entry for its directory on the kind node. A failed
+entry. A pod case has a `namespace` entry and a `node_directory` entry for its directory on the kind node. A pod case with
+the realization option `kubelet` also has a `cluster_role` entry for its ClusterRole and ClusterRoleBinding, which are
+not in the namespace. The namespace owns them too, so deleting the namespace removes them. A failed
 removal adds a `resource_leaked` issue, and an unconfirmed one adds `resource_unsettled`. Neither changes the
 outcome.
 
