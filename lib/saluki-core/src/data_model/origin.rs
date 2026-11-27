@@ -375,7 +375,7 @@ impl<'a> RawExternalData<'a> {
             let value = &part[3..];
 
             match key {
-                // Clients still send the init flag, but the pod UID and container name identify the container.
+                // Clients can send the init flag, but the pod UID and container name identify the container.
                 "it-" => {}
                 "pu-" => data.pod_uid = value,
                 "cn-" => data.container_name = value,
