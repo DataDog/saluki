@@ -313,7 +313,7 @@ fn metric_values_from_raw(
 
             // SAFETY: We've already checked above that `input` is valid UTF-8.
             let value = unsafe { std::str::from_utf8_unchecked(input) };
-            MetricValues::set(value.to_string())
+            MetricValues::set(value)
         }
         MetricType::Timer | MetricType::Histogram => MetricValues::histogram_sampled_fallible(floats, sample_rate)?,
         MetricType::Distribution => MetricValues::distribution_sampled_fallible(floats, sample_rate)?,
