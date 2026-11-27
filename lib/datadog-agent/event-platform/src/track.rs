@@ -20,9 +20,6 @@ const DEFAULT_INPUT_CHAN_SIZE: usize = 100;
 /// The value of the `DD-EVP-ORIGIN` header on the requests of every track.
 const INTAKE_ORIGIN: &str = "agent";
 
-/// The product in the `User-Agent` header, before the version of the producer.
-const USER_AGENT_PRODUCT: &str = "datadog-agent";
-
 /// The content type of the events of a track.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentType {
@@ -58,6 +55,10 @@ pub enum Strategy {
 /// What the producer of events tells the intake about itself.
 #[derive(Clone, Copy, Debug)]
 pub struct Origin<'a> {
+    /// The name of the producer, which the `User-Agent` header gives before the version. The Datadog Agent sends
+    /// `datadog-agent`.
+    pub product: &'a str,
+
     /// The version of the producer. The Datadog Agent sends its own version.
     pub version: &'a str,
 
@@ -137,7 +138,7 @@ impl Track {
             ("DD-EVP-ORIGIN-VERSION".to_string(), origin.version.to_string()),
             (
                 "User-Agent".to_string(),
-                format!("{USER_AGENT_PRODUCT}/{}", origin.version),
+                format!("{}/{}", origin.product, origin.version),
             ),
         ]);
 
@@ -609,6 +610,7 @@ mod tests {
         for case in cases {
             let track = Track::by_event_type(case.event_type).expect("should find the track");
             let origin = Origin {
+                product: "datadog-agent",
                 version: "7.70.0",
                 hostname: "my-host",
                 ecs_task_arn: case.ecs_task_arn,

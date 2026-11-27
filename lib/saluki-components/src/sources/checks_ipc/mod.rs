@@ -858,6 +858,7 @@ mod tests {
             .max_by_key(|track| track.default_batch_max_content_size)
             .expect("should have tracks");
         let origin = Origin {
+            product: "datadog-agent",
             version: "7.70.0",
             hostname: "test-host",
             ecs_task_arn: None,
