@@ -83,9 +83,6 @@ use crate::{
     remote_config::{self, RemoteConfigSubscriptions},
 };
 
-/// The component that applies the logs processing rules.
-const LOGS_PROCESS: &str = "logs_process";
-
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "run")]
@@ -517,6 +514,9 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
 
     Ok(())
 }
+
+/// The component that applies the logs processing rules.
+const LOGS_PROCESS: &str = "logs_process";
 
 /// Returns the component that check and OTLP logs enter the logs pipeline through.
 ///
