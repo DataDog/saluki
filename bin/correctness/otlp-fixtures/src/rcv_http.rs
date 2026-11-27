@@ -81,8 +81,8 @@ fn pretty(value: &Value) -> Vec<u8> {
 
 /// The OTLP JSON form of `request`, which has camel case names, hexadecimal IDs, and 64-bit integers as strings.
 ///
-/// It covers the parts that the fixtures use. It panics on any other part, so a fixture cannot gain a part that the
-/// JSON form leaves out.
+/// It covers the parts that the fixtures use, and drops other fields. It panics on a metric that is not a gauge, a
+/// point that does not hold a double, and an attribute that does not hold a string.
 fn metrics_json(request: &ExportMetricsServiceRequest) -> Value {
     let resource_metrics: Vec<Value> = request
         .resource_metrics
