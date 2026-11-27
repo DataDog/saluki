@@ -333,6 +333,11 @@ impl CaseSources {
     }
 }
 
+/// The suite directory above the case directory `dir`: the directory that holds every file a case can read.
+fn suite_of(dir: &Path) -> Option<PathBuf> {
+    dir.canonicalize().ok()?.parent().map(Path::to_path_buf)
+}
+
 /// The real path of the source `from`, relative to the case directory `dir`, which must be inside `suite`.
 fn resolve(dir: &Path, suite: &Path, from: &Path) -> Result<PathBuf, String> {
     let real = dir
@@ -356,16 +361,12 @@ fn resolve(dir: &Path, suite: &Path, from: &Path) -> Result<PathBuf, String> {
 ///
 /// Returns an error if the file cannot be read or is outside the suite directory.
 pub(crate) fn read_step_source(dir: &Path, from: &Path) -> Result<Vec<u8>, String> {
-    let suite = dir
-        .canonicalize()
-        .ok()
-        .and_then(|dir| dir.parent().map(Path::to_path_buf))
-        .ok_or_else(|| {
-            format!(
-                "file source '{}': the case directory has no suite directory above it",
-                from.display()
-            )
-        })?;
+    let suite = suite_of(dir).ok_or_else(|| {
+        format!(
+            "file source '{}': the case directory has no suite directory above it",
+            from.display()
+        )
+    })?;
     let real = resolve(dir, &suite, from)?;
     fs::read(&real).map_err(|e| format!("file source '{}' cannot be read: {}", from.display(), e))
 }
@@ -514,16 +515,12 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
 
     let text = fs::read_to_string(&file).map_err(|e| vec![error(None, format!("cannot be read: {}", e))])?;
     let case: CaseFile = serde_saphyr::from_str(&text).map_err(|e| vec![error(None, e.to_string())])?;
-    let suite = dir
-        .canonicalize()
-        .ok()
-        .and_then(|dir| dir.parent().map(Path::to_path_buf))
-        .ok_or_else(|| {
-            vec![error(
-                None,
-                "the case directory has no suite directory above it".to_string(),
-            )]
-        })?;
+    let suite = suite_of(dir).ok_or_else(|| {
+        vec![error(
+            None,
+            "the case directory has no suite directory above it".to_string(),
+        )]
+    })?;
 
     let mut errors = Vec::new();
     if case.subject_os.is_empty() {
