@@ -18,12 +18,12 @@ use crate::{collections::PrehashedHashSet, hash::hash_single_fast};
 /// collision detected. Consistent with other code in this repository that deals with things like metric tags, we use a
 /// high-quality hash function and make a calculated bet that collisions are _extremely_ unlikely.
 #[derive(Debug)]
-pub struct ReusableDeduplicator<T> {
+pub struct ReusableDeduplicator<T: ?Sized> {
     seen: PrehashedHashSet<u64>,
     _item: PhantomData<T>,
 }
 
-impl<T: Eq + std::hash::Hash> ReusableDeduplicator<T> {
+impl<T: Eq + std::hash::Hash + ?Sized> ReusableDeduplicator<T> {
     /// Create a new `ReusableDeduplicator`.
     pub fn new() -> Self {
         Self {
@@ -50,7 +50,7 @@ impl<T: Eq + std::hash::Hash> ReusableDeduplicator<T> {
 pub struct Deduplicated<'seen, 'item, I, T>
 where
     I: Iterator<Item = &'item T>,
-    T: Eq + std::hash::Hash + 'item,
+    T: Eq + std::hash::Hash + ?Sized + 'item,
 {
     iter: I,
     seen: &'seen mut PrehashedHashSet<u64>,
@@ -59,7 +59,7 @@ where
 impl<'seen, 'item, I, T> Iterator for Deduplicated<'seen, 'item, I, T>
 where
     I: Iterator<Item = &'item T>,
-    T: Eq + std::hash::Hash + 'item,
+    T: Eq + std::hash::Hash + ?Sized + 'item,
 {
     type Item = &'item T;
 

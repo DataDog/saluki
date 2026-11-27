@@ -37,7 +37,7 @@ impl Serialize for AgentContextSnapshotRecord<'_> {
         record.serialize_field("Host", context.host().unwrap_or_default())?;
         record.serialize_field("Type", agent_metric_type(entry.metric_type()))?;
         record.serialize_field("TaggerTags", &BorrowedTags(context.origin_tags()))?;
-        record.serialize_field("MetricTags", &BorrowedTags(context.tags()))?;
+        record.serialize_field("MetricTags", &context.tags())?;
         record.serialize_field("NoIndex", &false)?;
         record.serialize_field("Source", &AGENT_METRIC_SOURCE_DOGSTATSD)?;
         record.end()

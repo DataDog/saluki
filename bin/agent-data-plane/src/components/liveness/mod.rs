@@ -132,7 +132,7 @@ impl Liveness {
     fn metric_at_with_container_tags(&self, timestamp: u64, container_tags: Option<&SharedTagSet>) -> Event {
         let context = match container_tags {
             Some(container_tags) => {
-                let mut tags = self.metric_context.tags().clone();
+                let mut tags = self.metric_context.tags().to_mutable();
                 tags.merge_shared(container_tags);
                 self.metric_context.with_tags(tags)
             }

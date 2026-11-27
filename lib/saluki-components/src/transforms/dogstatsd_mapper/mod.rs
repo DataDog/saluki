@@ -256,7 +256,7 @@ impl MetricMapper {
         // chain them together for our call into `resolve_with_origin_tags`, avoiding any allocations... but we need
         // some supporting work on the `TagSet` side to make it possible.
 
-        let metric_name = context.name();
+        let metric_name = context.name().as_ref();
         let tags = context.tags();
         let origin_tags = context.origin_tags();
         // TODO: If host-bearing remaps show measurable allocation overhead, preserve the context's underlying host
@@ -269,7 +269,7 @@ impl MetricMapper {
                 return match cached {
                     None => None,
                     Some(result) => {
-                        let mut merged_tags = tags.clone();
+                        let mut merged_tags = tags.to_mutable();
                         merged_tags.merge_shared(&result.extra_tags);
 
                         self.context_resolver.resolve_with_optional_host_and_origin_tags(
@@ -310,7 +310,7 @@ impl MetricMapper {
                     // Freeze the tags here so they can be shared / cached.
                     let extra_tags = extra_tags.into_shared();
 
-                    let mut merged_tags = tags.clone();
+                    let mut merged_tags = tags.to_mutable();
                     merged_tags.merge_shared(&extra_tags);
 
                     let resolved = self.context_resolver.resolve_with_optional_host_and_origin_tags(
@@ -322,9 +322,9 @@ impl MetricMapper {
 
                     if let Some(cache) = &self.cache {
                         cache.insert(
-                            metric_name.clone(),
+                            metric_name.into(),
                             Some(CachedMapResult {
-                                name: resolved.name().clone(),
+                                name: resolved.name().into(),
                                 extra_tags,
                             }),
                         );
@@ -336,7 +336,7 @@ impl MetricMapper {
 
         // We also cache "negative" results -- no match for this metric in the configured profiles -- to save ourselves some work.
         if let Some(cache) = &self.cache {
-            cache.insert(metric_name.clone(), None);
+            cache.insert(metric_name.into(), None);
         }
         None
     }
@@ -348,9 +348,7 @@ impl MetricMapper {
 
     #[cfg(test)]
     fn cache_contains(&self, metric_name: &str) -> bool {
-        self.cache
-            .as_ref()
-            .is_some_and(|c| c.get(&MetaString::from(metric_name)).is_some())
+        self.cache.as_ref().is_some_and(|c| c.get(metric_name).is_some())
     }
 }
 

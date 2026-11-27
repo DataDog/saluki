@@ -164,8 +164,8 @@ impl Destination for DogStatsDStats {
                             for metric in events.into_events::<Metric>() {
                                 let context = metric.context();
                                 let new_context = ContextNoOrigin {
-                                    name: context.name().clone(),
-                                    tags: context.tags().clone(),
+                                    name: context.name().into(),
+                                    tags: context.tags().to_mutable(),
                                 };
 
                                 let timestamp = get_coarse_unix_timestamp();

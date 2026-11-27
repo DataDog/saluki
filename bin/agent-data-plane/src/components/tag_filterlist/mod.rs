@@ -43,7 +43,7 @@ use saluki_core::{
             },
             EventType,
         },
-        tags::Tag,
+        tags::{Tag, TagStr},
     },
     observability::ComponentMetricsExt,
     topology::OutputDefinition,
@@ -565,7 +565,7 @@ impl Transform for TagFilterlist {
 
 #[inline]
 fn filter_tag(
-    tag: &Tag, key_filter: Option<&CompiledKeyFilter>, value_filter: Option<&CompiledValuePrefixFilter>,
+    tag: &TagStr, key_filter: Option<&CompiledKeyFilter>, value_filter: Option<&CompiledValuePrefixFilter>,
     key_buf: &mut TagBuf, replacements: &mut Vec<Tag>,
 ) -> bool {
     let key = tag_key(tag.as_str(), key_buf);
@@ -584,7 +584,6 @@ fn filter_tag(
         return true;
     };
 
-    let tag = tag.as_borrowed();
     let Some(value) = tag.value() else {
         return true;
     };
@@ -594,7 +593,7 @@ fn filter_tag(
 
     match &allowlist.on_miss {
         CompiledMismatchAction::Remove => false,
-        CompiledMismatchAction::Replace(replacement) if replacement.as_str() == tag.as_ref() => true,
+        CompiledMismatchAction::Replace(replacement) if replacement.as_str() == tag.as_str() => true,
         CompiledMismatchAction::Replace(replacement) => {
             replacements.push(replacement.clone());
             false
@@ -618,7 +617,7 @@ fn filter_tag(
 pub fn filter_metric_tags(
     metric: &mut Metric, state: &mut TagSetMutViewState, filters: &CompiledFilters,
 ) -> FilterMetricTagsOutcome {
-    let metric_name = metric.context().name().clone();
+    let metric_name = metric.context().name();
     let key_filter = filters.key_filter(metric_name.as_ref());
     let value_filter = filters.value_prefix_filters.get(metric_name.as_ref());
     if key_filter.is_none() && value_filter.is_none() {

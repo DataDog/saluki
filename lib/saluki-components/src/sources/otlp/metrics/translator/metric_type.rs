@@ -82,7 +82,7 @@ mod tests {
     };
     use saluki_core::data_model::{
         event::metric::MetricValues,
-        tags::{SharedTagSet, Tag},
+        tags::{SharedTagSet, TagStr},
     };
 
     use super::super::tests::{nanos_from_seconds, string_attribute};
@@ -129,7 +129,7 @@ mod tests {
         );
         assert_eq!(
             metric.context().tags().get_single_tag(METRIC_TYPE_ATTRIBUTE_KEY),
-            Some(&Tag::from("datadog.metric.as_type:RaTe"))
+            Some(TagStr::new("datadog.metric.as_type:RaTe"))
         );
     }
 

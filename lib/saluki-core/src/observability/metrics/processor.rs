@@ -65,10 +65,10 @@ impl TelemetryProcessor {
         let mut groups: BTreeMap<MetaString, BTreeMap<Vec<MetaString>, AggregatedMetricValue>> = BTreeMap::new();
 
         state.visit_metrics(|context, value| {
-            let mut tags: Vec<MetaString> = context.tags().into_iter().map(|tag| tag.clone().into_inner()).collect();
+            let mut tags: Vec<MetaString> = context.tags().into_iter().map(MetaString::from).collect();
             tags.sort();
 
-            let series = groups.entry(context.name().clone()).or_default();
+            let series = groups.entry(context.name().into()).or_default();
             series
                 .entry(tags)
                 .and_modify(|existing| existing.merge(value))

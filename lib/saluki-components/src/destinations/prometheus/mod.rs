@@ -20,7 +20,7 @@ use saluki_core::{
             metric::{context::Context, Histogram, Metric, MetricValues},
             EventType,
         },
-        tags::Tag,
+        tags::{Tag, TagStr},
     },
     runtime,
 };
@@ -288,7 +288,7 @@ async fn build_scrape_response(
 #[allow(clippy::mutable_key_type)]
 async fn regenerate_payload(
     metrics: &FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>, payload: &Arc<RwLock<String>>,
-    renderer: &mut PrometheusRenderer, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+    renderer: &mut PrometheusRenderer, tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
 ) {
     renderer.clear();
 
@@ -314,7 +314,7 @@ async fn regenerate_payload(
 
 fn write_metrics(
     renderer: &mut PrometheusRenderer, prom_context: &PrometheusContext,
-    contexts: &FastIndexMap<Context, PrometheusValue>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+    contexts: &FastIndexMap<Context, PrometheusValue>, tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
 ) -> bool {
     if contexts.is_empty() {
         debug!("No contexts for metric '{}'. Skipping.", prom_context.metric_name);
@@ -352,19 +352,21 @@ fn write_metrics(
 
 /// Collects tags from a context into key-value pairs suitable for the renderer.
 fn collect_tags<'a>(
-    context: &'a Context, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+    context: &'a Context, tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
 ) -> Option<Vec<(&'a str, &'a str)>> {
     let mut labels = Vec::new();
     let mut total_bytes = 0;
 
-    let chained_tags = context.tags().into_iter().chain(context.origin_tags());
+    let chained_tags = context
+        .tags()
+        .into_iter()
+        .chain(context.origin_tags().into_iter().map(Tag::as_tag_str));
     let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
 
     for tag in deduplicated_tags {
-        let tag_name = tag.name();
-        let tag_value = match tag.value() {
-            Some(value) => value,
-            None => {
+        let (tag_name, tag_value) = match tag.name_and_value() {
+            (name, Some(value)) => (name, value),
+            (_, None) => {
                 debug!("Skipping bare tag.");
                 continue;
             }
