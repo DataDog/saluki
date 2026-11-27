@@ -492,6 +492,43 @@ fn build_context_cache(capacity: usize) -> Cache<Context, Option<(Context, usize
         .build()
 }
 
+fn matching_filters<'a>(
+    filters: &'a CompiledFilters, name: &str,
+) -> Option<(Option<&'a CompiledKeyFilter>, Option<&'a CompiledValuePrefixFilter>)> {
+    let key_filter = filters.key_filter(name);
+    let value_filter = filters.value_prefix_filters.get(name);
+    (key_filter.is_some() || value_filter.is_some()).then_some((key_filter, value_filter))
+}
+
+impl TagFilterlist {
+    fn filter_cached(&self, metric: &mut Metric, state: &mut TagSetMutViewState) -> FilterMetricTagsOutcome {
+        if let Some(cached) = self.context_cache.get(metric.context()) {
+            return match cached {
+                None => FilterMetricTagsOutcome::NoChange,
+                Some((filtered_context, removed_tags)) => {
+                    *metric.context_mut() = filtered_context;
+                    FilterMetricTagsOutcome::Modified { removed_tags }
+                }
+            };
+        }
+
+        let Some((key_filter, value_filter)) = matching_filters(&self.filters, metric.context().name().as_ref()) else {
+            return FilterMetricTagsOutcome::RuleMiss;
+        };
+
+        let original_context = metric.context().clone();
+        let removed_tags = apply_metric_tag_filters(metric, state, key_filter, value_filter);
+        if removed_tags == 0 {
+            self.context_cache.insert(original_context, None);
+            FilterMetricTagsOutcome::NoChange
+        } else {
+            self.context_cache
+                .insert(original_context, Some((metric.context().clone(), removed_tags)));
+            FilterMetricTagsOutcome::Modified { removed_tags }
+        }
+    }
+}
+
 #[async_trait]
 impl Transform for TagFilterlist {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
@@ -511,33 +548,7 @@ impl Transform for TagFilterlist {
                             if metric.values().is_sketch()
                                 || matches!(metric.values(), MetricValues::Counter(_))
                             {
-                                let original_context = metric.context().clone();
-
-                                if let Some(cached) = self.context_cache.get(&original_context) {
-                                    match cached {
-                                        None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
-                                        Some((filtered_ctx, removed_tags)) => {
-                                            *metric.context_mut() = filtered_ctx;
-                                            self.telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags });
-                                        }
-                                    }
-                                } else {
-                                    let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
-                                    self.telemetry.record(outcome);
-
-                                    match outcome {
-                                        FilterMetricTagsOutcome::RuleMiss => {}
-                                        FilterMetricTagsOutcome::NoChange => {
-                                            self.context_cache.insert(original_context, None);
-                                        }
-                                        FilterMetricTagsOutcome::Modified { removed_tags } => {
-                                            self.context_cache.insert(
-                                                original_context,
-                                                Some((metric.context().clone(), removed_tags)),
-                                            );
-                                        }
-                                    }
-                                }
+                                self.telemetry.record(self.filter_cached(metric, &mut view_state));
                             }
                         }
                         if let Err(e) = context.dispatcher().dispatch(events).await {
@@ -610,20 +621,12 @@ fn filter_tag(
 /// leave bare tags unchanged; empty-string values are processed and can be retained by including `""` in the configured
 /// values.
 ///
-/// The caller applies this function only to counters and sketch-backed metrics. If the metric name doesn't have an
-/// exact whole-tag rule or a matching value-rule prefix, the metric is unchanged. If filtering would not change any
-/// tags, the metric context is left untouched (zero allocations).
-#[inline]
-pub fn filter_metric_tags(
-    metric: &mut Metric, state: &mut TagSetMutViewState, filters: &CompiledFilters,
-) -> FilterMetricTagsOutcome {
-    let metric_name = metric.context().name();
-    let key_filter = filters.key_filter(metric_name.as_ref());
-    let value_filter = filters.value_prefix_filters.get(metric_name.as_ref());
-    if key_filter.is_none() && value_filter.is_none() {
-        return FilterMetricTagsOutcome::RuleMiss;
-    }
-
+/// The caller applies this function only to counters and sketch-backed metrics with a matching rule. If no tags
+/// change, the context is left untouched.
+fn apply_metric_tag_filters(
+    metric: &mut Metric, state: &mut TagSetMutViewState, key_filter: Option<&CompiledKeyFilter>,
+    value_filter: Option<&CompiledValuePrefixFilter>,
+) -> usize {
     let mut key_buf = TagBuf::new();
     let mut tag_replacements = Vec::new();
     let mut origin_tag_replacements = Vec::new();
@@ -651,12 +654,19 @@ pub fn filter_metric_tags(
         });
     }
 
-    if total_removed == 0 {
-        FilterMetricTagsOutcome::NoChange
-    } else {
-        FilterMetricTagsOutcome::Modified {
-            removed_tags: total_removed,
-        }
+    total_removed
+}
+
+#[cfg(test)]
+fn filter_metric_tags(
+    metric: &mut Metric, state: &mut TagSetMutViewState, filters: &CompiledFilters,
+) -> FilterMetricTagsOutcome {
+    let Some((key_filter, value_filter)) = matching_filters(filters, metric.context().name().as_ref()) else {
+        return FilterMetricTagsOutcome::RuleMiss;
+    };
+    match apply_metric_tag_filters(metric, state, key_filter, value_filter) {
+        0 => FilterMetricTagsOutcome::NoChange,
+        removed_tags => FilterMetricTagsOutcome::Modified { removed_tags },
     }
 }
 
@@ -1757,6 +1767,7 @@ mod tests {
         // of the distribution. The counter and the repeated distribution hit the cache entry created by the first
         // distribution.
         let tags = &["host:h1", "env:prod", "customer_id:long-tail"];
+        let unmatched = Context::from_static_parts("other.latency", tags);
         control
             .send_events([
                 Event::Metric(Metric::distribution(
@@ -1769,6 +1780,7 @@ mod tests {
                     Context::from_static_parts("svc.latency", tags),
                     1.0,
                 )),
+                Event::Metric(Metric::counter(unmatched, 1.0)),
             ])
             .await;
 
@@ -1784,7 +1796,7 @@ mod tests {
             .collect();
 
         // Nothing is dropped by the transform; order is preserved.
-        assert_eq!(dispatched.len(), 4, "all four metrics should be dispatched");
+        assert_eq!(dispatched.len(), 5);
 
         let sorted_tags = |metric: &Metric| {
             let mut names: Vec<String> = metric
@@ -1814,6 +1826,12 @@ mod tests {
         // Repeated distribution -> filtered via the cache-hit branch, identical to the first distribution.
         assert!(dispatched[3].values().is_sketch());
         assert_eq!(sorted_tags(&dispatched[3]), vec!["customer_id:other", "env:prod"]);
+        // A counter whose name matches no rule passes through unchanged.
+        assert_eq!(dispatched[4].context().name().as_ref(), "other.latency");
+        assert_eq!(
+            sorted_tags(&dispatched[4]),
+            vec!["customer_id:long-tail", "env:prod", "host:h1"]
+        );
     }
 
     mod pipeline_integration {
