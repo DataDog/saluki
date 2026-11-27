@@ -506,5 +506,32 @@
 <a href=#506 id=506 data-nosnippet>506</a>        <span class="kw">let </span>result = apply_datadog_env_vars(<span class="kw-2">&amp;mut </span>base, vars(<span class="kw-2">&amp;</span>[(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>)]), <span class="bool-val">true</span>);
 <a href=#507 id=507 data-nosnippet>507</a>        <span class="macro">assert!</span>(result.is_err());
 <a href=#508 id=508 data-nosnippet>508</a>    }
-<a href=#509 id=509 data-nosnippet>509</a>}
+<a href=#509 id=509 data-nosnippet>509</a>
+<a href=#510 id=510 data-nosnippet>510</a>    <span class="attr">#[test]
+<a href=#511 id=511 data-nosnippet>511</a>    </span><span class="kw">fn </span>logs_processing_rules_that_are_not_a_json_array_stay_a_string() {
+<a href=#512 id=512 data-nosnippet>512</a>        <span class="comment">// Like the Agent, keep the string, so that the rules are only rejected when the logs pipeline starts. A single
+<a href=#513 id=513 data-nosnippet>513</a>        // rule as a JSON object is a string too: unlike a single map in YAML, the Agent doesn't read it as a rule.
+<a href=#514 id=514 data-nosnippet>514</a>        </span><span class="kw">for </span>raw <span class="kw">in </span>[
+<a href=#515 id=515 data-nosnippet>515</a>            <span class="string">"- type: exclude_at_match"</span>,
+<a href=#516 id=516 data-nosnippet>516</a>            <span class="string">r#"{"type": "exclude_truncated", "name": "x"}"#</span>,
+<a href=#517 id=517 data-nosnippet>517</a>        ] {
+<a href=#518 id=518 data-nosnippet>518</a>            <span class="kw">let </span><span class="kw-2">mut </span>base = <span class="macro">json!</span>({});
+<a href=#519 id=519 data-nosnippet>519</a>            apply_datadog_env_vars(<span class="kw-2">&amp;mut </span>base, vars(<span class="kw-2">&amp;</span>[(<span class="string">"DD_LOGS_CONFIG_PROCESSING_RULES"</span>, raw)]), <span class="bool-val">true</span>)
+<a href=#520 id=520 data-nosnippet>520</a>                .expect(<span class="string">"a string that isn't a JSON array is kept"</span>);
+<a href=#521 id=521 data-nosnippet>521</a>            <span class="macro">assert_eq!</span>(base, <span class="macro">json!</span>({ <span class="string">"logs_config"</span>: { <span class="string">"processing_rules"</span>: raw } }), <span class="string">"{raw}"</span>);
+<a href=#522 id=522 data-nosnippet>522</a>        }
+<a href=#523 id=523 data-nosnippet>523</a>
+<a href=#524 id=524 data-nosnippet>524</a>        <span class="kw">let </span><span class="kw-2">mut </span>base = <span class="macro">json!</span>({});
+<a href=#525 id=525 data-nosnippet>525</a>        apply_datadog_env_vars(
+<a href=#526 id=526 data-nosnippet>526</a>            <span class="kw-2">&amp;mut </span>base,
+<a href=#527 id=527 data-nosnippet>527</a>            vars(<span class="kw-2">&amp;</span>[(<span class="string">"DD_LOGS_CONFIG_PROCESSING_RULES"</span>, <span class="string">r#"[{"type": "exclude_truncated"}]"#</span>)]),
+<a href=#528 id=528 data-nosnippet>528</a>            <span class="bool-val">true</span>,
+<a href=#529 id=529 data-nosnippet>529</a>        )
+<a href=#530 id=530 data-nosnippet>530</a>        .expect(<span class="string">"a JSON array is decoded"</span>);
+<a href=#531 id=531 data-nosnippet>531</a>        <span class="macro">assert_eq!</span>(
+<a href=#532 id=532 data-nosnippet>532</a>            base,
+<a href=#533 id=533 data-nosnippet>533</a>            <span class="macro">json!</span>({ <span class="string">"logs_config"</span>: { <span class="string">"processing_rules"</span>: [{ <span class="string">"type"</span>: <span class="string">"exclude_truncated" </span>}] } })
+<a href=#534 id=534 data-nosnippet>534</a>        );
+<a href=#535 id=535 data-nosnippet>535</a>    }
+<a href=#536 id=536 data-nosnippet>536</a>}
 </code></pre></div></section></main></body></html>

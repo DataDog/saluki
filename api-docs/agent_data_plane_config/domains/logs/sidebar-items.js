@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ProcessingRule","ProcessingRules"],"struct":["Domain","InvalidProcessingRules","ProcessingRuleEntry","SourceMatch"]};
