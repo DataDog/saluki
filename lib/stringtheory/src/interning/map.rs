@@ -525,7 +525,7 @@ impl Drop for Chunk {
 ///
 /// A shard owns its chunks. It does not own its capacity budget: it reserves chunk capacity from
 /// `SharedState::unallocated`, and only `SharedState::intern_under_pressure` returns that capacity.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ShardState {
     /// Active entries in this shard, keyed by string.
     ///
@@ -543,6 +543,9 @@ struct ShardState {
     ///
     /// This counts bytes across all chunks. It excludes reclaimed entries and unoccupied space.
     len_bytes: usize,
+
+    /// The shared count of empty chunk bytes, also kept alive by shards with outstanding handles.
+    reclaimable: Arc<AtomicUsize>,
 }
 
 impl ShardState {
@@ -574,6 +577,9 @@ impl ShardState {
         let len = unsafe { header.as_ref() }.entry_len();
         self.len_bytes -= len;
         chunk.add_reclaimed(ReclaimedEntry::new(chunk.offset_of(header), len));
+        if chunk.offset == 0 {
+            self.reclaimable.fetch_add(chunk.capacity, Release);
+        }
     }
 
     /// Looks up `s`, or writes it into an existing chunk of this shard.
@@ -589,7 +595,12 @@ impl ShardState {
 
         // Check the end of the chunk list first, where appends usually have room.
         for (index, chunk) in self.chunks.iter_mut().enumerate().rev() {
-            if let Some(header) = chunk.as_mut().and_then(|chunk| chunk.try_intern(s, required)) {
+            let Some(chunk) = chunk else { continue };
+            let was_empty = chunk.offset == 0;
+            if let Some(header) = chunk.try_intern(s, required) {
+                if was_empty {
+                    self.reclaimable.fetch_sub(chunk.capacity, Release);
+                }
                 self.insert_entry(header, index);
                 return Some(header);
             }
@@ -652,6 +663,9 @@ struct SharedState {
 
     /// The capacity, in bytes, that is not yet allocated to any chunk.
     unallocated: AtomicUsize,
+
+    /// The total capacity, in bytes, of allocated chunks with no live entries.
+    reclaimable: Arc<AtomicUsize>,
 }
 
 impl SharedState {
@@ -691,12 +705,21 @@ impl SharedState {
 
     /// Interns `s` after the fast path found no room, by freeing empty chunks in all shards.
     ///
-    /// The method locks every shard, so it is slow and blocks all other interning. The caller must not hold a shard
-    /// lock. First, it retries `try_intern_in_chunks` in the target shard. Next, it frees empty chunks until at least
-    /// `required` bytes are unallocated. If enough capacity is free, it allocates a new chunk in the target shard.
-    /// Returns `None` if the interner cannot make room for the string.
+    /// Returns `None` without locking if the capacity counters show too little room. This check can miss concurrent
+    /// capacity changes. Otherwise, the method locks every shard, so the caller must not hold a shard lock. It retries
+    /// `try_intern_in_chunks` in the target shard, then frees empty chunks to allocate a new chunk if there is enough
+    /// capacity.
     #[cold]
     fn intern_under_pressure(&self, index: usize, s: &str, required: usize) -> Option<NonNull<EntryHeader>> {
+        if self
+            .unallocated
+            .load(Acquire)
+            .saturating_add(self.reclaimable.load(Acquire))
+            < required
+        {
+            return None;
+        }
+
         // Acquire locks in the same order as the metrics methods. Another thread may have inserted the string or made
         // room after we released the original lock.
         let mut shards = self.lock_shards();
@@ -714,6 +737,7 @@ impl SharedState {
                 }
                 if let Some(chunk) = slot.as_ref().filter(|chunk| chunk.offset == 0) {
                     available += chunk.capacity;
+                    self.reclaimable.fetch_sub(chunk.capacity, Release);
                     *slot = None;
                 }
             }
@@ -805,13 +829,22 @@ impl GenericMapInterner {
         assert!(capacity <= isize::MAX as usize, "capacity exceeds allocation limits");
 
         let shard_count = (capacity / (2 * CHUNK_SIZE)).clamp(1, MAX_SHARDS);
+        let reclaimable = Arc::new(AtomicUsize::new(0));
         Self {
             state: Arc::new(SharedState {
                 shards: (0..shard_count)
-                    .map(|_| Arc::new(Mutex::new(ShardState::default())))
+                    .map(|_| {
+                        Arc::new(Mutex::new(ShardState {
+                            entries: HashMap::new(),
+                            chunks: Vec::new(),
+                            len_bytes: 0,
+                            reclaimable: Arc::clone(&reclaimable),
+                        }))
+                    })
                     .collect(),
                 capacity,
                 unallocated: AtomicUsize::new(capacity & !(HEADER_ALIGN - 1)),
+                reclaimable,
             }),
         }
     }
@@ -1008,14 +1041,45 @@ mod tests {
         assert_eq!(allocated_chunks(&interner), (0, 0));
 
         // An empty small chunk must not prevent the full-size entry from fitting.
+        let reclaimable = &interner.state.reclaimable;
         drop(interner.try_intern("small").unwrap());
+        assert_eq!(reclaimable.load(Acquire), CHUNK_SIZE);
+        let reused = interner.try_intern("small").unwrap();
+        assert_eq!(reclaimable.load(Acquire), 0);
+        drop(reused);
+        assert_eq!(reclaimable.load(Acquire), CHUNK_SIZE);
+
         let large = interner.try_intern(&large).unwrap();
+        assert_eq!(reclaimable.load(Acquire), 0);
         assert_eq!(interner.capacity_bytes(), capacity);
         assert_eq!(interner.len_bytes(), 2 * CHUNK_SIZE);
         assert_eq!(allocated_chunks(&interner), (1, 2 * CHUNK_SIZE));
         assert!(interner.try_intern("").is_none());
         drop(large);
         assert_eq!(interner.len_bytes(), 0);
+    }
+
+    #[test]
+    fn full_interner_miss_does_not_lock_unrelated_shards() {
+        let capacity = 4 * CHUNK_SIZE;
+        let interner = create_interner(capacity);
+        let large = "x".repeat(capacity - HEADER_LEN);
+        let _full = interner.try_intern(&large).unwrap();
+        let target = interner.state.shard_index(&large);
+        let unrelated = &interner.state.shards[1 - target];
+
+        // Make taking this lock fail immediately rather than risking a deadlock in the test.
+        assert!(std::panic::catch_unwind(|| {
+            let _guard = unrelated.lock().unwrap();
+            panic!("poison the unrelated shard");
+        })
+        .is_err());
+        assert!(interner.try_intern(&large).is_some());
+        let distinct = (0..)
+            .map(|n| n.to_string())
+            .find(|s| interner.state.shard_index(s) == target)
+            .unwrap();
+        assert!(interner.try_intern(&distinct).is_none());
     }
 
     #[test]
