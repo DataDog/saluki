@@ -33,6 +33,12 @@ const SHARD_BITS: u32 = 4;
 /// The number of shards in each table.
 const SHARD_COUNT: usize = 1 << SHARD_BITS;
 
+/// Rotates the shard bits out of the hash table's seven-bit control tag.
+#[inline]
+fn table_hash(hash: u64) -> u64 {
+    hash.rotate_left(4)
+}
+
 /// The number of usable record bytes in one chunk.
 ///
 /// A shard allocates its storage one 16 KiB chunk at a time, on demand. A table with few symbols allocates few chunks.
@@ -426,7 +432,8 @@ impl Drop for Shard {
 /// - Bits 60 to 63 select the shard.
 /// - Bits 0 to 7 select the witness slot.
 /// - Bits 32 to 37 select the `resident` filter word, and bits 0 to 5 and 16 to 21 select its two bits.
-/// - The shard index uses the full hash to place and find the entry.
+/// - The shard's hash table uses the full hash rotated left by 4 bits. On 64-bit targets, its seven-bit control tag
+///   uses original bits 53 to 59, not the bits that select the shard.
 ///
 /// ## Lock-free reads
 ///
@@ -545,13 +552,14 @@ impl SymbolTable {
         }
         let (index, bits) = Shard::filter_location(hash);
         let filter = &shard.resident[index];
+        let index_hash = table_hash(hash);
         let matches = |offset: &u32| {
             // SAFETY: The shard lock keeps all indexed records live during lookup.
             unsafe { Record::value(shard.record(*offset as usize)) == value }
         };
         if filter.load(Ordering::Acquire) & bits == bits {
             let state = shard.state.read().unwrap();
-            if let Some(&offset) = state.entries.find(hash, matches) {
+            if let Some(&offset) = state.entries.find(index_hash, matches) {
                 let id = Self::make_id(shard_index, offset as usize);
                 // SAFETY: The shard read lock prevents the record's last reference from dropping.
                 unsafe { self.retain(id) };
@@ -563,7 +571,7 @@ impl SymbolTable {
         }
 
         let mut state = shard.state.write().unwrap();
-        if let Some(&offset) = state.entries.find(hash, matches) {
+        if let Some(&offset) = state.entries.find(index_hash, matches) {
             let id = Self::make_id(shard_index, offset as usize);
             // SAFETY: The shard write lock prevents the record's last reference from dropping.
             unsafe { self.retain(id) };
@@ -582,10 +590,9 @@ impl SymbolTable {
                 .cast::<u8>()
                 .copy_from_nonoverlapping(value.as_ptr(), value.len());
         }
-        state.entries.insert_unique(hash, offset as u32, |&offset| {
+        state.entries.insert_unique(index_hash, offset as u32, |&offset| {
             // SAFETY: Only live records are in the index.
-            self.hasher
-                .hash_one(unsafe { Record::value(shard.record(offset as usize)) })
+            table_hash(self.hasher.hash_one(unsafe { Record::value(shard.record(offset as usize)) }))
         });
         state.used += size;
         filter.fetch_or(bits, Ordering::Release);
@@ -666,7 +673,7 @@ impl SymbolTable {
         let size = Record::allocation_size(value.len());
         state
             .entries
-            .find_entry(hash, |entry| *entry as usize == offset)
+            .find_entry(table_hash(hash), |entry| *entry as usize == offset)
             .unwrap()
             .remove();
         state.used -= size;
@@ -834,6 +841,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn concurrent_intern_and_final_drop_reclaim_the_record() {
         let value = "deployment:shared-during-churn";
         let table = SymbolTable::new(64 * 1024);
