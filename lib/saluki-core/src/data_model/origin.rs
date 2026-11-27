@@ -297,21 +297,26 @@ where
 /// - `pu-<pod_uid>`: The pod UID associated with the entity.
 /// - `cn-<container_name>`: The container name associated with the entity.
 ///
+/// The pod UID and container name identify the container, because container names are unique within a pod. The parser
+/// accepts the `it-` key but discards its value, so a client that sends the wrong init flag still resolves to the
+/// container. This matches the Datadog Agent, which ignores the flag since
+/// [`3d38f15a20b`](https://github.com/DataDog/datadog-agent/commit/3d38f15a20b5ba41c8bdbc94e0184ebd2f3bdd79). Native
+/// sidecars (init containers with `restartPolicy: Always`) depend on this: OTLP clients don't usually know that they
+/// run in an init container.
+///
 /// For parsing external data strings without allocating, see [`RawExternalData`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ExternalData {
     pod_uid: MetaString,
     container_name: MetaString,
-    init_container: bool,
 }
 
 impl ExternalData {
     /// Creates a new `ExternalData` instance.
-    pub fn new(pod_uid: MetaString, container_name: MetaString, init_container: bool) -> Self {
+    pub fn new(pod_uid: MetaString, container_name: MetaString) -> Self {
         Self {
             pod_uid,
             container_name,
-            init_container,
         }
     }
 
@@ -324,18 +329,12 @@ impl ExternalData {
     pub fn container_name(&self) -> &MetaString {
         &self.container_name
     }
-
-    /// Returns `true` if the entity is an init container.
-    pub fn is_init_container(&self) -> bool {
-        self.init_container
-    }
 }
 
 impl std::hash::Hash for ExternalData {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (*self.pod_uid).hash(state);
         (*self.container_name).hash(state);
-        self.init_container.hash(state);
     }
 }
 
@@ -347,7 +346,6 @@ impl std::hash::Hash for ExternalData {
 pub struct RawExternalData<'a> {
     pod_uid: &'a str,
     container_name: &'a str,
-    init_container: bool,
 }
 
 impl<'a> RawExternalData<'a> {
@@ -362,7 +360,6 @@ impl<'a> RawExternalData<'a> {
         let mut data = Self {
             pod_uid: "",
             container_name: "",
-            init_container: false,
         };
 
         let parts = raw.split(',');
@@ -378,7 +375,8 @@ impl<'a> RawExternalData<'a> {
             let value = &part[3..];
 
             match key {
-                "it-" => data.init_container = value.parse().unwrap_or(false),
+                // Clients can send the init flag, but the pod UID and container name identify the container.
+                "it-" => {}
                 "pu-" => data.pod_uid = value,
                 "cn-" => data.container_name = value,
                 _ => {
@@ -396,25 +394,18 @@ impl std::hash::Hash for RawExternalData<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.pod_uid.hash(state);
         self.container_name.hash(state);
-        self.init_container.hash(state);
     }
 }
 
 impl fmt::Display for RawExternalData<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "pu-{},cn-{},it-{}",
-            self.pod_uid, self.container_name, self.init_container
-        )
+        write!(f, "pu-{},cn-{}", self.pod_uid, self.container_name)
     }
 }
 
 impl Equivalent<ExternalData> for RawExternalData<'_> {
     fn equivalent(&self, other: &ExternalData) -> bool {
-        self.pod_uid == &*other.pod_uid
-            && self.container_name == &*other.container_name
-            && self.init_container == other.init_container
+        self.pod_uid == &*other.pod_uid && self.container_name == &*other.container_name
     }
 }
 
@@ -431,12 +422,11 @@ mod tests {
 
     proptest! {
         #[test]
-        fn property_test_identical_hash_impls(pod_uid in "[a-z0-9]{1,64}", container_name in "[a-z0-9]{1,64}", init_container in any::<bool>()) {
-            let external_data = ExternalData::new(pod_uid.clone().into(), container_name.clone().into(), init_container);
+        fn property_test_identical_hash_impls(pod_uid in "[a-z0-9]{1,64}", container_name in "[a-z0-9]{1,64}") {
+            let external_data = ExternalData::new(pod_uid.clone().into(), container_name.clone().into());
             let external_data_ref = RawExternalData {
                 pod_uid: &pod_uid,
                 container_name: &container_name,
-                init_container,
             };
 
             let mut hasher = DefaultHasher::new();
@@ -452,38 +442,49 @@ mod tests {
     }
 
     /// Parses `raw` and projects the result into a comparable tuple of its fields.
-    fn parsed(raw: &str) -> Option<(&str, &str, bool)> {
-        RawExternalData::try_from_str(raw).map(|data| (data.pod_uid, data.container_name, data.init_container))
+    fn parsed(raw: &str) -> Option<(&str, &str)> {
+        RawExternalData::try_from_str(raw).map(|data| (data.pod_uid, data.container_name))
     }
 
     #[test]
     fn try_from_str_parses_valid_and_malformed_external_data() {
-        let cases: &[(&str, Option<(&str, &str, bool)>)] = &[
+        let cases: &[(&str, Option<(&str, &str)>)] = &[
             // Empty input is the only case that yields no data at all.
             ("", None),
-            // All three keys, in any order, populate their respective fields.
-            ("pu-podid,cn-web,it-true", Some(("podid", "web", true))),
-            ("it-false,cn-web,pu-podid", Some(("podid", "web", false))),
-            // A single key populates just that field; the others keep their empty/false defaults.
-            ("pu-podid", Some(("podid", "", false))),
-            ("cn-web", Some(("", "web", false))),
-            // The `it-` value is parsed as a bool; any non-bool value falls back to false.
-            ("it-true", Some(("", "", true))),
-            ("it-notabool", Some(("", "", false))),
+            // All three keys, in any order, populate the pod UID and container name.
+            ("pu-podid,cn-web,it-true", Some(("podid", "web"))),
+            ("it-false,cn-web,pu-podid", Some(("podid", "web"))),
+            // A single key populates just that field; the other keeps its empty default.
+            ("pu-podid", Some(("podid", ""))),
+            ("cn-web", Some(("", "web"))),
+            // The `it-` key is accepted, but its value is discarded.
+            ("it-true", Some(("", ""))),
+            ("it-notabool", Some(("", ""))),
             // Parts shorter than four characters (no room for an `xx-` prefix plus a value) are
             // skipped, but a non-empty input still parses to defaults rather than `None`.
-            ("x", Some(("", "", false))),
-            ("abc", Some(("", "", false))),
+            ("x", Some(("", ""))),
+            ("abc", Some(("", ""))),
             // Unknown keys are ignored.
-            ("zz-whatever", Some(("", "", false))),
+            ("zz-whatever", Some(("", ""))),
             // Short/garbage parts are skipped while valid parts are still parsed.
-            ("pu-podid,z,cn-web", Some(("podid", "web", false))),
+            ("pu-podid,z,cn-web", Some(("podid", "web"))),
             // Duplicate keys: the last occurrence wins.
-            ("pu-first,pu-second", Some(("second", "", false))),
+            ("pu-first,pu-second", Some(("second", ""))),
         ];
 
         for (raw, expected) in cases {
             assert_eq!(parsed(raw), *expected, "input: {raw:?}");
+        }
+    }
+
+    #[test]
+    fn init_flag_does_not_change_external_data_identity() {
+        let stored = ExternalData::new("podid".into(), "web".into());
+
+        for raw in ["pu-podid,cn-web,it-true", "pu-podid,cn-web,it-false", "pu-podid,cn-web"] {
+            let data = RawExternalData::try_from_str(raw).unwrap();
+            assert!(data.equivalent(&stored), "input: {raw:?}");
+            assert_eq!(hash_single_fast(&data), hash_single_fast(&stored), "input: {raw:?}");
         }
     }
 
@@ -502,14 +503,14 @@ mod tests {
     }
 
     #[test]
-    fn raw_external_data_display_lists_all_fields() {
+    fn raw_external_data_display_lists_identifying_fields() {
         let data = RawExternalData::try_from_str("pu-podid,cn-web,it-true").unwrap();
-        assert_eq!(data.to_string(), "pu-podid,cn-web,it-true");
+        assert_eq!(data.to_string(), "pu-podid,cn-web");
     }
 
     #[test]
     fn raw_external_data_display_round_trips_through_parser() {
-        // Display always emits the canonical `pu-,cn-,it-` form, which the parser accepts verbatim,
+        // Display always emits the canonical `pu-,cn-` form, which the parser accepts verbatim,
         // regardless of the field order in the original input.
         let original = RawExternalData::try_from_str("cn-web,pu-podid,it-true").unwrap();
         let rendered = original.to_string();
@@ -542,10 +543,7 @@ mod tests {
 
         let mut external_data = RawOrigin::default();
         external_data.set_external_data("pu-podid,cn-web,it-true");
-        assert_eq!(
-            external_data.to_string(),
-            "RawOrigin(external_data=pu-podid,cn-web,it-true)"
-        );
+        assert_eq!(external_data.to_string(), "RawOrigin(external_data=pu-podid,cn-web)");
     }
 
     #[test]

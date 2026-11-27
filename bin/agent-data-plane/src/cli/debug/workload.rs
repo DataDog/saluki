@@ -68,7 +68,6 @@ struct EntityTagsEntry<'a> {
 struct ExternalDataEntry<'a> {
     pod_uid: &'a str,
     container_name: &'a str,
-    init_container: bool,
     container_id: &'a str,
 }
 
@@ -155,7 +154,6 @@ async fn dump_external_data(api_client: &mut DataPlaneAPIClient, cmd: ExternalDa
     static CONTAINER_ID: LazyLock<ColoredString> = LazyLock::new(|| "Container ID".bold());
     static POD_UID: LazyLock<ColoredString> = LazyLock::new(|| "Pod UID".bold());
     static CONTAINER_NAME: LazyLock<ColoredString> = LazyLock::new(|| "Container Name".bold());
-    static INIT_CONTAINER: LazyLock<ColoredString> = LazyLock::new(|| "Init Container".bold());
 
     let raw_external_data = api_client.workload_external_data().await?;
 
@@ -178,7 +176,6 @@ async fn dump_external_data(api_client: &mut DataPlaneAPIClient, cmd: ExternalDa
         );
         println!("  {}: {}", *POD_UID, external_data_entry.pod_uid.italic().green());
         println!("  {}: {}", *CONTAINER_NAME, external_data_entry.container_name.italic());
-        println!("  {}: {}", *INIT_CONTAINER, external_data_entry.init_container);
 
         println!();
     }

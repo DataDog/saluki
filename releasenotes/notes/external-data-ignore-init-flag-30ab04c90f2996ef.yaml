@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Origin detection with External Data now finds the container whatever the init container flag says, as
+    the Datadog Agent does. Before, a client that sent the wrong flag, such as a native sidecar (an init
+    container with ``restartPolicy: Always``) that reported itself as a regular container, got no container
+    tags.

@@ -223,12 +223,12 @@ mod tests {
     }
 
     fn build_external_data(
-        pod_uid: &str, container_name: &str, container_id: &EntityId, init_container: bool,
+        pod_uid: &str, container_name: &str, container_id: &EntityId,
     ) -> (String, ExternalData, ResolvedExternalData) {
-        let raw_external_data = format!("pu-{},cn-{},it-{}", pod_uid, container_name, init_container);
+        let raw_external_data = format!("pu-{},cn-{}", pod_uid, container_name);
         let pod_entity_id = EntityId::from_pod_uid(pod_uid).unwrap();
 
-        let external_data = ExternalData::new(pod_uid.into(), container_name.into(), init_container);
+        let external_data = ExternalData::new(pod_uid.into(), container_name.into());
         let resolved_external_data = ResolvedExternalData::new(pod_entity_id.clone(), container_id.clone());
         (raw_external_data, external_data, resolved_external_data)
     }
@@ -239,7 +239,7 @@ mod tests {
         let resolver = store.resolver();
 
         let container_eid = entity_id_container("abcdef");
-        let (raw_ed, ed, resolved_ed) = build_external_data("1234", "redis", &container_eid, false);
+        let (raw_ed, ed, resolved_ed) = build_external_data("1234", "redis", &container_eid);
         let ed_ref = RawExternalData::try_from_str(&raw_ed).unwrap();
 
         // Make sure we don't get anything back for this External Data yet:
@@ -258,6 +258,29 @@ mod tests {
     }
 
     #[test]
+    fn resolves_regardless_of_init_flag() {
+        let mut store = ExternalDataStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        let resolver = store.resolver();
+
+        let container_eid = entity_id_container("abcdef");
+        let (_, ed, resolved_ed) = build_external_data("1234", "sidecar", &container_eid);
+        store.process_operation(MetadataOperation::attach_external_data(container_eid, ed));
+
+        for raw_ed in [
+            "pu-1234,cn-sidecar,it-true",
+            "pu-1234,cn-sidecar,it-false",
+            "pu-1234,cn-sidecar",
+        ] {
+            let ed_ref = RawExternalData::try_from_str(raw_ed).unwrap();
+            assert_eq!(
+                resolver.resolve(&ed_ref).as_ref(),
+                Some(&resolved_ed),
+                "input: {raw_ed:?}"
+            );
+        }
+    }
+
+    #[test]
     fn obeys_entity_limit() {
         // Create our `ExternalDataStore` with a reduced entity limit of two:
         let mut store = ExternalDataStore::with_entity_limit(NonZeroUsize::new(2).unwrap());
@@ -267,9 +290,9 @@ mod tests {
         let container_eid1 = entity_id_container("abcdef");
         let container_eid2 = entity_id_container("bcdefg");
         let container_eid3 = entity_id_container("cdefgh");
-        let (raw_ed1, ed1, resolved_ed1) = build_external_data("1234", "redis", &container_eid1, false);
-        let (raw_ed2, ed2, resolved_ed2) = build_external_data("1234", "init-volume", &container_eid2, true);
-        let (raw_ed3, ed3, resolved_ed3) = build_external_data("1234", "chmod-dir", &container_eid3, true);
+        let (raw_ed1, ed1, resolved_ed1) = build_external_data("1234", "redis", &container_eid1);
+        let (raw_ed2, ed2, resolved_ed2) = build_external_data("1234", "init-volume", &container_eid2);
+        let (raw_ed3, ed3, resolved_ed3) = build_external_data("1234", "chmod-dir", &container_eid3);
         let ed_ref1 = RawExternalData::try_from_str(&raw_ed1).unwrap();
         let ed_ref2 = RawExternalData::try_from_str(&raw_ed2).unwrap();
         let ed_ref3 = RawExternalData::try_from_str(&raw_ed3).unwrap();

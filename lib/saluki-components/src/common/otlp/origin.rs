@@ -20,7 +20,6 @@ const K8S_NODE_NAME: &str = "k8s.node.name";
 const K8S_POD_UID: &str = "k8s.pod.uid";
 const PROCESS_PID: &str = "process.pid";
 const CGROUP_INODE: &str = "datadog.container.cgroup_inode";
-const INIT_CONTAINER: &str = "datadog.container.is_init";
 const DATADOG_CONTAINER_ID: &str = "datadog.container_id";
 
 /// Recognized OTLP resource attributes used for entity tag resolution.
@@ -37,7 +36,6 @@ struct OtlpResourceAttributes<'a> {
     k8s_pod_uid: Option<&'a str>,
     process_pid: Option<i64>,
     cgroup_inode: Option<i64>,
-    init_container: Option<bool>,
 }
 
 impl<'a> OtlpResourceAttributes<'a> {
@@ -61,7 +59,6 @@ impl<'a> OtlpResourceAttributes<'a> {
                 (K8S_POD_UID, Value::StringValue(value)) => extracted.k8s_pod_uid = Some(value),
                 (PROCESS_PID, Value::IntValue(value)) => extracted.process_pid = Some(*value),
                 (CGROUP_INODE, Value::IntValue(value)) => extracted.cgroup_inode = Some(*value),
-                (INIT_CONTAINER, Value::BoolValue(value)) => extracted.init_container = Some(*value),
                 _ => {}
             }
         }
@@ -167,8 +164,7 @@ impl OtlpOriginTagResolver {
     fn container_entity_from_external_data(&self, attributes: &OtlpResourceAttributes<'_>) -> Option<EntityId> {
         let pod_uid = attributes.k8s_pod_uid?;
         let container_name = attributes.k8s_container_name?;
-        let init_container = attributes.init_container.unwrap_or(false);
-        let external_data = format!("pu-{pod_uid},cn-{container_name},it-{init_container}");
+        let external_data = format!("pu-{pod_uid},cn-{container_name}");
 
         let mut origin = RawOrigin::default();
         origin.set_external_data(external_data.as_str());
