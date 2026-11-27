@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Size the dedicated data-plane worker pool for the available CPUs, between two and eight workers.
