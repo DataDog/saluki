@@ -1,0 +1,5 @@
+fixes:
+  - |
+    Use the OS hostname, with a warning, when the hostname request to the Datadog Agent fails.
+    ADP doesn't use the OS hostname on Linux outside the initial UTS namespace,
+    or when ``vsock_addr`` is set.

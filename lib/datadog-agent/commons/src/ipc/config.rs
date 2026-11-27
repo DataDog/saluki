@@ -151,6 +151,22 @@ impl RemoteAgentClientConfiguration {
             .expect("a URI built from `localhost` or an IP address and a u16 port is valid")
     }
 
+    /// Returns `true` if the Core Agent is known to run on the same host as this process.
+    ///
+    /// Returns `false` for every vsock peer, including `local`: the context identifier alone doesn't prove that the
+    /// peer shares this host. Anything the local operating system reports, such as its hostname, can then describe a
+    /// different machine.
+    pub fn core_agent_is_local(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.vsock_cid.is_none()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            true
+        }
+    }
+
     /// Returns the vsock address to use for connecting to the IPC endpoint, if configured.
     #[cfg(target_os = "linux")]
     pub fn vsock_addr(&self) -> Option<tokio_vsock::VsockAddr> {
@@ -404,5 +420,20 @@ mod tests {
         let addr = config.vsock_addr().expect("vsock address should be configured");
         assert_eq!(addr.cid(), 2);
         assert_eq!(addr.port(), 5001);
+    }
+
+    #[test]
+    fn core_agent_is_local_only_without_a_vsock_peer() {
+        let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
+        let config = RemoteAgentClientConfiguration::from_parts("localhost", 5001, auth, 4 * 1024 * 1024, "").unwrap();
+        assert!(config.core_agent_is_local());
+
+        #[cfg(target_os = "linux")]
+        for value in ["host", "hypervisor", "local"] {
+            let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
+            let config =
+                RemoteAgentClientConfiguration::from_parts("localhost", 5001, auth, 4 * 1024 * 1024, value).unwrap();
+            assert!(!config.core_agent_is_local(), "input: {value:?}");
+        }
     }
 }
