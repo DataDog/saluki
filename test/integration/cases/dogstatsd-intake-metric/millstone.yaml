@@ -2,8 +2,8 @@ seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 7
 target: "{{ self.connections.target.url }}"
 # Two datagrams of the same counter, which ADP aggregates into one rate.
 volume: 2
-# Pause after each datagram. The sender and ADP run in separate containers, and a burst of datagrams sent before the
-# network has resolved the peer's address can lose one.
+# Pause after each datagram. On Windows, where the sender and ADP run in separate containers, one datagram of a burst
+# was lost once. The cause is not confirmed: address resolution of the peer is the suspect.
 send_delay_us: 250000
 corpus:
   size: 1

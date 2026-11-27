@@ -322,8 +322,9 @@ container, the participant also collects the input capture of the baseline sende
 **`millstone-sender`.** It runs one `millstone` that sends to one target and exits. Use it when a case checks that
 traffic reaches the product, and not that two products agree. The case supplies `millstone.yaml` with `template: true`.
 The `target` of the file must be one reference to a field of the `target` connection, and panoramic checks it.
-The case sets the payload and the `volume` in the file. The participant has one process, `main`, so `exits_with` on `main` checks that the sender finished. The `millstone`
-type does not fit such a case: it starts a comparison sender and a baseline sender, and needs two targets.
+The case sets the payload and the `volume` in the file. The participant has one process, `main`, so `exits_with` on
+`main` checks that the sender finished. The `millstone` type does not fit such a case: it starts a comparison sender and
+a baseline sender, and needs two targets.
 
 **Where the tools run.** `datadog-intake` and `millstone` are the same executables on every OS, and a case names none of
 them. Each participant type picks them for the realization:
