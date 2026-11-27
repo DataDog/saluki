@@ -310,17 +310,7 @@ impl CaseSources {
     /// Reads `from`, relative to `dir`, once.
     fn read(&mut self, dir: &Path, suite: &Path, from: &Path, template: bool) -> Result<(), String> {
         if !self.sources.contains_key(from) {
-            let path = dir.join(from);
-            let real = path
-                .canonicalize()
-                .map_err(|e| format!("file source '{}' cannot be read: {}", from.display(), e))?;
-            if !real.starts_with(suite) {
-                return Err(format!(
-                    "file source '{}' is outside the suite directory {}",
-                    from.display(),
-                    suite.display()
-                ));
-            }
+            let real = resolve(dir, suite, from)?;
             let source = if real.is_dir() {
                 let mut files = Vec::new();
                 read_dir(suite, &real, &real, &mut vec![real.clone()], &mut files)
@@ -341,6 +331,22 @@ impl CaseSources {
         }
         Ok(())
     }
+}
+
+/// The real path of the source `from`, relative to the case directory `dir`, which must be inside `suite`.
+fn resolve(dir: &Path, suite: &Path, from: &Path) -> Result<PathBuf, String> {
+    let real = dir
+        .join(from)
+        .canonicalize()
+        .map_err(|e| format!("file source '{}' cannot be read: {}", from.display(), e))?;
+    if !real.starts_with(suite) {
+        return Err(format!(
+            "file source '{}' is outside the suite directory {}",
+            from.display(),
+            suite.display()
+        ));
+    }
+    Ok(real)
 }
 
 /// Reads every file under `dir` into `out`, keyed by its path relative to `root`.

@@ -460,13 +460,7 @@ impl<'a> Handle<'a> {
     async fn published_get(
         &self, endpoint: &str, tls: bool, path: &str, skip_verify: bool, read_body: bool, limit: Duration,
     ) -> Result<HttpResponse, HandleError> {
-        let port = self.realized.host_port(endpoint).ok_or_else(|| {
-            HandleError::Software(format!(
-                "endpoint '{}' of participant '{}' has no published port: the participant had exited by the time its \
-                 ports were read",
-                endpoint, self.name
-            ))
-        })?;
+        let port = self.runner_port(endpoint)?;
         // One client of each kind for the process, so requests share their connection pools.
         static VERIFYING: OnceLock<reqwest::Client> = OnceLock::new();
         static NOT_VERIFYING: OnceLock<reqwest::Client> = OnceLock::new();
@@ -483,27 +477,40 @@ impl<'a> Handle<'a> {
                 cell.get_or_init(|| client)
             }
         };
-        let failed = |e: reqwest::Error| {
-            if e.is_builder() {
-                harness(e)
-            } else {
-                HandleError::Software(format!("{:#}", GenericError::from(e)))
-            }
-        };
         let scheme = if tls { "https" } else { "http" };
         let response = client
             .get(format!("{}://127.0.0.1:{}{}", scheme, port, path))
             .timeout(limit)
             .send()
             .await
-            .map_err(failed)?;
+            .map_err(request_failed)?;
         let status = response.status().as_u16();
         let body = if read_body {
-            response.bytes().await.map_err(failed)?.to_vec()
+            response.bytes().await.map_err(request_failed)?.to_vec()
         } else {
             Vec::new()
         };
         Ok(HttpResponse { status, body })
+    }
+
+    /// The port on the runner's loopback address that reaches `endpoint`: published, forwarded, or the endpoint's own.
+    fn runner_port(&self, endpoint: &str) -> Result<u16, HandleError> {
+        self.realized.host_port(endpoint).ok_or_else(|| {
+            HandleError::Software(format!(
+                "endpoint '{}' of participant '{}' has no published port: the participant had exited by the time its \
+                 ports were read",
+                endpoint, self.name
+            ))
+        })
+    }
+}
+
+/// Blames a request that failed on the client's setup, or else on the software.
+fn request_failed(error: reqwest::Error) -> HandleError {
+    if error.is_builder() {
+        harness(error)
+    } else {
+        HandleError::Software(format!("{:#}", GenericError::from(error)))
     }
 }
 
