@@ -1,0 +1,4 @@
+enhancements:
+  - |
+    Reuse drained event buffer allocations for later batches from the same component, reducing allocator churn
+    during large aggregation flushes.

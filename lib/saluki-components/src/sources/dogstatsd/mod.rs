@@ -1516,10 +1516,11 @@ async fn acquire_io_buffer(io_buffer_pool: &ElasticObjectPool<BytesBuffer>) -> B
 
 impl DogStatsDDecoder {
     fn new(source_context: SourceContext, context: DecoderContext) -> Self {
+        let event_buffer = source_context.dispatcher().event_buffer_manager();
         Self {
             source_context,
             context,
-            event_buffer: EventBufferManager::default(),
+            event_buffer,
         }
     }
 

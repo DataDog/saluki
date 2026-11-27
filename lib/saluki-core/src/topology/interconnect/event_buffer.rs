@@ -3,17 +3,75 @@ use std::{
     collections::{vec_deque, VecDeque},
     fmt,
     iter::{self, FusedIterator},
+    mem,
+    sync::{Arc, Mutex},
 };
 
 use crate::{
     data_model::event::{metric::Metric, Event, EventKind, EventType},
-    topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
+    topology::interconnect::{
+        dispatcher::{make_buffer, BufferFactory, DispatchBuffer},
+        Dispatchable,
+    },
 };
 
-#[derive(Clone)]
 enum Backing {
     Metrics(VecDeque<Metric>),
     Mixed(VecDeque<Event>),
+}
+
+impl Default for Backing {
+    fn default() -> Self {
+        Self::Metrics(VecDeque::new())
+    }
+}
+
+// Retain at most one empty allocation of each kind per producing component.
+#[derive(Default)]
+pub(super) struct EventBufferPool<const N: usize> {
+    metrics: Mutex<VecDeque<Metric>>,
+    mixed: Mutex<VecDeque<Event>>,
+}
+
+impl<const N: usize> EventBufferPool<N> {
+    pub(super) fn buffer(self: &Arc<Self>) -> FixedSizeEventBuffer<N> {
+        let mut buffer = FixedSizeEventBuffer::default();
+        buffer.recycler = Some(Arc::clone(self));
+        buffer
+    }
+}
+
+fn take_backing<T, const N: usize>(slot: Option<&Mutex<VecDeque<T>>>) -> VecDeque<T> {
+    if let Some(slot) = slot {
+        let mut idle = slot.lock().unwrap();
+        if idle.capacity() != 0 {
+            return mem::take(&mut *idle);
+        }
+    }
+    VecDeque::with_capacity(N)
+}
+
+fn recycle_backing<T, const N: usize>(slot: &Mutex<VecDeque<T>>, mut backing: VecDeque<T>) {
+    if backing.capacity() != N || N == 0 {
+        return;
+    }
+    backing.clear();
+    let mut idle = slot.lock().unwrap();
+    if idle.capacity() == 0 {
+        *idle = backing;
+    }
+}
+
+fn clone_backing<T: Clone, const N: usize>(backing: &VecDeque<T>, slot: Option<&Mutex<VecDeque<T>>>) -> VecDeque<T> {
+    // Partial clones only need space for their contents.
+    match slot {
+        Some(slot) if backing.len() == N && N != 0 => {
+            let mut clone = take_backing::<_, N>(Some(slot));
+            clone.extend(backing.iter().cloned());
+            clone
+        }
+        _ => backing.clone(),
+    }
 }
 
 fn metric_ref<T: EventKind>(metric: &Metric) -> Option<&T> {
@@ -30,10 +88,10 @@ fn into_metric_kind<T: EventKind>(metric: Metric) -> Option<T> {
 }
 
 /// A fixed-size event buffer.
-#[derive(Clone)]
 pub struct FixedSizeEventBuffer<const N: usize> {
     events: Backing,
     seen_event_types: EventType,
+    recycler: Option<Arc<EventBufferPool<N>>>,
 }
 
 impl<const N: usize> FixedSizeEventBuffer<N> {
@@ -85,20 +143,26 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         match (&mut self.events, event) {
             (Backing::Metrics(metrics), Event::Metric(metric)) => {
                 if metrics.capacity() == 0 {
-                    *metrics = VecDeque::with_capacity(N);
+                    *metrics = take_backing::<_, N>(self.recycler.as_ref().map(|pool| &pool.metrics));
                 }
                 metrics.push_back(metric);
                 self.seen_event_types = EventType::Metric;
             }
             (Backing::Mixed(events), Event::Metric(metric)) if events.is_empty() => {
-                let mut metrics = VecDeque::with_capacity(N);
+                let mut metrics = take_backing::<_, N>(self.recycler.as_ref().map(|pool| &pool.metrics));
+                if let Some(pool) = &self.recycler {
+                    recycle_backing::<_, N>(&pool.mixed, mem::take(events));
+                }
                 metrics.push_back(metric);
                 self.events = Backing::Metrics(metrics);
                 self.seen_event_types = EventType::Metric;
             }
             (Backing::Metrics(metrics), event) => {
-                let mut events = VecDeque::with_capacity(N);
+                let mut events = take_backing::<_, N>(self.recycler.as_ref().map(|pool| &pool.mixed));
                 events.extend(metrics.drain(..).map(Event::Metric));
+                if let Some(pool) = &self.recycler {
+                    recycle_backing::<_, N>(&pool.metrics, mem::take(metrics));
+                }
                 self.seen_event_types |= event.event_type();
                 events.push_back(event);
                 self.events = Backing::Mixed(events);
@@ -253,8 +317,40 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
 impl<const N: usize> Default for FixedSizeEventBuffer<N> {
     fn default() -> Self {
         Self {
-            events: Backing::Metrics(VecDeque::new()),
+            events: Backing::default(),
             seen_event_types: EventType::none(),
+            recycler: None,
+        }
+    }
+}
+
+impl<const N: usize> Clone for FixedSizeEventBuffer<N> {
+    fn clone(&self) -> Self {
+        let events = match &self.events {
+            Backing::Metrics(metrics) => Backing::Metrics(clone_backing::<_, N>(
+                metrics,
+                self.recycler.as_ref().map(|pool| &pool.metrics),
+            )),
+            Backing::Mixed(events) => Backing::Mixed(clone_backing::<_, N>(
+                events,
+                self.recycler.as_ref().map(|pool| &pool.mixed),
+            )),
+        };
+        Self {
+            events,
+            seen_event_types: self.seen_event_types,
+            recycler: self.recycler.clone(),
+        }
+    }
+}
+
+impl<const N: usize> Drop for FixedSizeEventBuffer<N> {
+    fn drop(&mut self) {
+        if let Some(pool) = &self.recycler {
+            match mem::take(&mut self.events) {
+                Backing::Metrics(metrics) => recycle_backing::<_, N>(&pool.metrics, metrics),
+                Backing::Mixed(events) => recycle_backing::<_, N>(&pool.mixed, events),
+            }
         }
     }
 }
@@ -343,21 +439,30 @@ impl<const N: usize> FusedIterator for EventBufferIntoIter<N> {}
 #[derive(Default)]
 pub struct EventBufferManager<const N: usize> {
     current: Option<FixedSizeEventBuffer<N>>,
+    buffer_factory: Option<BufferFactory<FixedSizeEventBuffer<N>>>,
 }
 
 impl<const N: usize> EventBufferManager<N> {
+    pub(super) fn with_factory(buffer_factory: Option<BufferFactory<FixedSizeEventBuffer<N>>>) -> Self {
+        Self {
+            current: None,
+            buffer_factory,
+        }
+    }
+
     /// Attempts to push an event into the current event buffer.
     ///
     /// If the event buffer is full, it's replaced with a new event buffer before pushing the event, and `Some(buffer)`
     /// is returned containing the old event buffer. Otherwise, `None` is returned.
     pub fn try_push(&mut self, event: Event) -> Option<FixedSizeEventBuffer<N>> {
-        let buffer = self.current.get_or_insert_default();
+        let factory = || make_buffer(self.buffer_factory.as_ref());
+        let buffer = self.current.get_or_insert_with(factory);
 
         match buffer.try_push(event) {
             Some(event) => {
                 // Our current buffer is full, so replace it with a new buffer before trying to write the event
                 // into it again, and return the old buffer to the caller.
-                let old_buffer = std::mem::take(buffer);
+                let old_buffer = mem::replace(buffer, factory());
 
                 if buffer.try_push(event).is_some() {
                     panic!("New event buffer is unexpectedly full.")
@@ -384,6 +489,37 @@ mod tests {
         eventd::EventD,
         service_check::{CheckStatus, ServiceCheck},
     };
+
+    #[test]
+    fn recycler_retains_at_most_one_empty_allocation_of_each_kind() {
+        fn backing_ptr(buffer: &FixedSizeEventBuffer<1>) -> *const () {
+            match &buffer.events {
+                Backing::Metrics(metrics) => std::ptr::from_ref(metrics.front().unwrap()).cast(),
+                Backing::Mixed(events) => std::ptr::from_ref(events.front().unwrap()).cast(),
+            }
+        }
+
+        let pool = Arc::new(EventBufferPool::<1>::default());
+        for event in [
+            Event::Metric(Metric::counter("metric", 1.0)),
+            Event::EventD(EventD::new("event", "event")),
+        ] {
+            let mut first = pool.buffer();
+            let mut second = pool.buffer();
+            assert!(first.try_push(event.clone()).is_none());
+            assert!(second.try_push(event.clone()).is_none());
+            let first_ptr = backing_ptr(&first);
+            assert_ne!(backing_ptr(&second), first_ptr);
+
+            drop(first);
+            drop(second);
+
+            let mut next = pool.buffer();
+            assert!(next.try_push(event.clone()).is_none());
+            assert_eq!(backing_ptr(&next), first_ptr);
+            assert_eq!(next.into_iter().collect::<Vec<_>>(), [event]);
+        }
+    }
 
     /// Builds a buffer holding metrics `a` and `c`, and events `b` and `d`, interleaved in that order.
     fn mixed_buffer() -> FixedSizeEventBuffer<8> {

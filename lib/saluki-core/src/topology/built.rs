@@ -554,7 +554,7 @@ impl ComponentInterconnects {
             ComponentType::Source | ComponentType::Decoder | ComponentType::Transform => self
                 .events_dispatchers
                 .entry(component_context.clone())
-                .or_insert_with(|| EventsDispatcher::new(component_context)),
+                .or_insert_with(|| EventsDispatcher::with_event_buffer_pool(component_context)),
             _ => {
                 panic!("Only sources, decoders, and transforms can dispatch events to downstream components.")
             }
