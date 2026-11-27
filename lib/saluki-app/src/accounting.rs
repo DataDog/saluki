@@ -94,7 +94,7 @@ pub fn initialize_memory_bounds(
 
     let limiter_grant = match configuration.memory_mode {
         MemoryMode::Disabled => {
-            info!("Memory bounds verification and cooperative backpressure disabled.");
+            info!("Memory limiting disabled.");
             None
         }
         mode @ (MemoryMode::Permissive | MemoryMode::Strict) => match configured_grant {
