@@ -107,6 +107,7 @@ dependencies = [
  "snafu",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -339,4 +339,105 @@ mod tests {
             .check_compatibility(&pipelines(&[Pipeline::DogStatsD]))
             .expect("unclassified keys are not incompatibilities");
     }
+
+    /// The Datadog Agent's ADP pre-flight check reads the compatibility findings from ADP's JSON log.
+    /// It identifies them by the log target, and it reads the setting from the `key` field. See
+    /// `comp/dataplane/preflightmode/impl/capture.go` in the Datadog Agent. If you change the target
+    /// or the field name, you must update the pre-flight check too, and then update this test.
+    #[test]
+    fn findings_are_logged_with_the_target_and_key_field_the_agent_preflight_reads() {
+        let system = system_with(json!({
+            "min_tls_version": "tlsv1.3",
+            "dogstatsd_telemetry_enabled_listener_id": true,
+            "heroku_dyno": true,
+        }));
+
+        let (result, events) =
+            super::log_capture::capture(|| system.check_compatibility(&pipelines(&[Pipeline::DogStatsD])));
+        result.expect_err("the high-severity key stops ADP");
+
+        let mut findings: Vec<_> = events
+            .iter()
+            .filter(|event| event.fields.contains_key("key"))
+            .map(|event| (event.level, event.target.as_str(), event.fields["key"].as_str()))
+            .collect();
+        findings.sort();
+        assert_eq!(
+            findings,
+            vec![
+                (
+                    tracing::Level::ERROR,
+                    "agent_data_plane_config_system::compatibility",
+                    "heroku_dyno"
+                ),
+                (
+                    tracing::Level::WARN,
+                    "agent_data_plane_config_system::compatibility",
+                    "dogstatsd_telemetry_enabled_listener_id"
+                ),
+                (
+                    tracing::Level::WARN,
+                    "agent_data_plane_config_system::compatibility",
+                    "min_tls_version"
+                ),
+            ]
+        );
+    }
+}
+
+/// Captures the tracing events that a closure emits, with each event's target, level, and fields.
+#[cfg(test)]
+mod log_capture {
+    use std::collections::HashMap;
+    use std::fmt;
+    use std::sync::{Arc, Mutex};
+
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Level, Subscriber};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
+
+    /// One captured event. Each field value is its `Display` form, or its `Debug` form when the field
+    /// has no `Display` form.
+    pub(super) struct CapturedEvent {
+        pub(super) target: String,
+        pub(super) level: Level,
+        pub(super) fields: HashMap<String, String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CaptureLayer(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    impl<S: Subscriber> Layer<S> for CaptureLayer {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let mut fields = FieldValues::default();
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(CapturedEvent {
+                target: event.metadata().target().to_string(),
+                level: *event.metadata().level(),
+                fields: fields.0,
+            });
+        }
+    }
+
+    #[derive(Default)]
+    struct FieldValues(HashMap<String, String>);
+
+    impl Visit for FieldValues {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+            self.0.insert(field.name().to_string(), format!("{value:?}"));
+        }
+    }
+
+    /// Runs `f` with a subscriber that captures every event, and returns `f`'s result and the events.
+    pub(super) fn capture<T>(f: impl FnOnce() -> T) -> (T, Vec<CapturedEvent>) {
+        let layer = CaptureLayer::default();
+        let subscriber = tracing_subscriber::registry().with(layer.clone());
+        let result = tracing::subscriber::with_default(subscriber, f);
+        let events = std::mem::take(&mut *layer.0.lock().unwrap());
+        (result, events)
+    }
 }

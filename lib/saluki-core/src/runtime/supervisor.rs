@@ -2734,6 +2734,140 @@ mod tests {
         assert_eq!(start_count.load(Ordering::SeqCst), 0);
     }
 
+    /// Log consumers outside this crate identify supervisor events by their target, and they read
+    /// the child's name from the `worker_name` field. For a child of a nested supervisor, the name
+    /// is the path of child names joined with `/`. A change to the target, the field name, or the
+    /// name format is a breaking change for those consumers. Update them before you update this
+    /// test.
+    #[tokio::test]
+    async fn init_failures_are_logged_with_the_target_and_worker_name_field() {
+        let (logs, _guard) = log_capture::set_default();
+
+        let mut direct = Supervisor::new("direct-sup").unwrap();
+        direct.add_worker(MockWorker::init_failure("bad-worker"));
+        let (_tx, rx) = oneshot::channel::<()>();
+        let result = timeout(Duration::from_secs(2), direct.run_with_shutdown(rx))
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(SupervisorError::FailedToInitialize { .. })));
+
+        let mut inner = Supervisor::new("inner-sup").unwrap();
+        inner.add_worker(MockWorker::init_failure("bad-worker"));
+        let mut outer = Supervisor::new("outer-sup").unwrap();
+        outer.add_worker(inner);
+        let (_tx, rx) = oneshot::channel::<()>();
+        let result = timeout(Duration::from_secs(2), outer.run_with_shutdown(rx))
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(SupervisorError::FailedToInitialize { .. })));
+
+        let failures: Vec<_> = logs
+            .events()
+            .into_iter()
+            .filter(|event| event.message.starts_with("Child process failed to initialize"))
+            .map(|event| {
+                (
+                    event.level,
+                    event.target,
+                    event.fields.get("supervisor_id").cloned().unwrap_or_default(),
+                    event.fields.get("worker_name").cloned().unwrap_or_default(),
+                )
+            })
+            .collect();
+        let target = "saluki_core::runtime::supervisor".to_string();
+        assert_eq!(
+            failures,
+            vec![
+                (
+                    tracing::Level::ERROR,
+                    target.clone(),
+                    "direct-sup".to_string(),
+                    "bad-worker".to_string()
+                ),
+                (
+                    tracing::Level::ERROR,
+                    target.clone(),
+                    "inner-sup".to_string(),
+                    "bad-worker".to_string()
+                ),
+                (
+                    tracing::Level::ERROR,
+                    target,
+                    "outer-sup".to_string(),
+                    "inner-sup/bad-worker".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// Captures the tracing events emitted on the current thread, with each event's target, level,
+    /// message, and fields.
+    mod log_capture {
+        use std::collections::HashMap;
+        use std::fmt;
+        use std::sync::{Arc, Mutex};
+
+        use tracing::field::{Field, Visit};
+        use tracing::subscriber::DefaultGuard;
+        use tracing::{Event, Level, Subscriber};
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
+
+        /// One captured event. Each field value is its `Display` form, or its `Debug` form when the
+        /// field has no `Display` form. The `message` field is in `message`, not in `fields`.
+        pub(super) struct CapturedEvent {
+            pub(super) target: String,
+            pub(super) level: Level,
+            pub(super) message: String,
+            pub(super) fields: HashMap<String, String>,
+        }
+
+        #[derive(Clone, Default)]
+        pub(super) struct CapturedLogs(Arc<Mutex<Vec<CapturedEvent>>>);
+
+        impl CapturedLogs {
+            /// Removes and returns the events captured so far.
+            pub(super) fn events(&self) -> Vec<CapturedEvent> {
+                std::mem::take(&mut *self.0.lock().unwrap())
+            }
+        }
+
+        impl<S: Subscriber> Layer<S> for CapturedLogs {
+            fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+                let mut fields = FieldValues::default();
+                event.record(&mut fields);
+                let message = fields.0.remove("message").unwrap_or_default();
+                self.0.lock().unwrap().push(CapturedEvent {
+                    target: event.metadata().target().to_string(),
+                    level: *event.metadata().level(),
+                    message,
+                    fields: fields.0,
+                });
+            }
+        }
+
+        #[derive(Default)]
+        struct FieldValues(HashMap<String, String>);
+
+        impl Visit for FieldValues {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.0.insert(field.name().to_string(), value.to_string());
+            }
+
+            fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+                self.0.insert(field.name().to_string(), format!("{value:?}"));
+            }
+        }
+
+        /// Captures events on the current thread until the returned guard is dropped. A
+        /// current-thread Tokio runtime runs its tasks on this thread, so their events are captured
+        /// too.
+        pub(super) fn set_default() -> (CapturedLogs, DefaultGuard) {
+            let logs = CapturedLogs::default();
+            let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(logs.clone()));
+            (logs, guard)
+        }
+    }
+
     // -- Shutdown responsiveness tests -----------------------------------------------------
 
     #[tokio::test]
