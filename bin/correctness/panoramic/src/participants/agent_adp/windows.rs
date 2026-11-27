@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use super::datadog_agent::{self, With};
+use super::datadog_agent::{self, With, SHARED_ENV_INTAKE};
 use super::{add_endpoints, own_ip, program_command, reject_adp_keys, DOGSTATSD_UDP_STARTED, OPERATIONS};
 use crate::core::participant::SpecContext;
 use crate::core::spec::{Evidence, FileSource, FileSpec, ParticipantSpec};
@@ -96,6 +96,7 @@ pub(super) fn spec(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
             datadog_agent::supervised_process("adp", "data-plane", "adp.log")?,
             datadog_agent::supervised_process("agent", "agent", "agent.log")?,
         ]),
+        consumes: BTreeMap::from([("intake", SHARED_ENV_INTAKE)]),
         commands: BTreeMap::from([
             ("adp".to_string(), program_command(ADP_COMMAND)?),
             ("agent".to_string(), program_command(AGENT_COMMAND)?),

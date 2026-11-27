@@ -8,18 +8,31 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::time::Instant;
 
+use super::tools;
 use crate::core::handle::{Handle, HandleError};
-use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext, LINUX_CONTAINER_OR_POD};
+use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{Address, EndpointSpec, Evidence, ParticipantSpec, Protocol, DEFAULT_PROCESS};
 use crate::core::step::{Operation, Uses};
 use crate::core::template::Template;
 
-/// The tools image the `Makefile` builds, and the intake's path in it.
-const IMAGE: &str = "saluki-images/correctness-tools:latest";
-const PROGRAM: &str = "/usr/local/bin/datadog-intake";
+/// The intake's executable, in the tools image or built for the host.
+const BINARY: &str = "datadog-intake";
+
+/// The address the listeners bind. A host process runs on the runner's own network, so it binds loopback, which is all
+/// ADP and the harness use. A container binds every interface of its case network.
+fn bind_host(enclosure: Enclosure) -> &'static str {
+    match enclosure {
+        Enclosure::HostProcessGroup => "127.0.0.1",
+        _ => "0.0.0.0",
+    }
+}
 
 /// How much of an error answer's body a failed dump quotes, so a large error page does not flood the case record.
 const MAX_ERROR_BODY_BYTES: usize = 512;
+
+/// The intake's line once its HTTP listener is bound. Only the process the case started writes it to that process's
+/// output, so a host process that waits for it knows it owns the port.
+const HTTP_STARTED: &str = "datadog-intake started: listening on";
 
 /// The intake's line once its socket for forwarded DogStatsD packets is bound.
 const FORWARD_CAPTURE_STARTED: &str = "DogStatsD forwarding capture started: listening on";
@@ -37,7 +50,12 @@ impl ParticipantType for DatadogIntake {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        LINUX_CONTAINER_OR_POD
+        &[
+            (Os::Linux, Enclosure::LinuxContainer),
+            (Os::Linux, Enclosure::KubernetesPod),
+            (Os::Macos, Enclosure::HostProcessGroup),
+            (Os::Windows, Enclosure::WindowsContainer),
+        ]
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
@@ -47,17 +65,28 @@ impl ParticipantType for DatadogIntake {
             address: Address::Port(port),
             tls: false,
         };
+        let host = bind_host(cx.realization.enclosure);
+        // A host process listens at a fixed port on the runner, which another process could hold. Only the process the
+        // case started writes the line that says its listener is bound, so waiting for it shows that this intake owns
+        // the port. A container has its own network, so the intake's own answer is enough.
+        let api_ready = match cx.realization.enclosure {
+            Enclosure::HostProcessGroup => Evidence::Output {
+                pattern: Template::parse(HTTP_STARTED)?,
+                process: DEFAULT_PROCESS.to_string(),
+            },
+            _ => Evidence::Http {
+                path: "/ready".to_string(),
+            },
+        };
         Ok(ParticipantSpec {
-            image: Some(IMAGE.to_string()),
-            command: Some(vec![Template::parse(PROGRAM)?]),
             env: BTreeMap::from([
                 (
                     "INTAKE_HTTP_LISTEN_ADDR".to_string(),
-                    Template::parse("0.0.0.0:{{ self.endpoints.api.port }}")?,
+                    Template::parse(format!("{}:{{{{ self.endpoints.api.port }}}}", host))?,
                 ),
                 (
                     "INTAKE_DOGSTATSD_LISTEN_ADDR".to_string(),
-                    Template::parse("0.0.0.0:{{ self.endpoints.dogstatsd_forward.port }}")?,
+                    Template::parse(format!("{}:{{{{ self.endpoints.dogstatsd_forward.port }}}}", host))?,
                 ),
             ]),
             endpoints: BTreeMap::from([
@@ -65,12 +94,7 @@ impl ParticipantType for DatadogIntake {
                 ("dogstatsd_forward".to_string(), endpoint(Protocol::Udp, 9125)),
             ]),
             ready: BTreeMap::from([
-                (
-                    "api".to_string(),
-                    Evidence::Http {
-                        path: "/ready".to_string(),
-                    },
-                ),
+                ("api".to_string(), api_ready),
                 (
                     "dogstatsd_forward".to_string(),
                     Evidence::Output {
@@ -80,7 +104,7 @@ impl ParticipantType for DatadogIntake {
                 ),
             ]),
             operations: &[&Dump],
-            ..ParticipantSpec::default()
+            ..tools::launch(cx, BINARY, &[])?
         })
     }
 }
