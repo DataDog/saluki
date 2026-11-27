@@ -1,0 +1,43 @@
+# OTLP ETS correctness test configuration for Agent Data Plane
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+log_level: debug
+
+# Disable process and container collection.
+process_config:
+  process_collection:
+    enabled: false
+  container_collection:
+    enabled: false
+
+# Error Tracking Standalone mode keeps the error traces, and forwards the other traces with
+# DroppedTrace=true.
+#
+# We keep target_traces_per_second and errors_per_second very high to prevent
+# the error sampler's TPS limit from being a variable in the comparison.
+apm_config:
+  enabled: true
+  target_traces_per_second: 1000000
+  errors_per_second: 1000000
+  features: ["enable_otlp_compute_top_level_by_span_kind"]
+  error_tracking_standalone:
+    enabled: true
+
+# Enable OTLP receiver on gRPC
+otlp_config:
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"
+  traces:
+    enable_otlp_compute_top_level_by_span_kind: true
+    # The receiver keeps half of the traces, and error tracking standalone mode forwards the other half as well.
+    probabilistic_sampler:
+      sampling_percentage: 50

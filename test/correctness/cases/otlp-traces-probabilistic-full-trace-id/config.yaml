@@ -46,12 +46,19 @@ procedure:
         comparison: intake-adp
         baseline: intake-agent
         otlp_direct_analysis_mode: true
-        # The sampler keeps about half of the 2000 traces of the load. The floors are well below that.
+        # The load holds 2000 traces and 4096 spans, and the sampler keeps about half of the traces: 1004 traces with 2061
+        # spans in the first run. The number of traces that it keeps varies by about 22 with the hash, so the limits are
+        # wide. A side that keeps every trace, or drops them all, fails.
         traces:
-          min_traces: 500
-          min_spans: 1000
+          min_traces: 800
+          max_traces: 1200
+          min_spans: 1500
+          max_spans: 2600
           spans:
-            - {service: api-gateway, resource: "GET /api/v1/products/{id}"}
+            - service: api-gateway
+              resource: "GET /api/v1/products/{id}"
+              priority: 1
+              dropped_trace: false
           known_differences:
             # Only `api-gateway` sends HTTP spans, and the load gives their status code as a string.
             - gap: gap/otlp-http-status-code-string

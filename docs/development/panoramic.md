@@ -525,18 +525,26 @@ A comparison answers two questions:
 For logs, `logs.min_count` sets the minimum number of records per intake. If you include a `metrics` section, set
 `min_series`, `series` or both, even if the step also declares a known difference:
 
-- `min_series`: the fewest series that each side holds after the filter that removes internal telemetry.
+- `min_series`: the minimum number of series that each side is expected to hold after the filter that removes
+  internal telemetry.
 - `series`: a list of criteria. One series of each side must meet each criterion. A criterion has a `name`, and
   optionally `tags`, `tags_match`, `metric_type` and `value`. See
   [Checking a metric at the intake](#checking-a-metric-at-the-intake).
 
 For traces, set expectations under `traces`:
 
-- `min_traces` and `min_spans`: the fewest traces and spans that each side holds.
+- `min_traces` and `min_spans`: the minimum numbers of traces and spans that each side is expected to hold.
+- `max_traces` and `max_spans`: the maximum numbers of traces and spans that each side is expected to hold. Use them
+  when a sampler drops part of the fixture. If both sides keep every trace, the sides still match, but each side fails
+  its limit. A limit can't be below the minimum of the same name.
+  `test/correctness/cases/otlp-traces-sampling/config.yaml` sets each limit from the count of the side that keeps more.
 - `spans`: select spans by `service` and optionally by `name` (the operation name) or `resource`. Each entry needs
   at least one of `name`, `resource` or `meta`. See [Check span tags at each intake](#check-span-tags-at-each-intake).
+  An entry can also check the trace chunk that holds each span. See
+  [Check the sampling decision of a span](#check-the-sampling-decision-of-a-span).
 - `absent`: spans that neither intake may hold. See [Check that both sides drop a span](#check-that-both-sides-drop-a-span).
-- `min_stats_groups`: the fewest groups of APM stats that each side holds. A group is one aggregation key.
+- `min_stats_groups`: the minimum number of APM stats groups that each side is expected to hold. A group is one
+  aggregation key.
 - `require_ssi`: whether each side must hold a span with Single Step Instrumentation metadata. It defaults to `true`.
   The Agent and ADP add that metadata to the spans that they send, so the check shows that onboarding ran.
 
@@ -581,6 +589,32 @@ and the entry, and shows which tags are missing or have a wrong value.
 
 A string in `meta` means exact equality. A map can set `equals`, `not_contains` or both. For example,
 `{not_contains: canary-7f3a}` rejects a tag that contains the fixture's secret. A missing tag fails this check too.
+
+#### Check the sampling decision of a span
+
+An intake receives each span in a trace chunk. The chunk has a sampling `priority`, a `dropped_trace` mark and tags. A
+sampler that keeps every trace on both sides sends equal spans, so a comparison cannot see it.
+`test/correctness/cases/otlp-traces-sampling/config.yaml` checks the decision for each probe span. A `spans` entry can
+set these fields of the chunk:
+
+```yaml
+spans:
+  - service: probe-sampling
+    name: otlpprobe.tsamp.002.keep
+    priority: 1
+    dropped_trace: false
+    meta: {_dd.p.dm: "-9"}
+    chunk_tags: {_dd.otlp_sr: "0.50"}
+```
+
+- `priority`: the sampling priority of the chunk, for example `1` for an automatic keep.
+- `dropped_trace`: whether the chunk is marked as dropped. A side still sends a dropped chunk when it holds the spans
+  of an analytics event, or when error tracking standalone mode forwards a trace without an error.
+- `chunk_tags`: the tags of the chunk, with the same values as `meta`: a string for an exact value, or a map of
+  `equals` and `not_contains`. A missing tag fails the entry.
+
+As for `meta`, every span that the entry selects must meet these fields. `side` applies to them too. An `absent` entry
+takes none of them.
 
 #### When only one side meets an expectation
 

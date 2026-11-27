@@ -2090,6 +2090,79 @@ mod tests {
         assert_eq!(decision_maker, "");
     }
 
+    // `error_sampling_enabled` (`apm_config.error_sampling_enabled`) is an ADP-only key. It defaults to `true`, which
+    // matches the Agent: `runSamplers` in `pkg/trace/agent/agent.go` runs the error sampler on every trace that the
+    // other samplers drop, and turns it off only with `errors_per_second: 0`, which ADP honors too. These tests pin
+    // what the extra key turns off.
+
+    /// Samples an error trace that the OTLP receiver drops, with error sampling on or off, and returns whether the
+    /// sampler forwards it, with the trace.
+    fn process_receiver_dropped_otlp_error_trace(error_sampling_enabled: bool) -> (bool, Trace) {
+        let mut sampler = create_test_sampler();
+        sampler.probabilistic_sampler_enabled = false;
+        sampler.error_sampling_enabled = error_sampling_enabled;
+
+        let mut trace = create_otlp_test_trace(
+            vec![create_test_span(1, 1)],
+            OTLP_TEST_RECEIVER_SAMPLING_RATE,
+            OTLP_RECEIVER_DROPPED_TRACE_ID,
+        );
+        let forwarded = sampler.process_trace(&mut trace);
+        (forwarded, trace)
+    }
+
+    /// With error sampling on, the error sampler keeps an error trace that the receiver dropped. With it off, nothing
+    /// does, and the trace is dropped.
+    #[test]
+    fn disabling_error_sampling_skips_the_rescue_of_a_receiver_dropped_otlp_trace() {
+        let (forwarded, trace) = process_receiver_dropped_otlp_error_trace(true);
+        assert!(forwarded, "the error sampler should keep the error trace");
+        assert!(!trace.dropped_trace);
+        assert_eq!(trace.priority, Some(PRIORITY_AUTO_KEEP));
+        assert!(
+            trace.spans()[0].attributes.contains_key(score_sampler::ERRORS_RATE_KEY),
+            "the error sampler should mark the root span"
+        );
+
+        let (forwarded, _) = process_receiver_dropped_otlp_error_trace(false);
+        assert!(!forwarded, "no sampler should keep the trace");
+    }
+
+    /// With the probabilistic sampler on and a rate of 0, the error sampler is the only way to keep an error trace.
+    #[test]
+    fn disabling_error_sampling_skips_the_rescue_in_probabilistic_mode() {
+        let process_error_trace = |error_sampling_enabled: bool| {
+            let mut sampler = create_test_sampler();
+            sampler.sampling_rate = 0.0;
+            sampler.probabilistic_sampler_enabled = true;
+            sampler.error_sampling_enabled = error_sampling_enabled;
+
+            let mut trace = create_test_trace(vec![create_test_span(1, 1)]);
+            let forwarded = sampler.process_trace(&mut trace);
+            (forwarded, trace)
+        };
+
+        let (forwarded, trace) = process_error_trace(true);
+        assert!(forwarded, "the error sampler should keep the error trace");
+        assert_eq!(trace.priority, Some(PRIORITY_AUTO_KEEP));
+
+        let (forwarded, _) = process_error_trace(false);
+        assert!(!forwarded, "no sampler should keep the trace");
+    }
+
+    /// Error tracking standalone mode calls the error sampler on its own, so the switch does not turn it off.
+    #[test]
+    fn error_tracking_standalone_ignores_the_error_sampling_switch() {
+        let mut sampler = create_sampler_with_ets();
+        sampler.error_sampling_enabled = false;
+
+        let mut trace = create_test_trace(vec![create_test_span(1, 1)]);
+        let SamplerOutcome { keep, priority, .. } = sampler.run_samplers(&mut trace);
+
+        assert!(keep, "ETS should keep an error trace whatever the switch says");
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+    }
+
     /// Adapted from Go manual-drop short-circuit behavior:
     ///
     /// UserDrop (-1) priority is checked before rare runs in the priority path. A UserDrop trace

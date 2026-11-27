@@ -31,7 +31,7 @@ const NAME_FIELD: &str = "name";
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MetricsOptions {
-    /// Fewest series that each side holds after the internal-name filter.
+    /// The minimum number of series that each side is expected to hold after the internal-name filter.
     pub min_series: Option<NonZeroUsize>,
 
     /// Criteria that one series of each side must meet, one entry for each.

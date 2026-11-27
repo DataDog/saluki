@@ -1,0 +1,143 @@
+description: >-
+  ADP's OTLP receiver and the Agent's each receive the same fixed OTLP traces over gRPC with error tracking standalone
+  on, and the receiver keeping half of them by their trace IDs. Both sides must keep the traces with an error or an
+  exception event, forward the other traces marked as dropped, and send the same spans and APM stats.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_grpc.port }}"
+      DD_APM_ERROR_TRACKING_STANDALONE_ENABLED: "true"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: correctness-test
+      DD_APM_ERROR_TRACKING_STANDALONE_ENABLED: "true"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.otlp_grpc, baseline_target: agent.agent_otlp_grpc}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they received while the load stays up.
+  - {step: process_stable_for, on: load, duration: 32s}
+  # ADP sends the spans and their statistics itself, and does not proxy the traces to the Agent.
+  - parallel:
+      - step: compare
+        telemetry: traces
+        comparison: intake-adp
+        baseline: intake-agent
+        # Error tracking standalone mode forwards every trace, so each side holds the 10 traces and 16 spans of the
+        # fixture, and a stats group for each of its 10 roots. The other spans are not top-level.
+        traces:
+          min_traces: 10
+          max_traces: 10
+          min_spans: 16
+          max_spans: 16
+          spans:
+            # An error trace is kept, whatever the receiver decides, and its chunk keeps the priority that the receiver
+            # gave it.
+            - service: probe-ets
+              name: otlpprobe.ets.016.error_keep
+              priority: 1
+              dropped_trace: false
+              meta: {_dd.p.dm: "-9"}
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            - service: probe-ets
+              name: otlpprobe.ets.019.error_drop
+              priority: 0
+              dropped_trace: false
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            # An error on a child span is enough, as the receiver drops the trace.
+            - service: probe-ets
+              name: otlpprobe.ets.016.error_child_root
+              priority: 0
+              dropped_trace: false
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            - service: probe-ets
+              name: otlpprobe.ets.016.error_child
+              priority: 0
+              dropped_trace: false
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            # A trace without an error is forwarded with every span, marked as dropped.
+            - service: probe-ets
+              name: otlpprobe.ets.017.plain_keep
+              priority: 1
+              dropped_trace: true
+              meta: {_dd.p.dm: "-9"}
+              chunk_tags: {_dd.p.dm: "-9"}
+            - service: probe-ets
+              name: otlpprobe.ets.017.plain_keep_first
+              priority: 1
+              dropped_trace: true
+              chunk_tags: {_dd.p.dm: "-9"}
+            - service: probe-ets
+              name: otlpprobe.ets.017.plain_keep_second
+              priority: 1
+              dropped_trace: true
+              chunk_tags: {_dd.p.dm: "-9"}
+            - {service: probe-ets, name: otlpprobe.ets.017.plain_drop, priority: 0, dropped_trace: true}
+            - {service: probe-ets, name: otlpprobe.ets.017.plain_drop_first, priority: 0, dropped_trace: true}
+            - {service: probe-ets, name: otlpprobe.ets.017.plain_drop_second, priority: 0, dropped_trace: true}
+            # An exception event on any span makes the whole trace an error trace, and another event does not.
+            - service: probe-ets
+              name: otlpprobe.ets.021.exception_root
+              dropped_trace: false
+              meta: {_dd.span_events.has_exception: "true"}
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            - service: probe-ets
+              name: otlpprobe.ets.021.exception_child_root
+              dropped_trace: false
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            - service: probe-ets
+              name: otlpprobe.ets.021.exception_child
+              dropped_trace: false
+              meta: {_dd.span_events.has_exception: "true"}
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+            - {service: probe-ets, name: otlpprobe.ets.021.other_event, priority: 0, dropped_trace: true}
+            # A user keep sets the priority and the decision maker of a trace that is forwarded as dropped, and a user
+            # drop of an error trace keeps its priority.
+            - service: probe-ets
+              name: otlpprobe.ets.019.user_keep
+              priority: 2
+              dropped_trace: true
+              meta: {_dd.p.dm: "-4"}
+              chunk_tags: {_dd.p.dm: "-4"}
+            - service: probe-ets
+              name: otlpprobe.ets.019.user_drop_error
+              priority: -1
+              dropped_trace: false
+              chunk_tags: {_dd.error_tracking_standalone.error: "true"}
+          min_stats_groups: 10
+      - step: intake_from
+        on: intake-adp
+        telemetry: spans
+        select: {service: probe-ets}
+        sender: adp
+        count: 16
+        timeout: 1m
+      - step: intake_from
+        on: intake-adp
+        telemetry: trace_stats
+        select: {service: probe-ets}
+        sender: adp
+        timeout: 1m

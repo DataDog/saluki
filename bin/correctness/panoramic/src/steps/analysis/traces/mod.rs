@@ -88,9 +88,8 @@ const SPAN_VIEW_FIELDS: &[&str] = &["service", "name", "resource"];
 
 /// Options for traces analysis, set in the `traces` section of a `compare` step.
 ///
-/// The expectations (`min_traces`, `min_spans`, `spans`, `absent` and `min_stats_groups`) say what each side must hold.
-/// The step checks them first, and still compares the sides when one is unmet. A known difference never excuses an
-/// unmet expectation.
+/// The expectations, such as `min_spans`, say what each side must hold. The step checks them first, and still compares
+/// the sides when one is unmet. A known difference never excuses an unmet expectation.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesOptions {
@@ -111,23 +110,35 @@ pub struct TracesOptions {
     #[serde(default)]
     pub require_ssi: Option<bool>,
 
-    /// Fewest traces that each side holds. A trace is a distinct trace ID among the spans of a side.
+    /// The minimum number of traces that each side is expected to hold. A trace is a distinct trace ID among the spans
+    /// of a side.
     #[serde(default)]
     pub min_traces: Option<NonZeroUsize>,
 
-    /// Fewest spans that each side holds.
+    /// The maximum number of traces that each side is expected to hold. Set it for a case where a sampler drops traces,
+    /// so that a side that keeps every trace fails even when the baseline does the same.
+    #[serde(default)]
+    pub max_traces: Option<NonZeroUsize>,
+
+    /// The minimum number of spans that each side is expected to hold.
     #[serde(default)]
     pub min_spans: Option<NonZeroUsize>,
 
+    /// The maximum number of spans that each side is expected to hold. Like `max_traces`, it fails a side that keeps
+    /// what a sampler should drop.
+    #[serde(default)]
+    pub max_spans: Option<NonZeroUsize>,
+
     /// Spans that each side must hold, one entry for each. An entry has a `service`, and a `name`, a `resource`, `meta`
     /// tags or any of them, and a span of the side must match every field of the entry. A `meta` tag names its key, and
-    /// the value that it must equal or must not contain. An entry applies to both sides, unless it sets `side` to
-    /// `baseline` or `comparison`.
+    /// the value that it must equal or must not contain. An entry can also set the `priority`, the `dropped_trace` mark
+    /// and the `chunk_tags` of the trace chunk that holds each selected span. An entry applies to both sides, unless it
+    /// sets `side` to `baseline` or `comparison`.
     #[serde(default)]
     pub spans: Vec<ExpectedSpan>,
 
     /// Spans that neither side may hold, one entry for each. An entry has a `service`, and a `name`, a `resource` or
-    /// both. It takes no `meta` and no `side`: both sides must drop the span.
+    /// both. It takes no `meta`, no chunk field and no `side`: both sides must drop the span.
     ///
     /// Name a span that both sides drop, and name a span of the same service in `spans`, one that both sides hold, so
     /// that the check can't pass because the whole service is missing. The step rejects an entry whose service has no
@@ -135,7 +146,8 @@ pub struct TracesOptions {
     #[serde(default)]
     pub absent: Vec<AbsentSpan>,
 
-    /// Fewest groups of APM stats that each side holds. A group is one aggregation key, whatever its buckets.
+    /// The minimum number of APM stats groups that each side is expected to hold. A group is one aggregation key,
+    /// whatever its buckets.
     ///
     /// A step that compares stats and sets other expectations, or sets `require_ssi` to `false`, must set it, so that two
     /// sides with no stats do not match. It has no effect with `otlp_direct_analysis_mode`, so the step rejects it there.
@@ -152,10 +164,21 @@ impl TracesOptions {
     /// only, has a path that covers the trace ID of a span, or has a span path and doesn't scope itself to spans by
     /// service, name or resource, or covers whole spans without exactly one of the `missing` and `extra` kinds or
     /// without a `name` or `resource` in `when`, or if an `absent` entry has a service that no `spans` entry has, or if
-    /// `otlp_direct_analysis_mode` skips the statistics comparison that an option or an entry's path applies to, or if
-    /// a step that compares stats sets expectations or turns off `require_ssi` and sets no `min_stats_groups`, an error
-    /// is returned.
+    /// a `max_*` limit is below its `min_*`, or if `otlp_direct_analysis_mode` skips the statistics comparison that an
+    /// option or an entry's path applies to, or if a step that compares stats sets expectations or turns off
+    /// `require_ssi` and sets no `min_stats_groups`, an error is returned.
     pub fn validate(&self, otlp_direct_analysis_mode: bool) -> Result<(), String> {
+        for (limit, max, min) in [
+            ("traces", self.max_traces, self.min_traces),
+            ("spans", self.max_spans, self.min_spans),
+        ] {
+            if let Some((max, min)) = max.zip(min).filter(|(max, min)| max < min) {
+                return Err(format!(
+                    "'traces.max_{limit}' is {max}, below 'traces.min_{limit}', which is {min}: no side can meet \
+                     both"
+                ));
+            }
+        }
         if otlp_direct_analysis_mode {
             let compares_nothing = "which compares no stats";
             if let Some(entry) = self
@@ -185,7 +208,9 @@ impl TracesOptions {
         } else if self.min_stats_groups.is_none()
             && (self.require_ssi == Some(false)
                 || self.min_traces.is_some()
+                || self.max_traces.is_some()
                 || self.min_spans.is_some()
+                || self.max_spans.is_some()
                 || !self.spans.is_empty()
                 || !self.absent.is_empty())
         {
@@ -264,7 +289,9 @@ impl TracesOptions {
     pub fn expectations(&self) -> TracesExpectations {
         TracesExpectations {
             min_traces: self.min_traces,
+            max_traces: self.max_traces,
             min_spans: self.min_spans,
+            max_spans: self.max_spans,
             spans: self.spans.clone(),
             absent: self.absent.clone(),
             min_stats_groups: self.min_stats_groups,
