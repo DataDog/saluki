@@ -33,10 +33,11 @@ const SHARD_BITS: u32 = 4;
 /// The number of shards in each table.
 const SHARD_COUNT: usize = 1 << SHARD_BITS;
 
-/// Rotates the shard bits out of the hash table's seven-bit control tag.
+/// Rotates the top shard-selection bits into unused middle bits (`24..27`), keeping both the low bucket-index bits and
+/// the top seven control-tag bits free of constant shard bits.
 #[inline]
 fn table_hash(hash: u64) -> u64 {
-    hash.rotate_left(4)
+    hash.rotate_left(28)
 }
 
 /// The number of usable record bytes in one chunk.
@@ -74,15 +75,14 @@ const MAX_SHARD_BYTES: usize = SHARD_ADDRESS_BYTES / 2;
 
 /// The number of witness slots in each thread.
 ///
-/// Each slot remembers one first sighting. With 280-byte slots, the array of 256 slots uses 71,680 bytes (70 KiB) in
-/// each thread that interns.
-const WITNESS_COUNT: usize = 256;
+/// Each slot stores one 64-bit fingerprint combining the string's per-table hash and the table ID. With 8-byte slots,
+/// the array of 8,192 slots uses 65,536 bytes (64 KiB) in each thread that interns.
+const WITNESS_COUNT: usize = 8192;
 
 /// The maximum length of a string that the table admits, in bytes.
 ///
-/// A witness slot must hold a full copy of the string to confirm a second sighting exactly. Longer strings always get
-/// `None` from `try_intern`.
-const WITNESS_BYTES: usize = 256;
+/// Longer strings always get `None` from `try_intern` so oversized values do not fragment shard chunks.
+const MAX_SYMBOL_BYTES: usize = 256;
 
 /// The number of 64-bit words in the `resident` filter of each shard.
 ///
@@ -105,55 +105,30 @@ thread_local! {
     static WITNESSES: RefCell<Box<[Witness]>> = RefCell::new(vec![Witness::EMPTY; WITNESS_COUNT].into_boxed_slice());
 }
 
-/// A record of one first sighting of a string in the current thread.
+/// A 64-bit fingerprint of one first sighting in the current thread.
 ///
-/// Each slot holds an exact copy of the string, so a hash collision cannot admit a first sighting. A slot has this
-/// layout on 64-bit targets, 280 bytes in total:
-///
-/// ```text
-/// ┏━━━━━━━━━━━┯━━━━━━━━━━━┯━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-/// ┃ table ID  │ str hash  │  str len  │ str bytes (first `len` are valid) ┃
-/// ┃ (8 bytes) │ (8 bytes) │ (8 bytes) │           (256 bytes)             ┃
-/// ┗━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-/// ```
+/// Bit 0 is always 1 for a populated slot, so `0` unambiguously marks an empty slot. Mixing the per-table random hash
+/// with the unique `table` ID isolates tables that share a thread while keeping each slot to 8 bytes.
 #[derive(Clone, Copy)]
-struct Witness {
-    /// The ID of the table that saw the string, or 0 for an empty slot.
-    table: usize,
-
-    /// The full hash of the string.
-    hash: u64,
-
-    /// The length of the string, in bytes.
-    len: usize,
-
-    /// A copy of the string. Only the first `len` bytes are valid.
-    bytes: [u8; WITNESS_BYTES],
-}
+struct Witness(u64);
 
 impl Witness {
-    /// An empty slot that matches no table.
-    const EMPTY: Self = Self {
-        table: 0,
-        hash: 0,
-        len: 0,
-        bytes: [0; WITNESS_BYTES],
-    };
+    /// An empty slot that matches no sighting.
+    const EMPTY: Self = Self(0);
 
-    /// Returns `true` if the current thread saw `value` in `table` at the last use of its slot.
+    /// Returns `true` if the current thread saw the same `(table, hash)` fingerprint at the last use of its slot.
     ///
-    /// Low hash bits 0 to 7 select the slot. On a miss, the method overwrites the slot with `value` and returns
-    /// `false`. A hit leaves the slot as it is. The caller must make sure `value` is at most `WITNESS_BYTES` long.
-    fn seen(table: usize, hash: u64, value: &str) -> bool {
+    /// Low hash bits 0 to 12 select the slot. On a miss, the method overwrites the slot with the new fingerprint and
+    /// returns `false`. A hit leaves the slot as it is.
+    fn seen(table: usize, hash: u64) -> bool {
+        const TABLE_MIX: u64 = 0x9e37_79b9_7f4a_7c15;
+        let fingerprint = (hash ^ (table as u64).wrapping_mul(TABLE_MIX)) | 1;
         WITNESSES.with_borrow_mut(|slots| {
-            let slot = &mut slots[hash as usize % WITNESS_COUNT];
-            if slot.hash == hash && slot.table == table && slot.bytes[..slot.len] == *value.as_bytes() {
+            let slot = &mut slots[(hash as usize) & (WITNESS_COUNT - 1)];
+            if slot.0 == fingerprint {
                 return true;
             }
-            slot.table = table;
-            slot.hash = hash;
-            slot.len = value.len();
-            slot.bytes[..slot.len].copy_from_slice(value.as_bytes());
+            slot.0 = fingerprint;
             false
         })
     }
@@ -387,7 +362,7 @@ impl Drop for Shard {
     }
 }
 
-/// A bounded string dictionary with exact, two-hit admission and lock-free ID reads.
+/// A bounded string dictionary with two-hit admission and lock-free ID reads.
 ///
 /// IDs stay stable while a reference is live. Their storage is available for reuse when the last reference drops.
 /// Admission requires two observations in the same thread-local window. Strings longer than 256 bytes stay out of the
@@ -430,7 +405,7 @@ impl Drop for Shard {
 /// One 64-bit hash of each string drives every decision:
 ///
 /// - Bits 60 to 63 select the shard.
-/// - Bits 0 to 7 select the witness slot.
+/// - Bits 0 to 12 select the witness slot.
 /// - Bits 32 to 37 select the `resident` filter word, and bits 0 to 5 and 16 to 21 select its two bits.
 /// - The shard's hash table uses the full hash rotated left by 4 bits. On 64-bit targets, its seven-bit control tag
 ///   uses original bits 53 to 59, not the bits that select the shard.
@@ -448,7 +423,7 @@ impl Drop for Shard {
 /// it another way. A string that alternates between threads, or that shares a slot with another string, can need
 /// more sightings.
 ///
-/// A thread allocates its 256 witness slots on first use and frees them on exit. The slots use 70 KiB per thread.
+/// A thread allocates its 8,192 witness slots on first use and frees them on exit. The slots use 64 KiB per thread.
 /// A first sighting checks the `resident` filter and the witness without a shard lock.
 ///
 /// ## Memory
@@ -540,7 +515,7 @@ impl SymbolTable {
     /// A first observation never takes a dictionary write lock. It takes a read lock only if the `resident` filter
     /// reports a possible match.
     pub fn try_intern(&self, value: &str) -> Option<Symbol<'_>> {
-        if value.len() > WITNESS_BYTES {
+        if value.len() > MAX_SYMBOL_BYTES {
             return None;
         }
         let hash = self.hasher.hash_one(value);
@@ -566,7 +541,7 @@ impl SymbolTable {
                 return Some(Symbol { table: self, id });
             }
         }
-        if !Witness::seen(self.table_id, hash, value) {
+        if !Witness::seen(self.table_id, hash) {
             return None;
         }
 
@@ -592,7 +567,10 @@ impl SymbolTable {
         }
         state.entries.insert_unique(index_hash, offset as u32, |&offset| {
             // SAFETY: Only live records are in the index.
-            table_hash(self.hasher.hash_one(unsafe { Record::value(shard.record(offset as usize)) }))
+            table_hash(
+                self.hasher
+                    .hash_one(unsafe { Record::value(shard.record(offset as usize)) }),
+            )
         });
         state.used += size;
         filter.fetch_or(bits, Ordering::Release);
@@ -748,7 +726,8 @@ mod tests {
     #[test]
     fn singletons_leave_space_for_late_shared_symbols() {
         let table = SymbolTable::new(8 * 1024 * 1024);
-        for n in 0..200_000 {
+        let count = if cfg!(miri) { 256 } else { 200_000 };
+        for n in 0..count {
             let value = format!("correlation_id:12345678-1234-1234-1234-{n:012x}");
             assert_eq!(value.len(), 51);
             assert!(table.try_intern(&value).is_none());
@@ -780,7 +759,8 @@ mod tests {
         thread::scope(|scope| {
             for _ in 0..4 {
                 scope.spawn(|| {
-                    for _ in 0..10_000 {
+                    let reads = if cfg!(miri) { 64 } else { 10_000 };
+                    for _ in 0..reads {
                         assert_eq!(&*symbol, value);
                     }
                 });
