@@ -1,7 +1,5 @@
 //! Datadog APM Stats encoder.
 
-use std::time::Duration;
-
 use async_trait::async_trait;
 use datadog_protos::traces::{
     ClientGroupedStats as ProtoClientGroupedStats, ClientStatsBucket as ProtoClientStatsBucket,
@@ -29,9 +27,8 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
-    pin, select,
+    select,
     sync::mpsc::{self, Receiver, Sender},
-    time::sleep,
 };
 use tracing::{debug, error};
 
@@ -43,12 +40,10 @@ use crate::common::datadog::{
 };
 use crate::config::AgentEnv;
 
-const MAX_STATS_PER_PAYLOAD: usize = 4000;
 static CONTENT_TYPE_MSGPACK: HeaderValue = HeaderValue::from_static("application/msgpack");
 
 /// Configuration for the Datadog APM Stats encoder.
 pub struct DatadogApmStatsEncoderConfiguration {
-    flush_timeout: Duration,
     agent_hostname: Option<String>,
     agent_version: String,
     agent_env: AgentEnv,
@@ -57,12 +52,10 @@ pub struct DatadogApmStatsEncoderConfiguration {
 impl DatadogApmStatsEncoderConfiguration {
     /// Creates a new `DatadogApmStatsEncoderConfiguration`.
     ///
-    /// The encoder waits up to `flush_timeout` before flushing a partially filled payload; a zero duration flushes
-    /// almost immediately. Each payload carries `agent_env` as its agent environment.
-    pub fn new(flush_timeout: Duration, agent_env: AgentEnv) -> Self {
+    /// Each payload carries `agent_env` as its agent environment.
+    pub fn new(agent_env: AgentEnv) -> Self {
         let app_details = saluki_metadata::get_app_details();
         Self {
-            flush_timeout,
             agent_hostname: None,
             agent_version: format!("agent-data-plane/{}", app_details.version().raw()),
             agent_env,
@@ -105,23 +98,12 @@ impl EncoderBuilder for DatadogApmStatsEncoderConfiguration {
         let payload_telemetry = StatsPayloadTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::gzip_default();
 
-        let mut stats_rb =
-            RequestBuilder::new(self.endpoint_encoder(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
-        stats_rb.with_max_inputs_per_payload(MAX_STATS_PER_PAYLOAD);
-
-        let flush_timeout = if self.flush_timeout.is_zero() {
-            // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
-            // batching, while still practically flushing things almost immediately.
-            Duration::from_millis(10)
-        } else {
-            self.flush_timeout
-        };
+        let stats_rb = RequestBuilder::new(self.endpoint_encoder(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
 
         Ok(Box::new(DatadogStats {
             stats_rb,
             telemetry,
             payload_telemetry,
-            flush_timeout,
         }))
     }
 }
@@ -134,9 +116,7 @@ impl MemoryBounds for DatadogApmStatsEncoderConfiguration {
             .with_array::<EventsBuffer>("request builder events channel", 8)
             .with_array::<PayloadsBuffer>("request builder payloads channel", 8);
 
-        builder
-            .firm()
-            .with_array::<TraceStats>("stats split re-encode buffer", MAX_STATS_PER_PAYLOAD);
+        builder.firm().with_single_value::<TraceStats>("stats re-encode buffer");
     }
 }
 
@@ -144,7 +124,6 @@ pub struct DatadogStats {
     stats_rb: RequestBuilder<StatsEndpointEncoder>,
     telemetry: ComponentTelemetry,
     payload_telemetry: StatsPayloadTelemetry,
-    flush_timeout: Duration,
 }
 
 /// Telemetry for what the stats encoder writes into payloads.
@@ -206,7 +185,6 @@ impl Encoder for DatadogStats {
             stats_rb,
             telemetry,
             payload_telemetry,
-            flush_timeout,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -218,14 +196,7 @@ impl Encoder for DatadogStats {
         //
         // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
         // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
-        let request_builder_fut = run_request_builder(
-            stats_rb,
-            telemetry,
-            payload_telemetry,
-            events_rx,
-            payloads_tx,
-            flush_timeout,
-        );
+        let request_builder_fut = run_request_builder(stats_rb, telemetry, payload_telemetry, events_rx, payloads_tx);
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
             .needed()
@@ -248,8 +219,33 @@ impl Encoder for DatadogStats {
                     None => break,
                 },
                 maybe_event_buffer = context.events().next() => match maybe_event_buffer {
-                    Some(event_buffer) => events_tx.send(event_buffer).await
-                        .error_context("Failed to send event buffer to request builder task.")?,
+                    Some(event_buffer) => {
+                        // Both channels between this task and the request builder task are bounded, and each task is
+                        // the producer on one and the consumer on the other. The request builder task can send several
+                        // payloads for one event buffer, and blocks once `payloads_tx` is full, so it never returns to
+                        // receive from `events_rx`. Keep draining payloads while we wait for capacity on `events_tx`
+                        // so that at least one of the two channels is always making progress.
+                        let permit = loop {
+                            select! {
+                                biased;
+
+                                permit = events_tx.reserve() => break permit
+                                    .error_context("Failed to reserve capacity for event buffer.")?,
+                                maybe_payload = payloads_rx.recv() => match maybe_payload {
+                                    Some(payload) => {
+                                        if let Err(e) = context.dispatcher().dispatch(payload).await {
+                                            error!("Failed to dispatch payload: {}", e);
+                                        }
+                                    }
+
+                                    // Our payloads channel is gone, which means our request builder task went away unexpectedly.
+                                    None => return Err(generic_error!("Request builder task stopped before accepting event buffer.")),
+                                }
+                            }
+                        };
+
+                        permit.send(event_buffer);
+                    }
                     None => break,
                 },
             }
@@ -272,111 +268,56 @@ impl Encoder for DatadogStats {
     }
 }
 
+/// Encodes each `TraceStats` into its own request and sends it at once.
+///
+/// Like the Agent, we send one `StatsPayload` per request: a reader decodes one MessagePack value from the body and
+/// ignores the rest.
 async fn run_request_builder(
     mut stats_request_builder: RequestBuilder<StatsEndpointEncoder>, telemetry: ComponentTelemetry,
     payload_telemetry: StatsPayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
-    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
+    payloads_tx: Sender<PayloadsBuffer>,
 ) -> Result<(), GenericError> {
-    let mut pending_flush = false;
-    let pending_flush_timeout = sleep(flush_timeout);
-    pin!(pending_flush_timeout);
-
-    loop {
-        select! {
-            Some(event_buffer) = events_rx.recv() => {
-                for trace_stats in event_buffer.into_events::<TraceStats>() {
-
-                    // Encode the stats. If we get it back, that means the current request is full, and we need to
-                    // flush it before we can try to encode the stats again.
-                    let stats_counts = StatsCounts::from_trace_stats(&trace_stats);
-                    let stats_to_retry = match stats_request_builder.encode(trace_stats).await {
-                        Ok(None) => {
-                            payload_telemetry.track_stats(stats_counts);
-                            continue;
-                        }
-                        Ok(Some(stats)) => stats,
-                        Err(e) => {
-                            error!(error = %e, "Failed to encode stats.");
-                            telemetry.events_dropped_encoder().increment(1);
-                            continue;
-                        }
-                    };
-
-                    let maybe_requests = stats_request_builder.flush().await;
-                    if maybe_requests.is_empty() {
-                        panic!("builder told us to flush, but gave us nothing");
-                    }
-
-                    for maybe_request in maybe_requests {
-                        match maybe_request {
-                            Ok((events, _data_points, uncompressed_len, request)) => {
-                                payload_telemetry.track_payload(uncompressed_len);
-                                let payload_meta = PayloadMetadata::from_event_count(events);
-                                let http_payload = HttpPayload::new(payload_meta, request);
-                                let payload = Payload::Http(http_payload);
-
-                                payloads_tx.send(payload).await
-                                    .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
-                            },
-                            Err(e) => if e.is_recoverable() {
-                                continue;
-                            } else {
-                                return Err(GenericError::from(e).context("Failed to flush request."));
-                            }
-                        }
-                    }
-
-                    match stats_request_builder.encode(stats_to_retry).await {
-                        Ok(None) => payload_telemetry.track_stats(stats_counts),
-                        Ok(Some(_)) => {
-                            error!("Stats did not fit in a request after flushing; dropping them.");
-                            telemetry.events_dropped_encoder().increment(1);
-                        }
-                        Err(e) => {
-                            error!(error = %e, "Failed to encode stats.");
-                            telemetry.events_dropped_encoder().increment(1);
-                        }
-                    }
+    while let Some(event_buffer) = events_rx.recv().await {
+        for trace_stats in event_buffer.into_events::<TraceStats>() {
+            // The request builder is empty here, so it only gives the stats back if they can never fit in a request.
+            let stats_counts = StatsCounts::from_trace_stats(&trace_stats);
+            match stats_request_builder.encode(trace_stats).await {
+                Ok(None) => payload_telemetry.track_stats(stats_counts),
+                Ok(Some(_)) => {
+                    error!("Stats do not fit in a request; dropping them.");
+                    telemetry.events_dropped_encoder().increment(1);
+                    continue;
                 }
-
-                debug!("Processed event buffer.");
-
-                // If we're not already pending a flush, we'll start the countdown.
-                if !pending_flush {
-                    pending_flush_timeout.as_mut().reset(tokio::time::Instant::now() + flush_timeout);
-                    pending_flush = true;
+                Err(e) => {
+                    error!(error = %e, "Failed to encode stats.");
+                    telemetry.events_dropped_encoder().increment(1);
+                    continue;
                 }
-            },
-            _ = &mut pending_flush_timeout, if pending_flush => {
-                debug!("Flushing pending request(s).");
+            }
 
-                pending_flush = false;
+            for maybe_request in stats_request_builder.flush().await {
+                match maybe_request {
+                    Ok((events, _data_points, uncompressed_len, request)) => {
+                        payload_telemetry.track_payload(uncompressed_len);
+                        let payload_meta = PayloadMetadata::from_event_count(events);
+                        let http_payload = HttpPayload::new(payload_meta, request);
+                        let payload = Payload::Http(http_payload);
 
-                let maybe_stats_requests = stats_request_builder.flush().await;
-                for maybe_request in maybe_stats_requests {
-                    match maybe_request {
-                        Ok((events, _data_points, uncompressed_len, request)) => {
-                            payload_telemetry.track_payload(uncompressed_len);
-                            let payload_meta = PayloadMetadata::from_event_count(events);
-                            let http_payload = HttpPayload::new(payload_meta, request);
-                            let payload = Payload::Http(http_payload);
-
-                            payloads_tx.send(payload).await
-                                .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
-                        },
-                        Err(e) => if e.is_recoverable() {
-                            continue;
-                        } else {
-                            return Err(GenericError::from(e).context("Failed to flush request."));
-                        }
+                        payloads_tx
+                            .send(payload)
+                            .await
+                            .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
                     }
+                    Err(e) if e.is_recoverable() => {
+                        error!(error = %e, "Stats do not fit in a request once compressed; dropping them.");
+                        telemetry.events_dropped_encoder().increment(1);
+                    }
+                    Err(e) => return Err(GenericError::from(e).context("Failed to flush request.")),
                 }
-
-                debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
-            },
-
-            else => break,
+            }
         }
+
+        debug!("Processed event buffer.");
     }
 
     Ok(())
@@ -522,8 +463,15 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use async_compression::tokio::bufread::GzipDecoder;
+    use http_body_util::BodyExt as _;
+    use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::data_model::event::Event;
     use saluki_metrics::test::TestRecorder;
+    use serde::Deserialize as _;
+    use tokio::io::AsyncReadExt as _;
 
     use super::*;
 
@@ -536,7 +484,7 @@ mod tests {
             (AgentEnv::resolve(Some("!!!"), None, &[], &[]), ""),
         ];
         for (agent_env, expected) in cases {
-            let config = DatadogApmStatsEncoderConfiguration::new(Duration::from_secs(2), agent_env);
+            let config = DatadogApmStatsEncoderConfiguration::new(agent_env);
             let mut buf = Vec::new();
             config
                 .endpoint_encoder()
@@ -551,10 +499,7 @@ mod tests {
     #[test]
     fn stats_payload_split_flag_follows_trace_stats() {
         for is_split in [false, true] {
-            let config = DatadogApmStatsEncoderConfiguration::new(
-                Duration::from_secs(2),
-                AgentEnv::resolve(None, Some("prod"), &[], &[]),
-            );
+            let config = DatadogApmStatsEncoderConfiguration::new(AgentEnv::resolve(None, Some("prod"), &[], &[]));
             let mut buf = Vec::new();
             config
                 .endpoint_encoder()
@@ -596,22 +541,172 @@ mod tests {
         );
     }
 
+    /// Builds one `TraceStats` with `groups` groups, named by the piece and their number.
+    fn split_piece(piece: usize, groups: usize) -> TraceStats {
+        let stats = (0..groups)
+            .map(|group| ClientGroupedStats::new("svc", "op", format!("piece-{piece}-group-{group}")))
+            .collect();
+        let payload = ClientStatsPayload::new("host", "env", "1.0.0").with_stats(vec![ClientStatsBucket::new(
+            1000,
+            10_000_000_000,
+            stats,
+        )]);
+        TraceStats::new(vec![payload]).with_split_payload(true)
+    }
+
+    // The Agent sends each `StatsPayload` of a split flush in its own request:
+    // https://github.com/DataDog/datadog-agent/blob/92824ec3d3f4a4c5b0926452999a39df5b4eb850/pkg/trace/writer/stats.go#L245-L265
+    #[tokio::test]
+    async fn every_group_decodes_from_the_request_that_carries_it() {
+        const PIECES: usize = 3;
+        const GROUPS_PER_PIECE: usize = 2;
+
+        let config = DatadogApmStatsEncoderConfiguration::new(AgentEnv::resolve(None, Some("prod"), &[], &[]));
+        let (encoder, mut payloads) = TestComponentDriver::encoder(config)
+            .await
+            .expect("stats encoder should build");
+        // The pieces of one split flush reach the encoder together.
+        encoder
+            .send_events((0..PIECES).map(|piece| Event::TraceStats(split_piece(piece, GROUPS_PER_PIECE))))
+            .await;
+        encoder.shutdown().await.expect("stats encoder should stop cleanly");
+
+        let mut resources = Vec::new();
+        for payload in payloads.collect().await {
+            let (_, request) = payload
+                .try_into_http_payload()
+                .expect("stats are sent over HTTP")
+                .into_parts();
+            let compressed = request
+                .into_body()
+                .collect()
+                .await
+                .expect("body should collect")
+                .to_bytes();
+            let mut body = Vec::new();
+            GzipDecoder::new(compressed.as_ref())
+                .read_to_end(&mut body)
+                .await
+                .expect("body should decompress");
+
+            let mut remaining = body.as_slice();
+            let decoded = ProtoStatsPayload::deserialize(&mut rmp_serde::Deserializer::new(&mut remaining))
+                .expect("body should hold a StatsPayload");
+            assert!(
+                remaining.is_empty(),
+                "the request holds {} bytes after its first StatsPayload",
+                remaining.len()
+            );
+            assert!(
+                decoded.splitPayload(),
+                "every payload of a split flush is marked as split"
+            );
+            for client in decoded.stats() {
+                for bucket in client.stats() {
+                    resources.extend(bucket.stats().iter().map(|group| group.resource().to_string()));
+                }
+            }
+        }
+
+        resources.sort();
+        let expected = (0..PIECES)
+            .flat_map(|piece| (0..GROUPS_PER_PIECE).map(move |group| format!("piece-{piece}-group-{group}")))
+            .collect::<Vec<_>>();
+        assert_eq!(resources, expected);
+    }
+
+    // Each event buffer below goes on the encoder's input before the encoder runs. On this single-threaded runtime, the
+    // encoder then hands event buffers to the request builder task until that channel is full, while the request
+    // builder task fills the payloads channel from the first event buffer, which holds more stats than both channels.
+    #[tokio::test]
+    async fn encoder_does_not_deadlock_when_one_event_buffer_fills_the_payloads_channel() {
+        const FIRST_BUFFER_STATS: usize = 64;
+        const LATER_BUFFERS: usize = 16;
+
+        let config = DatadogApmStatsEncoderConfiguration::new(AgentEnv::resolve(None, Some("prod"), &[], &[]));
+        let (encoder, mut payloads) = TestComponentDriver::options()
+            .with_wait_timeout(Duration::from_secs(2))
+            .encoder(config)
+            .await
+            .expect("stats encoder should build");
+
+        let mut first_buffer = EventsBuffer::default();
+        for piece in 0..FIRST_BUFFER_STATS {
+            assert!(first_buffer
+                .try_push(Event::TraceStats(split_piece(piece, 1)))
+                .is_none());
+        }
+        encoder.send(first_buffer).await;
+        for piece in 0..LATER_BUFFERS {
+            encoder.send_event(Event::TraceStats(split_piece(piece, 1))).await;
+        }
+
+        // Each stats goes in its own request.
+        for _ in 0..FIRST_BUFFER_STATS + LATER_BUFFERS {
+            assert!(payloads.next().await.is_some(), "the encoder stopped early");
+        }
+        encoder.shutdown().await.expect("stats encoder should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn request_builder_counts_stats_too_large_once_compressed_as_dropped() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let config = DatadogApmStatsEncoderConfiguration::new(AgentEnv::resolve(None, Some("prod"), &[], &[]));
+
+        let mut request_builder = RequestBuilder::new(
+            config.endpoint_encoder(),
+            CompressionScheme::gzip_default(),
+            RB_BUFFER_CHUNK_SIZE,
+        )
+        .await
+        .expect("request builder should be created");
+        // No gzip output fits in one byte.
+        request_builder
+            .with_len_limits(DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, 1)
+            .expect("limits should be valid");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        assert!(events.try_push(Event::TraceStats(split_piece(0, 1))).is_none());
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            StatsPayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        assert!(payloads_rx.recv().await.is_none());
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")][..],
+            )),
+            Some(1)
+        );
+    }
+
     #[tokio::test]
     async fn request_builder_tracks_written_stats_and_uncompressed_bytes() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let metrics_builder = MetricsBuilder::default();
-        let config = DatadogApmStatsEncoderConfiguration::new(
-            Duration::from_secs(2),
-            AgentEnv::resolve(None, Some("prod"), &[], &[]),
-        );
+        let config = DatadogApmStatsEncoderConfiguration::new(AgentEnv::resolve(None, Some("prod"), &[], &[]));
 
         let all_stats = vec![
             TraceStats::new(vec![make_client_payload(&[2, 3]), make_client_payload(&[1])]),
             TraceStats::new(vec![make_client_payload(&[4])]),
         ];
 
-        // Without compression or framing, the payload before compression is all stats encoded back to back.
+        // Without compression or framing, the payloads before compression add up to all stats encoded.
         let expected_uncompressed_len = all_stats
             .iter()
             .map(|stats| {
@@ -647,7 +742,6 @@ mod tests {
             StatsPayloadTelemetry::from_builder(&metrics_builder),
             events_rx,
             payloads_tx,
-            Duration::from_millis(1),
         )
         .await
         .expect("request builder should run to completion");
@@ -656,7 +750,7 @@ mod tests {
         while payloads_rx.recv().await.is_some() {
             payloads += 1;
         }
-        assert_eq!(payloads, 1);
+        assert_eq!(payloads, 2);
 
         assert_eq!(
             recorder.counter("component_stats_client_payloads_encoded_total"),

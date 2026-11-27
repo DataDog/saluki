@@ -686,10 +686,9 @@ async fn add_baseline_traces_pipeline_to_blueprint(
             .with_environment_provider(env_provider.clone())
             .await?;
     apm_stats_transform_config.workload_provider = Some(workload_provider);
-    let dd_apm_stats_encoder =
-        DatadogApmStatsEncoderConfiguration::new(config.shared.metrics_encoding.flush_timeout, agent_env)
-            .with_environment_provider(env_provider.clone())
-            .await?;
+    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::new(agent_env)
+        .with_environment_provider(env_provider.clone())
+        .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?

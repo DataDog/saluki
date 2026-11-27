@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    Send each APM stats payload in its own request, as the Datadog Agent does. Before, when one flush had more than
+    4000 stats groups, Agent Data Plane sent all its payloads in one request, and an intake that reads one payload
+    from each request dropped the rest.
+  - |
+    Send APM stats as soon as they are computed. They no longer wait for the encoder flush timeout.
