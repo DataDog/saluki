@@ -106,6 +106,10 @@ impl<'a> FromIterator<&'a str> for SetMembers {
     }
 }
 
+/// The exact members of a single Set bucket.
+#[derive(Debug, Default)]
+pub struct SetBucket(SetMembers);
+
 /// A set of set points.
 ///
 /// Used to represent the data points of sets. Each data point is attached to an optional timestamp.
@@ -131,6 +135,24 @@ impl SetPoints {
 
     pub(super) fn split_at_timestamp(&mut self, timestamp: u64) -> Option<Self> {
         self.0.split_at_timestamp(timestamp).map(Self)
+    }
+
+    /// Moves the exact members of each bucket out of these points.
+    pub fn into_buckets(self) -> impl Iterator<Item = (Option<NonZeroU64>, SetBucket)> {
+        self.0
+            .values
+            .into_iter()
+            .map(|point| (point.timestamp, SetBucket(point.value)))
+    }
+
+    /// Creates points from buckets of exact members.
+    pub fn from_buckets(buckets: impl IntoIterator<Item = (Option<NonZeroU64>, SetBucket)>) -> Self {
+        Self(
+            buckets
+                .into_iter()
+                .map(|(timestamp, bucket)| (timestamp, bucket.0))
+                .into(),
+        )
     }
 
     /// Returns `true` if this set is empty.

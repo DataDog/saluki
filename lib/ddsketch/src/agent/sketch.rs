@@ -95,6 +95,22 @@ pub struct DDSketch {
 }
 
 impl DDSketch {
+    /// Restores ordered bins and raw summary fields without converting keys or recomputing statistics.
+    ///
+    /// Pass the bins in ascending key order, including duplicate keys when a bin count overflows.
+    pub fn from_raw_parts(
+        bins: impl IntoIterator<Item = (i16, u32)>, count: u64, min: f64, max: f64, sum: f64, avg: f64,
+    ) -> Self {
+        Self {
+            bins: bins.into_iter().map(|(k, n)| Bin { k, n }).collect(),
+            count,
+            min,
+            max,
+            sum,
+            avg,
+        }
+    }
+
     /// Returns the canonical DDSketch mapping that aligns with the agent sketch's key space.
     pub fn remap_mapping() -> LogarithmicMapping {
         LogarithmicMapping::new_with_gamma_and_offset(DDSKETCH_CONF_GAMMA_V, f64::from(DDSKETCH_CONF_NORM_BIAS) + 0.5)

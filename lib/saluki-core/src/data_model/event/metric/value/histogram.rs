@@ -108,6 +108,28 @@ impl Histogram {
     pub fn samples(&self) -> &[WeightedSample] {
         &self.samples
     }
+
+    /// Returns the shared weight and whether sample weights vary.
+    pub fn weighting(&self) -> (f64, bool) {
+        (self.shared_weight.0, self.weights_vary)
+    }
+
+    /// Restores a histogram from its samples and weighting without recalculating weights.
+    pub fn from_weighted_samples(
+        samples: impl IntoIterator<Item = (f64, f64)>, shared_weight: f64, weights_vary: bool,
+    ) -> Self {
+        Self {
+            samples: samples
+                .into_iter()
+                .map(|(value, weight)| WeightedSample {
+                    value: OrderedFloat(value),
+                    weight: OrderedFloat(weight),
+                })
+                .collect(),
+            shared_weight: OrderedFloat(shared_weight),
+            weights_vary,
+        }
+    }
 }
 
 /// Summary view over a [`Histogram`].
@@ -333,6 +355,15 @@ impl<'a, const N: usize> From<&'a [f64; N]> for HistogramPoints {
         }
 
         Self(TimestampedValue::from(histogram).into())
+    }
+}
+
+impl FromIterator<(Option<NonZeroU64>, Histogram)> for HistogramPoints {
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = (Option<NonZeroU64>, Histogram)>,
+    {
+        Self(iter.into())
     }
 }
 

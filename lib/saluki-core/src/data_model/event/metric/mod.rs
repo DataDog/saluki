@@ -10,7 +10,7 @@ pub use self::metadata::*;
 
 mod value;
 pub use self::value::{
-    Histogram, HistogramPoints, HistogramSummary, MetricValues, ScalarPoints, SetPoints, SketchPoints,
+    Histogram, HistogramPoints, HistogramSummary, MetricValues, ScalarPoints, SetBucket, SetPoints, SketchPoints,
 };
 
 /// A metric.
