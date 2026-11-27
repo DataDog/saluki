@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce memory use for workloads with many distinct metric contexts by storing names and tags together and sharing recurring strings.

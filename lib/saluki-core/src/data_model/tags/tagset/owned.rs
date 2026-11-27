@@ -334,6 +334,31 @@ impl TagSet {
         self.overlay.is_some()
     }
 
+    /// Returns the number of tags in the overlay additions.
+    ///
+    /// A packed context records this count, so it can rebuild the same split between base tags and additions. Added
+    /// tags keep their priority over base tags in key lookups.
+    pub(crate) fn addition_count(&self) -> usize {
+        self.overlay.as_ref().map_or(0, |overlay| overlay.additions.len())
+    }
+
+    /// Rebuilds a tag set from the tags of a packed context.
+    ///
+    /// The first `base_count` tags become the shared base. If `modified` is `true`, the rest become overlay additions,
+    /// and [`is_modified`][Self::is_modified] returns `true`. If `modified` is `false`, the function ignores the rest,
+    /// so the caller passes every tag as a base tag. A packed context records `base_count` and `modified` from the tag
+    /// set that built it, so the rebuilt set matches that tag set.
+    pub(crate) fn from_context_tags<'a>(
+        tags: impl Iterator<Item = &'a str>, base_count: usize, modified: bool,
+    ) -> Self {
+        let mut tags = tags.map(Tag::from);
+        let mut result = Self::from(SharedTagSet::from_tags(tags.by_ref().take(base_count).collect()));
+        if modified {
+            result.ensure_overlay().additions.extend(tags);
+        }
+        result
+    }
+
     fn ensure_overlay(&mut self) -> &mut TagSetOverlay {
         self.overlay.get_or_insert_with(|| {
             Box::new(TagSetOverlay {

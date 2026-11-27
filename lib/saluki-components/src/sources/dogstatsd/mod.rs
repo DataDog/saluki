@@ -306,11 +306,19 @@ pub struct DogStatsDConfiguration {
 
     /// Whether or not to allow heap allocations when resolving contexts.
     ///
-    /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
-    /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
-    /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
-    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags can't be
-    /// interned, the metric is skipped.
+    /// This setting selects which bounded string store the context resolvers use:
+    ///
+    /// - When set to `true`, each context is one packed allocation. Recurring strings of 8 bytes or more become IDs in
+    ///   a shared `SymbolTable`, and other strings stay inline in the context. A full table never drops a metric, but
+    ///   memory usage for contexts is unbounded.
+    /// - When set to `false`, the resolvers copy string bytes into each packed context allocation. An interner lease
+    ///   bounds the strings that do not fit inline in a `MetaString`. The resolvers skip the metric if they cannot
+    ///   acquire the lease for its name and all its tags.
+    ///
+    /// The interner size settings bound each store. Event and service check tags always use the
+    /// `GenericMapInterner`.
+    ///
+    /// Defaults to `true`.
     pub allow_context_heap_allocations: bool,
 
     /// Whether or not to enable support for no-aggregation pipelines.
@@ -325,6 +333,8 @@ pub struct DogStatsDConfiguration {
     /// When `context_string_interner_size_bytes` isn't set, this value is multiplied by 512 bytes per entry to
     /// derive the interner byte size. This provides backwards compatibility for customers migrating configurations
     /// from the Core Agent, where this setting represents an entry count rather than a byte size.
+    ///
+    /// Defaults to 4096, which gives 2 MiB.
     pub context_string_interner_entry_count: u64,
 
     /// Total size of the string interner used for contexts, in bytes.
@@ -332,6 +342,17 @@ pub struct DogStatsDConfiguration {
     /// When set, this takes priority over `context_string_interner_entry_count`. This controls the amount of memory
     /// that can be used to intern metric names and tags. If the interner is full, metrics with contexts that haven't
     /// already been resolved may or may not be dropped, depending on the value of `allow_context_heap_allocations`.
+    ///
+    /// The source builds two string stores of this size, and both context resolvers share them:
+    ///
+    /// - a `SymbolTable` for metric contexts when `allow_context_heap_allocations` is `true`
+    /// - a `GenericMapInterner` for metric contexts when `allow_context_heap_allocations` is `false`, and for event
+    ///   and service check tags in both cases
+    ///
+    /// `SymbolTable` allocates its storage on demand, so this size is an upper bound; `GenericMapInterner`
+    /// allocates its backing buffer up front.
+    ///
+    /// Defaults to unset, so `context_string_interner_entry_count` sets the size.
     pub context_string_interner_size_bytes: Option<ByteSize>,
 
     /// The maximum number of cached contexts to allow.
@@ -873,8 +894,8 @@ impl MemoryBounds for DogStatsDConfiguration {
                 UsageExpr::config("dogstatsd_buffer_count", self.buffer_count),
                 UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
             ))
-            // We also allocate the backing storage for the string interner up front, which is used by our context
-            // resolver.
+            // Account for the store that bounds metric contexts. In strict mode it also holds event and service
+            // check tags. In heap-allowed mode the separate store for those tags is not included in this estimate.
             .with_expr(UsageExpr::config(
                 "dogstatsd_string_interner_size_bytes",
                 self.effective_context_string_interner_bytes().as_u64() as usize,
