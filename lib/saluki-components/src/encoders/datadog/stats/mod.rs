@@ -219,8 +219,33 @@ impl Encoder for DatadogStats {
                     None => break,
                 },
                 maybe_event_buffer = context.events().next() => match maybe_event_buffer {
-                    Some(event_buffer) => events_tx.send(event_buffer).await
-                        .error_context("Failed to send event buffer to request builder task.")?,
+                    Some(event_buffer) => {
+                        // Both channels between this task and the request builder task are bounded, and each task is
+                        // the producer on one and the consumer on the other. The request builder task can send several
+                        // payloads for one event buffer, and blocks once `payloads_tx` is full, so it never returns to
+                        // receive from `events_rx`. Keep draining payloads while we wait for capacity on `events_tx`
+                        // so that at least one of the two channels is always making progress.
+                        let permit = loop {
+                            select! {
+                                biased;
+
+                                permit = events_tx.reserve() => break permit
+                                    .error_context("Failed to reserve capacity for event buffer.")?,
+                                maybe_payload = payloads_rx.recv() => match maybe_payload {
+                                    Some(payload) => {
+                                        if let Err(e) = context.dispatcher().dispatch(payload).await {
+                                            error!("Failed to dispatch payload: {}", e);
+                                        }
+                                    }
+
+                                    // Our payloads channel is gone, which means our request builder task went away unexpectedly.
+                                    None => return Err(generic_error!("Request builder task stopped before accepting event buffer.")),
+                                }
+                            }
+                        };
+
+                        permit.send(event_buffer);
+                    }
                     None => break,
                 },
             }
@@ -435,6 +460,8 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use async_compression::tokio::bufread::GzipDecoder;
     use http_body_util::BodyExt as _;
     use saluki_core::components::test_util::TestComponentDriver;
@@ -583,6 +610,39 @@ mod tests {
             .flat_map(|piece| (0..GROUPS_PER_PIECE).map(move |group| format!("piece-{piece}-group-{group}")))
             .collect::<Vec<_>>();
         assert_eq!(resources, expected);
+    }
+
+    // Each event buffer below goes on the encoder's input before the encoder runs. On this single-threaded runtime, the
+    // encoder then hands event buffers to the request builder task until that channel is full, while the request
+    // builder task fills the payloads channel from the first event buffer, which holds more stats than both channels.
+    #[tokio::test]
+    async fn encoder_does_not_deadlock_when_one_event_buffer_fills_the_payloads_channel() {
+        const FIRST_BUFFER_STATS: usize = 64;
+        const LATER_BUFFERS: usize = 16;
+
+        let config = DatadogApmStatsEncoderConfiguration::new(AgentEnv::resolve(None, Some("prod"), &[], &[]));
+        let (encoder, mut payloads) = TestComponentDriver::options()
+            .with_wait_timeout(Duration::from_secs(2))
+            .encoder(config)
+            .await
+            .expect("stats encoder should build");
+
+        let mut first_buffer = EventsBuffer::default();
+        for piece in 0..FIRST_BUFFER_STATS {
+            assert!(first_buffer
+                .try_push(Event::TraceStats(split_piece(piece, 1)))
+                .is_none());
+        }
+        encoder.send(first_buffer).await;
+        for piece in 0..LATER_BUFFERS {
+            encoder.send_event(Event::TraceStats(split_piece(piece, 1))).await;
+        }
+
+        // Each stats goes in its own request.
+        for _ in 0..FIRST_BUFFER_STATS + LATER_BUFFERS {
+            assert!(payloads.next().await.is_some(), "the encoder stopped early");
+        }
+        encoder.shutdown().await.expect("stats encoder should stop cleanly");
     }
 
     #[tokio::test]
