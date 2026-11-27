@@ -131,8 +131,7 @@ ports are fixed.
 
 | Job | What it runs |
 | --- | --- |
-| `test-integration` | Every integration case on Linux except the cases that check what the OTLP/HTTP receivers answer, with the images the pipeline built. |
-| `test-integration-otlp` | The cases on Linux that check what the OTLP/HTTP receivers answer, with the same images. `ci/tooling/integration-cases.sh` lists them. |
+| `test-integration` | Every integration case on Linux, with the images the pipeline built. |
 | `test-integration-macos-arm64`, `test-integration-macos-amd64` | The cases that declare macOS, as host processes. |
 | `test-integration-windows-amd64` | The cases that declare Windows, in Windows containers. |
 | `generate-correctness-pipeline` | Makes one `test-correctness-<case>` job for each correctness case. |

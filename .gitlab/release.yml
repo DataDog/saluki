@@ -34,7 +34,6 @@ check-release-agent-version:
     - check-deny
     - check-licenses
     - test-integration
-    - test-integration-otlp
     - run-correctness-tests
 
 .release-gating-darwin:
