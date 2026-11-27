@@ -113,7 +113,7 @@ fn now_nanos() -> u64 {
 }
 
 #[test]
-fn test_normalize_service_pass_thru_v1() {
+fn normalize_service_pass_thru_v1() {
     let mut s = new_test_span_v1().with_service("foo");
     set_string_attribute(&mut s, PEER_SERVICE_KEY, "foo");
     set_string_attribute(&mut s, BASE_SERVICE_KEY, "bar");
@@ -126,7 +126,7 @@ fn test_normalize_service_pass_thru_v1() {
 }
 
 #[test]
-fn test_normalize_empty_service_no_lang_v1() {
+fn normalize_empty_service_no_lang_v1() {
     let mut s = new_test_span_v1().with_service("");
     set_string_attribute(&mut s, PEER_SERVICE_KEY, "");
     set_string_attribute(&mut s, BASE_SERVICE_KEY, "");
@@ -140,7 +140,7 @@ fn test_normalize_empty_service_no_lang_v1() {
 }
 
 #[test]
-fn test_normalize_empty_service_with_lang_v1() {
+fn normalize_empty_service_with_lang_v1() {
     let mut s = new_test_span_v1().with_service("");
     set_string_attribute(&mut s, PEER_SERVICE_KEY, "");
     set_string_attribute(&mut s, BASE_SERVICE_KEY, "");
@@ -153,7 +153,7 @@ fn test_normalize_empty_service_with_lang_v1() {
 }
 
 #[test]
-fn test_normalize_long_service_v1() {
+fn normalize_long_service_v1() {
     let mut s = new_test_span_v1().with_service("CAMEMBERT".repeat(100));
     set_string_attribute(&mut s, PEER_SERVICE_KEY, &"BRIE".repeat(100));
     set_string_attribute(&mut s, BASE_SERVICE_KEY, &"ROQUEFORT".repeat(100));
@@ -176,7 +176,7 @@ fn test_normalize_long_service_v1() {
 }
 
 #[test]
-fn test_normalize_name_pass_thru_v1() {
+fn normalize_name_pass_thru_v1() {
     let mut s = new_test_span_v1();
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -185,7 +185,7 @@ fn test_normalize_name_pass_thru_v1() {
 }
 
 #[test]
-fn test_normalize_empty_name_v1() {
+fn normalize_empty_name_v1() {
     let mut s = new_test_span_v1().with_name("");
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -194,7 +194,7 @@ fn test_normalize_empty_name_v1() {
 }
 
 #[test]
-fn test_normalize_long_name_v1() {
+fn normalize_long_name_v1() {
     let mut s = new_test_span_v1().with_name("CAMEMBERT".repeat(100));
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -203,7 +203,7 @@ fn test_normalize_long_name_v1() {
 }
 
 #[test]
-fn test_normalize_name_no_alphanumeric_v1() {
+fn normalize_name_no_alphanumeric_v1() {
     let mut s = new_test_span_v1().with_name("/");
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -212,7 +212,7 @@ fn test_normalize_name_no_alphanumeric_v1() {
 }
 
 #[test]
-fn test_normalize_resource_pass_thru_v1() {
+fn normalize_resource_pass_thru_v1() {
     let mut s = new_test_span_v1();
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -221,7 +221,7 @@ fn test_normalize_resource_pass_thru_v1() {
 }
 
 #[test]
-fn test_normalize_empty_resource_v1() {
+fn normalize_empty_resource_v1() {
     let mut s = new_test_span_v1();
     s.set_resource("");
     let (result, counts) = normalize_v1(&mut s, "");
@@ -231,7 +231,7 @@ fn test_normalize_empty_resource_v1() {
 }
 
 #[test]
-fn test_normalize_no_span_id_v1() {
+fn normalize_no_span_id_v1() {
     let mut s = new_test_span_v1().with_span_id(0);
     let (result, counts) = normalize_v1(&mut s, "");
     assert_eq!(result, Err(DropReason::SpanIdZero));
@@ -239,7 +239,7 @@ fn test_normalize_no_span_id_v1() {
 }
 
 #[test]
-fn test_normalize_start_v1_pass_through() {
+fn normalize_start_v1_pass_through() {
     let mut s = new_test_span_v1();
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -248,7 +248,7 @@ fn test_normalize_start_v1_pass_through() {
 }
 
 #[test]
-fn test_normalize_start_v1_too_small() {
+fn normalize_start_v1_too_small() {
     let mut s = new_test_span_v1().with_start(42);
     let min_start = now_nanos() - s.duration();
     let (result, counts) = normalize_v1(&mut s, "");
@@ -259,7 +259,7 @@ fn test_normalize_start_v1_too_small() {
 }
 
 #[test]
-fn test_normalize_start_v1_too_small_with_large_duration() {
+fn normalize_start_v1_too_small_with_large_duration() {
     let mut s = new_test_span_v1().with_start(42).with_duration(now_nanos() * 2);
     let min_start = now_nanos();
     let (result, counts) = normalize_v1(&mut s, "");
@@ -270,7 +270,7 @@ fn test_normalize_start_v1_too_small_with_large_duration() {
 }
 
 #[test]
-fn test_normalize_duration_pass_thru_v1() {
+fn normalize_duration_pass_thru_v1() {
     let mut s = new_test_span_v1();
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -279,7 +279,7 @@ fn test_normalize_duration_pass_thru_v1() {
 }
 
 #[test]
-fn test_normalize_empty_duration_v1() {
+fn normalize_empty_duration_v1() {
     let mut s = new_test_span_v1().with_duration(0);
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -288,7 +288,7 @@ fn test_normalize_empty_duration_v1() {
 }
 
 #[test]
-fn test_normalize_large_duration_v1() {
+fn normalize_large_duration_v1() {
     let mut s = new_test_span_v1().with_duration(i64::MAX as u64);
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -297,7 +297,7 @@ fn test_normalize_large_duration_v1() {
 }
 
 #[test]
-fn test_normalize_duration_above_i64_max_with_zero_start_v1() {
+fn normalize_duration_above_i64_max_with_zero_start_v1() {
     // The trace-agent zeroes a `u64` duration above `i64::MAX` even when the start is 0, so the sum doesn't overflow.
     let mut s = new_test_span_v1().with_start(0).with_duration(u64::MAX);
     let (result, counts) = normalize_v1(&mut s, "");
@@ -310,7 +310,7 @@ fn test_normalize_duration_above_i64_max_with_zero_start_v1() {
 }
 
 #[test]
-fn test_normalize_type_pass_thru_v1() {
+fn normalize_type_pass_thru_v1() {
     let mut s = new_test_span_v1().with_span_type("http");
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -319,7 +319,7 @@ fn test_normalize_type_pass_thru_v1() {
 }
 
 #[test]
-fn test_normalize_type_too_long_v1() {
+fn normalize_type_too_long_v1() {
     let mut s = new_test_span_v1().with_span_type("sql".repeat(1000));
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -328,7 +328,7 @@ fn test_normalize_type_too_long_v1() {
 }
 
 #[test]
-fn test_normalize_service_tag_v1() {
+fn normalize_service_tag_v1() {
     let mut s = new_test_span_v1().with_service("retargeting(api-Staging ");
     set_string_attribute(&mut s, PEER_SERVICE_KEY, "retargeting(api-Peer ");
     set_string_attribute(&mut s, BASE_SERVICE_KEY, "retargeting(api-Base ");
@@ -341,7 +341,7 @@ fn test_normalize_service_tag_v1() {
 }
 
 #[test]
-fn test_normalize_env_v1() {
+fn normalize_env_v1() {
     let mut s = new_test_span_v1().with_env("123DEVELOPMENT");
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -350,7 +350,7 @@ fn test_normalize_env_v1() {
 }
 
 #[test]
-fn test_normalize_span_link_name_v1() {
+fn normalize_span_link_name_v1() {
     for (link_name, expected) in [
         // An empty link name.
         ("", "unnamed_operation"),
@@ -376,7 +376,7 @@ fn test_normalize_span_link_name_v1() {
 /// The trace ID is already a fixed pair of 64-bit halves here, so only the zero check applies: the coercion of short
 /// and over-long IDs to 16 bytes belongs to the decoder.
 #[test]
-fn test_normalize_trace_chunk_v1_trace_id() {
+fn normalize_trace_chunk_v1_trace_id() {
     for (name, high, low, want_drop) in [
         ("exact", 0x0102030405060708, 0x090a0b0c0d0e0f10, false),
         ("low-64-bits-zero", 0x0102030405060708, 0, false),
@@ -400,7 +400,7 @@ fn test_normalize_trace_chunk_v1_trace_id() {
 
 /// With `component2name`, the span name is replaced by its `component` when set, a promoted field on V1 spans.
 #[test]
-fn test_normalize_component2name() {
+fn normalize_component2name() {
     // On, with a component.
     let mut s = new_test_span_v1().with_component("component");
     assert!(normalize_v1_with(&mut s, "", true).0.is_ok());
@@ -420,7 +420,7 @@ fn test_normalize_component2name() {
 /// A Zipkin root span, whose parent ID equals its span ID, gets a zero parent ID; the V1 check compares the parent ID
 /// with the span ID only.
 #[test]
-fn test_special_zipkin_root_span() {
+fn special_zipkin_root_span() {
     let mut s = new_test_span_v1().with_span_id(42).with_parent_id(42);
     let (result, counts) = normalize_v1(&mut s, "");
     assert!(result.is_ok());
@@ -430,7 +430,7 @@ fn test_special_zipkin_root_span() {
 }
 
 #[test]
-fn test_normalize_trace_empty() {
+fn normalize_trace_empty() {
     let mut trace = new_test_trace(Vec::new());
     let (result, counts) = normalize_trace_chunk_v1(&mut trace);
     assert_eq!(result, Err(DropReason::EmptyTrace));
@@ -438,7 +438,7 @@ fn test_normalize_trace_empty() {
 }
 
 #[test]
-fn test_normalize_trace_invalid_span() {
+fn normalize_trace_invalid_span() {
     let span2 = new_test_span_v1().with_span_id(TEST_SPAN_ID + 1).with_name("");
     let mut trace = new_test_trace(vec![new_test_span_v1(), span2]);
     let (result, counts) = normalize_trace_chunk_v1(&mut trace);
@@ -447,7 +447,7 @@ fn test_normalize_trace_invalid_span() {
 }
 
 #[test]
-fn test_normalize_trace_duplicate_span_id() {
+fn normalize_trace_duplicate_span_id() {
     let mut trace = new_test_trace(vec![new_test_span_v1(), new_test_span_v1()]);
     let (result, counts) = normalize_trace_chunk_v1(&mut trace);
     assert!(result.is_ok());
@@ -455,7 +455,7 @@ fn test_normalize_trace_duplicate_span_id() {
 }
 
 #[test]
-fn test_normalize_trace() {
+fn normalize_trace() {
     let span2 = new_test_span_v1().with_span_id(TEST_SPAN_ID + 1);
     let mut trace = new_test_trace(vec![new_test_span_v1(), span2]);
     let (result, counts) = normalize_trace_chunk_v1(&mut trace);
