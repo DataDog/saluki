@@ -9,7 +9,8 @@
 //! Supported splitting and delimiter behavior matches the Agent bug-for-bug (see the per-function
 //! notes, which cite the Agent source). Error handling deliberately diverges: the Agent logs a malformed
 //! value and substitutes an empty result, while this module propagates a hard error so the caller
-//! can reject the value instead of silently losing it. [`crate::cast_de`] notes the one exception.
+//! can reject the value instead of silently losing it. [`crate::cast_de`] notes one exception, and
+//! [`EnvDecode::JsonArrayOrRawString`] is another.
 //!
 //! The scalar type fallbacks are the string half of [`crate::cast_de`], which every configuration
 //! source shares, so an environment variable and a file accept the same spellings for a leaf.
@@ -63,6 +64,13 @@ pub enum EnvDecode {
     DurationString,
     /// Type fallback: a map/object (or any non-scalar), parsed as a JSON document.
     JsonValue,
+    /// A JSON array, else the raw string.
+    ///
+    /// For a key with a list default whose consumer decodes a string itself. The Agent decodes the value
+    /// of such a key only when it's a JSON array (`decodeJSONEnv`, `pkg/config/nodetreemodel/config.go`).
+    /// It stores any other value, such as invalid JSON or a JSON object, as the string it is, and the
+    /// consumer rejects that string only when the feature that uses the key runs.
+    JsonArrayOrRawString,
     /// Saluki-only: a signed decimal integer, optionally followed by an all-zero fraction. A leading
     /// `0` is decimal.
     DecimalInteger,
@@ -82,6 +90,10 @@ pub enum EnvDecode {
 pub fn decode(raw: &str, how: EnvDecode) -> Result<Value, String> {
     match how {
         EnvDecode::Json | EnvDecode::JsonValue => parse_json(raw),
+        EnvDecode::JsonArrayOrRawString => Ok(match parse_json(raw) {
+            Ok(array @ Value::Array(_)) => array,
+            _ => Value::String(raw.to_string()),
+        }),
         EnvDecode::CommaSeparated => Ok(comma_separated(raw)),
         EnvDecode::CommaAndSpaceSeparated => Ok(comma_and_space_separated(raw)),
         EnvDecode::CommaThenSpaceSeparated => Ok(comma_then_space_separated(raw)),
@@ -284,6 +296,21 @@ mod tests {
             json!({"k": ["v"]})
         );
         assert!(decode("{bad", EnvDecode::Json).is_err());
+    }
+
+    #[test]
+    fn json_array_or_raw_string_keeps_anything_but_a_json_array_as_a_string() {
+        assert_eq!(
+            decode(r#"[{"name":"x"}]"#, EnvDecode::JsonArrayOrRawString).unwrap(),
+            json!([{"name": "x"}])
+        );
+        for raw in ["- name: x", r#"{"name":"x"}"#, "5", "true", "null", r#""x""#] {
+            assert_eq!(
+                decode(raw, EnvDecode::JsonArrayOrRawString).unwrap(),
+                Value::String(raw.into()),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

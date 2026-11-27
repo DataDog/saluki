@@ -1,0 +1,37 @@
+# Verify that ADP starts when `logs_config.processing_rules` is a string that isn't JSON and the logs agent is disabled.
+#
+# Like the Agent, ADP doesn't decode the string unless the logs agent is enabled. The string is set in `datadog.yaml`,
+# so the core Agent keeps it as a string and streams it to ADP as one.
+
+description: "Verify ADP starts with a processing rules string that isn't JSON when the logs agent is disabled"
+timeout: 120s
+subject_os: [linux]
+
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-logs-processing-rules-string-unused"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    files:
+      datadog.yaml: datadog.yaml
+
+procedure:
+  # ADP has received the string as it is.
+  - step: config_key_equals
+    on: adp
+    view: source
+    key: logs_config.processing_rules
+    value: "- type: exclude_at_match\n  name: drop_app_debug_info\n  pattern: \"(?i)\\\\bDEBUG\\\\b|\\\\bINFO\\\\b\""
+    timeout: 60s
+  - parallel:
+      - {step: process_stable_for, on: adp, process: adp, duration: 10s}
+      # ADP doesn't report the string. The core Agent logs a notice about the setting's type, so only ADP's lines are
+      # searched.
+      - {step: log_not_contains, on: adp, pattern: "DATAPLANE.*processing_rules", regex: true, during: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}

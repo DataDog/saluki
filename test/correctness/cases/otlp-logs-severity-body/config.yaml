@@ -48,4 +48,30 @@ procedure:
     logs:
       # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
       identity_fields: ["fixture_id"]
-      min_count: 99
+      # All 33 severity, timestamp, and body records and 8 of the 11 processing-rule records survive, sent 3 times.
+      min_count: 123
+      # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
+      # an entry in the change that fixes its gap.
+      known_differences:
+        - gap: gap/regex-dialect
+          paths: ["content.message"]
+          kinds: [value]
+          when:
+            fixture_id: [keep-regex-dialect]
+          reason: >-
+            ADP's `\w` matches non-ASCII letters, where Go's matches only ASCII ones, so ADP also masks the `é` of
+            `word=café`.
+        - gap: gap/placeholder-expansion
+          paths: ["content.message"]
+          kinds: [value]
+          when:
+            fixture_id: [keep-placeholder-expansion]
+          reason: ADP expands the `$01` of a mask placeholder to the first group, where Go expands it to nothing.
+        - gap: gap/json-encoding
+          paths: ["content.message"]
+          kinds: [value]
+          when:
+            fixture_id: [keep-json-encoding]
+          reason: >-
+            ADP's content holds `<` and `>` as they are, where the Agent's escapes them as `\u003c` and `\u003e`, so a
+            mask matching the escaped form only applies in the Agent.

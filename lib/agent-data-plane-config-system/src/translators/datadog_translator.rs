@@ -25,6 +25,7 @@ use std::time::Duration;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricPrefixRule, MetricTagFilterEntry, OriginTagCardinality,
 };
+use agent_data_plane_config::domains::logs::{ProcessingRuleEntry, ProcessingRules};
 use agent_data_plane_config::domains::otlp::{
     ContainerTagPromotion, CumulativeMonotonicMode, DebugVerbosity, GrpcTransport, HistogramMode,
     InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT,
@@ -323,6 +324,44 @@ fn non_empty_trimmed(s: String) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// Reads `logs_config.processing_rules` as the Agent's `GlobalProcessingRules` does
+/// (`comp/logs/agent/config/config.go`).
+///
+/// A sequence is decoded into entries here, as [`ProcessingRuleEntry::from_sequence_value`] describes, and only the
+/// shape of each rule is checked. Like `mapstructure`, a single map is read as a sequence of that rule, and an empty
+/// map as no rules. A string is kept as it is: like the Agent, ADP decodes and validates the rules when it starts the
+/// logs pipeline, so that invalid rules don't affect the other pipelines.
+fn parse_processing_rules(key: &str, raw: serde_json::Value) -> Result<ProcessingRules> {
+    use serde_json::Value;
+    let rules = match raw {
+        Value::Null => return Ok(ProcessingRules::default()),
+        Value::String(json) => return Ok(ProcessingRules::Json(json)),
+        Value::Array(rules) => rules,
+        Value::Object(rule) if rule.is_empty() => Vec::new(),
+        rule @ Value::Object(_) => vec![rule],
+        other => {
+            return Err(TranslateError::new(
+                key,
+                format!("Invalid processing rules: expected a sequence or a JSON string, got `{other}`"),
+            ))
+        }
+    };
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, rule)| {
+            ProcessingRuleEntry::from_sequence_value(rule).map_err(|error| {
+                TranslateError::new_with_context(
+                    key,
+                    format!("Invalid processing rules: processing rule {index}"),
+                    error,
+                )
+            })
+        })
+        .collect::<Result<_>>()
+        .map(ProcessingRules::Entries)
 }
 
 /// Parses one `dogstatsd_mapper_profiles` object into a [`MapperProfile`].
@@ -1526,6 +1565,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.control.logging.to_syslog = value;
     }
 
+    fn consume_logs_config_processing_rules(&mut self, value: serde_json::Value) {
+        // The Agent only reads the rules when its logs agent runs. `control.logs_enabled` may not be set yet, since
+        // `logs_enabled` is consumed after this key, so read the keys that enable the logs agent directly.
+        if !(self.datadog.logs_enabled || self.datadog.log_enabled) {
+            return;
+        }
+        match parse_processing_rules("logs_config.processing_rules", value) {
+            Ok(rules) => self.config.domains.logs.processing_rules = rules,
+            Err(error) => self.record_error(error),
+        }
+    }
+
     fn consume_logs_enabled(&mut self, value: bool) {
         // See `consume_log_enabled`.
         self.config.control.logs_enabled |= value;
@@ -2143,6 +2194,7 @@ mod tests {
     use agent_data_plane_config::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use agent_data_plane_config::domains::{
         dogstatsd::{MetricFilter, MetricPrefixRule, OriginTagCardinality},
+        logs::{ProcessingRuleEntry, ProcessingRules, SourceMatch},
         otlp::{
             CumulativeMonotonicMode, DebugVerbosity, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
@@ -3107,6 +3159,176 @@ mod tests {
         let error = errors.expect("a negative mapper cache size should record an error");
         assert!(error.to_string().contains("dogstatsd_mapper_cache_size"));
         assert!(error.to_string().contains("greater than or equal to 0"));
+    }
+
+    fn processing_rule_entry(rule_type: &str, name: &str, pattern: &str) -> ProcessingRuleEntry {
+        ProcessingRuleEntry {
+            rule_type: rule_type.into(),
+            name: name.into(),
+            pattern: pattern.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn logs_processing_rules_translate_from_a_sequence() {
+        let rules = json!([
+            { "type": "exclude_at_match", "name": "exclude", "pattern": "^debug" },
+            { "type": "mask_sequences", "name": "mask", "pattern": "(id=)[0-9]+", "replace_placeholder": "${1}x" },
+            {
+                "type": "remap_source",
+                "name": "remap",
+                "matching": [{ "attribute": "vendor", "value": "acme", "new_source": "acme_logs" }]
+            },
+        ]);
+        let (config, errors) =
+            translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": rules } }));
+
+        assert!(errors.is_none(), "unexpected errors: {errors:?}");
+        assert_eq!(
+            config.domains.logs.processing_rules,
+            ProcessingRules::Entries(vec![
+                processing_rule_entry("exclude_at_match", "exclude", "^debug"),
+                ProcessingRuleEntry {
+                    replace_placeholder: "${1}x".into(),
+                    ..processing_rule_entry("mask_sequences", "mask", "(id=)[0-9]+")
+                },
+                ProcessingRuleEntry {
+                    matching: vec![SourceMatch {
+                        attribute: "vendor".into(),
+                        value: "acme".into(),
+                        new_source: "acme_logs".into(),
+                    }],
+                    ..processing_rule_entry("remap_source", "remap", "")
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn logs_processing_rules_keep_a_string_as_it_is() {
+        // Like the Agent, ADP decodes a string when it starts the logs pipeline, so a string that isn't JSON doesn't fail
+        // translation.
+        for rules in [
+            r#"[{"type": "exclude_at_match", "name": "exclude", "pattern": "^debug"}]"#,
+            "- type: exclude_at_match\n  name: exclude\n  pattern: ^debug",
+            "",
+        ] {
+            let (config, errors) =
+                translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": rules } }));
+
+            assert!(errors.is_none(), "unexpected errors for {rules:?}: {errors:?}");
+            assert_eq!(
+                config.domains.logs.processing_rules,
+                ProcessingRules::Json(rules.into()),
+                "{rules:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn null_logs_processing_rule_fields_read_as_empty() {
+        // A YAML field with no value is null. Like the Agent, read it as an empty value.
+        let rule = json!({ "type": "mask_sequences", "name": "strip", "pattern": null, "matching": null });
+        let (config, errors) =
+            translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": [rule] } }));
+
+        assert!(errors.is_none(), "unexpected errors: {errors:?}");
+        assert_eq!(
+            config.domains.logs.processing_rules,
+            ProcessingRules::Entries(vec![processing_rule_entry("mask_sequences", "strip", "")])
+        );
+    }
+
+    #[test]
+    fn logs_processing_rules_are_only_read_when_the_logs_agent_is_enabled() {
+        // Like the Agent, the rules aren't read unless `logs_enabled` or `log_enabled` turns on the logs agent, so even a
+        // value of the wrong type doesn't fail translation.
+        for rules in [json!([{ "type": "exclude_truncated", "name": "truncated" }]), json!(7)] {
+            let (config, errors) = translate_explicit(json!({ "logs_config": { "processing_rules": rules } }));
+            assert!(errors.is_none(), "unexpected errors for {rules}: {errors:?}");
+            assert_eq!(config.domains.logs.processing_rules, ProcessingRules::default());
+        }
+
+        let rules = json!([{ "type": "exclude_truncated", "name": "truncated" }]);
+        for enabling_key in ["logs_enabled", "log_enabled"] {
+            let (config, errors) =
+                translate_explicit(json!({ enabling_key: true, "logs_config": { "processing_rules": rules } }));
+            assert!(errors.is_none(), "unexpected errors with {enabling_key}: {errors:?}");
+            assert_eq!(
+                config.domains.logs.processing_rules,
+                ProcessingRules::Entries(vec![processing_rule_entry("exclude_truncated", "truncated", "")]),
+                "{enabling_key}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_logs_processing_rules_translate_without_errors() {
+        // The rules are validated when the logs pipeline starts, so an invalid rule doesn't fail translation.
+        let rules = json!([
+            { "type": "exclude_at_match", "name": "no_pattern" },
+            { "type": "drop_everything", "name": "unknown" },
+            { "type": "mask_sequences", "name": "bad_pattern", "pattern": "(" },
+        ]);
+        let (config, errors) =
+            translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": rules } }));
+
+        assert!(errors.is_none(), "unexpected errors: {errors:?}");
+        let ProcessingRules::Entries(entries) = config.domains.logs.processing_rules else {
+            panic!("expected entries");
+        };
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn undecodable_logs_processing_rules_fail_naming_the_rule() {
+        let rules = json!([
+            { "type": "exclude_truncated", "name": "valid" },
+            { "type": "exclude_at_match", "name": ["a"], "pattern": "a" },
+        ]);
+        let (config, errors) =
+            translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": rules } }));
+
+        let error = errors.expect("an undecodable rule should fail").to_string();
+        assert!(
+            error.contains("`logs_config.processing_rules`, Invalid processing rules: processing rule 1: `name` expected a string, got a list"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(config.domains.logs.processing_rules, ProcessingRules::default());
+    }
+
+    #[test]
+    fn a_logs_processing_rules_map_reads_as_one_rule() {
+        // Like `mapstructure`, which reads a map where a list is expected as a list of that map.
+        for (rules, expected) in [
+            (
+                json!({ "type": "exclude_at_match", "name": "exclude", "pattern": "^debug" }),
+                vec![processing_rule_entry("exclude_at_match", "exclude", "^debug")],
+            ),
+            (json!({}), vec![]),
+        ] {
+            let (config, errors) =
+                translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": rules } }));
+
+            assert!(errors.is_none(), "unexpected errors for {rules}: {errors:?}");
+            assert_eq!(
+                config.domains.logs.processing_rules,
+                ProcessingRules::Entries(expected),
+                "{rules}"
+            );
+        }
+    }
+
+    #[test]
+    fn logs_processing_rules_of_another_type_fail() {
+        let (_, errors) = translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": 7 } }));
+
+        let error = errors.expect("a number should fail").to_string();
+        assert!(
+            error.contains("expected a sequence or a JSON string"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

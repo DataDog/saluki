@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    Apply the global logs processing rules in ``logs_config.processing_rules`` to check logs and to OTLP logs that
+    Agent Data Plane handles natively, as the Agent does: ``exclude_at_match`` and ``include_at_match`` drop logs, and
+    ``mask_sequences`` masks matching content. Like the Agent, Agent Data Plane only reads the rules when
+    ``logs_enabled`` (or its deprecated spelling ``log_enabled``) is ``true``, and doesn't start when they're invalid.
+    Patterns use Rust's regular expression syntax, which differs from Go's for some constructs: for example, ``\w``
+    also matches non-ASCII letters.

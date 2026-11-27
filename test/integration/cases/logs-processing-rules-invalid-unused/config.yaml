@@ -1,0 +1,40 @@
+# Verify that an invalid logs processing rule doesn't stop ADP when ADP runs no logs pipeline.
+#
+# Like the Agent's logs agent, ADP validates the rules only when it starts the pipeline that uses them. Here ADP only
+# runs DogStatsD, so it keeps running. The `ADP_` prefix gives the settings to ADP alone, since the core Agent in the
+# image would fail to start on the invalid rule.
+
+description: "Verify an invalid logs processing rule doesn't stop ADP when it runs no logs pipeline"
+timeout: 120s
+subject_os: [linux]
+
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-logs-processing-rules-invalid-unused"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      ADP_DD_LOGS_ENABLED: "true"
+      ADP_DD_LOGS_CONFIG_PROCESSING_RULES: '[{"type": "exclude_at_match", "name": "no_pattern"}]'
+
+procedure:
+  # ADP has read the invalid rule.
+  - step: config_key_equals
+    on: adp
+    view: runtime
+    key: domains.logs.processing_rules
+    value:
+      - type: exclude_at_match
+        name: no_pattern
+        pattern: ""
+        replace_placeholder: ""
+        matching: []
+    timeout: 60s
+  - parallel:
+      - {step: process_stable_for, on: adp, process: adp, duration: 10s}
+      - {step: log_not_contains, on: adp, pattern: "Invalid processing rules", during: 10s}
+      - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}

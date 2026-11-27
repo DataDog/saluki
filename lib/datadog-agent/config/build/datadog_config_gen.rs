@@ -20,6 +20,9 @@
 //! the deserialization boundary keeps downstream types consistent; see `listize` and
 //! `crate::list_de`.
 //!
+//! A few keys keep their value as written, as a `serde_json::Value`, because the Agent decodes them
+//! only when the feature that uses them runs. Their translator decodes them. See `keep_raw`.
+//!
 //! Scalar leaves get the Agent's own type coercion for the same reason: the Agent reads every
 //! setting through a cast against its declared type, so each leaf must accept the spellings that
 //! cast accepts. See `permissivize` and `crate::cast_de`.
@@ -261,6 +264,7 @@ fn render(
     listize(&mut file);
     strip_section_prefixes(&mut file);
     durationize(&mut file, durations);
+    keep_raw(&mut file);
     platformize(&mut file, platform_defaults);
     permissivize(&mut file);
 
@@ -327,6 +331,41 @@ fn durationize(file: &mut syn::File, durations: &BTreeMap<String, u64>) {
         current: None,
     }
     .visit_file_mut(file);
+}
+
+/// Keys whose value reaches the translator as written: a sequence, a string, or any other JSON value.
+///
+/// The Agent's consumer of each of these keys decodes a string value when it reads the key, not when
+/// it loads the configuration, and only when the feature that uses the key runs. Decoding it here
+/// would reject a configuration that the Agent runs with. Every key here has a list default:
+/// `env_reader_gen` decodes an environment value of these keys only when it's a JSON array, as the
+/// Agent does for such a key, and keeps any other value as a string.
+pub(crate) const RAW_KEYS: &[&str] = &["logs_config.processing_rules"];
+
+/// Retype every key in [`RAW_KEYS`] to `serde_json::Value`, with no decoder.
+///
+/// This replaces the decoder that `listize` gives an object array. A missing value is `null`. Runs
+/// after `strip_section_prefixes`, so section structs already carry their bare names.
+fn keep_raw(file: &mut syn::File) {
+    let struct_names: HashSet<String> = file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(s) => Some(s.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    for path in RAW_KEYS {
+        let (owner_struct, leaf_field) = resolve_owner_and_leaf(file, &struct_names, path);
+        let field = find_field_mut(file, &owner_struct, &leaf_field)
+            .unwrap_or_else(|| panic!("raw key `{path}` resolves to unknown field `{owner_struct}.{leaf_field}`"));
+        field.ty = parse_quote!(::serde_json::Value);
+        field.attrs.retain(|attr| !attr.path().is_ident("serde"));
+        field.attrs.push(parse_quote!(
+            #[serde(default, skip_serializing_if = "::serde_json::Value::is_null")]
+        ));
+    }
 }
 
 /// The `duration_defaults` / `platform_defaults` function name for a dotted key: its path with `.`

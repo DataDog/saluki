@@ -10,6 +10,7 @@
 mod apm;
 mod datadog;
 mod dogstatsd;
+mod logs;
 mod otlp;
 mod static_tags;
 mod traces;
@@ -22,6 +23,7 @@ pub(crate) use self::datadog::{
     datadog_metrics_configuration, forwarder_configuration, mrf_configuration, traces_forwarder_configuration,
 };
 pub(crate) use self::dogstatsd::{metric_mirroring, metric_name_filter, tag_filter_entries, tag_value_allowlist};
+pub(crate) use self::logs::logs_processing_rules;
 pub(crate) use self::otlp::{
     otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_proxy_destinations, otlp_receiver,
     otlp_traces_settings,
