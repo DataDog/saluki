@@ -313,13 +313,7 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn config(&mut self) -> Result<String, GenericError> {
-        let uri = self.build_uri("/config", None);
-        let req = Request::get(uri).body(String::new()).expect("valid request");
-        self.client
-            .send(req)
-            .and_then(process_response_body)
-            .await
-            .and_then(body_when_success)
+        self.get_configuration("/config").await
     }
 
     /// Retrieves the translated runtime configuration of the process.
@@ -333,13 +327,30 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn config_runtime(&mut self) -> Result<String, GenericError> {
-        let uri = self.build_uri("/config/runtime", None);
+        self.get_configuration("/config/runtime").await
+    }
+
+    /// Retrieves a configuration view from `route`.
+    ///
+    /// Unlike the other requests, a non-success response is reported by its status alone: the body of an error
+    /// response can hold configuration values, and the error ends up in logs.
+    async fn get_configuration(&mut self, route: &str) -> Result<String, GenericError> {
+        let uri = self.build_uri(route, None);
         let req = Request::get(uri).body(String::new()).expect("valid request");
-        self.client
-            .send(req)
-            .and_then(process_response_body)
+        let resp = self.client.send(req).await?;
+        let (parts, body) = resp.into_parts();
+        let body = body
+            .collect()
             .await
-            .and_then(body_when_success)
+            .with_error_context(|| {
+                format!(
+                    "Failed to read the configuration response body (status {}).",
+                    parts.status
+                )
+            })?
+            .to_bytes();
+        let body = String::from_utf8(body.into()).error_context("Configuration response body is not valid UTF-8.")?;
+        configuration_when_success(Response::from_parts(parts, body))
     }
 
     /// Retrieves the tags from the workload provider.
@@ -464,6 +475,16 @@ fn body_when_replay_session_success(resp: Response<String>) -> Result<String, Ge
     }
 }
 
+/// Returns the body of a successful configuration response. An unsuccessful response gives an error with its status
+/// alone, because its body can hold configuration values.
+fn configuration_when_success(resp: Response<String>) -> Result<String, GenericError> {
+    if resp.status().is_success() {
+        Ok(resp.into_body())
+    } else {
+        Err(generic_error!("Received non-success response ({}).", resp.status()))
+    }
+}
+
 fn body_when_success(resp: Response<String>) -> Result<String, GenericError> {
     if resp.status().is_success() {
         Ok(resp.into_body())
@@ -508,7 +529,7 @@ mod tests {
 
     use super::{
         body_when_capture_success, body_when_replay_session_success, build_dogstatsd_contexts_dump_request,
-        empty_when_replay_session_success, path_when_context_dump_success,
+        configuration_when_success, empty_when_replay_session_success, path_when_context_dump_success,
     };
     use crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
@@ -626,5 +647,18 @@ mod tests {
                 "missing response body in: {message}"
             );
         }
+    }
+
+    #[test]
+    fn configuration_error_does_not_quote_the_response_body() {
+        let resp = Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body("api_key: secret-value".to_string())
+            .unwrap();
+
+        let message = format!("{:#}", configuration_when_success(resp).unwrap_err());
+
+        assert!(message.contains("500"));
+        assert!(!message.contains("secret-value"));
     }
 }

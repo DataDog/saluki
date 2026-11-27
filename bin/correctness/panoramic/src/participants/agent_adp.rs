@@ -356,6 +356,24 @@ struct ConfigDumpArgs {
     view: View,
 }
 
+/// The messages that `agent-data-plane config` writes to standard error when it fails; see `cli/config.rs` in
+/// `agent-data-plane` (`CLIENT_FAILED` and the constants after it). They hold no configuration values. Change both
+/// together. When `config_dump` fails, nothing else from the command's output reaches a report.
+const CONFIG_FAILURES: [&str; 4] = [
+    "agent-data-plane config: cannot create the client for the secure API",
+    "agent-data-plane config: the request for the configuration failed",
+    "agent-data-plane config: the configuration response is not valid JSON after redaction",
+    "agent-data-plane config: cannot format the configuration response as JSON",
+];
+
+/// The fixed failure message in `stderr`, if it has one.
+fn config_failure(stderr: &[u8]) -> Option<&'static str> {
+    let stderr = String::from_utf8_lossy(stderr);
+    CONFIG_FAILURES
+        .into_iter()
+        .find(|message| stderr.lines().any(|line| line.trim() == *message))
+}
+
 /// `config_dump`: ADP's configuration, as JSON, from its `config --json` command. Its argument is `{view: source |
 /// runtime}`.
 #[derive(Debug)]
@@ -379,11 +397,13 @@ impl Operation for ConfigDump {
             argv.push("--runtime".to_string());
         }
         let exited = on.command("adp", &argv, &BTreeMap::new(), limit).await?;
-        // The configuration holds the API key, so no message here quotes the command's output.
+        // The configuration holds the API key, so no message here quotes the command's output. Only a fixed failure
+        // message from the command passes.
         if exited.code != 0 {
+            let reason = config_failure(&exited.stderr).map_or(String::new(), |message| format!(": {message}"));
             return Err(HandleError::Software(format!(
-                "agent-data-plane config exited with code {}",
-                exited.code
+                "agent-data-plane config exited with code {}{}",
+                exited.code, reason
             )));
         }
         serde_json::from_slice(&exited.stdout)
@@ -429,5 +449,17 @@ impl Operation for ConfigSet {
             )));
         }
         Ok(json!({}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{config_failure, CONFIG_FAILURES};
+
+    #[test]
+    fn config_failure_quotes_only_a_fixed_message() {
+        let stderr = format!("api_key: secret\n{}\n", CONFIG_FAILURES[1]);
+        assert_eq!(config_failure(stderr.as_bytes()), Some(CONFIG_FAILURES[1]));
+        assert_eq!(config_failure(b"api_key: secret\n"), None);
     }
 }
