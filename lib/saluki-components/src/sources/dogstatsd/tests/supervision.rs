@@ -11,13 +11,20 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use saluki_core::{
-    components::test_util::{ComponentControl, DriverOptions, NoInput, Outputs, PrebuiltSource, TestComponentDriver},
-    runtime::{state::ResourceRegistry, NodeSnapshot, NodeState},
+    components::{
+        sources::SourceBuilder as _,
+        test_util::{ComponentControl, DriverOptions, NoInput, Outputs, PrebuiltSource, TestComponentDriver},
+    },
+    runtime::{
+        state::{ResourceLease, ResourceRegistry},
+        NodeSnapshot, NodeState,
+    },
     support::SubsystemIdentifier,
     topology::EventsBuffer,
 };
+use saluki_error::GenericError;
 use saluki_io::net::listener::Listener;
-use saluki_io::net::{BoundListenAddress, ListenAddress};
+use saluki_io::net::{BoundListenAddress, ListenAddress, SocketSpecification};
 use stringtheory::MetaString;
 use tokio::net::UdpSocket;
 #[cfg(unix)]
