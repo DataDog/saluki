@@ -1,8 +1,9 @@
 description: >-
-  External Data decides the origin of a DogStatsD metric in unified origin detection. The metric names the sender's
-  container through External Data. UDS origin detection is off, and the Local Data container ID names no container, so
-  the unified waterfall resolves External Data from the pods the Agent gets from the kubelet. Both sides must tag the
-  metric with the sender's container.
+  External Data decides the origin of DogStatsD metrics in unified origin detection. Each metric names the sender's
+  container through External Data, once with the right init container flag and once with the wrong one, which the Agent
+  ignores. UDS origin detection is off, and the Local Data container ID names no container, so the unified waterfall
+  resolves External Data from the pods the Agent gets from the kubelet. Both sides must tag each metric with the
+  sender's container.
 timeout: 8m
 subject_os: [linux]
 participants:
@@ -58,4 +59,5 @@ procedure:
       # A container-level tag shows that External Data resolved to the container. Without it, the waterfall falls back
       # to the pod that External Data names, which has pod-level tags only.
       series:
-        - {name: external_data.container, tags: [probe:external-data, kube_container_name:load]}
+        - {name: external_data.init_false, tags: [probe:external-data, kube_container_name:load]}
+        - {name: external_data.init_true, tags: [probe:external-data, kube_container_name:load]}

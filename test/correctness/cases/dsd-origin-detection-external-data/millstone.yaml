@@ -5,8 +5,10 @@ volume: 1000
 corpus:
   size: 1
   payload:
-    # The metric names the load generator's own container through External Data (`|e:`): its pod's UID, the container
-    # name `load`, and that it is not an init container. It also has a Local Data container ID (`|c:`) that no
-    # container has, so that External Data decides the origin.
+    # Each metric names the load generator's own container through External Data (`|e:`): its pod's UID, the container
+    # name `load`, and whether it is an init container. `load` is not, so `it-true` is the wrong flag, which the Agent
+    # ignores. Each metric also has a Local Data container ID (`|c:`) that no container has, so that External Data
+    # decides the origin.
     static: |
-      external_data.container:1|c|#probe:external-data|c:this-is-not-a-real-container-id|e:pu-{{ self.pod_uid }},cn-load,it-false
+      external_data.init_false:1|c|#probe:external-data|c:this-is-not-a-real-container-id|e:pu-{{ self.pod_uid }},cn-load,it-false
+      external_data.init_true:1|c|#probe:external-data|c:this-is-not-a-real-container-id|e:pu-{{ self.pod_uid }},cn-load,it-true
