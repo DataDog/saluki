@@ -70,6 +70,8 @@ pub(crate) struct PlannedParticipant {
     pub(crate) options: BTreeMap<String, bool>,
     pub(crate) launch: Launch,
     pub(crate) env: BTreeMap<String, Template>,
+    /// Environment the pod fills from its own fields, by variable: the field path of each.
+    pub(crate) field_env: BTreeMap<String, &'static str>,
     /// Every placed file, by destination, with a directory source expanded to its files.
     pub(crate) files: Vec<PlannedFile>,
     pub(crate) mounts: Vec<HostMount>,
@@ -846,6 +848,8 @@ impl Planner<'_, '_, '_> {
             consumes,
             operations,
             wiring: _,
+            options: type_options,
+            mut field_env,
         } = spec;
 
         let connect = &self.participant.placement.connect;
@@ -953,6 +957,30 @@ impl Planner<'_, '_, '_> {
             ));
         }
 
+        field_env.retain(|key, _| !env.contains_key(key));
+        if !field_env.is_empty() && enclosure != Enclosure::KubernetesPod {
+            self.at.push(format!(
+                "participant type '{}' fills environment from pod fields, and this participant is a {}",
+                type_name.unwrap_or_default(),
+                enclosure
+            ));
+        }
+        let mut options: BTreeMap<String, bool> = BTreeMap::new();
+        for (option, value) in type_options {
+            if !enclosure.facts().options.contains(&option) {
+                self.at.push(format!(
+                    "participant type '{}' sets realization option '{}', which {} does not support",
+                    type_name.unwrap_or_default(),
+                    option,
+                    enclosure
+                ));
+            }
+            options.insert(option.to_string(), value);
+        }
+        if let Some(request) = &self.participant.placement.realization {
+            options.extend(request.options.clone());
+        }
+
         let mounts = mounts.unwrap_or_default();
         if !mounts.is_empty() && !enclosure.facts().mounts {
             self.at.push(format!(
@@ -1034,15 +1062,10 @@ impl Planner<'_, '_, '_> {
             participant_type: self.participant.placement.participant_type.clone(),
             subject: self.participant.placement.subject,
             realization: self.realization,
-            options: self
-                .participant
-                .placement
-                .realization
-                .as_ref()
-                .map(|request| request.options.clone())
-                .unwrap_or_default(),
+            options,
             launch,
             env,
+            field_env,
             files,
             mounts,
             endpoints: planned_endpoints,

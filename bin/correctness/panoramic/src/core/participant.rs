@@ -181,8 +181,6 @@ pub(crate) trait ParticipantType: Send + Sync {
 pub(crate) struct SpecContext<'a> {
     pub(crate) realization: Realization,
     /// The realization options the case set.
-    // TODO: remove the dead_code allowance once a participant type reads an option.
-    #[allow(dead_code)]
     pub(crate) options: &'a BTreeMap<String, bool>,
     /// What the case wrote for this OS, with references unresolved.
     pub(crate) case: &'a ParticipantSpec,

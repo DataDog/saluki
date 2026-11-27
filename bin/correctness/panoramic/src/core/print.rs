@@ -140,7 +140,11 @@ impl PlannedParticipant {
         field(
             f,
             "env",
-            self.env.iter().map(|(key, value)| format!("{}={}", key, value)),
+            self.env.iter().map(|(key, value)| format!("{}={}", key, value)).chain(
+                self.field_env
+                    .iter()
+                    .map(|(key, field)| format!("{}=(the pod's {})", key, field)),
+            ),
         )?;
         let files = self.files.iter().map(|file| {
             let mut line = format!("{}  <- {}", file.destination, file.source);

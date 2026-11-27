@@ -26,10 +26,11 @@ use bollard::Docker;
 use bytes::Bytes;
 use futures::io::AsyncReadExt as _;
 use k8s_openapi::api::core::v1::{
-    Container as PodContainer, ContainerStatus, EnvVar, HostPathVolumeSource, Namespace, Pod, PodSpec, Service,
-    ServiceSpec, Volume, VolumeMount,
+    Container as PodContainer, ContainerStatus, EnvVar, EnvVarSource, HostPathVolumeSource, Namespace,
+    ObjectFieldSelector, Pod, PodSpec, Service, ServiceAccount, ServiceSpec, Volume, VolumeMount,
 };
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Status};
+use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, PolicyRule, RoleRef, Subject};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference, Status};
 use kube::api::{Api, AttachParams, LogParams, PostParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::{Client, Config};
@@ -37,13 +38,14 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use tokio::process::Command;
+use tokio::sync::OnceCell;
 use tokio::time::{sleep_until, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::backend::{
     Backend, Created, Exec, Identities, Preparing, Realized, Running, Scope, CRI_SOCKET, EXIT_DIR_ENV, HOST_PID,
-    LOG_DIR_ENV,
+    KUBELET, LOG_DIR_ENV,
 };
 use super::container::exec_in;
 use super::handle::HandleError;
@@ -74,6 +76,11 @@ const PARTICIPANT_LABEL: &str = "panoramic-participant";
 /// Where the kind node has the container runtime's socket, and where a pod that asks for it gets it.
 const NODE_CRI_SOCKET: &str = "/run/containerd/containerd.sock";
 const POD_CRI_SOCKET: &str = "/var/run/containerd/containerd.sock";
+/// The service account of a pod with the realization option `kubelet`, one in each case's namespace.
+const KUBELET_ACCOUNT: &str = "kubelet";
+/// What the service account may read: the kubelet API, as the Datadog Helm chart's ClusterRole for the node Agent grants
+/// it. The kubelet authorizes `/pods` and the other paths without a resource of their own as `nodes/proxy`.
+const KUBELET_RESOURCES: &[&str] = &["nodes/metrics", "nodes/spec", "nodes/proxy", "nodes/stats"];
 /// The file in a participant's late directory that tells its pod's command that every late file is in place.
 const READY_FILE: &str = "ready";
 /// How long a pod's termination may take after the case has no more use of it, which bounds namespace deletion.
@@ -177,6 +184,8 @@ impl Backend for PodBackend {
             client: self.client.clone(),
             node: self.node.clone(),
             namespace,
+            namespace_uid: Arc::new(OnceCell::new()),
+            kubelet: Arc::new(OnceCell::new()),
             dir,
             tasks: cx.tasks.clone(),
             ledger: cx.ledger.clone(),
@@ -203,7 +212,8 @@ impl Backend for PodBackend {
             },
             ..Default::default()
         };
-        cx.ledger
+        let created = cx
+            .ledger
             .create_by(&case.namespace, cx.cancel, cx.deadline, async {
                 namespaces
                     .create(&PostParams::default(), &object)
@@ -212,6 +222,9 @@ impl Backend for PodBackend {
             })
             .await
             .ok_or_else(|| generic_error!("Cancelled while creating namespace '{}'.", case.namespace))??;
+        if let Some(uid) = created.metadata.uid {
+            let _ = case.namespace_uid.set(uid);
+        }
         Ok(Box::new(case))
     }
 }
@@ -222,6 +235,10 @@ struct CasePods {
     client: Client,
     node: Container,
     namespace: String,
+    /// The UID of the namespace, which owns the case's cluster-wide objects.
+    namespace_uid: Arc<OnceCell<String>>,
+    /// Set once the service account of the pods with the realization option `kubelet` may read the kubelet API.
+    kubelet: Arc<OnceCell<()>>,
     /// The case's directory on the node.
     dir: String,
     tasks: CaseTasks,
@@ -288,6 +305,11 @@ impl Scope for CasePods {
                 Enclosure::KubernetesPod
             ));
         }
+        if planned.options.get(KUBELET) == Some(&true) {
+            self.kubelet
+                .get_or_try_init(|| self.grant_kubelet(cancel, deadline))
+                .await?;
+        }
         let PodPlan { pod, files, late } = self.plan(name, planned, values)?;
         let mut forwards = BTreeMap::new();
         for (endpoint_name, endpoint) in &planned.endpoints {
@@ -352,6 +374,91 @@ impl Scope for CasePods {
     }
 }
 
+impl CasePods {
+    /// Makes the service account of the case's pods with the realization option `kubelet`, and lets it read the
+    /// kubelet API through a ClusterRole and a ClusterRoleBinding named after the case's namespace.
+    ///
+    /// The ledger deletes the two cluster-wide objects. The namespace owns them too, so the garbage collector deletes
+    /// them with it when `make clean-kind` deletes a namespace that a stopped run left behind.
+    async fn grant_kubelet(&self, cancel: &CancellationToken, deadline: Instant) -> Result<(), GenericError> {
+        let account = ServiceAccount {
+            metadata: ObjectMeta {
+                name: Some(KUBELET_ACCOUNT.to_string()),
+                namespace: Some(self.namespace.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let accounts: Api<ServiceAccount> = Api::namespaced(self.client.clone(), &self.namespace);
+        self.ledger
+            .create_by(&self.namespace, cancel, deadline, async {
+                accounts
+                    .create(&PostParams::default(), &account)
+                    .await
+                    .map_err(|e| generic_error!("Failed to create service account '{}': {}", KUBELET_ACCOUNT, e))
+            })
+            .await
+            .ok_or_else(|| generic_error!("Cancelled while creating service account '{}'.", KUBELET_ACCOUNT))??;
+
+        let name = format!("{}-kubelet", self.namespace);
+        let metadata = ObjectMeta {
+            name: Some(name.clone()),
+            labels: Some([(NAMESPACE_LABEL.0.to_string(), NAMESPACE_LABEL.1.to_string())].into()),
+            owner_references: self.namespace_uid.get().map(|uid| {
+                vec![OwnerReference {
+                    api_version: "v1".to_string(),
+                    kind: "Namespace".to_string(),
+                    name: self.namespace.clone(),
+                    uid: uid.clone(),
+                    ..Default::default()
+                }]
+            }),
+            ..Default::default()
+        };
+        let role = ClusterRole {
+            metadata: metadata.clone(),
+            rules: Some(vec![PolicyRule {
+                api_groups: Some(vec![String::new()]),
+                resources: Some(KUBELET_RESOURCES.iter().map(|resource| resource.to_string()).collect()),
+                verbs: vec!["get".to_string()],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let binding = ClusterRoleBinding {
+            metadata,
+            role_ref: RoleRef {
+                api_group: "rbac.authorization.k8s.io".to_string(),
+                kind: "ClusterRole".to_string(),
+                name: name.clone(),
+            },
+            subjects: Some(vec![Subject {
+                kind: "ServiceAccount".to_string(),
+                name: KUBELET_ACCOUNT.to_string(),
+                namespace: Some(self.namespace.clone()),
+                ..Default::default()
+            }]),
+        };
+        self.ledger.cluster_role(self.client.clone(), name.clone());
+        let roles: Api<ClusterRole> = Api::all(self.client.clone());
+        let bindings: Api<ClusterRoleBinding> = Api::all(self.client.clone());
+        self.ledger
+            .create_by(&name, cancel, deadline, async {
+                roles
+                    .create(&PostParams::default(), &role)
+                    .await
+                    .map_err(|e| generic_error!("Failed to create ClusterRole '{}': {}", name, e))?;
+                bindings
+                    .create(&PostParams::default(), &binding)
+                    .await
+                    .map_err(|e| generic_error!("Failed to create ClusterRoleBinding '{}': {}", name, e))
+            })
+            .await
+            .ok_or_else(|| generic_error!("Cancelled while creating ClusterRole '{}'.", name))??;
+        Ok(())
+    }
+}
+
 /// The pod of one participant as the plan describes it, and its files.
 struct PodPlan {
     pod: Pod,
@@ -404,6 +511,9 @@ impl CasePods {
         let mut env = Vec::new();
         for (key, value) in &planned.env {
             env.push(env_var(key, fill(value)?));
+        }
+        for (key, field) in &planned.field_env {
+            env.push(field_env_var(key, field));
         }
         env.push(env_var(EXIT_DIR_ENV, exit_dir));
         env.push(env_var(LOG_DIR_ENV, log_dir));
@@ -515,6 +625,8 @@ impl CasePods {
             },
             spec: Some(PodSpec {
                 host_pid: (planned.options.get(HOST_PID) == Some(&true)).then_some(true),
+                service_account_name: (planned.options.get(KUBELET) == Some(&true))
+                    .then(|| KUBELET_ACCOUNT.to_string()),
                 restart_policy: Some("Never".to_string()),
                 termination_grace_period_seconds: Some(GRACE_SECONDS),
                 volumes: Some(mounts.volumes),
@@ -608,6 +720,20 @@ fn env_var(name: &str, value: String) -> EnvVar {
     EnvVar {
         name: name.to_string(),
         value: Some(value),
+        ..Default::default()
+    }
+}
+
+fn field_env_var(name: &str, field: &str) -> EnvVar {
+    EnvVar {
+        name: name.to_string(),
+        value_from: Some(EnvVarSource {
+            field_ref: Some(ObjectFieldSelector {
+                field_path: field.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
