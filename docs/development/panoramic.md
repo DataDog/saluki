@@ -132,7 +132,7 @@ ports are fixed.
 | Job | What it runs |
 | --- | --- |
 | `test-integration` | Every integration case on Linux, with the images the pipeline built. |
-| `test-integration-macos-arm64`, `test-integration-macos-amd64` | The cases that declare macOS, as host processes. |
+| `test-integration-macos-arm64`, `test-integration-macos-amd64` | The cases that declare macOS, as host processes. A push to a development branch or a merge queue branch runs the subset that `CASE` names in `.gitlab/e2e.yml`, and fails unless exactly that subset passes. Every other pipeline runs all of them. |
 | `test-integration-windows-amd64` | The cases that declare Windows, in Windows containers. |
 | `generate-correctness-pipeline` | Makes one `test-correctness-<case>` job for each correctness case. |
 | `run-correctness-tests` | Runs the generated jobs. A case with pods gets the longer kind template. |

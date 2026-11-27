@@ -730,13 +730,14 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 # build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
 # Cases take the two binaries with --set.
 test-integration-macos-run: BUILD_PROFILE ?= release
-test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all macOS integration cases (host processes); narrow with CASE=<name>.
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all macOS integration cases (host processes); narrow with CASE=<name>[,<name>...]. With CASE and PANORAMIC_LOG_DIR set, fails unless exactly the named cases passed.
 	@echo "[*] Running macOS host-process integration tests..."
 	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		--set "target/release/agent-data-plane=$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
 		--set "/tmp/saluki-dda/datadog-agent/bin/agent/agent=$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		$(if $(CASE),-t $(CASE)) --no-tui \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
+	@$(if $(and $(CASE),$(PANORAMIC_LOG_DIR)),$(PYTHON) ci/tooling/check_panoramic_selection.py "$(PANORAMIC_LOG_DIR)" "$(CASE)")
 
 .PHONY: provision-macos-test-env
 provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-agent-version.json into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if its marker matches the file.
