@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -81,7 +82,14 @@ impl<'de> Deserialize<'de> for Timeout {
     where
         D: Deserializer<'de>,
     {
-        let text = strict_string(deserializer)?;
+        strict_string(deserializer)?.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl FromStr for Timeout {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
         let digits = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
         let unit = &text[digits.len()..];
         let millis_per_unit = match unit {
@@ -90,10 +98,10 @@ impl<'de> Deserialize<'de> for Timeout {
             "m" => 60_000,
             "h" => 3_600_000,
             _ => {
-                return Err(serde::de::Error::custom(format!(
+                return Err(format!(
                     "timeout '{}' needs a number and a unit: ms, s, m or h, such as 20m",
                     text
-                )))
+                ))
             }
         };
         match digits
@@ -103,12 +111,12 @@ impl<'de> Deserialize<'de> for Timeout {
         {
             Some(millis) if millis > 0 => Ok(Self {
                 duration: Duration::from_millis(millis),
-                text,
+                text: text.to_string(),
             }),
-            _ => Err(serde::de::Error::custom(format!(
+            _ => Err(format!(
                 "timeout '{}' needs a whole number above zero before its unit, such as 20m",
                 text
-            ))),
+            )),
         }
     }
 }

@@ -50,10 +50,6 @@ pub(crate) fn runtime_of(os: Os) -> &'static str {
 /// How long pulling one image may take before the first case.
 const PULL_TIME: Duration = Duration::from_secs(15 * 60);
 
-/// How long setting up the kind cluster may take before the first case: creating it, pulling the images, and loading
-/// them.
-const KIND_SETUP_TIME: Duration = Duration::from_secs(30 * 60);
-
 /// One `--set NAME=REFERENCE`: the image or host program a case names as `NAME` runs as `REFERENCE`.
 #[derive(Clone, Debug)]
 pub(crate) struct Replacement {
@@ -293,6 +289,8 @@ impl Test for ParticipantCase {
 pub(crate) struct KindSetup {
     /// The cluster's name.
     pub(crate) cluster: String,
+    /// How long setup may take: creating the cluster, pulling the images, and loading them.
+    pub(crate) timeout: Duration,
     /// Where setup reports its progress, for the run's display.
     pub(crate) events: UnboundedSender<TestEvent>,
 }
@@ -328,7 +326,7 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 /// A kind cluster is made if it is missing, and a run with any pod sets it up once here, outside every case's timeout.
 /// `kind_state` records how far setup got: `Ready` holds the cluster once setup succeeds, so the caller can remove it
 /// even when connecting to it fails, and `Started` means setup began and a cluster may be left over. Setup that outlasts
-/// `KIND_SETUP_TIME` fails and stops its commands.
+/// `kind.timeout` fails and stops its commands.
 ///
 /// Returns the backend of each realization the cases use.
 ///
@@ -497,11 +495,15 @@ pub(crate) async fn check_before_the_first_case(
     }
     if pods {
         let images = pod_images.keys().map(|image| image.to_string()).collect();
-        let KindSetup { cluster, events } = kind;
+        let KindSetup {
+            cluster,
+            timeout,
+            events,
+        } = kind;
         *kind_state = KindState::Started;
-        let ensured = tokio::time::timeout(KIND_SETUP_TIME, KindLifecycle::ensure(cluster.clone(), images, events))
+        let ensured = tokio::time::timeout(timeout, KindLifecycle::ensure(cluster.clone(), images, events))
             .await
-            .unwrap_or_else(|_| Err(generic_error!("Setup took longer than {:?}.", KIND_SETUP_TIME)));
+            .unwrap_or_else(|_| Err(generic_error!("Setup took longer than {:?}.", timeout)));
         match ensured {
             Ok(ready) => *kind_state = KindState::Ready(ready),
             Err(e) => {

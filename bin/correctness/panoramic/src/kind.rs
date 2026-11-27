@@ -57,11 +57,16 @@ impl KindLifecycle {
 }
 
 async fn check_kind_installed() -> Result<(), GenericError> {
-    let output = Command::new("kind").arg("version").output().await.map_err(|_| {
-        generic_error!(
+    let output = Command::new("kind")
+        .arg("version")
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|_| {
+            generic_error!(
             "'kind' not found in PATH. Install it from https://kind.sigs.k8s.io/docs/user/quick-start/#installation"
         )
-    })?;
+        })?;
     if !output.status.success() {
         return Err(generic_error!(
             "'kind version' exited with status {}; is kind installed correctly?",
