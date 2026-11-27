@@ -14,6 +14,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::Bytes;
+use reqwest::header::HeaderMap;
+use reqwest::Method;
 use saluki_error::GenericError;
 use serde_json::Value;
 use tokio::sync::watch;
@@ -57,6 +59,25 @@ pub(crate) struct Exited {
     pub(crate) code: i64,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
+}
+
+/// An HTTP request as [`Handle::http_request`] sends it.
+#[derive(Clone, Debug)]
+pub(crate) struct HttpRequestSpec {
+    pub(crate) method: Method,
+    /// The path and query, which start with `/`.
+    pub(crate) path: String,
+    /// The headers sent in addition to the client's own `Host`, `Accept` and framing headers.
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Vec<u8>,
+}
+
+/// A reply to an HTTP request, as it arrived: the body is not decoded.
+#[derive(Clone, Debug)]
+pub(crate) struct HttpReply {
+    pub(crate) status: u16,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Vec<u8>,
 }
 
 /// What a step acts on one started participant through.
@@ -379,6 +400,71 @@ impl<'a> Handle<'a> {
                 self.courier()?.http_get(&address, path, limit).await
             }
         }
+    }
+
+    /// Sends `request` to the endpoint once, over TLS if the endpoint serves it, and reads the whole reply within
+    /// `limit`. Any status is a reply.
+    ///
+    /// The client adds no `Content-Type`, `Content-Encoding` or `Accept-Encoding` header, and it does not decode the
+    /// reply body. It follows no redirect and keeps no connection open, so each request goes on a new connection and is
+    /// never sent again.
+    ///
+    /// # Errors
+    ///
+    /// Returns a software error if no whole reply arrives within `limit`, and a harness error if the endpoint cannot be
+    /// requested.
+    pub(crate) async fn http_request(
+        &self, endpoint: &str, request: &HttpRequestSpec, limit: Duration,
+    ) -> Result<HttpReply, HandleError> {
+        let (planned, route) = self.route(endpoint, EndpointOperation::Exchange)?;
+        if !request.path.starts_with('/') {
+            return Err(HandleError::Harness(format!(
+                "the path '{}' does not start with '/'",
+                request.path
+            )));
+        }
+        if route == Reach::CourierInServer {
+            return Err(HandleError::Harness(format!(
+                "no HTTP request is routed through {:?}",
+                route
+            )));
+        }
+        let port = self.runner_port(endpoint)?;
+        static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+        let client = match CLIENT.get() {
+            Some(client) => client,
+            None => {
+                // Panoramic turns on the `zstd` feature of reqwest, and other crates in the build can turn on more.
+                // Each one would add `Accept-Encoding` and decode the reply body, so the client turns them all off.
+                let client = reqwest::Client::builder()
+                    .no_proxy()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .no_gzip()
+                    .no_brotli()
+                    .no_zstd()
+                    .no_deflate()
+                    .pool_max_idle_per_host(0)
+                    .build()
+                    .map_err(harness)?;
+                CLIENT.get_or_init(|| client)
+            }
+        };
+        let scheme = if planned.tls { "https" } else { "http" };
+        let response = client
+            .request(
+                request.method.clone(),
+                format!("{}://127.0.0.1:{}{}", scheme, port, request.path),
+            )
+            .headers(request.headers.clone())
+            .body(request.body.clone())
+            .timeout(limit)
+            .send()
+            .await
+            .map_err(request_failed)?;
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response.bytes().await.map_err(request_failed)?.to_vec();
+        Ok(HttpReply { status, headers, body })
     }
 
     /// The endpoint `name`, and how the runner reaches it to do `operation`.

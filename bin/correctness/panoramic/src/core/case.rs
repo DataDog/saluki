@@ -349,6 +349,27 @@ fn resolve(dir: &Path, suite: &Path, from: &Path) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// Reads the file `from`, relative to the case directory `dir`, as the source of a step's field. Like every source, it
+/// must be inside the suite directory above `dir`.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or is outside the suite directory.
+pub(crate) fn read_step_source(dir: &Path, from: &Path) -> Result<Vec<u8>, String> {
+    let suite = dir
+        .canonicalize()
+        .ok()
+        .and_then(|dir| dir.parent().map(Path::to_path_buf))
+        .ok_or_else(|| {
+            format!(
+                "file source '{}': the case directory has no suite directory above it",
+                from.display()
+            )
+        })?;
+    let real = resolve(dir, &suite, from)?;
+    fs::read(&real).map_err(|e| format!("file source '{}' cannot be read: {}", from.display(), e))
+}
+
 /// Reads every file under `dir` into `out`, keyed by its path relative to `root`.
 ///
 /// Each entry, a symlink included, must resolve inside `suite`. `open` holds the directories being read, so a link back
@@ -605,7 +626,7 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
 
     let mut procedure = Vec::new();
     for (index, node) in case.procedure.into_iter().enumerate() {
-        match StepEntry::decode_node(node) {
+        match StepEntry::decode_node(node, dir) {
             Ok(node) => procedure.push(node),
             Err(message) => errors.push(error(Some(format!("step {}", index + 1)), message)),
         }

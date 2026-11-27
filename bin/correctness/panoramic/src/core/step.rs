@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -44,7 +45,7 @@ pub(crate) trait StepFactory: Send + Sync {
         &[]
     }
 
-    /// Decodes and checks the fields. Does no I/O.
+    /// Decodes and checks the fields. Does no I/O, other than to read files of the case that the fields name.
     ///
     /// # Errors
     ///
@@ -87,7 +88,10 @@ pub(crate) enum Need {
 pub(crate) enum EndpointOperation {
     Probe,
     Send,
+    /// An HTTP `GET` whose reply status and body are read.
     Request,
+    /// An HTTP request of any method, headers and body, whose reply status, headers and body are read.
+    Exchange,
 }
 
 /// A capability a participant offers to steps: a name, what it uses of its participant, and a function.
@@ -171,9 +175,23 @@ pub(crate) struct StepReport {
 /// A step's own fields, as the case wrote them: everything but `step`.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(transparent)]
-pub(crate) struct StepFields(pub(crate) BTreeMap<String, Value>);
+pub(crate) struct StepFields {
+    pub(crate) values: BTreeMap<String, Value>,
+    /// The case directory. A file that a field names is relative to it.
+    #[serde(skip)]
+    pub(crate) dir: PathBuf,
+}
 
 impl StepFields {
+    /// Fields of a step in no case directory, for tests that read no file.
+    #[cfg(test)]
+    pub(crate) fn of(values: BTreeMap<String, Value>) -> Self {
+        Self {
+            values,
+            dir: PathBuf::new(),
+        }
+    }
+
     /// Decodes the fields into the step's own struct, which should deny unknown fields.
     ///
     /// # Errors
@@ -183,7 +201,7 @@ impl StepFields {
     where
         T: DeserializeOwned,
     {
-        let fields = Value::Object(self.0.clone().into_iter().collect());
+        let fields = Value::Object(self.values.clone().into_iter().collect());
         serde_json::from_value(fields).map_err(|e| e.to_string())
     }
 }
@@ -214,12 +232,12 @@ pub(crate) struct StepEntry {
 }
 
 impl StepEntry {
-    /// Decodes one procedure entry.
+    /// Decodes one procedure entry of the case in `dir`.
     ///
     /// # Errors
     ///
     /// Returns an error if the entry is neither a step nor a `parallel` block of steps.
-    pub(crate) fn decode_node(value: Value) -> Result<ProcedureNode<Self>, String> {
+    pub(crate) fn decode_node(value: Value, dir: &Path) -> Result<ProcedureNode<Self>, String> {
         let Value::Object(mut map) = value else {
             return Err("a procedure entry is a map with a 'step' or a 'parallel' key".to_string());
         };
@@ -228,16 +246,19 @@ impl StepEntry {
                 Err("a 'parallel' block holds at least one step".to_string())
             }
             Some(Value::Array(members)) if map.is_empty() => {
-                let members = members.into_iter().map(Self::decode).collect::<Result<_, _>>()?;
+                let members = members
+                    .into_iter()
+                    .map(|member| Self::decode(member, dir))
+                    .collect::<Result<_, _>>()?;
                 Ok(ProcedureNode::Parallel(members))
             }
             Some(_) if !map.is_empty() => Err("a 'parallel' entry holds nothing but its list of steps".to_string()),
             Some(_) => Err("'parallel' holds a list of steps".to_string()),
-            None => Self::decode(Value::Object(map)).map(ProcedureNode::Step),
+            None => Self::decode(Value::Object(map), dir).map(ProcedureNode::Step),
         }
     }
 
-    fn decode(value: Value) -> Result<Self, String> {
+    fn decode(value: Value, dir: &Path) -> Result<Self, String> {
         let Value::Object(mut map) = value else {
             return Err("a step is a map with a 'step' key".to_string());
         };
@@ -247,7 +268,10 @@ impl StepEntry {
         match map.remove("step") {
             Some(Value::String(step)) => Ok(Self {
                 step,
-                fields: StepFields(map.into_iter().collect()),
+                fields: StepFields {
+                    values: map.into_iter().collect(),
+                    dir: dir.to_path_buf(),
+                },
             }),
             Some(other) => Err(format!("a step's name must be a string, not {}", other)),
             None => Err("a step needs a 'step' key that names it".to_string()),

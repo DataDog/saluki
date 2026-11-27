@@ -310,15 +310,27 @@ pub(crate) fn reach(
         (EndpointOperation::Request, Protocol::Http, WindowsContainer) if tls => {
             Err("a request to a Windows container goes through the courier, which does not speak TLS".to_string())
         }
-        (EndpointOperation::Request, Protocol::Http, LinuxContainer) => Ok(Reach::PublishedPort),
-        (EndpointOperation::Request, Protocol::Http, KubernetesPod) => Ok(Reach::ForwardedPort),
-        (EndpointOperation::Request, Protocol::Http, HostProcessGroup) => Ok(Reach::InRunner),
+        (EndpointOperation::Exchange, Protocol::Http, WindowsContainer) => Err(
+            "an HTTP request to a Windows container goes through the courier, which sends only a GET without headers"
+                .to_string(),
+        ),
+        (EndpointOperation::Request | EndpointOperation::Exchange, Protocol::Http, LinuxContainer) => {
+            Ok(Reach::PublishedPort)
+        }
+        (EndpointOperation::Request | EndpointOperation::Exchange, Protocol::Http, KubernetesPod) => {
+            Ok(Reach::ForwardedPort)
+        }
+        (EndpointOperation::Request | EndpointOperation::Exchange, Protocol::Http, HostProcessGroup) => {
+            Ok(Reach::InRunner)
+        }
         (EndpointOperation::Request, Protocol::Http, WindowsContainer) => Ok(Reach::CourierInServer),
         // TODO: request grpc endpoints with the first case that does.
-        (EndpointOperation::Request, Protocol::Grpc, _) => {
-            Err("a request is an HTTP GET, and requests to grpc endpoints are not built".to_string())
+        (EndpointOperation::Request | EndpointOperation::Exchange, Protocol::Grpc, _) => {
+            Err("requests to grpc endpoints are not built".to_string())
         }
-        (EndpointOperation::Request, _, _) => Err("a request goes to an http endpoint".to_string()),
+        (EndpointOperation::Request | EndpointOperation::Exchange, _, _) => {
+            Err("a request goes to an http endpoint".to_string())
+        }
         (_, Protocol::NamedPipe, WindowsContainer) => Ok(Reach::CourierInServer),
         (_, Protocol::NamedPipe, _) => Err("a named pipe exists only in a Windows container".to_string()),
         (EndpointOperation::Probe | EndpointOperation::Send, _, HostProcessGroup) => Ok(Reach::InRunner),

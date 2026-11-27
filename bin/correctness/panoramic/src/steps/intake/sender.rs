@@ -879,7 +879,7 @@ mod tests {
     }
 
     fn step(fields: &str) -> IntakeFrom {
-        let fields = StepFields(serde_saphyr::from_str(fields).unwrap());
+        let fields = StepFields::of(serde_saphyr::from_str(fields).unwrap());
         IntakeFrom::new(fields.decode().unwrap()).unwrap()
     }
 
@@ -1485,7 +1485,7 @@ mod tests {
             ),
         ];
         for (fields, error) in cases {
-            let fields = StepFields(serde_saphyr::from_str(&format!("{{{}}}", fields)).unwrap());
+            let fields = StepFields::of(serde_saphyr::from_str(&format!("{{{}}}", fields)).unwrap());
             let rejected = IntakeFromFactory.build(&fields).unwrap_err();
             assert!(rejected.contains(error), "'{}' is not in: {}", error, rejected);
         }
