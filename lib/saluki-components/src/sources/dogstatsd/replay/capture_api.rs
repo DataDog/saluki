@@ -84,7 +84,7 @@ impl APIHandler for DogStatsDCaptureAPIHandler {
 mod tests {
     use super::super::test_support::{temp_dir, wait_until_inactive};
     use super::*;
-    use crate::sources::dogstatsd::replay::TrafficCapture;
+    use crate::sources::dogstatsd::replay::DogStatsDCaptureControl;
 
     fn trigger_body(duration: &str) -> CaptureTriggerBody {
         CaptureTriggerBody {
@@ -95,25 +95,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_rejects_unbound_control() {
-        // With no capture runtime bound to the control, the handler surfaces the "capture control unavailable" error
-        // as a precondition failure.
-        let control = DogStatsDCaptureControl::new();
-
-        let err = DogStatsDCaptureAPIHandler::trigger_handler(State(control), Json(trigger_body("50ms")))
-            .await
-            .err()
-            .expect("unbound control should fail");
-
-        assert_eq!(err.0, StatusCode::PRECONDITION_FAILED);
-    }
-
-    #[tokio::test]
     async fn trigger_rejects_invalid_duration() {
         // A malformed duration is rejected up front (BAD_REQUEST), before the capture runtime is consulted.
-        let control = DogStatsDCaptureControl::new();
         let target_dir = temp_dir();
-        control.bind(TrafficCapture::new(target_dir.path().to_path_buf(), 1));
+        let control = DogStatsDCaptureControl::new(target_dir.path().to_path_buf(), 1);
 
         let err = DogStatsDCaptureAPIHandler::trigger_handler(State(control), Json(trigger_body("not-a-duration")))
             .await
@@ -126,8 +111,7 @@ mod tests {
     #[tokio::test]
     async fn trigger_starts_capture_and_returns_path() {
         let target_dir = temp_dir();
-        let control = DogStatsDCaptureControl::new();
-        control.bind(TrafficCapture::new(target_dir.path().to_path_buf(), 1));
+        let control = DogStatsDCaptureControl::new(target_dir.path().to_path_buf(), 1);
 
         let Json(response) =
             DogStatsDCaptureAPIHandler::trigger_handler(State(control.clone()), Json(trigger_body("100ms")))
@@ -142,16 +126,15 @@ mod tests {
             target_dir.path()
         );
         assert!(response.path.contains("datadog-capture"));
-        assert!(control.is_ongoing().expect("control should be bound"));
+        assert!(control.is_ongoing());
 
-        wait_until_inactive(|| control.is_ongoing().expect("control should be bound"));
+        wait_until_inactive(|| control.is_ongoing());
     }
 
     #[tokio::test]
     async fn trigger_rejects_concurrent_capture() {
         let target_dir = temp_dir();
-        let control = DogStatsDCaptureControl::new();
-        control.bind(TrafficCapture::new(target_dir.path().to_path_buf(), 1));
+        let control = DogStatsDCaptureControl::new(target_dir.path().to_path_buf(), 1);
 
         let _ = DogStatsDCaptureAPIHandler::trigger_handler(State(control.clone()), Json(trigger_body("1s")))
             .await
@@ -168,8 +151,8 @@ mod tests {
             err.1
         );
 
-        control.stop_capture().expect("stop should succeed");
-        wait_until_inactive(|| control.is_ongoing().expect("control should be bound"));
+        control.stop_capture();
+        wait_until_inactive(|| control.is_ongoing());
     }
 
     #[test]

@@ -67,7 +67,6 @@ pub struct ReplaySessionResponseBody {
 
 fn map_replay_control_error(err: ReplayControlError) -> (StatusCode, String) {
     let status = match err {
-        ReplayControlError::Unavailable => StatusCode::PRECONDITION_FAILED,
         ReplayControlError::AlreadyInProgress | ReplayControlError::NotOwner { .. } => StatusCode::CONFLICT,
     };
     (status, err.to_string())
@@ -99,7 +98,6 @@ mod tests {
     use saluki_core::data_model::origin::OriginTagCardinality;
 
     use super::*;
-    use crate::sources::dogstatsd::replay::CapturedTaggerHandle;
 
     fn make_state() -> TaggerState {
         let entity = ProtoEntity {
@@ -136,26 +134,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unbound_control_is_precondition_failed() {
-        let control = DogStatsDReplayControl::new();
-        let expected_message = "DogStatsD replay control is unavailable because the source is not running.";
-
-        let err = DogStatsDReplayAPIHandler::start_session_handler(State(control.clone()), Bytes::new())
-            .await
-            .expect_err("unbound start should fail");
-        assert_eq!(err, (StatusCode::PRECONDITION_FAILED, expected_message.to_string()));
-
-        let err = DogStatsDReplayAPIHandler::finish_session_handler(State(control), Path("any".to_string()))
-            .await
-            .expect_err("unbound finish should fail");
-        assert_eq!(err, (StatusCode::PRECONDITION_FAILED, expected_message.to_string()));
-    }
-
-    #[tokio::test]
     async fn start_and_finish_session_update_control() {
-        let captured_tagger = CapturedTaggerHandle::new();
         let control = DogStatsDReplayControl::new();
-        control.bind(captured_tagger.clone());
+        let captured_tagger = control.captured_tagger().clone();
 
         let body = Bytes::from(make_state().encode_to_vec());
         let Json(session) = DogStatsDReplayAPIHandler::start_session_handler(State(control.clone()), body)
@@ -175,9 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_session_rejects_concurrent_session() {
-        let captured_tagger = CapturedTaggerHandle::new();
         let control = DogStatsDReplayControl::new();
-        control.bind(captured_tagger);
 
         let body = Bytes::from(make_state().encode_to_vec());
         let _ = DogStatsDReplayAPIHandler::start_session_handler(State(control.clone()), body)
@@ -199,9 +178,8 @@ mod tests {
 
     #[tokio::test]
     async fn finish_session_rejects_non_owner() {
-        let captured_tagger = CapturedTaggerHandle::new();
         let control = DogStatsDReplayControl::new();
-        control.bind(captured_tagger.clone());
+        let captured_tagger = control.captured_tagger().clone();
 
         let body = Bytes::from(make_state().encode_to_vec());
         let Json(session) = DogStatsDReplayAPIHandler::start_session_handler(State(control.clone()), body)
