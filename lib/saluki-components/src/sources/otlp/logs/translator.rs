@@ -474,9 +474,10 @@ mod tests {
         assert!(!log.tags().has_tag("service:tag-service"));
     }
 
-    /// With two `ddtags` record attributes, the infra tags merge into the first one, and the transform reads the last
-    /// one. The Agent behaves the same: `writeDdtagsToLogRecords` updates the first attribute (`Map.Get`), and the
-    /// translator keeps the last one that it visits
+    /// Duplicate `ddtags` record attributes, which the OTLP spec forbids, lose the infra tags. The tags merge into the
+    /// first attribute, but the transform reads the last one. The Agent drops them the same way:
+    /// `writeDdtagsToLogRecords` updates the first attribute (`Map.Get`), and the translator keeps the last one that it
+    /// visits
     /// (<https://github.com/DataDog/datadog-agent/blob/d22eedcd06ef9fcedad3d43bcab45795068b8ecc/pkg/opentelemetry-mapping-go/otlp/logs/transform.go#L133-L136>).
     #[test]
     fn duplicate_ddtags_use_the_last_record_attribute_as_the_agent_does() {
