@@ -49,10 +49,12 @@ impl DsdFramer {
     }
 }
 
-/// Something found at the front of the buffer.
+/// A DogStatsD message or an outer frame payload borrowed from the input buffer.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Frame<'a> {
-    /// A DogStatsD message.
+    /// A DogStatsD wire line, including its newline if present.
+    ///
+    /// The delimiter remains part of the wire line so callers can account for bytes received.
     Message(&'a [u8]),
 
     /// The payload of an outer frame, yielded before the messages it holds when outer frame capture is on.
@@ -63,9 +65,8 @@ pub enum Frame<'a> {
 ///
 /// Frames borrow the buffer, not `Frames`, so `Frames` can be used freely while they're held.
 ///
-/// Dropping `Frames` partway through an outer frame skips that frame's remaining messages, since the buffer has already
-/// been advanced past them. After an error, `Frames` yields nothing more. A new drain starts afresh, since the framer
-/// keeps no state.
+/// Dropping `Frames` partway through an outer frame skips its remaining messages. The cursor already took the payload.
+/// An error ends the current drain. The framer keeps no state between drains.
 pub struct Frames<'a> {
     cursor: ReadCursor<'a>,
     framer: DsdFramer,
@@ -90,19 +91,19 @@ impl<'a> Frames<'a> {
         Some(Err(error))
     }
 
-    fn next_line(&mut self) -> Option<Result<&'a [u8], FramingError>> {
+    fn next_line(&mut self) -> Option<Result<Frame<'a>, FramingError>> {
         let unread = self.cursor.unread();
         if unread.is_empty() {
             return None;
         }
 
         let len = match memchr::memchr(b'\n', unread) {
-            Some(idx) => return Some(Ok(&self.cursor.take(idx + 1)[..idx])),
+            Some(idx) => return Some(Ok(Frame::Message(self.cursor.take(idx + 1)))),
             None if !self.is_eof => return None,
             None if self.framer.eol_required => return self.fail(missing_newline(unread.len())),
             None => unread.len(),
         };
-        Some(Ok(self.cursor.take(len)))
+        Some(Ok(Frame::Message(self.cursor.take(len))))
     }
 
     fn next_nested(&mut self) -> Option<Result<Frame<'a>, FramingError>> {
@@ -130,7 +131,7 @@ impl<'a> Frames<'a> {
         };
 
         let (message, rest) = match memchr::memchr(b'\n', payload) {
-            Some(idx) => (&payload[..idx], &payload[idx + 1..]),
+            Some(idx) => payload.split_at(idx + 1),
             None if self.framer.eol_required => return self.fail(missing_newline(payload.len())),
             None => (payload, &payload[payload.len()..]),
         };
@@ -157,7 +158,7 @@ impl<'a> Iterator for Frames<'a> {
             return None;
         }
         match self.framer.mode {
-            Mode::NonStream => self.next_line().map(|result| result.map(Frame::Message)),
+            Mode::NonStream => self.next_line(),
             Mode::Stream => self.next_nested(),
         }
     }
@@ -292,7 +293,9 @@ mod tests {
                 got.push(Got::Completed(completed));
             }
             match frame {
-                Some(Ok(Frame::Message(message))) => got.push(Got::Message(message.to_vec())),
+                Some(Ok(Frame::Message(message))) => {
+                    got.push(Got::Message(message.strip_suffix(b"\n").unwrap_or(message).to_vec()))
+                }
                 Some(Ok(Frame::Outer(outer))) => got.push(Got::Outer(outer.to_vec())),
                 Some(Err(e)) => {
                     got.push(Got::Error(e));
@@ -320,6 +323,16 @@ mod tests {
 
     const fn missing_newline(frame_len: usize) -> Got {
         Got::Error(super::missing_newline(frame_len))
+    }
+
+    #[test]
+    fn lines_preserve_delimiters_without_counting_stream_prefixes() {
+        for (framer, mut buf) in [(direct(false), bytes(b"a\nbc")), (nested(false), stream(&[b"a\nbc"]))] {
+            let mut frames = framer.frames(buf.cursor(), true, false);
+            assert_eq!(frames.next(), Some(Ok(Frame::Message(b"a\n"))));
+            assert_eq!(frames.next(), Some(Ok(Frame::Message(b"bc"))));
+            assert_eq!(frames.next(), None);
+        }
     }
 
     #[test]
@@ -450,7 +463,11 @@ mod tests {
             assert_eq!(frames.next(), Some(Ok(Frame::Outer(b"aa\nbb\n"))));
             frames.next()
         };
-        assert_eq!(held, Some(Ok(Frame::Message(b"aa"))), "frames outlive `Frames`");
+        assert_eq!(
+            held,
+            Some(Ok(Frame::Message(b"aa\n"))),
+            "frames retain the exact wire line and outlive `Frames`"
+        );
         assert_eq!(buf.chunk()[..4], [0, 0, 0, 0], "front is at the next outer frame");
 
         assert_eq!(

@@ -104,6 +104,25 @@ impl Histogram {
         self.samples.extend(other.samples.drain(..));
     }
 
+    /// Estimates the allocation required to append samples to this histogram.
+    pub fn merge_growth_bytes(&self, additional_samples: usize) -> usize {
+        Self::sample_growth_bytes(self.samples.len(), self.samples.capacity(), additional_samples)
+    }
+
+    /// Estimates the allocation required to append samples to an inline histogram.
+    pub fn inline_merge_growth_bytes(samples: usize, additional_samples: usize) -> usize {
+        Self::sample_growth_bytes(samples, 3, additional_samples)
+    }
+
+    fn sample_growth_bytes(samples: usize, capacity: usize, additional_samples: usize) -> usize {
+        let required = samples.saturating_add(additional_samples);
+        if required > capacity {
+            required.saturating_mul(2 * std::mem::size_of::<WeightedSample>())
+        } else {
+            0
+        }
+    }
+
     /// Returns the raw weighted samples of the histogram.
     pub fn samples(&self) -> &[WeightedSample] {
         &self.samples
