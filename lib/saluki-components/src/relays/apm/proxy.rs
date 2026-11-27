@@ -437,12 +437,15 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_trace_agent_is_a_bad_gateway() {
-        // Bind and immediately drop a listener, so the port is known to be closed.
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("should bind an ephemeral port");
-        let addr = listener.local_addr().expect("listener should have a local address");
-        drop(listener);
+        // Hold a port with a socket connected to a throwaway listener. While the socket lives, no concurrent test can
+        // bind the port and answer in place of the trace-agent. A connected socket only matches packets from its peer,
+        // so connections from anywhere else are refused. A socket that is bound but not listening would also hold the
+        // port, but macOS drops connections to it rather than refusing them.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
+        let holder = std::net::TcpStream::connect(listener.local_addr().expect("listener should have a local address"))
+            .expect("should connect to the listener");
+        let _peer = listener.accept().expect("should accept the connection");
+        let addr = holder.local_addr().expect("socket should have a local address");
 
         let proxy = test_proxy(&format!("http://{addr}")).expect("destination should parse");
         let response = proxy.forward(request("GET", "/info", &[], "")).await.into_response();
