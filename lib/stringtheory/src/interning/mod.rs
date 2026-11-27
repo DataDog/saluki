@@ -9,6 +9,9 @@ pub(crate) mod helpers;
 pub(crate) mod map;
 pub use self::map::GenericMapInterner;
 
+mod symbols;
+pub use self::symbols::{Symbol, SymbolTable};
+
 #[cfg(test)]
 pub(crate) mod test_support;
 
