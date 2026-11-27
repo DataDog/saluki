@@ -308,7 +308,10 @@ async fn run_request_builder(
                             .await
                             .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
                     }
-                    Err(e) if e.is_recoverable() => continue,
+                    Err(e) if e.is_recoverable() => {
+                        error!(error = %e, "Stats do not fit in a request once compressed; dropping them.");
+                        telemetry.events_dropped_encoder().increment(1);
+                    }
                     Err(e) => return Err(GenericError::from(e).context("Failed to flush request.")),
                 }
             }
@@ -643,6 +646,52 @@ mod tests {
             assert!(payloads.next().await.is_some(), "the encoder stopped early");
         }
         encoder.shutdown().await.expect("stats encoder should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn request_builder_counts_stats_too_large_once_compressed_as_dropped() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let config = DatadogApmStatsEncoderConfiguration::new(AgentEnv::resolve(None, Some("prod"), &[], &[]));
+
+        let mut request_builder = RequestBuilder::new(
+            config.endpoint_encoder(),
+            CompressionScheme::gzip_default(),
+            RB_BUFFER_CHUNK_SIZE,
+        )
+        .await
+        .expect("request builder should be created");
+        // No gzip output fits in one byte.
+        request_builder
+            .with_len_limits(DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, 1)
+            .expect("limits should be valid");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        assert!(events.try_push(Event::TraceStats(split_piece(0, 1))).is_none());
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            StatsPayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        assert!(payloads_rx.recv().await.is_none());
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")][..],
+            )),
+            Some(1)
+        );
     }
 
     #[tokio::test]
