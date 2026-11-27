@@ -32,13 +32,16 @@ fn origin_detection_errors_key(reason: &str) -> Key {
 async fn connectionless_decoder_dispatches_full_and_flushed_buffers_and_forwards_frames() {
     let recorder = TestRecorder::default();
     let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-    let listener = TestListener::new(ListenAddress::Unixgram("/tmp/dsd.sock".into()));
     let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
     let mut fixture = DecoderFixture::new(test_decoder_context(false));
     let mut metrics_rx = fixture.outputs.take_named_output("metrics");
     let event_buffer_capacity = EventsBuffer::default().capacity();
     let (packet_forwarder, packets_rx) = PacketForwarder::for_tests(event_buffer_capacity + 1);
-    let mut context = listener.decode_context(false, Some(&packet_forwarder), BufferDecodeMode::Connectionless);
+    let listener = ListenerState {
+        packet_forwarder: Some(packet_forwarder),
+        ..test_listener_state(ListenAddress::Unixgram("/tmp/dsd.sock".into()))
+    };
+    let mut context = BufferDecodeContext::new(&listener, BufferDecodeMode::Connectionless);
 
     let mut payload = b"decoder.metric:1|c\n".repeat(event_buffer_capacity);
     payload.extend_from_slice(b"decoder.metric:1|c");
@@ -82,12 +85,15 @@ async fn connectionless_decoder_dispatches_full_and_flushed_buffers_and_forwards
 async fn connected_decoder_waits_for_complete_outer_frame_and_stops_on_eof() {
     let recorder = TestRecorder::default();
     let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-    let listener = TestListener::new(ListenAddress::Unix("/tmp/dsd.socket".into()));
     let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials));
     let mut fixture = DecoderFixture::new(test_decoder_context(true));
     let mut metrics_rx = fixture.outputs.take_named_output("metrics");
     let (packet_forwarder, packets_rx) = PacketForwarder::for_tests(1);
-    let mut context = listener.decode_context(false, Some(&packet_forwarder), BufferDecodeMode::Connected);
+    let listener = ListenerState {
+        packet_forwarder: Some(packet_forwarder),
+        ..test_listener_state(ListenAddress::Unix("/tmp/dsd.socket".into()))
+    };
+    let mut context = BufferDecodeContext::new(&listener, BufferDecodeMode::Connected);
 
     let frame = b"stream.metric:1|c\n";
     let mut payload = Vec::with_capacity(frame.len() + 4);
@@ -136,9 +142,9 @@ async fn connected_decoder_waits_for_complete_outer_frame_and_stops_on_eof() {
 async fn connectionless_decoder_counts_origin_detection_errors_by_reason() {
     let recorder = TestRecorder::default();
     let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-    let listener = TestListener::new(ListenAddress::Unixgram("/tmp/dsd.sock".into()));
+    let listener = test_listener_state(ListenAddress::Unixgram("/tmp/dsd.sock".into()));
     let mut fixture = DecoderFixture::new(test_decoder_context(true));
-    let mut context = listener.decode_context(false, None, BufferDecodeMode::Connectionless);
+    let mut context = BufferDecodeContext::new(&listener, BufferDecodeMode::Connectionless);
 
     // Each datagram counts as a single origin detection error, regardless of how many metrics it holds, and is
     // tagged with the reason that origin detection failed.
@@ -173,8 +179,11 @@ async fn decoder_continues_connectionless_but_stops_connected_on_framing_error()
     let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
     let mut fixture = DecoderFixture::new(test_decoder_context(false));
 
-    let datagram_listener = TestListener::new(ListenAddress::Unixgram("/tmp/dsd.sock".into()));
-    let mut datagram_context = datagram_listener.decode_context(true, None, BufferDecodeMode::Connectionless);
+    let datagram_listener = ListenerState {
+        eol_required: true,
+        ..test_listener_state(ListenAddress::Unixgram("/tmp/dsd.sock".into()))
+    };
+    let mut datagram_context = BufferDecodeContext::new(&datagram_listener, BufferDecodeMode::Connectionless);
     let payload = b"missing.newline:1|c";
     let datagram_buffer = test_io_buffer(payload, payload.len());
     let (datagram_outcome, _) = fixture
@@ -182,8 +191,8 @@ async fn decoder_continues_connectionless_but_stops_connected_on_framing_error()
         .await;
     assert_eq!(datagram_outcome, DecodeOutcome::Continue);
 
-    let stream_listener = TestListener::new(ListenAddress::Unix("/tmp/dsd.socket".into()));
-    let mut stream_context = stream_listener.decode_context(false, None, BufferDecodeMode::Connected);
+    let stream_listener = test_listener_state(ListenAddress::Unix("/tmp/dsd.socket".into()));
+    let mut stream_context = BufferDecodeContext::new(&stream_listener, BufferDecodeMode::Connected);
     let stream_buffer_capacity = 64;
     let oversized_frame = (stream_buffer_capacity as u32).to_le_bytes();
     let stream_buffer = test_io_buffer(&oversized_frame, stream_buffer_capacity);

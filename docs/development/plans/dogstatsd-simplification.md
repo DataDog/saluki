@@ -38,7 +38,8 @@ abstraction would have one caller.
   per-stream Antithesis assertions need literal messages, so it came out net-neutral) and the SO_REUSEPORT gate (not
   redundant: it logs a different, once-per-build warning and passes `None` streams on non-Linux).
 - [ ] **4. Bug fixes 1 and 2** each with a regression test (codec parity first). Fix 4 landed with the step 3 `file_header` change.
-- [ ] **5. Inline connected-stream reads** and the context-struct collapse, with an SMP benchmark comparison.
+- [x] **5. Inline connected-stream reads** and the context-struct collapse (one `ListenerState` per listener). The SMP
+  benchmark comparison runs in this pull request's CI.
 - [ ] **6. Capture/replay:** eager controls, marker-bit removal, typed errors, `EntityId` conversions, then relocation
   out of `sources/dogstatsd`.
 - [ ] **7. Codec:** `ClientOrigin` and field helpers; tag-limit removal only if approved.
