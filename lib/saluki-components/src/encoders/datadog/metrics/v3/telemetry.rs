@@ -75,13 +75,15 @@ impl V3SerializerTelemetry {
         self.inner.values_float64.increment(stats.float64);
     }
 
-    pub(crate) fn record_column_size(&self, field_number: u32, uncompressed_size: u64, compressed_size: u64) {
+    pub(crate) fn record_column_size(&self, field_number: u32, uncompressed_size: u64, compressed_size: Option<u64>) {
         let Some(Some(column)) = self.inner.column_sizes.get(field_number as usize) else {
             return;
         };
 
         column.uncompressed.increment(uncompressed_size);
-        column.compressed.increment(compressed_size);
+        if let Some(compressed_size) = compressed_size {
+            column.compressed.increment(compressed_size);
+        }
     }
 
     pub(crate) fn record_item_too_big(&self) {

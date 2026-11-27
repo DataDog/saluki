@@ -4,10 +4,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use async_compression::{
-    tokio::write::{GzipEncoder, ZlibEncoder, ZstdEncoder},
-    Level,
-};
+use async_compression::tokio::write::{GzipEncoder, ZlibEncoder, ZstdEncoder};
+pub use async_compression::Level;
 use http::HeaderValue;
 use pin_project::pin_project;
 use tokio::io::AsyncWrite;
