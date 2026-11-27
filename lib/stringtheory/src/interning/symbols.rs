@@ -33,10 +33,11 @@ const SHARD_BITS: u32 = 4;
 /// The number of shards in each table.
 const SHARD_COUNT: usize = 1 << SHARD_BITS;
 
-/// Rotates the shard bits out of the hash table's seven-bit control tag.
+/// Rotates the top shard-selection bits into unused middle bits (`24..27`), keeping both the low bucket-index bits and
+/// the top seven control-tag bits free of constant shard bits.
 #[inline]
 fn table_hash(hash: u64) -> u64 {
-    hash.rotate_left(4)
+    hash.rotate_left(28)
 }
 
 /// The number of usable record bytes in one chunk.
@@ -592,7 +593,10 @@ impl SymbolTable {
         }
         state.entries.insert_unique(index_hash, offset as u32, |&offset| {
             // SAFETY: Only live records are in the index.
-            table_hash(self.hasher.hash_one(unsafe { Record::value(shard.record(offset as usize)) }))
+            table_hash(
+                self.hasher
+                    .hash_one(unsafe { Record::value(shard.record(offset as usize)) }),
+            )
         });
         state.used += size;
         filter.fetch_or(bits, Ordering::Release);
@@ -748,7 +752,8 @@ mod tests {
     #[test]
     fn singletons_leave_space_for_late_shared_symbols() {
         let table = SymbolTable::new(8 * 1024 * 1024);
-        for n in 0..200_000 {
+        let count = if cfg!(miri) { 256 } else { 200_000 };
+        for n in 0..count {
             let value = format!("correlation_id:12345678-1234-1234-1234-{n:012x}");
             assert_eq!(value.len(), 51);
             assert!(table.try_intern(&value).is_none());
@@ -780,7 +785,8 @@ mod tests {
         thread::scope(|scope| {
             for _ in 0..4 {
                 scope.spawn(|| {
-                    for _ in 0..10_000 {
+                    let reads = if cfg!(miri) { 64 } else { 10_000 };
+                    for _ in 0..reads {
                         assert_eq!(&*symbol, value);
                     }
                 });
