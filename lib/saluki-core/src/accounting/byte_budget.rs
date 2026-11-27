@@ -265,8 +265,8 @@ pub struct BudgetReclaimer {
 
 /// Local credits reserved against a shared [`ByteBudget`].
 ///
-/// Finish each operation synchronously before spending more credits or dropping this batch.
-/// Refilling or dropping the batch returns unused credits and marks spent credits complete for reconciliation.
+/// Finish each operation before spending more credits, releasing them, or dropping this batch.
+/// Refill, release, and drop return unused credits and mark spent credits complete for reconciliation.
 pub struct ByteBudgetBatch {
     budget: ByteBudget,
     remaining: usize,
@@ -287,7 +287,7 @@ impl ByteBudgetBatch {
 
     #[cold]
     fn refill(&mut self, bytes: usize) -> bool {
-        self.publish();
+        self.release();
         let chunk = bytes.max(INGEST_CREDIT_BYTES);
         if self.budget.charge(chunk) {
             self.remaining = chunk;
@@ -299,7 +299,10 @@ impl ByteBudgetBatch {
         true
     }
 
-    fn publish(&mut self) {
+    /// Returns unused credits and marks spent credits complete for reconciliation.
+    ///
+    /// Call this after the operations that spent the credits finish. The batch can then spend new credits.
+    pub fn release(&mut self) {
         let remaining = take(&mut self.remaining);
         let spent = take(&mut self.spent);
         if remaining != 0 {
@@ -313,7 +316,7 @@ impl ByteBudgetBatch {
 
 impl Drop for ByteBudgetBatch {
     fn drop(&mut self) {
-        self.publish();
+        self.release();
     }
 }
 
@@ -371,6 +374,22 @@ mod tests {
         assert!(budget.try_reserve(INGEST_CREDIT_BYTES).is_some());
         assert!(budget.try_reserve(1).is_none());
         assert_eq!(budget.0.completed.load(Relaxed), INGEST_CREDIT_BYTES + 10);
+    }
+
+    #[test]
+    fn release_returns_unused_credits_and_completes_spent_credits() {
+        let budget = ByteBudget::new(INGEST_CREDIT_BYTES, 0);
+        let mut batch = budget.batch();
+        assert!(batch.try_spend(10));
+        assert!(budget.try_reserve(1).is_none());
+        assert_eq!(budget.0.completed.load(Relaxed), 0);
+
+        batch.release();
+        batch.release();
+        assert_eq!(budget.0.completed.load(Relaxed), 10);
+        assert!(budget.try_reserve(INGEST_CREDIT_BYTES - 9).is_none());
+        assert!(batch.try_spend(INGEST_CREDIT_BYTES - 10));
+        assert!(budget.try_reserve(1).is_none());
     }
 
     #[test]
