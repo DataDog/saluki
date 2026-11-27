@@ -477,12 +477,6 @@ case from `test/integration/cases` that uses the same steps.
   confirm a UDP listener, so `port_listening` is not a readiness gate for it.
 - Use `config_key_equals`, `config_set` or an `exec` of the `adp` command for the privileged API of ADP.
   `http_check` and `http_request` cannot reach it.
-- `otlp-rcv-http` compares the answers of ADP and the Agent to the same HTTP requests. It runs a script in each
-  container with `exec`. Its `probes.json` holds what the Agent answers, and a `known` entry for each difference of
-  ADP, with a gap and an issue. The script, `otlp_http_probe.py`, fails the step when a known difference is gone, so
-  those staleness rules live in the helper and not in panoramic. Its entries are not the `known_differences` of the
-  [Known differences](#known-differences) section, which only the `compare` step reads. A case with other needs
-  writes its own checks, or a step for them.
 - List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
   See [Files](#files).
 
@@ -504,6 +498,10 @@ exact match does not rule out other series. A mismatch message shows the series 
 with an earlier step, such as `log_contains` or `port_listening`. `http_request` is an action, so it cannot be in a
 `parallel` block. It cannot reach a Windows container, because the courier there sends only a `GET`. It cannot reach an
 endpoint with `tls: true`, because its client does not trust a test certificate.
+
+`test/integration/cases/otlp-rcv-http` is an example. It sends the same requests to the OTLP/HTTP receivers of ADP and
+the Agent, and each ADP step has a `known` entry for a difference that an issue tracks. Its request bodies are files
+in `bodies/`, which `make generate-correctness-fixtures` writes. See [Static fixtures](./testing.md#static-fixtures).
 
 This example sends an OTLP payload and checks for an empty protobuf reply:
 

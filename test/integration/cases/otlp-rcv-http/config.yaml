@@ -1,11 +1,7 @@
 description: >-
-  ADP's OTLP/HTTP receiver and the Agent's each answer the same requests. A script runs in each container, sends the
-  requests of `probes.json` to the receiver of that container, and checks the status, headers and body of each answer.
-  The requests that each receiver accepts then reach its intake. `probes.json` lists the known differences of ADP, each
-  with a gap and an issue.
-# The script keeps these known differences in `probes.json`, and not in a `known_differences` list, because panoramic has
-# no step that sends an arbitrary HTTP request. Each entry has a gap, an issue and a reason, as in panoramic, and the
-# docstring of `otlp_http_probe.py` describes how the script checks them.
+  ADP's OTLP/HTTP receiver and the Agent's each answer the same requests. An `http_request` step for each request and
+  each receiver checks the status, headers and body of the answer. The requests that each receiver accepts then reach
+  its intake. A `known` entry of an ADP step holds a difference of ADP, with a gap and an issue.
 timeout: 5m
 subject_os: [linux]
 
@@ -22,10 +18,6 @@ participants:
       # ADP and the Agent read this. The endpoint is the harness's, not the default one. ADP handles every signal itself,
       # because it proxies none of them to the Agent by default.
       DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:{{ self.endpoints.otlp_http.port }}"
-    files:
-      /otlp-rcv-http/otlp_http_probe.py: otlp_http_probe.py
-      /otlp-rcv-http/test_otlp_http_probe.py: test_otlp_http_probe.py
-      /otlp-rcv-http/probes.json: probes.json
     connect: {intake: intake-adp.api}
   # The Agent on its own, with the receiver that its default environment binds at `agent_otlp_http`.
   agent:
@@ -33,20 +25,13 @@ participants:
     env:
       DD_API_KEY: "00000000000000000000000000000000"
       DD_HOSTNAME: "integration-test-otlp-rcv-http"
-    files:
-      /otlp-rcv-http/otlp_http_probe.py: otlp_http_probe.py
-      /otlp-rcv-http/probes.json: probes.json
     connect: {intake: intake-agent.api}
   intake-adp: {type: datadog-intake}
   intake-agent: {type: datadog-intake}
 
 procedure:
-  # The script checks its own logic first.
-  - step: exec
-    on: adp
-    command: ["/opt/datadog-agent/embedded/bin/python3", "/otlp-rcv-http/test_otlp_http_probe.py"]
-    timeout: 30s
-  # ADP listens, and its Agent leaves OTLP to ADP. The independent Agent starts its own OTLP pipeline.
+  # ADP listens, and its Agent leaves OTLP to ADP. The independent Agent starts its own OTLP pipeline. No request goes
+  # out before all three hold.
   - parallel:
       - step: log_contains
         on: adp
@@ -63,36 +48,446 @@ procedure:
         process: agent
         pattern: "Everything is ready. Begin running and processing data."
         timeout: 60s
-  # Each script prints one verdict for each probe, and fails the step when a probe fails, is stale or has an error.
-  - step: exec
+  # Each scenario sends the same request to ADP and to the Agent. A step sends its request once, and judges the one
+  # answer. The Agent must meet `expect`. ADP must meet `expect` or its `known` entry, which names the gap and the issue
+  # that track the difference. A `known` entry fails the step when ADP meets a part of `expect` that the entry replaces,
+  # so the entry cannot outlive its gap. A transport error fails the step in every case. The requests that the receivers
+  # accept come first, and then the requests that they refuse.
+  # metrics-protobuf: A protobuf metrics request that accepts gzip. Neither receiver compresses its answer.
+  - step: http_request
     on: adp
-    command:
-      - "/opt/datadog-agent/embedded/bin/python3"
-      - "/otlp-rcv-http/otlp_http_probe.py"
-      - "--spec"
-      - "/otlp-rcv-http/probes.json"
-      - "--side"
-      - "adp"
-      - "--port"
-      - "{{ adp.endpoints.otlp_http.port }}"
-    timeout: 90s
-  - step: exec
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/x-protobuf, Accept-Encoding: gzip}
+      body: {file: bodies/metrics_protobuf.pb}
+    expect:
+      status: 200
+      headers: {content-type: application/x-protobuf, content-encoding: null}
+      body: {base64: CgA=}
+    known:
+      gap: gap/otlp-http-response-format
+      issue: 3482
+      reason: >-
+        ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in
+        the content type of the request, which is what the Agent sends.
+      expect:
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
     on: agent
-    command:
-      - "/opt/datadog-agent/embedded/bin/python3"
-      - "/otlp-rcv-http/otlp_http_probe.py"
-      - "--spec"
-      - "/otlp-rcv-http/probes.json"
-      - "--side"
-      - "agent"
-      - "--port"
-      - "{{ agent.endpoints.agent_otlp_http.port }}"
-    timeout: 90s
-  # Each request that a receiver accepts reaches the intake from its own sender. A metric probe names its metric after
-  # its id, and the exact totals show that no other probe delivered. The counts follow from the known differences of
-  # ADP: when one goes stale, its count changes first.
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/x-protobuf, Accept-Encoding: gzip}
+      body: {file: bodies/metrics_protobuf.pb}
+    expect:
+      status: 200
+      headers: {content-type: application/x-protobuf, content-encoding: null}
+      body: {base64: CgA=}
+    timeout: 10s
+  # traces-protobuf: A protobuf traces request.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/traces.pb}
+    expect:
+      status: 200
+      headers: {content-type: application/x-protobuf}
+      body: {base64: CgA=}
+    known:
+      gap: gap/otlp-http-response-format
+      issue: 3482
+      reason: >-
+        ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in
+        the content type of the request, which is what the Agent sends.
+      expect:
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/traces.pb}
+    expect:
+      status: 200
+      headers: {content-type: application/x-protobuf}
+      body: {base64: CgA=}
+    timeout: 10s
+  # metrics-protobuf-charset: A protobuf metrics request whose content type has a charset parameter.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: "application/x-protobuf; charset=utf-8"}
+      body: {file: bodies/metrics_protobuf_charset.pb}
+    expect:
+      status: 200
+      headers: {content-type: application/x-protobuf}
+      body: {base64: CgA=}
+    known:
+      gap: gap/otlp-http-response-format
+      issue: 3482
+      reason: >-
+        ADP answers a success with the plain text `OK`. The OTLP specification asks for a serialized response message in
+        the content type of the request, which is what the Agent sends.
+      expect:
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: "application/x-protobuf; charset=utf-8"}
+      body: {file: bodies/metrics_protobuf_charset.pb}
+    expect:
+      status: 200
+      headers: {content-type: application/x-protobuf}
+      body: {base64: CgA=}
+    timeout: 10s
+  # metrics-json: A JSON metrics request.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/json}
+      body: {file: bodies/metrics_json.json}
+    expect:
+      status: 200
+      headers: {content-type: application/json}
+      body: {text: '{"partialSuccess":{}}'}
+    known:
+      gap: gap/otlp-http-content-type
+      issue: 3480
+      reason: >-
+        ADP ignores the content type and decodes every body as protobuf, so it fails a JSON body with status 500. The
+        Agent decodes the JSON.
+      expect:
+        status: 500
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: Internal processing error}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/json}
+      body: {file: bodies/metrics_json.json}
+    expect:
+      status: 200
+      headers: {content-type: application/json}
+      body: {text: '{"partialSuccess":{}}'}
+    timeout: 10s
+  # traces-json: A JSON traces request.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/json}
+      body: {file: bodies/traces.json}
+    expect:
+      status: 200
+      headers: {content-type: application/json}
+      body: {text: '{"partialSuccess":{}}'}
+    known:
+      gap: gap/otlp-http-content-type
+      issue: 3480
+      reason: >-
+        ADP ignores the content type and decodes every body as protobuf, so it fails a JSON body with status 500. The
+        Agent decodes the JSON.
+      expect:
+        status: 500
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: Internal processing error}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/traces
+      headers: {Content-Type: application/json}
+      body: {file: bodies/traces.json}
+    expect:
+      status: 200
+      headers: {content-type: application/json}
+      body: {text: '{"partialSuccess":{}}'}
+    timeout: 10s
+  # metrics-gzip: A protobuf metrics request with a gzip body and the matching `Content-Encoding`.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/metrics_gzip.pb}
+      content_encoding: gzip
+    expect:
+      status: 200
+      headers: {content-type: application/x-protobuf}
+      body: {base64: CgA=}
+    known:
+      gap: gap/otlp-http-content-encoding
+      issue: 3481
+      reason: >-
+        ADP ignores `Content-Encoding` and decodes the compressed body as protobuf, so it fails with status 500. The
+        Agent decompresses the body.
+      expect:
+        status: 500
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: Internal processing error}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/metrics_gzip.pb}
+      content_encoding: gzip
+    expect:
+      status: 200
+      headers: {content-type: application/x-protobuf}
+      body: {base64: CgA=}
+    timeout: 10s
+  # metrics-br: A protobuf metrics request that names an encoding that no receiver supports. The body is not compressed.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/x-protobuf, Content-Encoding: br}
+      body: {file: bodies/metrics_br.pb}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+      body_contains: {text: "unsupported Content-Encoding: br"}
+    known:
+      gap: gap/otlp-http-content-encoding
+      issue: 3481
+      reason: >-
+        ADP ignores `Content-Encoding`, so it accepts the body. The Agent refuses an encoding that it does not know,
+        with status 400.
+      expect:
+        status: 200
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/x-protobuf, Content-Encoding: br}
+      body: {file: bodies/metrics_br.pb}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+      body_contains: {text: "unsupported Content-Encoding: br"}
+    timeout: 10s
+  # metrics-text-plain: A protobuf metrics request with the content type `text/plain`.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: text/plain}
+      body: {file: bodies/metrics_text_plain.pb}
+    expect:
+      status: 415
+      headers: {content-type: text/plain}
+      body: {text: "415 unsupported media type, supported: [application/json, application/x-protobuf]"}
+    known:
+      gap: gap/otlp-http-content-type
+      issue: 3480
+      reason: >-
+        ADP ignores the content type, so it accepts the body. The Agent refuses a content type that is not JSON or
+        protobuf, with status 415.
+      expect:
+        status: 200
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: text/plain}
+      body: {file: bodies/metrics_text_plain.pb}
+    expect:
+      status: 415
+      headers: {content-type: text/plain}
+      body: {text: "415 unsupported media type, supported: [application/json, application/x-protobuf]"}
+    timeout: 10s
+  # metrics-no-content-type: A protobuf metrics request with no content type.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      body: {file: bodies/metrics_no_content_type.pb}
+    expect:
+      status: 415
+      headers: {content-type: text/plain}
+      body: {text: "415 unsupported media type, supported: [application/json, application/x-protobuf]"}
+    known:
+      gap: gap/otlp-http-content-type
+      issue: 3480
+      reason: >-
+        ADP ignores the content type, so it accepts the body. The Agent refuses a request with no content type, with
+        status 415.
+      expect:
+        status: 200
+        headers: {content-type: "text/plain; charset=utf-8"}
+        body: {text: OK}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      body: {file: bodies/metrics_no_content_type.pb}
+    expect:
+      status: 415
+      headers: {content-type: text/plain}
+      body: {text: "415 unsupported media type, supported: [application/json, application/x-protobuf]"}
+    timeout: 10s
+  # metrics-garbage: A protobuf metrics request whose body is the byte 0x0f, a tag with the invalid wire type 7.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/x-protobuf}
+      body: {base64: Dw==}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+    known:
+      gap: gap/otlp-http-response-format
+      issue: 3482
+      reason: >-
+        ADP answers a body that it cannot decode with status 500 and plain text. The Agent answers with status 400 and a
+        `google.rpc.Status` message, as the OTLP specification says.
+      expect:
+        status: 500
+        headers: {content-type: "text/plain; charset=utf-8"}
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics
+      headers: {Content-Type: application/x-protobuf}
+      body: {base64: Dw==}
+    expect:
+      status: 400
+      headers: {content-type: application/x-protobuf}
+    timeout: 10s
+  # metrics-get: A GET to the metrics path. The bodies of the two receivers differ, and that is not a gap.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: GET
+      path: /v1/metrics
+    expect:
+      status: 405
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: GET
+      path: /v1/metrics
+    expect:
+      status: 405
+    timeout: 10s
+  # unknown-path: A POST to a path that no signal uses.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/unknown
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/unknown_path.pb}
+    expect:
+      status: 404
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/unknown
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/unknown_path.pb}
+    expect:
+      status: 404
+    timeout: 10s
+  # trailing-slash: A POST to the metrics path with a trailing slash.
+  - step: http_request
+    on: adp
+    endpoint: otlp_http
+    request:
+      method: POST
+      path: /v1/metrics/
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/trailing_slash.pb}
+    expect:
+      status: 404
+    timeout: 10s
+  - step: http_request
+    on: agent
+    endpoint: agent_otlp_http
+    request:
+      method: POST
+      path: /v1/metrics/
+      headers: {Content-Type: application/x-protobuf}
+      body: {file: bodies/trailing_slash.pb}
+    expect:
+      status: 404
+    timeout: 10s
+  # Each request that a receiver accepts reaches the intake from its own sender, and a request that it refuses does not.
+  # The metric of each metrics body has the name of the body, so each step selects one request. The exact totals show
+  # that no other request delivered. The counts follow from the known differences of ADP: when one goes stale, its count
+  # changes first.
   - parallel:
-      # The Agent delivers the four metric probes that it accepts, and the two traces probes.
+      # The Agent delivers the four metrics requests that it accepts, and both traces requests.
       - step: intake_from
         on: intake-agent
         telemetry: metrics
@@ -135,8 +530,8 @@ procedure:
         sender: trace-agent
         count: 2
         timeout: 2m
-      # ADP delivers the five metric probes that it accepts, and one of the two traces probes. It decodes a JSON body as
-      # protobuf, and fails it.
+      # ADP delivers the five metrics requests that it accepts, and the protobuf traces request. It decodes a JSON body
+      # as protobuf, and fails it.
       - step: intake_from
         on: intake-adp
         telemetry: metrics
