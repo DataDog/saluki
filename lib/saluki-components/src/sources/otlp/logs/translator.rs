@@ -14,7 +14,7 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
-use crate::common::otlp::infra_attributes::{process_tags, ContainerTagPromotion, CustomTags};
+use crate::common::otlp::infra_attributes::{process_tags, ContainerTagPromotion};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::source::hostname_from_source_attributes;
 use crate::common::otlp::util::first_attribute;
@@ -81,7 +81,7 @@ impl ResourceLogsIter {
             &mut resource.attributes,
             origin_tag_resolver,
             OriginTagCardinality::Low,
-            CustomTags::Attributes(ContainerTagPromotion::Off),
+            ContainerTagPromotion::Off,
         );
         // An empty host or service counts as missing, so the record fallbacks still apply.
         let host = host_from_attributes(&resource.attributes);

@@ -8,7 +8,7 @@
 //! 2. The tags of each entity, and then the global tags, give one value for each tag key. The first value wins.
 //! 3. Each unified service tag (`service`, `env`, `version`) fills its OpenTelemetry attribute only when the resource
 //!    has none of the attributes for that tag.
-//! 4. Every other tag goes where [`CustomTags`] says, as `writeTagAttribute` does. A key with the
+//! 4. Every other tag follows the container tag promotion mode, as `writeTagAttribute` does. A key with the
 //!    `datadog.container.tag.` prefix, or a known convention key, always overwrites the resource attribute with
 //!    that key.
 //!
@@ -57,21 +57,17 @@ pub enum ContainerTagPromotion {
     Rename,
 }
 
-/// Where [`process_tags`] puts a custom tag: a tag that isn't a unified service tag, has no `datadog.container.tag.`
-/// prefix, and isn't a known convention key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CustomTags {
-    /// Writes custom tags into the resource attributes, promoted as the mode says. A prefixed copy never replaces an
-    /// attribute that the resource already has.
-    Attributes(ContainerTagPromotion),
-}
-
 /// Writes the entity and global tags of an OTLP resource into its attributes, as `ProcessTags` does.
 ///
-/// Container ID detection comes later. Until then, the container found from the origin attributes comes first.
+/// A custom tag, one that isn't a unified service tag, has no `datadog.container.tag.` prefix, and isn't a known
+/// convention key, is promoted as `promotion` says. A prefixed copy never replaces an attribute that the resource
+/// already has.
+///
+/// When the resource has no `container.id`, the container that the origin attributes identify comes first.
+/// TODO: detect `container.id` and write it into the attributes, as the Agent does.
 pub fn process_tags(
     attributes: &mut Vec<KeyValue>, resolver: &OtlpOriginTagResolver, cardinality: OriginTagCardinality,
-    custom_tags: CustomTags,
+    promotion: ContainerTagPromotion,
 ) {
     // As in the Agent, any `container.id` attribute stops the origin lookup, even an empty or unknown one. The Agent
     // detects the container ID only when `Map.Get` finds no `container.id`.
@@ -97,24 +93,24 @@ pub fn process_tags(
                     put_str_attribute(attributes, otel_keys[0], value);
                 }
             }
-            None => write_tag_attribute(attributes, key, value, custom_tags),
+            None => write_tag_attribute(attributes, key, value, promotion),
         }
     }
 }
 
 /// Writes a tag that isn't a unified service tag, as `writeTagAttribute` does.
-fn write_tag_attribute(attributes: &mut Vec<KeyValue>, key: &str, value: &str, custom_tags: CustomTags) {
+fn write_tag_attribute(attributes: &mut Vec<KeyValue>, key: &str, value: &str, promotion: ContainerTagPromotion) {
     if is_custom_container_tag_key(key) || is_known_convention_key(key) {
         put_str_attribute(attributes, key, value);
         return;
     }
-    match custom_tags {
-        CustomTags::Attributes(ContainerTagPromotion::Off) => put_str_attribute(attributes, key, value),
-        CustomTags::Attributes(ContainerTagPromotion::Duplicate) => {
+    match promotion {
+        ContainerTagPromotion::Off => put_str_attribute(attributes, key, value),
+        ContainerTagPromotion::Duplicate => {
             put_str_attribute(attributes, key, value);
             put_prefixed_str_if_absent(attributes, key, value);
         }
-        CustomTags::Attributes(ContainerTagPromotion::Rename) => put_prefixed_str_if_absent(attributes, key, value),
+        ContainerTagPromotion::Rename => put_prefixed_str_if_absent(attributes, key, value),
     }
 }
 
@@ -184,7 +180,7 @@ mod tests {
             &mut attributes,
             &resolver,
             OriginTagCardinality::Low,
-            CustomTags::Attributes(ContainerTagPromotion::Off),
+            ContainerTagPromotion::Off,
         );
         attributes
     }
@@ -283,7 +279,7 @@ mod tests {
                 &mut attributes,
                 &origin_tag_resolver,
                 OriginTagCardinality::Low,
-                CustomTags::Attributes(ContainerTagPromotion::Off),
+                ContainerTagPromotion::Off,
             );
             assert_eq!(as_map(&attributes), as_map(&expected), "case: {name}");
         }
@@ -585,7 +581,7 @@ mod tests {
                 &mut attributes,
                 &OtlpOriginTagResolver::new(Arc::new(provider)),
                 OriginTagCardinality::Low,
-                CustomTags::Attributes(promotion),
+                promotion,
             );
             assert_eq!(as_map(&attributes), string_map(&expected), "promotion: {promotion:?}");
         }
