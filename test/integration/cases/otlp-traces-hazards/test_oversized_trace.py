@@ -57,20 +57,20 @@ def decoded(body):
     for number, resource_spans in fields(body):
         assert number == 1
         parts = {}
-        for number, value in fields(resource_spans):
-            parts.setdefault(number, []).append(value)
+        for part, value in fields(resource_spans):
+            parts.setdefault(part, []).append(value)
         (resource,) = parts[1]
-        (attribute,) = [value for number, value in fields(resource) if number == 1]
+        (attribute,) = [value for field, value in fields(resource) if field == 1]
         key, value = [value for _, value in fields(attribute)]
         assert key == b"service.name"
         service = [text for _, text in fields(value)][0].decode()
         (scope_spans,) = parts[2]
         spans = []
-        for number, span in fields(scope_spans):
-            assert number == 2
+        for kind, span in fields(scope_spans):
+            assert kind == 2
             by_number = {}
-            for number, value in fields(span):
-                by_number.setdefault(number, []).append(value)
+            for field, value in fields(span):
+                by_number.setdefault(field, []).append(value)
             spans.append(by_number)
         result.append((service, spans))
     return result
