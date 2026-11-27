@@ -72,6 +72,31 @@ pub(crate) struct HttpRequestSpec {
     pub(crate) body: Vec<u8>,
 }
 
+impl HttpRequestSpec {
+    /// The URL of the request to `port` of the loopback address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path would not reach the server as written: it does not start with `/`, or the URL
+    /// parser rewrites or drops part of it, as it does for a dot segment, a space or a fragment.
+    pub(crate) fn url(&self, port: u16) -> Result<reqwest::Url, String> {
+        let path = &self.path;
+        if !path.starts_with('/') {
+            return Err(format!("the path '{}' does not start with '/'", path));
+        }
+        let url = reqwest::Url::parse(&format!("http://127.0.0.1:{}{}", port, path))
+            .map_err(|e| format!("the path '{}' is not a URL path: {}", path, e))?;
+        let sent = match url.query() {
+            Some(query) => format!("{}?{}", url.path(), query),
+            None => url.path().to_string(),
+        };
+        if sent != *path {
+            return Err(format!("the path '{}' would be sent as '{}'", path, sent));
+        }
+        Ok(url)
+    }
+}
+
 /// A reply to an HTTP request, as it arrived: the body is not decoded.
 #[derive(Clone, Debug)]
 pub(crate) struct HttpReply {
@@ -417,19 +442,13 @@ impl<'a> Handle<'a> {
         &self, endpoint: &str, request: &HttpRequestSpec, limit: Duration,
     ) -> Result<HttpReply, HandleError> {
         let (_, route) = self.route(endpoint, EndpointOperation::Exchange)?;
-        if !request.path.starts_with('/') {
-            return Err(HandleError::Harness(format!(
-                "the path '{}' does not start with '/'",
-                request.path
-            )));
-        }
         if route == Reach::CourierInServer {
             return Err(HandleError::Harness(format!(
                 "no HTTP request is routed through {:?}",
                 route
             )));
         }
-        let port = self.runner_port(endpoint)?;
+        let url = request.url(self.runner_port(endpoint)?).map_err(HandleError::Harness)?;
         static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
         let client = match CLIENT.get() {
             Some(client) => client,
@@ -452,10 +471,7 @@ impl<'a> Handle<'a> {
             }
         };
         let response = client
-            .request(
-                request.method.clone(),
-                format!("http://127.0.0.1:{}{}", port, request.path),
-            )
+            .request(request.method.clone(), url)
             .headers(request.headers.clone())
             .body(request.body.clone())
             .timeout(limit)

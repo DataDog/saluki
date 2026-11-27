@@ -526,7 +526,9 @@ This example sends an OTLP payload and checks for an empty protobuf reply:
 
 The `request` holds what the step sends:
 
-- `method` is any HTTP method. `path` starts with `/` and can hold a query.
+- `method` is any HTTP method. `path` starts with `/` and can hold a query. The step sends the path as written, so the
+  plan rejects a path that the URL parser would change. Examples are a `.` or `..` segment, a space, a `#`, and a
+  character that needs a percent escape. Write the escape in the path yourself.
 - `headers` are sent as written. Panoramic compares header names without regard to letter case, and a name given
   twice is an error. The client adds no `Content-Type`, `Content-Encoding` or `Accept-Encoding` of its own. It sets
   `Host`, `Content-Length` and `Accept: */*` itself, so a case cannot name `Host`, `Content-Length` or

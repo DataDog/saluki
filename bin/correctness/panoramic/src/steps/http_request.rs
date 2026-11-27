@@ -327,9 +327,6 @@ impl HttpRequest {
         let request = fields.request;
         let method = Method::from_bytes(request.method.as_bytes())
             .map_err(|_| format!("request.method: '{}' is not an HTTP method", request.method))?;
-        if !request.path.starts_with('/') {
-            return Err(format!("request.path: '{}' does not start with '/'", request.path));
-        }
         let mut headers = HeaderMap::new();
         for (written, value) in &request.headers {
             let name = HeaderName::from_bytes(written.as_bytes())
@@ -363,6 +360,15 @@ impl HttpRequest {
             None => Vec::new(),
         };
 
+        let spec = HttpRequestSpec {
+            method,
+            path: request.path,
+            headers,
+            body,
+        };
+        // The port does not matter: the check is of the path.
+        spec.url(0).map_err(|e| format!("request.path: {}", e))?;
+
         let expect = fields.expect.predicates("expect", dir)?;
         if !expect.iter().any(|predicate| matches!(predicate, Predicate::Status(_))) {
             return Err("expect: needs a status".to_string());
@@ -371,12 +377,7 @@ impl HttpRequest {
         Ok(Self {
             on: fields.on,
             endpoint: fields.endpoint,
-            request: HttpRequestSpec {
-                method,
-                path: request.path,
-                headers,
-                body,
-            },
+            request: spec,
             content_encoding: request.content_encoding,
             expect,
             known,
@@ -755,6 +756,44 @@ mod tests {
             Some("{gap: gap/otlp-format-2, issue: 1, reason: r, expect: {status: 500}}")
         ))
         .is_ok());
+    }
+
+    #[test]
+    fn a_path_that_the_url_parser_would_rewrite_does_not_build() {
+        let path = |path: &str| {
+            build(&fields(
+                &format!("{{method: GET, path: '{}'}}", path),
+                "{status: 200}",
+                None,
+            ))
+        };
+        let rewritten = [
+            ("/v1/../metrics", "/metrics"),
+            ("/v1/./metrics", "/v1/metrics"),
+            ("/a b", "/a%20b"),
+            ("/v1#frag", "/v1"),
+            ("/v1\\x", "/v1/x"),
+            ("/v1?a=b c", "/v1?a=b%20c"),
+            ("/\u{e9}", "/%C3%A9"),
+        ];
+        for (written, sent) in rewritten {
+            let error = path(written).unwrap_err();
+            assert_eq!(
+                error,
+                format!("request.path: the path '{}' would be sent as '{}'", written, sent)
+            );
+        }
+        for written in [
+            "/",
+            "//a//b/",
+            "/v1/metrics?a=b&c=%20d",
+            "/v1?",
+            "/a%2Fb",
+            "/v1/..%2Fmetrics",
+        ] {
+            let step = path(written).unwrap();
+            assert_eq!(step.request.path, written);
+        }
     }
 
     #[test]
