@@ -26,6 +26,7 @@ use saluki_core::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::compression::{CompressionScheme, Compressor};
 use saluki_metrics::MetricsBuilder;
+use smallvec::SmallVec;
 use tokio::{
     io::AsyncWriteExt as _,
     select,
@@ -840,12 +841,6 @@ async fn run_request_builder(
                         ),
                     };
                     let metric_point_count = metric.values().len();
-                    // Buffer before V2 encoding consumes the metric; roll back if V2 fails and is authoritative.
-                    if let Some(state) = maybe_v3_state.as_mut() {
-                        state.metrics.push(metric.clone());
-                        state.points += metric_point_count;
-                    }
-
                     // Attempt encoding the metric for V2 if configured.
                     //
                     // If the metric could not be encoded, remove its buffered V3 copy when this endpoint also requires
@@ -856,22 +851,26 @@ async fn run_request_builder(
                         }
                         MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v2_sketches),
                     };
-                    let _v2_flushed = if let Some(builder) = maybe_v2_builder {
+                    if let Some(builder) = maybe_v2_builder {
+                        if let Some(state) = maybe_v3_state.as_mut() {
+                            state.metrics.push(metric.clone());
+                            state.points += metric_point_count;
+                        }
                         let result = if endpoint == MetricsEndpoint::Sketches && sketch_shadow_state.is_enabled() {
                             sketch_shadow_state.encode(builder, metric, v3_sketch_flush_context, &mut payloads_tx).await?
                         } else {
                             encode_v2_metrics(builder, metric, &telemetry, &mut payloads_tx, v2_payload_info).await?
                         };
-                        if !result.encoded() && !matches!(endpoint_mode, MetricsEncoderMode::V3Enabled) {
+                        if !result && !matches!(endpoint_mode, MetricsEncoderMode::V3Enabled) {
                             if let Some(state) = maybe_v3_state.as_mut() {
                                 let _ = state.metrics.pop();
                                 state.points = state.points.saturating_sub(metric_point_count);
                             }
                         }
-                        result.flushed()
-                    } else {
-                        false
-                    };
+                    } else if let Some(state) = maybe_v3_state.as_mut() {
+                        state.metrics.push(metric);
+                        state.points += metric_point_count;
+                    }
 
                     let v3_payload_info = match endpoint {
                         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
@@ -1004,44 +1003,25 @@ async fn run_request_builder(
     Ok(())
 }
 
-struct EncodeResult {
-    encoded: bool,
-    flushed: bool,
-}
-
-impl EncodeResult {
-    pub const fn new(encoded: bool, flushed: bool) -> Self {
-        Self { encoded, flushed }
-    }
-
-    pub const fn encoded(&self) -> bool {
-        self.encoded
-    }
-
-    pub const fn flushed(&self) -> bool {
-        self.flushed
-    }
-}
-
 async fn encode_v2_metrics(
     request_builder: &mut RequestBuilder<v2::MetricsEndpointEncoder>, metric: Metric, telemetry: &ComponentTelemetry,
     payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
-) -> Result<EncodeResult, GenericError> {
+) -> Result<bool, GenericError> {
     // Encode the metric. If we get it back, that means the current request is full, and we need to
     // flush it before we can try to encode the metric again... so we'll hold on to it in that case
     // before flushing and trying to encode it again.
     let metric_to_retry = match request_builder.encode(metric).await {
-        Ok(None) => return Ok(EncodeResult::new(true, false)),
+        Ok(None) => return Ok(true),
         Ok(Some(metric)) => metric,
         Err(RequestBuilderError::InvalidInput { input }) => {
             debug!(metric_name = %input.context().name(), "Dropping metric with no emittable values.");
             telemetry.events_dropped_encoder().increment(1);
-            return Ok(EncodeResult::new(false, false));
+            return Ok(false);
         }
         Err(e) => {
             error!(error = %e, "Failed to encode metric.");
             telemetry.events_dropped_encoder().increment(1);
-            return Ok(EncodeResult::new(false, false));
+            return Ok(false);
         }
     };
 
@@ -1051,14 +1031,14 @@ async fn encode_v2_metrics(
     // be possible to fail at this point, otherwise we would have already caught that the first
     // time.
     match request_builder.encode(metric_to_retry).await {
-        Ok(None) => Ok(EncodeResult::new(true, true)),
+        Ok(None) => Ok(true),
         Ok(Some(_)) => unreachable!(
             "failure to encode due to size should never occur after flush for metrics which aren't unencodable"
         ),
         Err(e) => {
             error!(error = %e, "Failed to encode metric.");
             telemetry.events_dropped_encoder().increment(1);
-            Ok(EncodeResult::new(false, true))
+            Ok(false)
         }
     }
 }
@@ -1095,7 +1075,7 @@ struct V3EncoderState<'a> {
     metrics: Vec<Metric>,
     points: usize,
     context: V3FlushContext<'a>,
-    ratio: V3CompressionRatio,
+    workspace: V3EncodingWorkspace,
 }
 
 impl<'a> V3EncoderState<'a> {
@@ -1104,7 +1084,23 @@ impl<'a> V3EncoderState<'a> {
             metrics: Vec::new(),
             points: 0,
             context,
+            workspace: V3EncodingWorkspace::default(),
+        }
+    }
+}
+
+struct V3EncodingWorkspace {
+    ratio: V3CompressionRatio,
+    writer: V3Writer,
+    promoted_tags_deduplicator: ReusableDeduplicator<TagStr>,
+}
+
+impl Default for V3EncodingWorkspace {
+    fn default() -> Self {
+        Self {
             ratio: V3CompressionRatio::default(),
+            writer: V3Writer::new(),
+            promoted_tags_deduplicator: ReusableDeduplicator::new(),
         }
     }
 }
@@ -1146,18 +1142,18 @@ async fn encode_and_flush_v3_series_metrics(
     if state.metrics.is_empty() {
         return Ok(());
     }
-    let metrics_to_flush = std::mem::take(&mut state.metrics);
-
-    encode_and_flush_v3_payload_requests(
+    let result = encode_and_flush_v3_payload_requests(
         state.context.series_endpoint_uri,
-        &metrics_to_flush,
+        &state.metrics,
         state.context,
         "series",
-        &mut state.ratio,
+        &mut state.workspace,
         payloads_tx,
         payload_info,
     )
-    .await
+    .await;
+    state.metrics.clear();
+    result
 }
 
 async fn encode_and_flush_v3_sketch_metrics(
@@ -1167,18 +1163,18 @@ async fn encode_and_flush_v3_sketch_metrics(
     if state.metrics.is_empty() {
         return Ok(());
     }
-    let metrics_to_flush = std::mem::take(&mut state.metrics);
-
-    encode_and_flush_v3_payload_requests(
+    let result = encode_and_flush_v3_payload_requests(
         V3_SKETCHES_ENDPOINT_URI,
-        &metrics_to_flush,
+        &state.metrics,
         state.context,
         "sketches",
-        &mut state.ratio,
+        &mut state.workspace,
         payloads_tx,
         payload_info,
     )
-    .await
+    .await;
+    state.metrics.clear();
+    result
 }
 
 /// Smallest compression ratio used when translating the compressed size limit into an uncompressed byte target.
@@ -1248,10 +1244,9 @@ struct V3Batch {
 /// splitting, which is dominated by dictionary rebuilding on high-cardinality data
 fn build_v3_batch(
     metrics: &[Metric], idx: &mut usize, context: V3FlushContext<'_>, payload_kind: &'static str,
-    target_uncompressed_len: usize,
+    target_uncompressed_len: usize, workspace: &mut V3EncodingWorkspace,
 ) -> Option<V3Batch> {
-    let mut writer = V3Writer::new();
-    let mut tags_deduplicator = ReusableDeduplicator::new();
+    let writer = &mut workspace.writer;
     let additional_tags = context.endpoint_config.additional_tags();
     let mut data_point_count = 0usize;
     let mut cut_for_size = false;
@@ -1302,7 +1297,12 @@ fn build_v3_batch(
             }
         }
 
-        write_metric_to_v3(&mut writer, metric, additional_tags, &mut tags_deduplicator);
+        write_metric_to_v3(
+            writer,
+            metric,
+            additional_tags,
+            &mut workspace.promoted_tags_deduplicator,
+        );
         data_point_count += metric_points;
         *idx += 1;
 
@@ -1328,7 +1328,7 @@ fn build_v3_batch(
         return None;
     }
 
-    match writer.finalize() {
+    match writer.finish() {
         Ok(encoded) => Some(V3Batch {
             encoded,
             event_count,
@@ -1348,20 +1348,25 @@ async fn create_v3_batch_request(
     ratio: &mut V3CompressionRatio,
 ) -> Option<V3PayloadRequest> {
     let V3Batch {
-        encoded,
+        mut encoded,
         event_count,
         data_point_count,
     } = batch;
 
-    let mut encoded_request =
-        match create_v3_request(endpoint_uri, encoded, context.endpoint_config.compression_scheme()).await {
-            Ok(request) => request,
-            Err(e) => {
-                error!(error = %e, payload_kind, events = event_count, "Failed to create V3 metrics request.");
-                context.record_dropped_metrics(event_count);
-                return None;
-            }
-        };
+    let encoded_request = match create_v3_request(
+        endpoint_uri,
+        &encoded.payload,
+        context.endpoint_config.compression_scheme(),
+    )
+    .await
+    {
+        Ok(request) => request,
+        Err(e) => {
+            error!(error = %e, payload_kind, events = event_count, "Failed to create V3 metrics request.");
+            context.record_dropped_metrics(event_count);
+            return None;
+        }
+    };
 
     // Feed the observation back even when the request is too big: an oversized batch is exactly the case where the
     // target needs correcting.
@@ -1374,13 +1379,16 @@ async fn create_v3_batch_request(
     // Per-column compressed sizes are measured only for requests we actually emit. Measuring them eagerly in
     // `create_v3_request` would compress every column of every oversized attempt that gets discarded, which is pure
     // waste.
-    if let Err(e) =
-        measure_v3_column_compressed_sizes(&mut encoded_request.stats, context.endpoint_config.compression_scheme())
-            .await
+    if let Err(e) = measure_v3_column_compressed_sizes(
+        &mut encoded.stats,
+        &encoded.payload,
+        context.endpoint_config.compression_scheme(),
+    )
+    .await
     {
         error!(error = %e, payload_kind, "Failed to measure V3 column compressed sizes.");
     } else {
-        record_v3_serializer_stats(context.serializer_telemetry, &encoded_request.stats);
+        record_v3_serializer_stats(context.serializer_telemetry, &encoded.stats);
     }
 
     Some(V3PayloadRequest {
@@ -1392,12 +1400,11 @@ async fn create_v3_batch_request(
 
 /// Re-encodes an oversized range as progressively smaller ranges until each one fits.
 ///
-/// This is the fallback for a batch that was sized against the byte target but still exceeded the real payload limits.
-/// It re-encodes and re-compresses at every level of splitting, so it is deliberately only reached when the target
-/// guessed wrong.
+/// The byte target is an estimate. Each split costs another encode and compression, so use this path only after
+/// a request attempt exceeds the endpoint limits.
 async fn split_and_encode_oversized_v3_range(
     endpoint_uri: &str, metrics: &[Metric], range: Range<usize>, context: V3FlushContext<'_>,
-    payload_kind: &'static str, ratio: &mut V3CompressionRatio,
+    payload_kind: &'static str, workspace: &mut V3EncodingWorkspace,
 ) -> Vec<V3PayloadRequest> {
     // `build_v3_batch` advances past metrics it drops. Preserve that decision when the accepted batch has to be
     // re-encoded: retrying the raw source range would otherwise resurrect those metrics.
@@ -1421,10 +1428,15 @@ async fn split_and_encode_oversized_v3_range(
         let event_count = metrics_in_range.len();
         let data_point_count = metrics_in_range.iter().map(|metric| metric.values().len()).sum();
 
-        let encoded = match encode_v3_metrics_batch(
-            metrics_in_range.iter().copied(),
-            context.endpoint_config.additional_tags(),
-        ) {
+        for metric in metrics_in_range {
+            write_metric_to_v3(
+                &mut workspace.writer,
+                metric,
+                context.endpoint_config.additional_tags(),
+                &mut workspace.promoted_tags_deduplicator,
+            );
+        }
+        let encoded = match workspace.writer.finish() {
             Ok(encoded) => encoded,
             Err(e) => {
                 error!(error = %e, payload_kind, events = event_count, "Failed to encode V3 metrics payload request.");
@@ -1438,7 +1450,9 @@ async fn split_and_encode_oversized_v3_range(
             data_point_count,
         };
 
-        if let Some(request) = create_v3_batch_request(endpoint_uri, batch, context, payload_kind, ratio).await {
+        if let Some(request) =
+            create_v3_batch_request(endpoint_uri, batch, context, payload_kind, &mut workspace.ratio).await
+        {
             requests.push(request);
             continue;
         }
@@ -1474,14 +1488,15 @@ async fn split_and_encode_oversized_v3_range(
 #[allow(clippy::too_many_arguments)]
 async fn encode_and_flush_v3_payload_requests(
     endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
-    ratio: &mut V3CompressionRatio, payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+    workspace: &mut V3EncodingWorkspace, payloads_tx: &mut mpsc::Sender<Payload>,
+    payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     encode_v3_payload_requests(
         endpoint_uri,
         metrics,
         context,
         payload_kind,
-        ratio,
+        workspace,
         payloads_tx,
         payload_info,
         None,
@@ -1492,16 +1507,23 @@ async fn encode_and_flush_v3_payload_requests(
 #[allow(clippy::too_many_arguments)]
 async fn encode_v3_payload_requests(
     endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
-    ratio: &mut V3CompressionRatio, payloads_tx: &mut Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+    workspace: &mut V3EncodingWorkspace, payloads_tx: &mut Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
     sampled_destinations: Option<Arc<[SketchShadowDestination]>>,
 ) -> Result<(), GenericError> {
     let mut shadow_requests = Vec::new();
-    let target_uncompressed_len = ratio.uncompressed_target(context.payload_limits);
+    let target_uncompressed_len = workspace.ratio.uncompressed_target(context.payload_limits);
     let mut idx = 0;
 
     while idx < metrics.len() {
         let batch_start = idx;
-        let Some(batch) = build_v3_batch(metrics, &mut idx, context, payload_kind, target_uncompressed_len) else {
+        let Some(batch) = build_v3_batch(
+            metrics,
+            &mut idx,
+            context,
+            payload_kind,
+            target_uncompressed_len,
+            workspace,
+        ) else {
             // `build_v3_batch` always consumes at least one metric when one is available, but guard against spinning
             // on a batch that somehow produced nothing.
             if idx == batch_start {
@@ -1515,23 +1537,23 @@ async fn encode_v3_payload_requests(
             continue;
         };
 
-        let requests = match create_v3_batch_request(endpoint_uri, batch, context, payload_kind, ratio).await {
-            Some(request) => vec![request],
-            // The batch we sized against the byte target still came out over the real limits, so fall back to
-            // re-encoding it as progressively smaller ranges. The target self-corrects from the ratio we record on
-            // every emitted payload, so this should be rare.
-            None => {
-                split_and_encode_oversized_v3_range(
-                    endpoint_uri,
-                    metrics,
-                    batch_start..idx,
-                    context,
-                    payload_kind,
-                    ratio,
-                )
-                .await
-            }
-        };
+        let requests =
+            match create_v3_batch_request(endpoint_uri, batch, context, payload_kind, &mut workspace.ratio).await {
+                Some(request) => vec![request],
+                // Split when the real request exceeds the limit despite sizing against the byte target. The target
+                // adjusts from the compression ratios of emitted payloads.
+                None => {
+                    split_and_encode_oversized_v3_range(
+                        endpoint_uri,
+                        metrics,
+                        batch_start..idx,
+                        context,
+                        payload_kind,
+                        workspace,
+                    )
+                    .await
+                }
+            };
 
         for payload_request in requests {
             if sampled_destinations.is_some() {
@@ -1584,7 +1606,7 @@ fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3Encod
     telemetry.record_values_count(stats.value_encoding_stats);
 
     for column in &stats.columns {
-        let uncompressed_size = column.bytes.len() as u64;
+        let uncompressed_size = column.range.len() as u64;
         let compressed_size = column.compressed_len as u64;
         telemetry.record_column_size(column.field_number, uncompressed_size, compressed_size);
     }
@@ -1595,10 +1617,10 @@ fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3Encod
 /// This is deliberately separate from building the request: it is only worth paying for columns belonging to a request
 /// that will actually be sent, since oversized requests are discarded and re-encoded as smaller ranges.
 async fn measure_v3_column_compressed_sizes(
-    stats: &mut V3EncoderStats, compression_scheme: CompressionScheme,
+    stats: &mut V3EncoderStats, payload: &[u8], compression_scheme: CompressionScheme,
 ) -> Result<(), GenericError> {
     for column in &mut stats.columns {
-        column.compressed_len = compressed_v3_len(&column.bytes, compression_scheme)
+        column.compressed_len = compressed_v3_len(&payload[column.range.clone()], compression_scheme)
             .await
             .error_context("Failed to measure V3 column compressed size.")?;
     }
@@ -1649,13 +1671,14 @@ async fn flush_payload(
 }
 
 // Encodes a batch of metrics to V3 columnar format.
+#[cfg(test)]
 fn encode_v3_metrics_batch<'a>(
     metrics: impl IntoIterator<Item = &'a Metric>, additional_tags: &SharedTagSet,
 ) -> Result<V3EncodedMetrics, GenericError> {
     let mut writer = V3Writer::new();
     let mut tags_deduplicator = ReusableDeduplicator::new();
 
-    for metric in metrics {
+    for metric in metrics.into_iter().filter(|metric| metric_has_emittable_values(metric)) {
         write_metric_to_v3(&mut writer, metric, additional_tags, &mut tags_deduplicator);
     }
 
@@ -1684,13 +1707,8 @@ pub(super) fn metric_has_emittable_values(metric: &Metric) -> bool {
 
 fn write_metric_to_v3(
     writer: &mut V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
-    tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
+    promoted_tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
 ) {
-    if !metric_has_emittable_values(metric) {
-        debug!(metric_name = %metric.context().name(), "Dropping metric with no emittable values.");
-        return;
-    }
-
     let metric_type = match metric.values() {
         MetricValues::Counter(..) => V3MetricType::Count,
         MetricValues::Rate(..) => V3MetricType::Rate,
@@ -1699,42 +1717,54 @@ fn write_metric_to_v3(
     };
     let is_sketch = metric_type == V3MetricType::Sketch;
 
-    let mut builder = writer.write(metric_type, metric.context().name());
+    let context = metric.context();
+    let (name, hint) = context.name_with_symbol_id();
+    let mut builder = writer.write_with_symbol_id(metric_type, name, hint);
 
-    let all_tags = tags_deduplicator
-        .deduplicated(metric_tags(metric, additional_tags))
-        .filter(|tag| is_sketch || !is_v3_series_resource_tag(tag) && !is_v3_series_device_tag(tag))
-        .map(TagStr::as_str);
-    builder.set_tags(all_tags);
+    let mut promoted_tags = SmallVec::<[(&TagStr, bool); 4]>::new();
+    let tags = context
+        .tags()
+        .tags_with_symbol_ids()
+        .map(|(tag, hint)| (tag, hint, false))
+        .chain(additional_tags.into_iter().map(|tag| (tag.as_tag_str(), None, false)))
+        .chain(
+            context
+                .origin_tags()
+                .into_iter()
+                .map(|tag| (tag.as_tag_str(), None, true)),
+        );
+    builder.set_unique_tags(tags.filter_map(|(tag, hint, is_origin)| {
+        if !is_sketch && (is_v3_series_device_tag(tag) || is_v3_series_resource_tag(tag)) {
+            promoted_tags.push((tag, is_origin));
+            None
+        } else {
+            Some((tag.as_str(), hint))
+        }
+    }));
 
-    // Resources - extract host and, for series, promoted resource tags.
-    let mut resources = Vec::new();
-    if let Some(host) = metric.context().host().filter(|host| !host.is_empty()) {
+    let host = context.host().filter(|host| !host.is_empty());
+    let mut resources = SmallVec::<[(&str, &str); 4]>::new();
+    if let Some(host) = host {
         resources.push(("host", host));
     }
-    if !is_sketch {
-        let mut device_resource = None;
-        let chained_tags = metric
-            .context()
-            .origin_tags()
-            .into_iter()
-            .map(Tag::as_tag_str)
-            .chain(metric.context().tags())
-            .chain(additional_tags.into_iter().map(Tag::as_tag_str));
-        for tag in tags_deduplicator.deduplicated(chained_tags) {
-            if let Some(device) = tag.value_if_named("device") {
-                device_resource = Some(device).filter(|device| !device.is_empty());
-            } else if let Some(resource) = tag.value_if_named("dd.internal.resource") {
-                if let Some((rtype, rname)) = resource.split_once(':') {
-                    if !rtype.is_empty() && !rname.is_empty() {
-                        resources.push((rtype, rname));
-                    }
+    if !promoted_tags.is_empty() {
+        // Tags use instrumented/additional/origin order, but resources give origin tags first position.
+        let (other, origin) = promoted_tags.split_at(promoted_tags.partition_point(|(_, is_origin)| !is_origin));
+        let mut device = None;
+        for tag in promoted_tags_deduplicator.deduplicated(origin.iter().chain(other).map(|(tag, _)| *tag)) {
+            if let Some(value) = tag.value_if_named("device") {
+                device = Some(value).filter(|value| !value.is_empty());
+            } else if let Some((kind, name)) = tag
+                .value_if_named("dd.internal.resource")
+                .and_then(|value| value.split_once(':'))
+            {
+                if !kind.is_empty() && !name.is_empty() {
+                    resources.push((kind, name));
                 }
             }
         }
-        if let Some(device) = device_resource {
-            let device_idx = usize::from(metric.context().host().is_some_and(|host| !host.is_empty()));
-            resources.insert(device_idx, ("device", device));
+        if let Some(device) = device {
+            resources.insert(usize::from(host.is_some()), ("device", device));
         }
     }
     builder.set_resources(&resources);
@@ -1880,7 +1910,7 @@ fn metric_tags<'a>(metric: &'a Metric, additional_tags: &'a SharedTagSet) -> imp
 
 /// Creates a V3 HTTP request from encoded payload data.
 async fn create_v3_request(
-    endpoint_uri: &str, encoded: V3EncodedMetrics, compression_scheme: CompressionScheme,
+    endpoint_uri: &str, payload: &[u8], compression_scheme: CompressionScheme,
 ) -> Result<V3EncodedRequest, GenericError> {
     // Keep the wire payload as one continuous compressed stream. Per-column compressed sizes are measured
     // independently for telemetry.
@@ -1888,12 +1918,12 @@ async fn create_v3_request(
     let header_len = {
         let mut header_writer = CodedOutputStream::bytes(&mut header_buf);
         header_writer.write_tag(3, WireType::LengthDelimited)?;
-        header_writer.write_uint64_no_tag(encoded.payload.len() as u64)?;
+        header_writer.write_uint64_no_tag(payload.len() as u64)?;
         header_writer.flush()?;
         header_writer.total_bytes_written() as usize
     };
 
-    let uncompressed_len = header_len + encoded.payload.len();
+    let uncompressed_len = header_len + payload.len();
 
     let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
     let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
@@ -1902,7 +1932,7 @@ async fn create_v3_request(
         .await
         .error_context("Failed to compress V3 payload.")?;
     compressor
-        .write_all(&encoded.payload)
+        .write_all(payload)
         .await
         .error_context("Failed to compress V3 payload.")?;
     compressor
@@ -1934,7 +1964,6 @@ async fn create_v3_request(
         request,
         compressed_len,
         uncompressed_len,
-        stats: encoded.stats,
     })
 }
 
@@ -2301,9 +2330,13 @@ mod tests {
     #[tokio::test]
     async fn create_v3_request_uses_configured_endpoint_uri() {
         let encoded = V3Writer::new().finalize().expect("empty V3 payload should encode");
-        let request = create_v3_request("/api/intake/metrics/custom/series", encoded, CompressionScheme::noop())
-            .await
-            .expect("request should be created");
+        let request = create_v3_request(
+            "/api/intake/metrics/custom/series",
+            &encoded.payload,
+            CompressionScheme::noop(),
+        )
+        .await
+        .expect("request should be created");
 
         assert_eq!("/api/intake/metrics/custom/series", request.request.uri());
     }
@@ -2311,18 +2344,19 @@ mod tests {
     #[tokio::test]
     async fn create_v3_request_uses_single_stream_body_and_column_telemetry() {
         let metrics = vec![Metric::counter("v3.single.stream", 42.0)];
-        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let mut encoded =
+            encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let mut request = create_v3_request(METRICS_SERIES_V3_PATH, encoded, CompressionScheme::noop())
+        let request = create_v3_request(METRICS_SERIES_V3_PATH, &encoded.payload, CompressionScheme::noop())
             .await
             .expect("request should be created");
-        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::noop())
+        measure_v3_column_compressed_sizes(&mut encoded.stats, &encoded.payload, CompressionScheme::noop())
             .await
             .expect("column compressed sizes should be measured");
 
-        for column in &request.stats.columns {
-            assert_eq!(column.compressed_len, column.bytes.len());
+        for column in &encoded.stats.columns {
+            assert_eq!(column.compressed_len, column.range.len());
         }
 
         let mut expected_body = Vec::new();
@@ -2340,20 +2374,28 @@ mod tests {
     #[tokio::test]
     async fn create_v3_request_zstd_body_decodes_to_metric_payload() {
         let metrics = vec![Metric::counter("v3.single.stream.zstd", 42.0)];
-        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let mut encoded =
+            encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let mut request = create_v3_request(METRICS_SERIES_V3_PATH, encoded, CompressionScheme::zstd_default())
-            .await
-            .expect("request should be created");
-        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::zstd_default())
+        let request = create_v3_request(
+            METRICS_SERIES_V3_PATH,
+            &encoded.payload,
+            CompressionScheme::zstd_default(),
+        )
+        .await
+        .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut encoded.stats, &encoded.payload, CompressionScheme::zstd_default())
             .await
             .expect("column compressed sizes should be measured");
 
-        for column in &request.stats.columns {
-            let expected_compressed_len = compressed_v3_len(&column.bytes, CompressionScheme::zstd_default())
-                .await
-                .expect("column compressed size should be measured");
+        for column in &encoded.stats.columns {
+            let expected_compressed_len = compressed_v3_len(
+                &encoded.payload[column.range.clone()],
+                CompressionScheme::zstd_default(),
+            )
+            .await
+            .expect("column compressed size should be measured");
             assert_eq!(column.compressed_len, expected_compressed_len);
         }
 
@@ -2405,7 +2447,7 @@ mod tests {
                 .columns
                 .iter()
                 .find(|column| column.field_number == field_number)
-                .map(|column| column.bytes.as_slice())
+                .map(|column| &encoded.payload[column.range.clone()])
         };
 
         assert_eq!(column(NUM_POINTS_FIELD_NUMBER), Some(&[2, 2, 1, 1][..]));
@@ -2428,7 +2470,7 @@ mod tests {
                 .columns
                 .iter()
                 .find(|column| column.field_number == field_number)
-                .map(|column| column.bytes.as_slice())
+                .map(|column| &encoded.payload[column.range.clone()])
         };
 
         assert_eq!(column(NUM_POINTS_FIELD_NUMBER), Some(&[1][..]));
@@ -2448,24 +2490,22 @@ mod tests {
             Metric::gauge("v3.telemetry.float32", [(123, 1.5), (124, 2.25)]),
             Metric::gauge("v3.telemetry.float64", [(123, (1i64 << 30) as f64), (124, 1.5)]),
         ];
-        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
-        let mut request = create_v3_request(METRICS_SERIES_V3_PATH, encoded, CompressionScheme::noop())
-            .await
-            .expect("request should be created");
-        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::noop())
+        let mut encoded =
+            encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        measure_v3_column_compressed_sizes(&mut encoded.stats, &encoded.payload, CompressionScheme::noop())
             .await
             .expect("column compressed sizes should be measured");
 
-        let value_sint64_column = request
+        let value_sint64_column = encoded
             .stats
             .columns
             .iter()
             .find(|column| column.field_number == VALUE_SINT64_FIELD_NUMBER)
             .expect("sint64 value column should be present");
-        let value_sint64_len = value_sint64_column.bytes.len() as u64;
+        let value_sint64_len = value_sint64_column.range.len() as u64;
         assert_eq!(value_sint64_column.compressed_len as u64, value_sint64_len);
 
-        record_v3_serializer_stats(&serializer_telemetry, &request.stats);
+        record_v3_serializer_stats(&serializer_telemetry, &encoded.stats);
 
         assert_eq!(
             recorder.counter(("serializer.v3_values_count", &[("type", "zero")])),
@@ -2501,7 +2541,7 @@ mod tests {
 
     async fn create_v3_test_request(metrics: &[Metric]) -> V3EncodedRequest {
         let encoded = encode_v3_metrics_batch(metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
-        create_v3_request(METRICS_SERIES_V3_PATH, encoded, CompressionScheme::noop())
+        create_v3_request(METRICS_SERIES_V3_PATH, &encoded.payload, CompressionScheme::noop())
             .await
             .expect("request should be created")
     }
@@ -2533,13 +2573,13 @@ mod tests {
     /// encoder's main task.
     async fn collect_v3_payload_requests(metrics: &[Metric], context: V3FlushContext<'_>) -> Vec<CollectedV3Payload> {
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(64);
-        let mut ratio = V3CompressionRatio::default();
+        let mut workspace = V3EncodingWorkspace::default();
         encode_and_flush_v3_payload_requests(
             METRICS_SERIES_V3_PATH,
             metrics,
             context,
             "series",
-            &mut ratio,
+            &mut workspace,
             &mut payloads_tx,
             None,
         )
@@ -2710,10 +2750,18 @@ mod tests {
         metrics: &[Metric], context: V3FlushContext<'_>, target_uncompressed_len: usize,
     ) -> Vec<(Range<usize>, usize)> {
         let mut batches = Vec::new();
+        let mut workspace = V3EncodingWorkspace::default();
         let mut idx = 0;
         while idx < metrics.len() {
             let start = idx;
-            match build_v3_batch(metrics, &mut idx, context, "series", target_uncompressed_len) {
+            match build_v3_batch(
+                metrics,
+                &mut idx,
+                context,
+                "series",
+                target_uncompressed_len,
+                &mut workspace,
+            ) {
                 Some(batch) => batches.push((start..idx, batch.event_count)),
                 None if idx == start => break,
                 None => {}

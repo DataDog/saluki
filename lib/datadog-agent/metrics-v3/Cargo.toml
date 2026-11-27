@@ -8,4 +8,5 @@ repository = { workspace = true }
 
 [dependencies]
 foldhash = { workspace = true }
+hashbrown = { workspace = true }
 protobuf = { workspace = true }
