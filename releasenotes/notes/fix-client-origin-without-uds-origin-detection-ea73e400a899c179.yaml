@@ -3,5 +3,6 @@ fixes:
   - |
     With ``dogstatsd_origin_detection`` disabled, which is the default, DogStatsD metrics, events and service checks
     now get origin tags from the origin that the client sends, as in the Datadog Agent: the ``dd.internal.entity_id``
-    tag, and the container ID and External Data fields when ``dogstatsd_origin_detection_client`` is enabled.
-    ``dogstatsd_origin_detection`` controls only origin detection from the sender's UDS socket credentials.
+    tag, the container ID field when ``dogstatsd_origin_detection_client`` is enabled, and the External Data field when
+    ``dogstatsd_origin_detection_client`` and ``origin_detection_unified`` are enabled. ``dogstatsd_origin_detection``
+    controls only origin detection from the sender's UDS socket credentials.

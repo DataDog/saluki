@@ -50,12 +50,14 @@ fn captured_process_id_from_replay(process_id: u32) -> Option<u32> {
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct OriginEnrichmentConfiguration {
-    /// Whether or not to enable UDS origin detection, as `dogstatsd_origin_detection` does in the Agent.
+    /// Whether or not to enable UDS origin detection, as `dogstatsd_origin_detection` does in the Agent. It is off by
+    /// default.
     ///
     /// When enabled, the sender's process ID is read from the socket credentials of a UDS packet, and the container it
     /// runs in is an origin to enrich with. When disabled, the socket credentials are not an origin, and the origin
-    /// fields that the client sends -- `dd.internal.entity_id`, and the `c:` and `e:` fields when
-    /// `origin_detection_client` is set -- are still used, as the Agent uses them.
+    /// fields that the client sends are still used, as the Agent uses them: `dd.internal.entity_id`, the `c:` field
+    /// when `origin_detection_client` is set, and the `e:` field when `origin_detection_client` and
+    /// `origin_detection_unified` are set.
     pub enabled: bool,
 
     /// Whether or not a client-provided entity ID should take precedence over automatically detected origin metadata.
