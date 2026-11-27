@@ -436,9 +436,11 @@ impl<'a> Handle<'a> {
             None => {
                 // Panoramic turns on the `zstd` feature of reqwest, and other crates in the build can turn on more.
                 // Each one would add `Accept-Encoding` and decode the reply body, so the client turns them all off.
+                // The same goes for the default retry of a protocol NACK, which `http2` would turn on.
                 let client = reqwest::Client::builder()
                     .no_proxy()
                     .redirect(reqwest::redirect::Policy::none())
+                    .retry(reqwest::retry::never())
                     .no_gzip()
                     .no_brotli()
                     .no_zstd()
