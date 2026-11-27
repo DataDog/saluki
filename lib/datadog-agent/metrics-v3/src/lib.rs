@@ -15,5 +15,6 @@ mod types;
 mod writer;
 
 pub use constants::COLUMN_NAMES;
+pub use interner::SymbolOwner;
 pub use types::V3MetricType;
 pub use writer::{V3EncodeError, V3EncodedMetrics, V3EncoderStats, V3MetricBuilder, V3ValueEncodingStats, V3Writer};

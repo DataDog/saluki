@@ -37,7 +37,7 @@ use tracing::{debug, error, warn};
 use url::Url;
 
 use self::v3::{
-    V3EncodedMetrics, V3EncodedRequest, V3EncoderStats, V3MetricType, V3PayloadLimits, V3PayloadRequest,
+    SymbolOwner, V3EncodedMetrics, V3EncodedRequest, V3EncoderStats, V3MetricType, V3PayloadLimits, V3PayloadRequest,
     V3PayloadSplitReason, V3SerializerTelemetry, V3Writer,
 };
 use crate::{
@@ -1705,6 +1705,10 @@ pub(super) fn metric_has_emittable_values(metric: &Metric) -> bool {
     }
 }
 
+// Retain symbols only for longer tag lists, where avoiding repeated text hashing offsets the cost of pinning.
+// This counts all context tags, including device and resource tags promoted out of the V3 tagset.
+const MIN_CONTEXT_TAGS_FOR_PINNED_SYMBOLS: usize = 32;
+
 fn write_metric_to_v3(
     writer: &mut V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
     promoted_tags_deduplicator: &mut ReusableDeduplicator<TagStr>,
@@ -1722,8 +1726,8 @@ fn write_metric_to_v3(
     let mut builder = writer.write_with_symbol_id(metric_type, name, hint);
 
     let mut promoted_tags = SmallVec::<[(&TagStr, bool); 4]>::new();
-    let tags = context
-        .tags()
+    let context_tags = context.tags();
+    let tags = context_tags
         .tags_with_symbol_ids()
         .map(|(tag, hint)| (tag, hint, false))
         .chain(additional_tags.into_iter().map(|tag| (tag.as_tag_str(), None, false)))
@@ -1733,14 +1737,22 @@ fn write_metric_to_v3(
                 .into_iter()
                 .map(|tag| (tag.as_tag_str(), None, true)),
         );
-    builder.set_unique_tags(tags.filter_map(|(tag, hint, is_origin)| {
+    let tags = tags.filter_map(|(tag, hint, is_origin)| {
         if !is_sketch && (is_v3_series_device_tag(tag) || is_v3_series_resource_tag(tag)) {
             promoted_tags.push((tag, is_origin));
             None
         } else {
             Some((tag.as_str(), hint))
         }
-    }));
+    });
+    if context_tags.len() >= MIN_CONTEXT_TAGS_FOR_PINNED_SYMBOLS {
+        let mut symbol_owner: Option<SymbolOwner> = None;
+        builder.set_unique_tags_with_symbols(tags, || {
+            Arc::clone(symbol_owner.get_or_insert_with(|| Arc::new(context.clone())))
+        });
+    } else {
+        builder.set_unique_tags(tags);
+    }
 
     let host = context.host().filter(|host| !host.is_empty());
     let mut resources = SmallVec::<[(&str, &str); 4]>::new();

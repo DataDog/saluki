@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce V3 metric encoding work for recurring instrumented tags.

@@ -8,7 +8,11 @@
 //! This avoids a second copy of each key but requires the caller to keep indexed ranges intact until reset.
 //! Reset both the index and arena between payloads to reuse their allocations and start IDs again at 1.
 
-use std::hash::{BuildHasher, Hash};
+use std::{
+    any::Any,
+    hash::{BuildHasher, Hash},
+    sync::Arc,
+};
 
 use hashbrown::{hash_table::Entry, HashTable};
 
@@ -107,6 +111,72 @@ impl Interner {
         if let Some(symbols) = &mut self.symbols {
             symbols.fill(None);
         }
+    }
+}
+
+const PINNED_SYMBOL_SLOTS: usize = 512;
+const PINNED_SYMBOL_PROBES: usize = 4;
+
+/// A reference that keeps a cached symbol's text alive and immutable at the same address.
+pub type SymbolOwner = Arc<dyn Any + Send + Sync>;
+
+#[derive(Debug)]
+struct PinnedSymbol {
+    hint: SymbolHint,
+    address: usize,
+    len: usize,
+    id: i64,
+    _owner: SymbolOwner,
+}
+
+/// Maps retained symbols to payload IDs using their hint, address, and length.
+///
+/// Each occupied slot owns a reference that keeps the text alive and immutable at that address until replacement or
+/// reset. Unlike `Interner::intern_symbol`, this cache can therefore reuse an ID without comparing the arena bytes.
+#[derive(Debug, Default)]
+pub(crate) struct PinnedSymbols {
+    slots: Vec<Option<PinnedSymbol>>,
+}
+
+impl PinnedSymbols {
+    /// Returns the cached ID or interns the text and retains an owner for the new entry.
+    ///
+    /// The owner from `retain` must keep `text` alive and immutable at this address while the slot is occupied.
+    pub fn intern(
+        &mut self, hint: SymbolHint, text: &str, intern: impl FnOnce() -> i64, retain: impl FnOnce() -> SymbolOwner,
+    ) -> i64 {
+        if self.slots.is_empty() {
+            self.slots.resize_with(PINNED_SYMBOL_SLOTS, || None);
+        }
+        let (_, symbol) = hint;
+        let mixed = (symbol ^ symbol.rotate_right(15)).wrapping_mul(0x9e37_79b9);
+        let start = (mixed >> (u32::BITS - PINNED_SYMBOL_SLOTS.ilog2())) as usize;
+        let address = text.as_ptr().addr();
+        let mut destination = start;
+        for probe in 0..PINNED_SYMBOL_PROBES {
+            let idx = (start + probe) & (PINNED_SYMBOL_SLOTS - 1);
+            match &self.slots[idx] {
+                Some(slot) if slot.hint == hint && slot.address == address && slot.len == text.len() => return slot.id,
+                Some(_) => {}
+                None => {
+                    destination = idx;
+                    break;
+                }
+            }
+        }
+        let id = intern();
+        self.slots[destination] = Some(PinnedSymbol {
+            hint,
+            address,
+            len: text.len(),
+            id,
+            _owner: retain(),
+        });
+        id
+    }
+
+    pub fn clear(&mut self) {
+        self.slots.iter_mut().for_each(|slot| *slot = None);
     }
 }
 

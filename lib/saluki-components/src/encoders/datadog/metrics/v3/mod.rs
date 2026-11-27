@@ -19,6 +19,6 @@ mod payload;
 mod telemetry;
 
 pub(crate) use datadog_agent_metrics_v3::V3EncoderStats;
-pub use datadog_agent_metrics_v3::{V3EncodedMetrics, V3MetricType, V3Writer};
+pub use datadog_agent_metrics_v3::{SymbolOwner, V3EncodedMetrics, V3MetricType, V3Writer};
 pub(super) use payload::{V3EncodedRequest, V3PayloadLimits, V3PayloadRequest};
 pub(crate) use telemetry::{V3PayloadSplitReason, V3SerializerTelemetry};
