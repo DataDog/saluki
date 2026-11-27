@@ -262,7 +262,9 @@ connect to it.
 - a reference to something that does not exist, or whose value is not known in time;
 - a cycle in the order of creation or start;
 - a step that does not decode, or that names a participant, process, command, operation or endpoint that does not
-  exist on that OS.
+  exist on that OS;
+- a step that presumes what no earlier entry of the procedure shows, such as an `intake_from` absence of items that no
+  earlier step expects from a sender.
 
 Panoramic cannot check that a program exists in an image, that a script is correct, or that the software opens its
 listeners. Those fail at start, in `exec`, or at a readiness timeout, with the output attached.
@@ -477,6 +479,23 @@ case from `test/integration/cases` that uses the same steps.
   confirm a UDP listener, so `port_listening` is not a readiness gate for it.
 - Use `config_key_equals`, `config_set` or an `exec` of the `adp` command for the privileged API of ADP.
   `http_check` and `http_request` cannot reach it.
+- To check which intake each kind of telemetry reaches, give each destination its own `datadog-intake` and send one
+  fixture for each signal. The `intake` connection sets `DD_DD_URL` and `DD_APM_DD_URL`, and environment masks
+  `datadog.yaml`, so a case that sets other intake URLs in `datadog.yaml` does not use it. Give each connection a name
+  of your own, such as `main` or `extra`, and refer to its `url` from a template of `datadog.yaml`. See
+  [References](#references). Panoramic accepts a connection that a template refers to. `otlp-traces-endpoints` does
+  this.
+- When several API keys deliver to one intake, `intake_from` takes `api_keys`. It lists every key that may deliver
+  selected items, and a request with any other key, or with no key, fails the step. A map gives the exact number of
+  items of each key. A list expects at least one item of each key, and suits `trace_stats`, which takes no count. Give
+  every step that expects an item the keys of its intake, so that a key that the case does not name cannot deliver. The
+  reports, the kept files and the `Debug` form of the step never show the value of a key. The case file, the output of
+  `panoramic plan` and the `plan.json` of a failed case do show it, so use only synthetic keys.
+- To check that telemetry does not reach an intake, use `intake_from` with `count: 0` and an explicit `settle`. Let
+  `settle` cover the time that a wrong delivery needs to arrive. The plan rejects the step unless an earlier entry of
+  the procedure has a step that expects the same items from a sender, at any intake. Both steps need the same
+  `telemetry` and `select`, so an absence cannot pass because the payload went nowhere, or because of a typo in
+  `select`. A step in the same `parallel` entry does not count.
 - List only the OSes in `subject_os` where the case passes. On macOS and Windows, write a destination for each file.
   See [Files](#files).
 

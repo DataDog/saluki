@@ -1,0 +1,14 @@
+# ADP and the Agent read this file.
+
+# The metrics go here, with the API key `api_key` of the case.
+dd_url: "{{ self.connections.main.url }}"
+
+apm_config:
+  # The traces and the APM statistics would go here, but `traces_send_to_main_endpoint` turns the main endpoint off for
+  # them. The trace-agent reads `apm_dd_url` for the main endpoint of the traces, not `dd_url`.
+  apm_dd_url: "{{ self.connections.main.url }}"
+  traces_send_to_main_endpoint: false
+  # The traces and the APM statistics go only here.
+  additional_endpoints:
+    "{{ self.connections.extra.url }}":
+      - "11111111111111111111111111111111"

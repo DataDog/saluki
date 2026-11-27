@@ -1,9 +1,10 @@
-//! OTLP fixtures for the `otlp-routing-*` integration cases.
+//! OTLP fixtures for the `otlp-routing-*` and `otlp-traces-endpoints*` integration cases.
 //!
 //! A case sends one fixture per signal and protocol, and then checks which software delivered each fixture to the
 //! intake. Every fixture holds three items. The names of its items hold the case and the protocol, so the items of one
 //! fixture never match the selection of another: metric names start with `otlp.routing.<case>.<protocol>.`, and spans
-//! and logs have the service `otlp-routing-<case>-<protocol>`.
+//! and logs have the service `otlp-routing-<case>-<protocol>`. The `otlp-traces-endpoints*` cases send one fixture for
+//! each signal and each arm, and check which intake received it and with which API key.
 
 use otlp_protos::opentelemetry::proto::{
     collector::{logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest},

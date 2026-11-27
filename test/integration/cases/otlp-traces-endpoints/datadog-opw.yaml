@@ -1,0 +1,21 @@
+# ADP and the Agent read this file.
+
+# The metrics go here, with the API key `api_key` of the case. Only the traces settings of the Observability Pipelines
+# Worker and of Vector are on, so they do not move the metrics.
+dd_url: "{{ self.connections.main.url }}"
+
+# The traces and the APM statistics go here, with the API key `api_key`. An enabled Worker wins over an enabled Vector
+# intake and over `apm_dd_url`.
+observability_pipelines_worker:
+  traces:
+    enabled: true
+    url: "{{ self.connections.opw.url }}"
+
+# The Vector intake and `apm_dd_url` name one intake, and it must get nothing.
+vector:
+  traces:
+    enabled: true
+    url: "{{ self.connections.shadowed.url }}"
+
+apm_config:
+  apm_dd_url: "{{ self.connections.shadowed.url }}"

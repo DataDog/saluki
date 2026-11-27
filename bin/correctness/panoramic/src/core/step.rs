@@ -63,6 +63,22 @@ pub(crate) trait Step: fmt::Debug + Send + Sync {
 
     fn budget(&self) -> Duration;
 
+    /// What the step shows when it passes, as a clause such as `spans of service 'x' reach an intake`. A step of a later
+    /// procedure entry can presume it, see [`Step::presumes`]. `None` if no other step builds on this one.
+    fn establishes(&self) -> Option<String> {
+        None
+    }
+
+    /// What the step takes for granted, as a clause that a step of an earlier procedure entry establishes, see
+    /// [`Step::establishes`]. `None` if the step stands alone.
+    ///
+    /// The plan rejects the step if no earlier entry establishes the clause. The step could otherwise pass for a reason
+    /// other than the one it names, such as an absence that holds because the payload went nowhere. Steps of one
+    /// `parallel` entry run together, so none of them establishes a clause for another.
+    fn presumes(&self) -> Option<String> {
+        None
+    }
+
     /// Runs the step. The driver may drop this future on cancellation or when the budget runs out.
     async fn run(&self, cx: &StepContext<'_>) -> StepReport;
 }

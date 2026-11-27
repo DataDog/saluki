@@ -1,0 +1,16 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  intake:
+    type: datadog-intake
+  sender:
+    subject: true
+    image: alpine:3.20
+procedure:
+  - step: intake_from
+    on: intake
+    telemetry: spans
+    select: {service: fx}
+    count: 0
+    settle: 1s
+    timeout: 1s
