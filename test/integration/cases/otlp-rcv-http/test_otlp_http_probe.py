@@ -75,7 +75,6 @@ class DecodeTest(unittest.TestCase):
         entry = known(status=500)
         del entry["reason"]
         self.assert_rejected(spec_text([entry]), "missing key reason")
-        entry = known(status=500)
 
     def test_a_known_entry_takes_a_positive_issue_number(self):
         for issue in ("soon", "ISSUE_UNIT", 0, -1, 1.5, True, None):
