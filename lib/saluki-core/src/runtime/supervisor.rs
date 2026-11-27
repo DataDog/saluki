@@ -2825,7 +2825,7 @@ mod tests {
         pub(super) struct CapturedLogs(Arc<Mutex<Vec<CapturedEvent>>>);
 
         impl CapturedLogs {
-            /// Returns the events captured so far.
+            /// Removes and returns the events captured so far.
             pub(super) fn events(&self) -> Vec<CapturedEvent> {
                 std::mem::take(&mut *self.0.lock().unwrap())
             }
