@@ -132,6 +132,11 @@ differently named config skips the parse and validation check. `otlp-fixtures` r
 The trace builder in `traces.rs` takes a seed for the trace and span IDs: give each fixture that can reach the same
 destination its own seed, such as one per protocol.
 
+The `otlp-rcv-http` case sends each request with `http_request`, which reads the body from a file in the `bodies/`
+directory of the case. `otlp-fixtures` writes these files with the same command. A file holds the bytes of the request
+body: protobuf, or the OTLP JSON form of the same request. `rcv_http.rs` lists the files. To add a body, create an
+empty file for it, then add it to the list. `otlp-fixtures` refuses a body file that doesn't exist.
+
 ## Integration tests (panoramic)
 
 Integration tests run ADP, with the Datadog Agent where a case needs it, and assert high-level invariants: process

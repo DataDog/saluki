@@ -1,8 +1,9 @@
-//! Builds the `static_base64` OTLP payloads used by some correctness and integration cases.
+//! Builds the static OTLP payloads used by some correctness and integration cases.
 //!
-//! Each payload is built here and written into the `static_base64` payload of a sender config, such as a correctness
-//! case's `millstone.yaml`. The config must be named `millstone*.yaml`, must already exist, and must hold a
-//! `static_base64: ""` placeholder. After changing a fixture, regenerate the payloads with:
+//! A payload goes in one of two places. A correctness case's sender config, such as its `millstone.yaml`, holds the
+//! payload as a `static_base64` string. The config must be named `millstone*.yaml`, must already exist, and must hold a
+//! `static_base64: ""` placeholder. A body file, such as the bodies of the `otlp-rcv-http` case, holds the raw bytes of
+//! the payload. The file must already exist, and can be empty. After changing a fixture, regenerate the payloads with:
 //!
 //! ```text
 //! make generate-correctness-fixtures
@@ -18,6 +19,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 mod common;
 mod logs;
 mod metrics;
+mod rcv_http;
 mod routing;
 mod traces;
 
@@ -59,6 +61,25 @@ fn write_fixture(root: &Path, target: &str, payload: &[u8]) -> Result<bool, Gene
     }
     let updated = format!("{}{}{}", &config[..start], expected, &config[end..]);
     std::fs::write(&path, updated).with_error_context(|| format!("writing {}", path.display()))?;
+    Ok(true)
+}
+
+/// Writes `body` as the contents of the body file at `target`, a path relative to `root`.
+///
+/// Returns whether the file changed.
+fn write_body(root: &Path, target: &str, body: &[u8]) -> Result<bool, GenericError> {
+    let path = root.join(target);
+    if !path.is_file() {
+        return Err(generic_error!(
+            "{}: no such file; create an empty file for the body",
+            path.display()
+        ));
+    }
+    let current = std::fs::read(&path).with_error_context(|| format!("reading {}", path.display()))?;
+    if current == body {
+        return Ok(false);
+    }
+    std::fs::write(&path, body).with_error_context(|| format!("writing {}", path.display()))?;
     Ok(true)
 }
 
@@ -223,15 +244,20 @@ fn main() -> ExitCode {
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let mut failed = false;
-    for (target, build) in fixtures {
-        match write_fixture(&root, target, &build()) {
-            Ok(true) => println!("updated {}", target),
-            Ok(false) => {}
-            Err(e) => {
-                eprintln!("{:#}", e);
-                failed = true;
-            }
+    let mut report = |target: &str, written: Result<bool, GenericError>| match written {
+        Ok(true) => println!("updated {}", target),
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("{:#}", e);
+            failed = true;
         }
+    };
+    for (target, build) in fixtures {
+        report(target, write_fixture(&root, target, &build()));
+    }
+    for (name, body) in rcv_http::bodies() {
+        let target = format!("{}/{}", rcv_http::BODIES_DIR, name);
+        report(&target, write_body(&root, &target, &body));
     }
     if failed {
         ExitCode::FAILURE
@@ -321,6 +347,40 @@ mod tests {
             std::fs::read_to_string(root.path().join("millstone.yaml")).unwrap(),
             contents
         );
+    }
+
+    #[test]
+    fn write_body_replaces_the_contents_and_then_reports_no_change() {
+        let root = root_with("cases/case/bodies/body.pb", "");
+
+        assert!(write_body(root.path(), "cases/case/bodies/body.pb", b"\x0a\x00").unwrap());
+        assert!(!write_body(root.path(), "cases/case/bodies/body.pb", b"\x0a\x00").unwrap());
+
+        assert_eq!(
+            std::fs::read(root.path().join("cases/case/bodies/body.pb")).unwrap(),
+            b"\x0a\x00"
+        );
+    }
+
+    #[test]
+    fn write_body_replaces_a_stale_body() {
+        let root = root_with("body.json", "{\"stale\":true}\n");
+
+        assert!(write_body(root.path(), "body.json", b"{}\n").unwrap());
+
+        assert_eq!(std::fs::read(root.path().join("body.json")).unwrap(), b"{}\n");
+    }
+
+    #[test]
+    fn write_body_refuses_a_missing_file() {
+        let root = tempfile::tempdir().unwrap();
+
+        let error = write_body(root.path(), "cases/case/bodies/body.pb", b"body").unwrap_err();
+
+        let message = format!("{:#}", error);
+        assert!(message.contains("cases/case/bodies/body.pb"), "{}", message);
+        assert!(message.contains("no such file"), "{}", message);
+        assert!(!root.path().join("cases").exists());
     }
 
     #[test]

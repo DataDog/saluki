@@ -1,0 +1,33 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "otlp-rcv-http"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "metrics": [
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1.0,
+                    "timeUnixNano": "1000000000"
+                  }
+                ]
+              },
+              "name": "otlp.rcv.http.metrics_json.probe"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

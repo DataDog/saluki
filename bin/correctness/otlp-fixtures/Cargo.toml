@@ -13,6 +13,7 @@ base64 = { workspace = true }
 otlp-protos = { workspace = true }
 prost = { workspace = true }
 saluki-error = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
