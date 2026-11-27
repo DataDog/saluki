@@ -1,0 +1,61 @@
+description: >-
+  External Data decides the origin of a DogStatsD metric in unified origin detection. The metric names the sender's
+  container through External Data. UDS origin detection is off, and the Local Data container ID names no container, so
+  the unified waterfall resolves External Data from the pods the Agent gets from the kubelet. Both sides must tag the
+  metric with the sender's container.
+timeout: 8m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    # External Data names a pod and a container in it, which the Agent finds through the kubelet.
+    realization: {enclosure: kubernetes-pod}
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: "correctness-test"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "false"
+      # The unified waterfall tries UDS origin detection first, so it is off.
+      DD_DOGSTATSD_ORIGIN_DETECTION: "false"
+      DD_ORIGIN_DETECTION_UNIFIED: "true"
+      # The Agent parses `|e:` only with client origin fields on.
+      DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT: "true"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-adp.api}
+  agent:
+    type: agent
+    image: saluki-images/datadog-agent:testing-release
+    env:
+      DD_API_KEY: "correctness-test"
+      DD_DOGSTATSD_ORIGIN_DETECTION: "false"
+      DD_ORIGIN_DETECTION_UNIFIED: "true"
+      DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT: "true"
+    files:
+      datadog.yaml: {from: datadog.yaml, template: true}
+    connect: {intake: intake-agent.api}
+  intake-adp: {type: datadog-intake}
+  intake-agent: {type: datadog-intake}
+  load:
+    type: millstone
+    files:
+      millstone.yaml: {from: millstone.yaml, template: true}
+    connect: {comparison_target: adp.dogstatsd_uds, baseline_target: agent.dogstatsd_uds}
+procedure:
+  - {step: log_contains, on: load, process: comparison, pattern: Millstone finished sending, timeout: 5m}
+  - {step: log_contains, on: load, process: baseline, pattern: Millstone finished sending, timeout: 1m}
+  # Both sides flush what they aggregated. Waiting slightly longer than an aggregation bucket, with the load running,
+  # lets the Agent and ADP resolve the senders while they flush.
+  - {step: process_stable_for, on: load, duration: 32s}
+  - step: compare
+    telemetry: metrics
+    comparison: intake-adp
+    baseline: intake-agent
+    metrics:
+      # A container-level tag shows that External Data resolved to the container. Without it, the waterfall falls back
+      # to the pod that External Data names, which has pod-level tags only.
+      series:
+        - {name: external_data.container, tags: [probe:external-data, kube_container_name:load]}

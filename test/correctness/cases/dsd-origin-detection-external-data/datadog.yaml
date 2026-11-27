@@ -1,0 +1,13 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Turn off UDP and listen on a UDS socket instead. The socket is under the participant's own directory, which the load
+# generator's pod mounts too.
+dogstatsd_port: 0
+dogstatsd_socket: "{{ self.endpoints.dogstatsd_uds.path }}"

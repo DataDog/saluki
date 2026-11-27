@@ -1,0 +1,12 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "{{ self.connections.comparison_target.url }}"
+aggregation_bucket_width_secs: 10
+volume: 1000
+corpus:
+  size: 1
+  payload:
+    # The first metric names the load generator's pod with the `dd.internal.entity_id` tag, as a client sends it when
+    # the application has `DD_ENTITY_ID`. The second names its container with a Local Data container ID (`|c:`).
+    static: |
+      client_origin.pod:1|c|#probe:client-origin,dd.internal.entity_id:{{ self.pod_uid }}
+      client_origin.container:1|c|#probe:client-origin|c:{{ self.container_id }}

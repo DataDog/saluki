@@ -50,9 +50,12 @@ fn captured_process_id_from_replay(process_id: u32) -> Option<u32> {
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct OriginEnrichmentConfiguration {
-    /// Whether or not to enable origin detection.
+    /// Whether or not to enable UDS origin detection, as `dogstatsd_origin_detection` does in the Agent.
     ///
-    /// If disabled, no origin tags will be added to events even if the origin information is detected.
+    /// When enabled, the sender's process ID is read from the socket credentials of a UDS packet, and the container it
+    /// runs in is an origin to enrich with. When disabled, the socket credentials are not an origin, and the origin
+    /// fields that the client sends -- `dd.internal.entity_id`, and the `c:` and `e:` fields when
+    /// `origin_detection_client` is set -- are still used, as the Agent uses them.
     pub enabled: bool,
 
     /// Whether or not a client-provided entity ID should take precedence over automatically detected origin metadata.
@@ -129,10 +132,6 @@ impl DogStatsDOriginTagResolver {
     ) -> SharedTagSet {
         let mut collected_tags = SharedTagSet::default();
 
-        if !self.config.enabled {
-            return collected_tags;
-        }
-
         // Examine the various possible entity ID values, and based on their state, use one or more of them to grab any
         // enriched tags attached to the entities. We evalulate a number of possible entity IDs:
         //
@@ -141,7 +140,8 @@ impl DogStatsDOriginTagResolver {
         // - Local Data-based pod UID (extracted from `dd.internal.entity_id` tag)
         // - External Data-based container ID (derived from pod UID and container name in External Data)
         // - External Data-based pod UID (raw pod UID from External Data)
-        let maybe_process_entity_id = process_entity_id;
+        // The process ID can be known while UDS origin detection is disabled, as a traffic capture records it.
+        let maybe_process_entity_id = process_entity_id.filter(|_| self.config.enabled);
         let maybe_local_container_id = origin.local_data();
         let maybe_local_pod_uid = origin.pod_uid();
         let maybe_external_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
@@ -573,17 +573,51 @@ mod tests {
     }
 
     #[test]
-    fn origin_detection_disabled() {
-        // When origin detection is disabled, no tags should be resolved even if we do have mapped tags for the given
-        // resolved origin.
-        let tag_resolver_config = OriginEnrichmentConfiguration::for_test();
-        assert!(!tag_resolver_config.enabled);
+    fn origin_detection_disabled_ignores_only_the_process_origin() {
+        // With UDS origin detection disabled, the Agent does not use the sender's process as an origin, and still uses
+        // the origin fields that the client sends.
+        for unified in [false, true] {
+            let tag_resolver_config = OriginEnrichmentConfiguration {
+                origin_detection_unified: unified,
+                ..OriginEnrichmentConfiguration::for_test()
+            };
+            assert!(!tag_resolver_config.enabled);
+            let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
 
-        let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
+            let process_only = origin(Some(&EID_PID), None, None, None);
+            let actual_tags = origin_tags_resolver.collect_origin_tags(&process_only);
+            assert!(actual_tags.is_empty(), "unified={unified}: {actual_tags:?}");
 
-        let resolved_origin = origin(Some(&EID_PID), None, None, None);
-        let actual_tags = origin_tags_resolver.collect_origin_tags(&resolved_origin);
-        assert!(actual_tags.is_empty());
+            for (resolved_origin, expected_tags) in [
+                (
+                    origin(Some(&EID_PID), Some(&EID_LOCAL_CID), None, None),
+                    tags_for_entity(&EID_LOCAL_CID),
+                ),
+                (
+                    origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), None),
+                    tags_for_entity(&EID_LOCAL_POD),
+                ),
+            ] {
+                let actual_tags = origin_tags_resolver.collect_origin_tags(&resolved_origin);
+                assert_eq!(
+                    actual_tags, expected_tags,
+                    "unified={unified}: failed to resolve the expected tags for origin {:?}",
+                    resolved_origin
+                );
+            }
+        }
+
+        // Only the unified scheme uses External Data.
+        let unified_resolver = build_tags_resolver_with_default_tags(OriginEnrichmentConfiguration {
+            origin_detection_unified: true,
+            ..OriginEnrichmentConfiguration::for_test()
+        });
+        let ext_data = ResolvedExternalData::new(EID_EXTERNAL_POD.clone(), EID_EXTERNAL_CID_VALID.clone());
+        let external_only = origin(Some(&EID_PID), None, None, Some(&ext_data));
+        assert_eq!(
+            unified_resolver.collect_origin_tags(&external_only),
+            tags_for_entity(&EID_EXTERNAL_CID_VALID)
+        );
     }
 
     #[test]
