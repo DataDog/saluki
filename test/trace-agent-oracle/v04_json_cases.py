@@ -149,7 +149,8 @@ def main():
             oracle.append(entry)
         json.dump(oracle, sys.stdout)
     elif len(sys.argv) == 3 and sys.argv[1] == "fixture":
-        results = {result["name"]: result for result in json.load(open(sys.argv[2]))}
+        with open(sys.argv[2]) as f:
+            results = {result["name"]: result for result in json.load(f)}
         for case in cases:
             result = results[case["name"]]
             if "error" in result:
