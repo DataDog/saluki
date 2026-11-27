@@ -93,6 +93,17 @@ fn service_request(attributes: Vec<KeyValue>, scope: Option<InstrumentationScope
     )])
 }
 
+/// Builds the request for one resource, whose `service.name` is `service`, with one unit gauge named `name`.
+pub fn unit_gauge_request(service: &str, name: &str) -> ExportMetricsServiceRequest {
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![resource_metrics(
+            resource(vec![kv("service.name", string(service))]),
+            None,
+            vec![unit_gauge(name)],
+        )],
+    }
+}
+
 /// A `otlphost.metric` gauge whose value identifies which resource it came from.
 fn host_gauge(resource: Option<Resource>, value: f64) -> ResourceMetrics {
     resource_metrics(

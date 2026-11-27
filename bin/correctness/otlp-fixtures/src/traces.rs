@@ -66,12 +66,12 @@ fn span(seed: u32, number: u32) -> Span {
     }
 }
 
-/// Builds one trace of `span_count` spans from `service`.
+/// Builds the request for one trace of `span_count` spans from `service`.
 ///
 /// The trace ID and span IDs derive from `seed`, so give each fixture that can reach the same destination its own seed.
 /// The seed must not be zero, because an all-zero trace ID is invalid. The timestamps are fixed, so the same arguments
-/// always give the same bytes.
-pub fn trace_fixture(seed: u32, service: &str, span_count: u32) -> Vec<u8> {
+/// always give the same request.
+pub fn trace_request(seed: u32, service: &str, span_count: u32) -> ExportTraceServiceRequest {
     assert!(seed != 0, "the trace seed must not be zero");
     ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
@@ -86,7 +86,11 @@ pub fn trace_fixture(seed: u32, service: &str, span_count: u32) -> Vec<u8> {
             ..Default::default()
         }],
     }
-    .encode_to_vec()
+}
+
+/// Builds the protobuf encoding of [`trace_request`].
+pub fn trace_fixture(seed: u32, service: &str, span_count: u32) -> Vec<u8> {
+    trace_request(seed, service, span_count).encode_to_vec()
 }
 
 /// How a probe span relates to its parent.

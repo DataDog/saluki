@@ -499,6 +499,10 @@ with an earlier step, such as `log_contains` or `port_listening`. `http_request`
 `parallel` block. It cannot reach a Windows container, because the courier there sends only a `GET`. It cannot reach an
 endpoint with `tls: true`, because its client does not trust a test certificate.
 
+`test/integration/cases/otlp-rcv-http` is an example. It sends the same requests to the OTLP/HTTP receivers of ADP and
+the Agent, and each ADP step has a `known` entry for a difference that an issue tracks. Its request bodies are files
+in `bodies/`, which `make generate-correctness-fixtures` writes. See [Static fixtures](./testing.md#static-fixtures).
+
 This example sends an OTLP payload and checks for an empty protobuf reply:
 
 ```yaml

@@ -4599,6 +4599,7 @@ dependencies = [
  "otlp-protos",
  "prost",
  "saluki-error",
+ "serde_json",
  "tempfile",
 ]
 
