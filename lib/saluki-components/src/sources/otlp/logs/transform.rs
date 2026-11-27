@@ -20,6 +20,7 @@ use stringtheory::MetaString;
 
 use crate::common::otlp::traces::transform::bytes_to_hex_lowercase;
 use crate::common::otlp::value::otlp_value_as_string;
+use crate::sources::otlp::logs::ddtags::{record_ddtags, RecordDdtags};
 
 pub(super) const DDTAGS_ATTR: &str = "ddtags";
 const STATUS_KEYS: &[&str] = &["status", "severity", "level", "syslog.severity"];
@@ -57,20 +58,24 @@ const LOG_SOURCE_ATTR: &str = "datadog.log.source";
 /// The source is the final `datadog.log.source` property when it's a non-empty string, and `otlp_log_ingestion`
 /// otherwise, as the Agent's logs agent exporter chooses it. The property stays in the content.
 ///
+/// `infra_ddtags` holds the resource's diverted infra tags. They become tags as if they were merged into the record's
+/// `ddtags` first, as [`record_ddtags`] describes.
+///
 /// # Errors
 ///
 /// Returns an error when a record attribute holds a NaN or an infinite double that no later property overwrites. The
 /// caller drops the log, as the Agent drops a log that it fails to marshal.
 pub(super) fn transform_log_record(
     lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
-    record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet,
+    record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet, infra_ddtags: Option<&str>,
 ) -> Result<Log, GenericError> {
     let mut properties = Properties::default();
     let mut flattener = Flattener::default();
 
     // Resource attributes overwrite record attributes, and scope attributes overwrite both.
     let reserved = apply_record_attributes(&lr.attributes, &mut flattener, &mut properties);
-    if let Some(ddtags) = reserved.ddtags.as_deref() {
+    let (record_ddtags, infra_ddtags) = record_ddtags(reserved.ddtags, infra_ddtags);
+    for ddtags in record_ddtags.as_deref().into_iter().chain(infra_ddtags) {
         add_ddtags(&mut tags, ddtags);
     }
     apply_resource_attributes(&resource.attributes, &mut properties);
@@ -170,7 +175,7 @@ impl Properties {
 struct ReservedAttributes<'a> {
     message: Option<Cow<'a, str>>,
     status: Option<Cow<'a, str>>,
-    ddtags: Option<Cow<'a, str>>,
+    ddtags: RecordDdtags<'a>,
 }
 
 /// Sets the properties of the record attributes, and returns the reserved ones.
@@ -181,7 +186,7 @@ fn apply_record_attributes<'a>(
     attributes: &'a [otlp_common::KeyValue], flattener: &mut Flattener, properties: &mut Properties,
 ) -> ReservedAttributes<'a> {
     let mut reserved = ReservedAttributes::default();
-    for kv in attributes {
+    for (index, kv) in attributes.iter().enumerate() {
         match kv.key.as_str() {
             k if is_reserved(k, MESSAGE_KEYS) => reserved.message = Some(as_string(kv)),
             k if is_reserved(k, STATUS_KEYS) => reserved.status = Some(as_string(kv)),
@@ -201,7 +206,12 @@ fn apply_record_attributes<'a>(
                     }
                 }
             }
-            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => reserved.ddtags = Some(as_string(kv)),
+            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => {
+                if k == DDTAGS_ATTR && reserved.ddtags.first_exact.is_none() {
+                    reserved.ddtags.first_exact = Some(index);
+                }
+                reserved.ddtags.last = Some((index, as_string(kv)));
+            }
             k if k.eq_ignore_ascii_case(OTEL_LIBRARY_NAME) => {
                 insert_scope_alias(properties, attributes, OTEL_SCOPE_NAME, kv)
             }

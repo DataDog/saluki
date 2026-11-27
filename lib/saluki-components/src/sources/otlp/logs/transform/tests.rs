@@ -24,7 +24,7 @@ fn transform_attributes(attributes: Vec<KeyValue>) -> Log {
         attributes,
         ..Default::default()
     };
-    transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+    transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default(), None)
         .expect("the record should transform")
 }
 
@@ -237,7 +237,7 @@ fn values_coerce_as_the_reference() {
             attributes: case.scope,
             ..Default::default()
         };
-        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default(), None)
             .unwrap_or_else(|e| panic!("{}: {}", case.name, e));
 
         let target: JsonValue = serde_json::from_str(case.target).expect("the target should be JSON");
@@ -270,7 +270,7 @@ fn non_finite_record_attributes_drop_the_log() {
             attributes: vec![key_value("x", attribute)],
             ..Default::default()
         };
-        let result = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+        let result = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default(), None);
         assert!(result.is_err(), "{}: {:?}", name, result.map(|log| item_json(&log)));
     }
 }
@@ -494,7 +494,7 @@ fn duplicate_reserved_keys_resolve_as_the_reference() {
         };
         let mut tags = TagSet::default();
         tags.insert_tag("res:tag");
-        let log = transform_log_record(lr, &Resource::default(), None, None, None, tags)
+        let log = transform_log_record(lr, &Resource::default(), None, None, None, tags, None)
             .expect("the record should transform");
 
         assert_eq!(log.message(), case.message, "{}: message", case.name);
@@ -525,7 +525,7 @@ proptest::proptest! {
             time_unix_nano,
             ..Default::default()
         };
-        let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+        let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default(), None)
         .expect("the record should transform");
         let formatted = log.additional_properties()["@timestamp"]
             .as_str()
@@ -617,7 +617,7 @@ fn timestamps_fall_back_to_the_observed_timestamp() {
             observed_time_unix_nano,
             ..Default::default()
         };
-        let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+        let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default(), None)
             .expect("the record should transform");
 
         let props = log.additional_properties();
@@ -672,7 +672,7 @@ fn event_name_overwrites_attributes_with_the_same_key() {
             attributes: attributes(scope_attr),
             ..Default::default()
         };
-        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default(), None)
             .expect("the record should transform");
 
         assert_eq!(
@@ -840,7 +840,7 @@ fn scope_metadata_follows_the_reference_precedence() {
             attributes: attributes(case.scope_attributes),
             ..Default::default()
         };
-        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default(), None)
             .expect("the record should transform");
 
         let actual = log
@@ -960,7 +960,7 @@ fn check_log_source_cases(cases: Vec<LogSourceCase>) {
             attributes: case.scope,
             ..Default::default()
         };
-        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default())
+        let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default(), None)
             .unwrap_or_else(|e| panic!("{}: {}", case.name, e));
 
         assert_eq!(log.source().as_deref(), Some(case.source), "{}", case.name);
@@ -1134,7 +1134,7 @@ fn a_non_finite_record_log_source_drops_the_log() {
         attributes: vec![key_value(LOG_SOURCE_ATTR, value(Value::DoubleValue(f64::NAN)))],
         ..Default::default()
     };
-    let result = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+    let result = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default(), None);
     assert!(result.is_err(), "{:?}", result.map(|log| log.source().clone()));
 }
 

@@ -6,12 +6,9 @@
 //! `writeDdtagsToLogRecords`,
 //! <https://github.com/DataDog/datadog-agent/blob/d22eedcd06ef9fcedad3d43bcab45795068b8ecc/comp/otelcol/otlp/components/processor/infraattributesprocessor/logs.go>).
 
-use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
-use saluki_core::data_model::tags::Tag;
+use std::borrow::Cow;
 
-use crate::common::otlp::util::{first_attribute, put_str_attribute};
-use crate::common::otlp::value::otlp_value_as_string;
-use crate::sources::otlp::logs::transform::DDTAGS_ATTR;
+use saluki_core::data_model::tags::Tag;
 
 /// Returns the diverted tags of a resource as one `ddtags` value: sorted and comma-separated.
 ///
@@ -32,32 +29,53 @@ pub(super) fn ddtags_value(mut tags: Vec<Tag>) -> Option<String> {
     Some(value)
 }
 
-/// Adds `tags` to the `ddtags` attribute of a log record, as `writeDdtagsToLogRecords` does.
+/// The `ddtags` attributes of a log record, as the transform finds them.
+#[derive(Default)]
+pub(super) struct RecordDdtags<'a> {
+    /// The index of the first attribute named exactly `ddtags`.
+    pub(super) first_exact: Option<usize>,
+
+    /// The index and value of the last attribute named `ddtags` in any case.
+    pub(super) last: Option<(usize, Cow<'a, str>)>,
+}
+
+/// Returns the `ddtags` values that a log record's tags come from, as if `infra` had merged into the record first.
 ///
-/// An existing `ddtags` value that isn't empty keeps its tags, and `tags` follow them after a comma. Otherwise, `tags`
-/// replace the value.
+/// The Agent's `writeDdtagsToLogRecords` merges the infra tags into the first attribute named exactly `ddtags`, or
+/// adds one at the end. The logs translator then reads the last `ddtags` attribute in any case. So:
 ///
-/// The existing value converts with `otlp_value_as_string`, as `AsString` does. An array or map value differs from
-/// `pdata` until #3397 lands.
-pub(super) fn merge_ddtags(record_attributes: &mut Vec<KeyValue>, tags: &str) {
-    let merged = match first_attribute(record_attributes, DDTAGS_ATTR).map(otlp_value_as_string) {
-        Some(existing) if !existing.is_empty() => format!("{existing},{tags}"),
-        _ => tags.to_owned(),
+/// - Without an exact `ddtags`, the added attribute is the last one, and only `infra` counts.
+/// - When the first exact `ddtags` is also the last one, its value counts, and then `infra`.
+/// - When a later attribute matches in another case, only that attribute counts, and `infra` is lost.
+///
+/// An empty existing value adds no tags, as the merge replaces it with `infra`.
+pub(super) fn record_ddtags<'a>(
+    record: RecordDdtags<'a>, infra: Option<&'a str>,
+) -> (Option<Cow<'a, str>>, Option<&'a str>) {
+    let Some(infra) = infra else {
+        return (record.last.map(|(_, value)| value), None);
     };
-    put_str_attribute(record_attributes, DDTAGS_ATTR, merged);
+    match (record.first_exact, record.last) {
+        (Some(first), Some((last, value))) if first == last => (Some(value), Some(infra)),
+        (Some(_), Some((_, value))) => (Some(value), None),
+        _ => (None, Some(infra)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, sync::Arc};
 
-    use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue};
-    use saluki_core::data_model::origin::OriginTagCardinality;
+    use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
+    use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
+    use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+    use saluki_core::data_model::{origin::OriginTagCardinality, tags::TagSet};
     use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
 
     use super::*;
     use crate::common::otlp::infra_attributes::{process_tags, ContainerTagPromotion, CustomTags};
     use crate::common::otlp::origin::OtlpOriginTagResolver;
+    use crate::sources::otlp::logs::transform::transform_log_record;
 
     fn attribute(key: &str, value: Value) -> KeyValue {
         KeyValue {
@@ -89,6 +107,25 @@ mod tests {
         as_map(&strings(attributes))
     }
 
+    /// Returns the sorted tags of a log record with `record_attributes`, when its resource diverts `infra`.
+    fn record_tags(record_attributes: Vec<KeyValue>, infra: Option<&str>) -> Vec<String> {
+        let record = LogRecord {
+            attributes: record_attributes,
+            ..Default::default()
+        };
+        let log = transform_log_record(record, &Resource::default(), None, None, None, TagSet::default(), infra)
+            .expect("the record should transform");
+        let mut tags: Vec<String> = log.tags().into_iter().map(|tag| tag.as_str().to_owned()).collect();
+        tags.sort();
+        tags
+    }
+
+    fn sorted(tags: &[&str]) -> Vec<String> {
+        let mut tags: Vec<String> = tags.iter().map(|tag| (*tag).to_owned()).collect();
+        tags.sort();
+        tags
+    }
+
     #[test]
     fn ddtags_value_sorts_and_joins_the_tags() {
         assert_eq!(ddtags_value(vec![]), None);
@@ -105,15 +142,8 @@ mod tests {
             ("bytes", Value::BytesValue(b"abc".to_vec()), "YWJj,new:tag"),
         ];
         for (name, existing, expected) in cases {
-            let mut record_attributes = vec![attribute("ddtags", existing)];
-            merge_ddtags(&mut record_attributes, "new:tag");
-            assert_eq!(
-                first_attribute(&record_attributes, "ddtags")
-                    .map(otlp_value_as_string)
-                    .as_deref(),
-                Some(expected),
-                "case: {name}"
-            );
+            let tags = record_tags(vec![attribute("ddtags", existing)], Some("new:tag"));
+            assert_eq!(tags, sorted(&expected.split(',').collect::<Vec<_>>()), "case: {name}");
         }
     }
 
@@ -200,7 +230,7 @@ mod tests {
             let provider = TestWorkloadProvider::with_entity(EntityId::Container("test".into()), case.tagger_tags);
             let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
             let mut attributes = strings(&[("container.id", "test")]);
-            let mut record_attributes = case
+            let record_attributes = case
                 .existing_ddtags
                 .map(|ddtags| strings(&[("ddtags", ddtags)]))
                 .unwrap_or_default();
@@ -210,10 +240,13 @@ mod tests {
             } else {
                 CustomTags::Attributes(ContainerTagPromotion::Off)
             };
-            let tags = process_tags(&mut attributes, &resolver, OriginTagCardinality::Low, custom_tags);
-            if let Some(ddtags) = ddtags_value(tags) {
-                merge_ddtags(&mut record_attributes, &ddtags);
-            }
+            let infra = ddtags_value(process_tags(
+                &mut attributes,
+                &resolver,
+                OriginTagCardinality::Low,
+                custom_tags,
+            ));
+            let tags = record_tags(record_attributes, infra.as_deref());
 
             assert_eq!(
                 as_map(&attributes),
@@ -221,44 +254,74 @@ mod tests {
                 "case: {}",
                 case.name
             );
-            assert_eq!(
-                first_attribute(&record_attributes, "ddtags")
-                    .map(otlp_value_as_string)
-                    .as_deref(),
-                case.ddtags,
-                "case: {}",
-                case.name
-            );
+            let expected: Vec<&str> = case
+                .ddtags
+                .map(|ddtags| ddtags.split(',').collect())
+                .unwrap_or_default();
+            assert_eq!(tags, sorted(&expected), "case: {}", case.name);
         }
     }
 
+    /// The tags come from the `ddtags` attributes as if the infra tags merged into the first attribute named exactly
+    /// `ddtags`, and the transform then read the last one in any case.
     #[test]
-    fn merge_ddtags_replaces_an_empty_value_and_merges_any_other_type() {
-        let cases = [
-            ("empty string", vec![string("ddtags", "")], "new:tag"),
+    fn record_ddtags_follow_the_agent_merge_and_read() {
+        let valueless = KeyValue {
+            key: "ddtags".into(),
+            value: None,
+        };
+        type Case<'a> = (&'a str, Vec<KeyValue>, Option<&'a str>, &'a [&'a str]);
+        let cases: [Case; 8] = [
             (
-                "valueless",
-                vec![KeyValue {
-                    key: "ddtags".into(),
-                    value: None,
-                }],
-                "new:tag",
+                "empty string",
+                vec![string("ddtags", "")],
+                Some("new:tag"),
+                &["new:tag"],
+            ),
+            ("valueless", vec![valueless], Some("new:tag"), &["new:tag"]),
+            ("no record ddtags", vec![], Some("new:tag"), &["new:tag"]),
+            (
+                "two exact keys",
+                vec![string("ddtags", "first:tag"), string("ddtags", "second:tag")],
+                Some("new:tag"),
+                &["second:tag"],
             ),
             (
-                "first of two",
-                vec![string("ddtags", "first:tag"), string("ddtags", "second:tag")],
-                "first:tag,new:tag",
+                "only another case",
+                vec![string("DDTAGS", "upper:tag")],
+                Some("new:tag"),
+                &["new:tag"],
+            ),
+            (
+                "exact key, then another case",
+                vec![string("ddtags", "exact:tag"), string("DDTags", "later:tag")],
+                Some("new:tag"),
+                &["later:tag"],
+            ),
+            (
+                "another case, then the exact key",
+                vec![string("DDTAGS", "upper:tag"), string("ddtags", "exact:tag")],
+                Some("new:tag"),
+                &["exact:tag", "new:tag"],
+            ),
+            (
+                "no infra tags",
+                vec![string("ddtags", "exact:tag"), string("DDTAGS", "upper:tag")],
+                None,
+                &["upper:tag"],
             ),
         ];
-        for (name, mut record_attributes, expected) in cases {
-            merge_ddtags(&mut record_attributes, "new:tag");
-            assert_eq!(
-                first_attribute(&record_attributes, "ddtags")
-                    .map(otlp_value_as_string)
-                    .as_deref(),
-                Some(expected),
-                "case: {name}"
-            );
+        for (name, record_attributes, infra, expected) in cases {
+            assert_eq!(record_tags(record_attributes, infra), sorted(expected), "case: {name}");
         }
+    }
+
+    /// A comma in an infra tag value splits it, as when the intake reads `ddtags`.
+    #[test]
+    fn infra_tags_split_on_commas() {
+        assert_eq!(
+            record_tags(vec![string("ddtags", "user:tag")], Some("team:a,b")),
+            sorted(&["user:tag", "team:a", "b"])
+        );
     }
 }

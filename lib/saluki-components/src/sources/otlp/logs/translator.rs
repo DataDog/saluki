@@ -20,7 +20,7 @@ use crate::common::otlp::source::hostname_from_source_attributes;
 use crate::common::otlp::util::first_attribute;
 use crate::common::otlp::value::otlp_value_as_string;
 use crate::common::otlp::Metrics;
-use crate::sources::otlp::logs::ddtags::{ddtags_value, merge_ddtags};
+use crate::sources::otlp::logs::ddtags::ddtags_value;
 use crate::sources::otlp::logs::render::OtlpLogsRenderer;
 use crate::sources::otlp::logs::transform::transform_log_record;
 
@@ -136,10 +136,7 @@ impl ResourceLogsIter {
             };
 
             match current_log_records.next() {
-                Some(mut log_record) => {
-                    if let Some(ddtags) = &self.ddtags {
-                        merge_ddtags(&mut log_record.attributes, ddtags);
-                    }
+                Some(log_record) => {
                     // A host or service found on a record sticks for the rest of the resource's
                     // records, across scopes.
                     //
@@ -160,6 +157,7 @@ impl ResourceLogsIter {
                         self.host.clone(),
                         self.service.clone(),
                         self.attribute_tags.clone(),
+                        self.ddtags.as_deref(),
                     )
                     .map(|log| log.with_ingestion_timestamp(get_unix_timestamp_nanos()));
 
