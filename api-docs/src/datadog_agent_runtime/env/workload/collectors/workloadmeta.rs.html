@@ -125,7 +125,7 @@
 <a href=#125 id=125 data-nosnippet>125</a>        <span class="kw-2">&amp;</span><span class="self">self</span>, operations_tx: <span class="kw-2">&amp;mut </span>mpsc::Sender&lt;MetadataOperation&gt;, pod_uid: MetaString, kubernetes_pod: KubernetesPod,
 <a href=#126 id=126 data-nosnippet>126</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#127 id=127 data-nosnippet>127</a>        <span class="comment">// When a pod is created/updated, generate External Data entries for every container within the pod.
-<a href=#128 id=128 data-nosnippet>128</a>        </span><span class="kw">for </span>(container, is_init) <span class="kw">in </span>pod_containers(<span class="kw-2">&amp;</span>kubernetes_pod) {
+<a href=#128 id=128 data-nosnippet>128</a>        </span><span class="kw">for </span>container <span class="kw">in </span>pod_containers(<span class="kw-2">&amp;</span>kubernetes_pod) {
 <a href=#129 id=129 data-nosnippet>129</a>            <span class="kw">let </span>container_name = <span class="kw">match </span><span class="self">self</span>.try_intern(<span class="kw-2">&amp;</span>container.name) {
 <a href=#130 id=130 data-nosnippet>130</a>                <span class="prelude-val">Some</span>(container_name) =&gt; container_name,
 <a href=#131 id=131 data-nosnippet>131</a>                <span class="prelude-val">None </span>=&gt; {
@@ -142,7 +142,7 @@
 <a href=#142 id=142 data-nosnippet>142</a>                }
 <a href=#143 id=143 data-nosnippet>143</a>            };
 <a href=#144 id=144 data-nosnippet>144</a>
-<a href=#145 id=145 data-nosnippet>145</a>            <span class="kw">let </span>external_data = ExternalData::new(pod_uid.clone(), container_name, is_init);
+<a href=#145 id=145 data-nosnippet>145</a>            <span class="kw">let </span>external_data = ExternalData::new(pod_uid.clone(), container_name);
 <a href=#146 id=146 data-nosnippet>146</a>            <span class="kw">let </span>operation = MetadataOperation::attach_external_data(entity_id, external_data);
 <a href=#147 id=147 data-nosnippet>147</a>            send_metadata_operation(operations_tx, operation).<span class="kw">await</span>;
 <a href=#148 id=148 data-nosnippet>148</a>        }
@@ -157,7 +157,7 @@
 <a href=#157 id=157 data-nosnippet>157</a>        </span><span class="kw">let </span>operation = MetadataOperation::delete(EntityId::PodUid(pod_uid));
 <a href=#158 id=158 data-nosnippet>158</a>        send_metadata_operation(operations_tx, operation).<span class="kw">await</span>;
 <a href=#159 id=159 data-nosnippet>159</a>
-<a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">for </span>(container, <span class="kw">_</span>) <span class="kw">in </span>pod_containers(<span class="kw-2">&amp;</span>kubernetes_pod) {
+<a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">for </span>container <span class="kw">in </span>pod_containers(<span class="kw-2">&amp;</span>kubernetes_pod) {
 <a href=#161 id=161 data-nosnippet>161</a>            <span class="kw">let </span>container_entity_id = <span class="kw">match </span><span class="self">self</span>.try_intern(<span class="kw-2">&amp;</span>container.id) {
 <a href=#162 id=162 data-nosnippet>162</a>                <span class="prelude-val">Some</span>(entity_id) =&gt; EntityId::Container(entity_id),
 <a href=#163 id=163 data-nosnippet>163</a>                <span class="prelude-val">None </span>=&gt; {
@@ -287,162 +287,159 @@
 <a href=#287 id=287 data-nosnippet>287</a>    }
 <a href=#288 id=288 data-nosnippet>288</a>}
 <a href=#289 id=289 data-nosnippet>289</a>
-<a href=#290 id=290 data-nosnippet>290</a><span class="doccomment">/// Returns every container in the pod, with a flag that is `true` for init containers.
+<a href=#290 id=290 data-nosnippet>290</a><span class="doccomment">/// Returns every container in the pod: init, regular, and ephemeral containers.
 <a href=#291 id=291 data-nosnippet>291</a>///
-<a href=#292 id=292 data-nosnippet>292</a>/// Ephemeral containers aren't init containers. The Agent resolves External Data against all three lists.
-<a href=#293 id=293 data-nosnippet>293</a></span><span class="kw">fn </span>pod_containers(kubernetes_pod: <span class="kw-2">&amp;</span>KubernetesPod) -&gt; <span class="kw">impl </span>Iterator&lt;Item = (<span class="kw-2">&amp;</span>OrchestratorContainer, bool)&gt; {
-<a href=#294 id=294 data-nosnippet>294</a>    <span class="kw">let </span>init_containers = kubernetes_pod.init_containers.iter().map(|container| (container, <span class="bool-val">true</span>));
-<a href=#295 id=295 data-nosnippet>295</a>    <span class="kw">let </span>containers = kubernetes_pod.containers.iter().map(|container| (container, <span class="bool-val">false</span>));
-<a href=#296 id=296 data-nosnippet>296</a>    <span class="kw">let </span>ephemeral_containers = kubernetes_pod
-<a href=#297 id=297 data-nosnippet>297</a>        .ephemeral_containers
-<a href=#298 id=298 data-nosnippet>298</a>        .iter()
-<a href=#299 id=299 data-nosnippet>299</a>        .map(|container| (container, <span class="bool-val">false</span>));
+<a href=#292 id=292 data-nosnippet>292</a>/// The Agent resolves External Data against all three lists.
+<a href=#293 id=293 data-nosnippet>293</a></span><span class="kw">fn </span>pod_containers(kubernetes_pod: <span class="kw-2">&amp;</span>KubernetesPod) -&gt; <span class="kw">impl </span>Iterator&lt;Item = <span class="kw-2">&amp;</span>OrchestratorContainer&gt; {
+<a href=#294 id=294 data-nosnippet>294</a>    kubernetes_pod
+<a href=#295 id=295 data-nosnippet>295</a>        .init_containers
+<a href=#296 id=296 data-nosnippet>296</a>        .iter()
+<a href=#297 id=297 data-nosnippet>297</a>        .chain(<span class="kw-2">&amp;</span>kubernetes_pod.containers)
+<a href=#298 id=298 data-nosnippet>298</a>        .chain(<span class="kw-2">&amp;</span>kubernetes_pod.ephemeral_containers)
+<a href=#299 id=299 data-nosnippet>299</a>}
 <a href=#300 id=300 data-nosnippet>300</a>
-<a href=#301 id=301 data-nosnippet>301</a>    init_containers.chain(containers).chain(ephemeral_containers)
-<a href=#302 id=302 data-nosnippet>302</a>}
-<a href=#303 id=303 data-nosnippet>303</a>
-<a href=#304 id=304 data-nosnippet>304</a><span class="kw">async fn </span>send_metadata_operation(operations_tx: <span class="kw-2">&amp;mut </span>mpsc::Sender&lt;MetadataOperation&gt;, operation: MetadataOperation) {
-<a href=#305 id=305 data-nosnippet>305</a>    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = operations_tx.send(operation).<span class="kw">await </span>{
-<a href=#306 id=306 data-nosnippet>306</a>        <span class="macro">debug!</span>(error = %e, <span class="string">"Failed to send metadata operation."</span>);
-<a href=#307 id=307 data-nosnippet>307</a>    }
-<a href=#308 id=308 data-nosnippet>308</a>}
-<a href=#309 id=309 data-nosnippet>309</a>
-<a href=#310 id=310 data-nosnippet>310</a><span class="attr">#[cfg(test)]
-<a href=#311 id=311 data-nosnippet>311</a></span><span class="kw">mod </span>tests {
-<a href=#312 id=312 data-nosnippet>312</a>    <span class="kw">use </span>std::num::NonZeroUsize;
-<a href=#313 id=313 data-nosnippet>313</a>
-<a href=#314 id=314 data-nosnippet>314</a>    <span class="kw">use </span>datadog_protos::agent::WorkloadmetaEntityId;
-<a href=#315 id=315 data-nosnippet>315</a>    <span class="kw">use </span>saluki_core::data_model::origin::RawExternalData;
-<a href=#316 id=316 data-nosnippet>316</a>    <span class="kw">use </span>saluki_env::workload::{aggregator::MetadataStore <span class="kw">as _</span>, stores::ExternalDataStore, MetadataAction};
-<a href=#317 id=317 data-nosnippet>317</a>
-<a href=#318 id=318 data-nosnippet>318</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#319 id=319 data-nosnippet>319</a>
-<a href=#320 id=320 data-nosnippet>320</a>    <span class="kw">const </span>POD_UID: <span class="kw-2">&amp;</span>str = <span class="string">"pod-uid"</span>;
-<a href=#321 id=321 data-nosnippet>321</a>
-<a href=#322 id=322 data-nosnippet>322</a>    <span class="attr">#[derive(Debug, PartialEq)]
-<a href=#323 id=323 data-nosnippet>323</a>    </span><span class="kw">enum </span>Op {
-<a href=#324 id=324 data-nosnippet>324</a>        Attach(EntityId, ExternalData),
-<a href=#325 id=325 data-nosnippet>325</a>        Delete(EntityId),
-<a href=#326 id=326 data-nosnippet>326</a>    }
-<a href=#327 id=327 data-nosnippet>327</a>
-<a href=#328 id=328 data-nosnippet>328</a>    <span class="kw">fn </span>event_handler() -&gt; EventHandler {
-<a href=#329 id=329 data-nosnippet>329</a>        EventHandler::new(GenericMapInterner::new(NonZeroUsize::new(<span class="number">64 </span>* <span class="number">1024</span>).unwrap()))
-<a href=#330 id=330 data-nosnippet>330</a>    }
-<a href=#331 id=331 data-nosnippet>331</a>
-<a href=#332 id=332 data-nosnippet>332</a>    <span class="kw">fn </span>orchestrator_container(id: <span class="kw-2">&amp;</span>str, name: <span class="kw-2">&amp;</span>str) -&gt; OrchestratorContainer {
-<a href=#333 id=333 data-nosnippet>333</a>        OrchestratorContainer {
-<a href=#334 id=334 data-nosnippet>334</a>            id: id.to_string(),
-<a href=#335 id=335 data-nosnippet>335</a>            name: name.to_string(),
-<a href=#336 id=336 data-nosnippet>336</a>            image: <span class="prelude-val">None</span>,
-<a href=#337 id=337 data-nosnippet>337</a>        }
-<a href=#338 id=338 data-nosnippet>338</a>    }
-<a href=#339 id=339 data-nosnippet>339</a>
-<a href=#340 id=340 data-nosnippet>340</a>    <span class="kw">fn </span>pod_with_all_container_kinds() -&gt; KubernetesPod {
-<a href=#341 id=341 data-nosnippet>341</a>        KubernetesPod {
-<a href=#342 id=342 data-nosnippet>342</a>            entity_id: <span class="prelude-val">Some</span>(WorkloadmetaEntityId {
-<a href=#343 id=343 data-nosnippet>343</a>                id: POD_UID.to_string(),
-<a href=#344 id=344 data-nosnippet>344</a>                ..Default::default()
-<a href=#345 id=345 data-nosnippet>345</a>            }),
-<a href=#346 id=346 data-nosnippet>346</a>            init_containers: <span class="macro">vec!</span>[orchestrator_container(<span class="string">"init-id"</span>, <span class="string">"init"</span>)],
-<a href=#347 id=347 data-nosnippet>347</a>            containers: <span class="macro">vec!</span>[orchestrator_container(<span class="string">"app-id"</span>, <span class="string">"app"</span>)],
-<a href=#348 id=348 data-nosnippet>348</a>            ephemeral_containers: <span class="macro">vec!</span>[orchestrator_container(<span class="string">"debugger-id"</span>, <span class="string">"debugger"</span>)],
-<a href=#349 id=349 data-nosnippet>349</a>            ..Default::default()
-<a href=#350 id=350 data-nosnippet>350</a>        }
-<a href=#351 id=351 data-nosnippet>351</a>    }
-<a href=#352 id=352 data-nosnippet>352</a>
-<a href=#353 id=353 data-nosnippet>353</a>    <span class="kw">async fn </span>pod_event_operations(
-<a href=#354 id=354 data-nosnippet>354</a>        handler: <span class="kw-2">&amp;</span>EventHandler, event_type: EventType, pod: KubernetesPod,
-<a href=#355 id=355 data-nosnippet>355</a>    ) -&gt; Vec&lt;MetadataOperation&gt; {
-<a href=#356 id=356 data-nosnippet>356</a>        <span class="kw">let </span>(<span class="kw-2">mut </span>operations_tx, <span class="kw-2">mut </span>operations_rx) = mpsc::channel(<span class="number">16</span>);
-<a href=#357 id=357 data-nosnippet>357</a>        handler
-<a href=#358 id=358 data-nosnippet>358</a>            .handle_kubernetes_pod_event(<span class="kw-2">&amp;mut </span>operations_tx, event_type, pod)
-<a href=#359 id=359 data-nosnippet>359</a>            .<span class="kw">await
-<a href=#360 id=360 data-nosnippet>360</a>            </span>.unwrap();
-<a href=#361 id=361 data-nosnippet>361</a>        drop(operations_tx);
-<a href=#362 id=362 data-nosnippet>362</a>
-<a href=#363 id=363 data-nosnippet>363</a>        <span class="kw">let </span><span class="kw-2">mut </span>operations = Vec::new();
-<a href=#364 id=364 data-nosnippet>364</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(operation) = operations_rx.recv().<span class="kw">await </span>{
-<a href=#365 id=365 data-nosnippet>365</a>            operations.push(operation);
-<a href=#366 id=366 data-nosnippet>366</a>        }
-<a href=#367 id=367 data-nosnippet>367</a>        operations
-<a href=#368 id=368 data-nosnippet>368</a>    }
-<a href=#369 id=369 data-nosnippet>369</a>
-<a href=#370 id=370 data-nosnippet>370</a>    <span class="kw">fn </span>summarize(operations: <span class="kw-2">&amp;</span>[MetadataOperation]) -&gt; Vec&lt;Op&gt; {
-<a href=#371 id=371 data-nosnippet>371</a>        operations
-<a href=#372 id=372 data-nosnippet>372</a>            .iter()
-<a href=#373 id=373 data-nosnippet>373</a>            .flat_map(|operation| {
-<a href=#374 id=374 data-nosnippet>374</a>                operation.actions.clone().into_iter().map(|action| <span class="kw">match </span>action {
-<a href=#375 id=375 data-nosnippet>375</a>                    MetadataAction::AttachExternalData { external_data } =&gt; {
-<a href=#376 id=376 data-nosnippet>376</a>                        Op::Attach(operation.entity_id.clone(), external_data)
-<a href=#377 id=377 data-nosnippet>377</a>                    }
-<a href=#378 id=378 data-nosnippet>378</a>                    MetadataAction::Delete =&gt; Op::Delete(operation.entity_id.clone()),
-<a href=#379 id=379 data-nosnippet>379</a>                    other =&gt; <span class="macro">panic!</span>(<span class="string">"unexpected action: {other:?}"</span>),
-<a href=#380 id=380 data-nosnippet>380</a>                })
-<a href=#381 id=381 data-nosnippet>381</a>            })
-<a href=#382 id=382 data-nosnippet>382</a>            .collect()
-<a href=#383 id=383 data-nosnippet>383</a>    }
-<a href=#384 id=384 data-nosnippet>384</a>
-<a href=#385 id=385 data-nosnippet>385</a>    <span class="kw">fn </span>container(id: <span class="kw-2">&amp;</span>str) -&gt; EntityId {
-<a href=#386 id=386 data-nosnippet>386</a>        EntityId::Container(id.into())
-<a href=#387 id=387 data-nosnippet>387</a>    }
-<a href=#388 id=388 data-nosnippet>388</a>
-<a href=#389 id=389 data-nosnippet>389</a>    <span class="kw">fn </span>external_data(container_name: <span class="kw-2">&amp;</span>str, is_init: bool) -&gt; ExternalData {
-<a href=#390 id=390 data-nosnippet>390</a>        ExternalData::new(POD_UID.into(), container_name.into(), is_init)
-<a href=#391 id=391 data-nosnippet>391</a>    }
-<a href=#392 id=392 data-nosnippet>392</a>
-<a href=#393 id=393 data-nosnippet>393</a>    <span class="attr">#[tokio::test]
-<a href=#394 id=394 data-nosnippet>394</a>    </span><span class="kw">async fn </span>pod_update_attaches_external_data_for_every_container_kind() {
-<a href=#395 id=395 data-nosnippet>395</a>        <span class="kw">let </span>handler = event_handler();
-<a href=#396 id=396 data-nosnippet>396</a>        <span class="kw">let </span>operations =
-<a href=#397 id=397 data-nosnippet>397</a>            pod_event_operations(<span class="kw-2">&amp;</span>handler, EventType::CreatedOrUpdated, pod_with_all_container_kinds()).<span class="kw">await</span>;
-<a href=#398 id=398 data-nosnippet>398</a>
-<a href=#399 id=399 data-nosnippet>399</a>        <span class="macro">assert_eq!</span>(
-<a href=#400 id=400 data-nosnippet>400</a>            summarize(<span class="kw-2">&amp;</span>operations),
-<a href=#401 id=401 data-nosnippet>401</a>            <span class="macro">vec!</span>[
-<a href=#402 id=402 data-nosnippet>402</a>                Op::Attach(container(<span class="string">"init-id"</span>), external_data(<span class="string">"init"</span>, <span class="bool-val">true</span>)),
-<a href=#403 id=403 data-nosnippet>403</a>                Op::Attach(container(<span class="string">"app-id"</span>), external_data(<span class="string">"app"</span>, <span class="bool-val">false</span>)),
-<a href=#404 id=404 data-nosnippet>404</a>                Op::Attach(container(<span class="string">"debugger-id"</span>), external_data(<span class="string">"debugger"</span>, <span class="bool-val">false</span>)),
-<a href=#405 id=405 data-nosnippet>405</a>            ]
-<a href=#406 id=406 data-nosnippet>406</a>        );
-<a href=#407 id=407 data-nosnippet>407</a>    }
-<a href=#408 id=408 data-nosnippet>408</a>
-<a href=#409 id=409 data-nosnippet>409</a>    <span class="attr">#[tokio::test]
-<a href=#410 id=410 data-nosnippet>410</a>    </span><span class="kw">async fn </span>pod_removal_deletes_the_pod_and_every_container_kind() {
-<a href=#411 id=411 data-nosnippet>411</a>        <span class="kw">let </span>handler = event_handler();
-<a href=#412 id=412 data-nosnippet>412</a>        <span class="kw">let </span>operations = pod_event_operations(<span class="kw-2">&amp;</span>handler, EventType::Removed, pod_with_all_container_kinds()).<span class="kw">await</span>;
-<a href=#413 id=413 data-nosnippet>413</a>
-<a href=#414 id=414 data-nosnippet>414</a>        <span class="macro">assert_eq!</span>(
-<a href=#415 id=415 data-nosnippet>415</a>            summarize(<span class="kw-2">&amp;</span>operations),
-<a href=#416 id=416 data-nosnippet>416</a>            <span class="macro">vec!</span>[
-<a href=#417 id=417 data-nosnippet>417</a>                Op::Delete(EntityId::PodUid(POD_UID.into())),
-<a href=#418 id=418 data-nosnippet>418</a>                Op::Delete(container(<span class="string">"init-id"</span>)),
-<a href=#419 id=419 data-nosnippet>419</a>                Op::Delete(container(<span class="string">"app-id"</span>)),
-<a href=#420 id=420 data-nosnippet>420</a>                Op::Delete(container(<span class="string">"debugger-id"</span>)),
-<a href=#421 id=421 data-nosnippet>421</a>            ]
-<a href=#422 id=422 data-nosnippet>422</a>        );
-<a href=#423 id=423 data-nosnippet>423</a>    }
-<a href=#424 id=424 data-nosnippet>424</a>
-<a href=#425 id=425 data-nosnippet>425</a>    <span class="attr">#[tokio::test]
-<a href=#426 id=426 data-nosnippet>426</a>    </span><span class="kw">async fn </span>external_data_store_resolves_ephemeral_container_until_pod_removal() {
-<a href=#427 id=427 data-nosnippet>427</a>        <span class="kw">let </span>handler = event_handler();
-<a href=#428 id=428 data-nosnippet>428</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = ExternalDataStore::with_entity_limit(NonZeroUsize::new(<span class="number">16</span>).unwrap());
-<a href=#429 id=429 data-nosnippet>429</a>        <span class="kw">let </span>resolver = store.resolver();
-<a href=#430 id=430 data-nosnippet>430</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"pu-{POD_UID},cn-debugger,it-false"</span>);
-<a href=#431 id=431 data-nosnippet>431</a>        <span class="kw">let </span>raw = RawExternalData::try_from_str(<span class="kw-2">&amp;</span>raw).unwrap();
-<a href=#432 id=432 data-nosnippet>432</a>
-<a href=#433 id=433 data-nosnippet>433</a>        <span class="kw">for </span>operation <span class="kw">in
-<a href=#434 id=434 data-nosnippet>434</a>            </span>pod_event_operations(<span class="kw-2">&amp;</span>handler, EventType::CreatedOrUpdated, pod_with_all_container_kinds()).<span class="kw">await
-<a href=#435 id=435 data-nosnippet>435</a>        </span>{
-<a href=#436 id=436 data-nosnippet>436</a>            store.process_operation(operation);
-<a href=#437 id=437 data-nosnippet>437</a>        }
-<a href=#438 id=438 data-nosnippet>438</a>        <span class="kw">let </span>resolved = resolver.resolve(<span class="kw-2">&amp;</span>raw).expect(<span class="string">"ephemeral container should resolve"</span>);
-<a href=#439 id=439 data-nosnippet>439</a>        <span class="macro">assert_eq!</span>(resolved.pod_entity_id(), <span class="kw-2">&amp;</span>EntityId::PodUid(POD_UID.into()));
-<a href=#440 id=440 data-nosnippet>440</a>        <span class="macro">assert_eq!</span>(resolved.container_entity_id(), <span class="kw-2">&amp;</span>container(<span class="string">"debugger-id"</span>));
-<a href=#441 id=441 data-nosnippet>441</a>
-<a href=#442 id=442 data-nosnippet>442</a>        <span class="kw">for </span>operation <span class="kw">in </span>pod_event_operations(<span class="kw-2">&amp;</span>handler, EventType::Removed, pod_with_all_container_kinds()).<span class="kw">await </span>{
-<a href=#443 id=443 data-nosnippet>443</a>            store.process_operation(operation);
-<a href=#444 id=444 data-nosnippet>444</a>        }
-<a href=#445 id=445 data-nosnippet>445</a>        <span class="macro">assert_eq!</span>(resolver.resolve(<span class="kw-2">&amp;</span>raw), <span class="prelude-val">None</span>);
-<a href=#446 id=446 data-nosnippet>446</a>    }
-<a href=#447 id=447 data-nosnippet>447</a>}
+<a href=#301 id=301 data-nosnippet>301</a><span class="kw">async fn </span>send_metadata_operation(operations_tx: <span class="kw-2">&amp;mut </span>mpsc::Sender&lt;MetadataOperation&gt;, operation: MetadataOperation) {
+<a href=#302 id=302 data-nosnippet>302</a>    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = operations_tx.send(operation).<span class="kw">await </span>{
+<a href=#303 id=303 data-nosnippet>303</a>        <span class="macro">debug!</span>(error = %e, <span class="string">"Failed to send metadata operation."</span>);
+<a href=#304 id=304 data-nosnippet>304</a>    }
+<a href=#305 id=305 data-nosnippet>305</a>}
+<a href=#306 id=306 data-nosnippet>306</a>
+<a href=#307 id=307 data-nosnippet>307</a><span class="attr">#[cfg(test)]
+<a href=#308 id=308 data-nosnippet>308</a></span><span class="kw">mod </span>tests {
+<a href=#309 id=309 data-nosnippet>309</a>    <span class="kw">use </span>std::num::NonZeroUsize;
+<a href=#310 id=310 data-nosnippet>310</a>
+<a href=#311 id=311 data-nosnippet>311</a>    <span class="kw">use </span>datadog_protos::agent::WorkloadmetaEntityId;
+<a href=#312 id=312 data-nosnippet>312</a>    <span class="kw">use </span>saluki_core::data_model::origin::RawExternalData;
+<a href=#313 id=313 data-nosnippet>313</a>    <span class="kw">use </span>saluki_env::workload::{aggregator::MetadataStore <span class="kw">as _</span>, stores::ExternalDataStore, MetadataAction};
+<a href=#314 id=314 data-nosnippet>314</a>
+<a href=#315 id=315 data-nosnippet>315</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#316 id=316 data-nosnippet>316</a>
+<a href=#317 id=317 data-nosnippet>317</a>    <span class="kw">const </span>POD_UID: <span class="kw-2">&amp;</span>str = <span class="string">"pod-uid"</span>;
+<a href=#318 id=318 data-nosnippet>318</a>
+<a href=#319 id=319 data-nosnippet>319</a>    <span class="attr">#[derive(Debug, PartialEq)]
+<a href=#320 id=320 data-nosnippet>320</a>    </span><span class="kw">enum </span>Op {
+<a href=#321 id=321 data-nosnippet>321</a>        Attach(EntityId, ExternalData),
+<a href=#322 id=322 data-nosnippet>322</a>        Delete(EntityId),
+<a href=#323 id=323 data-nosnippet>323</a>    }
+<a href=#324 id=324 data-nosnippet>324</a>
+<a href=#325 id=325 data-nosnippet>325</a>    <span class="kw">fn </span>event_handler() -&gt; EventHandler {
+<a href=#326 id=326 data-nosnippet>326</a>        EventHandler::new(GenericMapInterner::new(NonZeroUsize::new(<span class="number">64 </span>* <span class="number">1024</span>).unwrap()))
+<a href=#327 id=327 data-nosnippet>327</a>    }
+<a href=#328 id=328 data-nosnippet>328</a>
+<a href=#329 id=329 data-nosnippet>329</a>    <span class="kw">fn </span>orchestrator_container(id: <span class="kw-2">&amp;</span>str, name: <span class="kw-2">&amp;</span>str) -&gt; OrchestratorContainer {
+<a href=#330 id=330 data-nosnippet>330</a>        OrchestratorContainer {
+<a href=#331 id=331 data-nosnippet>331</a>            id: id.to_string(),
+<a href=#332 id=332 data-nosnippet>332</a>            name: name.to_string(),
+<a href=#333 id=333 data-nosnippet>333</a>            image: <span class="prelude-val">None</span>,
+<a href=#334 id=334 data-nosnippet>334</a>        }
+<a href=#335 id=335 data-nosnippet>335</a>    }
+<a href=#336 id=336 data-nosnippet>336</a>
+<a href=#337 id=337 data-nosnippet>337</a>    <span class="kw">fn </span>pod_with_all_container_kinds() -&gt; KubernetesPod {
+<a href=#338 id=338 data-nosnippet>338</a>        KubernetesPod {
+<a href=#339 id=339 data-nosnippet>339</a>            entity_id: <span class="prelude-val">Some</span>(WorkloadmetaEntityId {
+<a href=#340 id=340 data-nosnippet>340</a>                id: POD_UID.to_string(),
+<a href=#341 id=341 data-nosnippet>341</a>                ..Default::default()
+<a href=#342 id=342 data-nosnippet>342</a>            }),
+<a href=#343 id=343 data-nosnippet>343</a>            init_containers: <span class="macro">vec!</span>[orchestrator_container(<span class="string">"init-id"</span>, <span class="string">"init"</span>)],
+<a href=#344 id=344 data-nosnippet>344</a>            containers: <span class="macro">vec!</span>[orchestrator_container(<span class="string">"app-id"</span>, <span class="string">"app"</span>)],
+<a href=#345 id=345 data-nosnippet>345</a>            ephemeral_containers: <span class="macro">vec!</span>[orchestrator_container(<span class="string">"debugger-id"</span>, <span class="string">"debugger"</span>)],
+<a href=#346 id=346 data-nosnippet>346</a>            ..Default::default()
+<a href=#347 id=347 data-nosnippet>347</a>        }
+<a href=#348 id=348 data-nosnippet>348</a>    }
+<a href=#349 id=349 data-nosnippet>349</a>
+<a href=#350 id=350 data-nosnippet>350</a>    <span class="kw">async fn </span>pod_event_operations(
+<a href=#351 id=351 data-nosnippet>351</a>        handler: <span class="kw-2">&amp;</span>EventHandler, event_type: EventType, pod: KubernetesPod,
+<a href=#352 id=352 data-nosnippet>352</a>    ) -&gt; Vec&lt;MetadataOperation&gt; {
+<a href=#353 id=353 data-nosnippet>353</a>        <span class="kw">let </span>(<span class="kw-2">mut </span>operations_tx, <span class="kw-2">mut </span>operations_rx) = mpsc::channel(<span class="number">16</span>);
+<a href=#354 id=354 data-nosnippet>354</a>        handler
+<a href=#355 id=355 data-nosnippet>355</a>            .handle_kubernetes_pod_event(<span class="kw-2">&amp;mut </span>operations_tx, event_type, pod)
+<a href=#356 id=356 data-nosnippet>356</a>            .<span class="kw">await
+<a href=#357 id=357 data-nosnippet>357</a>            </span>.unwrap();
+<a href=#358 id=358 data-nosnippet>358</a>        drop(operations_tx);
+<a href=#359 id=359 data-nosnippet>359</a>
+<a href=#360 id=360 data-nosnippet>360</a>        <span class="kw">let </span><span class="kw-2">mut </span>operations = Vec::new();
+<a href=#361 id=361 data-nosnippet>361</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(operation) = operations_rx.recv().<span class="kw">await </span>{
+<a href=#362 id=362 data-nosnippet>362</a>            operations.push(operation);
+<a href=#363 id=363 data-nosnippet>363</a>        }
+<a href=#364 id=364 data-nosnippet>364</a>        operations
+<a href=#365 id=365 data-nosnippet>365</a>    }
+<a href=#366 id=366 data-nosnippet>366</a>
+<a href=#367 id=367 data-nosnippet>367</a>    <span class="kw">fn </span>summarize(operations: <span class="kw-2">&amp;</span>[MetadataOperation]) -&gt; Vec&lt;Op&gt; {
+<a href=#368 id=368 data-nosnippet>368</a>        operations
+<a href=#369 id=369 data-nosnippet>369</a>            .iter()
+<a href=#370 id=370 data-nosnippet>370</a>            .flat_map(|operation| {
+<a href=#371 id=371 data-nosnippet>371</a>                operation.actions.clone().into_iter().map(|action| <span class="kw">match </span>action {
+<a href=#372 id=372 data-nosnippet>372</a>                    MetadataAction::AttachExternalData { external_data } =&gt; {
+<a href=#373 id=373 data-nosnippet>373</a>                        Op::Attach(operation.entity_id.clone(), external_data)
+<a href=#374 id=374 data-nosnippet>374</a>                    }
+<a href=#375 id=375 data-nosnippet>375</a>                    MetadataAction::Delete =&gt; Op::Delete(operation.entity_id.clone()),
+<a href=#376 id=376 data-nosnippet>376</a>                    other =&gt; <span class="macro">panic!</span>(<span class="string">"unexpected action: {other:?}"</span>),
+<a href=#377 id=377 data-nosnippet>377</a>                })
+<a href=#378 id=378 data-nosnippet>378</a>            })
+<a href=#379 id=379 data-nosnippet>379</a>            .collect()
+<a href=#380 id=380 data-nosnippet>380</a>    }
+<a href=#381 id=381 data-nosnippet>381</a>
+<a href=#382 id=382 data-nosnippet>382</a>    <span class="kw">fn </span>container(id: <span class="kw-2">&amp;</span>str) -&gt; EntityId {
+<a href=#383 id=383 data-nosnippet>383</a>        EntityId::Container(id.into())
+<a href=#384 id=384 data-nosnippet>384</a>    }
+<a href=#385 id=385 data-nosnippet>385</a>
+<a href=#386 id=386 data-nosnippet>386</a>    <span class="kw">fn </span>external_data(container_name: <span class="kw-2">&amp;</span>str) -&gt; ExternalData {
+<a href=#387 id=387 data-nosnippet>387</a>        ExternalData::new(POD_UID.into(), container_name.into())
+<a href=#388 id=388 data-nosnippet>388</a>    }
+<a href=#389 id=389 data-nosnippet>389</a>
+<a href=#390 id=390 data-nosnippet>390</a>    <span class="attr">#[tokio::test]
+<a href=#391 id=391 data-nosnippet>391</a>    </span><span class="kw">async fn </span>pod_update_attaches_external_data_for_every_container_kind() {
+<a href=#392 id=392 data-nosnippet>392</a>        <span class="kw">let </span>handler = event_handler();
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="kw">let </span>operations =
+<a href=#394 id=394 data-nosnippet>394</a>            pod_event_operations(<span class="kw-2">&amp;</span>handler, EventType::CreatedOrUpdated, pod_with_all_container_kinds()).<span class="kw">await</span>;
+<a href=#395 id=395 data-nosnippet>395</a>
+<a href=#396 id=396 data-nosnippet>396</a>        <span class="macro">assert_eq!</span>(
+<a href=#397 id=397 data-nosnippet>397</a>            summarize(<span class="kw-2">&amp;</span>operations),
+<a href=#398 id=398 data-nosnippet>398</a>            <span class="macro">vec!</span>[
+<a href=#399 id=399 data-nosnippet>399</a>                Op::Attach(container(<span class="string">"init-id"</span>), external_data(<span class="string">"init"</span>)),
+<a href=#400 id=400 data-nosnippet>400</a>                Op::Attach(container(<span class="string">"app-id"</span>), external_data(<span class="string">"app"</span>)),
+<a href=#401 id=401 data-nosnippet>401</a>                Op::Attach(container(<span class="string">"debugger-id"</span>), external_data(<span class="string">"debugger"</span>)),
+<a href=#402 id=402 data-nosnippet>402</a>            ]
+<a href=#403 id=403 data-nosnippet>403</a>        );
+<a href=#404 id=404 data-nosnippet>404</a>    }
+<a href=#405 id=405 data-nosnippet>405</a>
+<a href=#406 id=406 data-nosnippet>406</a>    <span class="attr">#[tokio::test]
+<a href=#407 id=407 data-nosnippet>407</a>    </span><span class="kw">async fn </span>pod_removal_deletes_the_pod_and_every_container_kind() {
+<a href=#408 id=408 data-nosnippet>408</a>        <span class="kw">let </span>handler = event_handler();
+<a href=#409 id=409 data-nosnippet>409</a>        <span class="kw">let </span>operations = pod_event_operations(<span class="kw-2">&amp;</span>handler, EventType::Removed, pod_with_all_container_kinds()).<span class="kw">await</span>;
+<a href=#410 id=410 data-nosnippet>410</a>
+<a href=#411 id=411 data-nosnippet>411</a>        <span class="macro">assert_eq!</span>(
+<a href=#412 id=412 data-nosnippet>412</a>            summarize(<span class="kw-2">&amp;</span>operations),
+<a href=#413 id=413 data-nosnippet>413</a>            <span class="macro">vec!</span>[
+<a href=#414 id=414 data-nosnippet>414</a>                Op::Delete(EntityId::PodUid(POD_UID.into())),
+<a href=#415 id=415 data-nosnippet>415</a>                Op::Delete(container(<span class="string">"init-id"</span>)),
+<a href=#416 id=416 data-nosnippet>416</a>                Op::Delete(container(<span class="string">"app-id"</span>)),
+<a href=#417 id=417 data-nosnippet>417</a>                Op::Delete(container(<span class="string">"debugger-id"</span>)),
+<a href=#418 id=418 data-nosnippet>418</a>            ]
+<a href=#419 id=419 data-nosnippet>419</a>        );
+<a href=#420 id=420 data-nosnippet>420</a>    }
+<a href=#421 id=421 data-nosnippet>421</a>
+<a href=#422 id=422 data-nosnippet>422</a>    <span class="attr">#[tokio::test]
+<a href=#423 id=423 data-nosnippet>423</a>    </span><span class="kw">async fn </span>external_data_store_resolves_ephemeral_container_until_pod_removal() {
+<a href=#424 id=424 data-nosnippet>424</a>        <span class="kw">let </span>handler = event_handler();
+<a href=#425 id=425 data-nosnippet>425</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = ExternalDataStore::with_entity_limit(NonZeroUsize::new(<span class="number">16</span>).unwrap());
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="kw">let </span>resolver = store.resolver();
+<a href=#427 id=427 data-nosnippet>427</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"pu-{POD_UID},cn-debugger,it-false"</span>);
+<a href=#428 id=428 data-nosnippet>428</a>        <span class="kw">let </span>raw = RawExternalData::try_from_str(<span class="kw-2">&amp;</span>raw).unwrap();
+<a href=#429 id=429 data-nosnippet>429</a>
+<a href=#430 id=430 data-nosnippet>430</a>        <span class="kw">for </span>operation <span class="kw">in
+<a href=#431 id=431 data-nosnippet>431</a>            </span>pod_event_operations(<span class="kw-2">&amp;</span>handler, EventType::CreatedOrUpdated, pod_with_all_container_kinds()).<span class="kw">await
+<a href=#432 id=432 data-nosnippet>432</a>        </span>{
+<a href=#433 id=433 data-nosnippet>433</a>            store.process_operation(operation);
+<a href=#434 id=434 data-nosnippet>434</a>        }
+<a href=#435 id=435 data-nosnippet>435</a>        <span class="kw">let </span>resolved = resolver.resolve(<span class="kw-2">&amp;</span>raw).expect(<span class="string">"ephemeral container should resolve"</span>);
+<a href=#436 id=436 data-nosnippet>436</a>        <span class="macro">assert_eq!</span>(resolved.pod_entity_id(), <span class="kw-2">&amp;</span>EntityId::PodUid(POD_UID.into()));
+<a href=#437 id=437 data-nosnippet>437</a>        <span class="macro">assert_eq!</span>(resolved.container_entity_id(), <span class="kw-2">&amp;</span>container(<span class="string">"debugger-id"</span>));
+<a href=#438 id=438 data-nosnippet>438</a>
+<a href=#439 id=439 data-nosnippet>439</a>        <span class="kw">for </span>operation <span class="kw">in </span>pod_event_operations(<span class="kw-2">&amp;</span>handler, EventType::Removed, pod_with_all_container_kinds()).<span class="kw">await </span>{
+<a href=#440 id=440 data-nosnippet>440</a>            store.process_operation(operation);
+<a href=#441 id=441 data-nosnippet>441</a>        }
+<a href=#442 id=442 data-nosnippet>442</a>        <span class="macro">assert_eq!</span>(resolver.resolve(<span class="kw-2">&amp;</span>raw), <span class="prelude-val">None</span>);
+<a href=#443 id=443 data-nosnippet>443</a>    }
+<a href=#444 id=444 data-nosnippet>444</a>}
 </code></pre></div></section></main></body></html>
