@@ -80,8 +80,9 @@ enum Resource {
     HostProcess(HostProcess),
     /// A Kubernetes namespace, removed through the client that created it.
     Namespace { name: String, client: Client },
-    /// A ClusterRole and the ClusterRoleBinding of the same name, removed through the client that created them. They
-    /// are cluster-wide, so deleting a case's namespace does not remove them.
+    /// A ClusterRole and the ClusterRoleBinding of the same name, removed through the client that created them. The
+    /// case's namespace owns them, and the ledger deletes them itself so that reclaim does not wait for the garbage
+    /// collector.
     ClusterRole { name: String, client: Client },
     /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),

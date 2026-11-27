@@ -34,6 +34,8 @@ use super::result::{ErrorKind, PhaseTracker, ReclaimEntry, ReclaimResult, TestOu
 use super::tasks::{CaseTasks, TASK_STOP_TIME};
 
 const BUDGET: Duration = Duration::from_secs(180);
+/// How long the checks before reclaim may take, so that a stalled request cannot keep the case from its cleanup.
+const CHECK_TIME: Duration = Duration::from_secs(30);
 
 /// What a case run left: its result, the ledger's reclaim entries, and the cluster.
 struct Ran {
@@ -54,7 +56,8 @@ impl Ran {
 }
 
 /// Runs the case `config` on the kind cluster, calls `before_reclaim` with the cluster's client and the labels of the
-/// resources the case made, and then reclaims them.
+/// resources the case made, and then reclaims them. A check that panics or runs out of time fails the test after
+/// reclaim.
 async fn run_case<F, Fut>(config: &str, before_reclaim: F) -> Ran
 where
     F: FnOnce(Client, Vec<String>) -> Fut,
@@ -102,12 +105,16 @@ where
     };
     let outcome = AssertUnwindSafe(lifecycle::run(&plan, &run)).catch_unwind().await;
     tasks.stop_all(Instant::now() + TASK_STOP_TIME).await;
-    let checked = AssertUnwindSafe(before_reclaim(client.clone(), ledger.labels()))
-        .catch_unwind()
-        .await;
+    let checked = tokio::time::timeout(
+        CHECK_TIME,
+        AssertUnwindSafe(before_reclaim(client.clone(), ledger.labels())).catch_unwind(),
+    )
+    .await;
     let (entries, _) = ledger.reclaim(Instant::now() + RECLAIM_TIME).await;
     let result = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-    checked.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    checked
+        .unwrap_or_else(|_| panic!("the checks before reclaim took more than {CHECK_TIME:?}"))
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     Ran {
         result,
         entries,
@@ -243,7 +250,8 @@ procedure: []
     );
 }
 
-/// Whether `user` may get the `subresource` of nodes, as the API server authorizes the kubelet's requests.
+/// Whether `user` may get the `subresource` of nodes, as the API server authorizes the kubelet's requests. A review
+/// that the API server could not evaluate fails the test, so that it does not read as a denial.
 async fn may_get_node(client: &Client, user: &str, subresource: &str) -> bool {
     let review = SubjectAccessReview {
         spec: SubjectAccessReviewSpec {
@@ -260,5 +268,10 @@ async fn may_get_node(client: &Client, user: &str, subresource: &str) -> bool {
     };
     let reviews: Api<SubjectAccessReview> = Api::all(client.clone());
     let review = reviews.create(&PostParams::default(), &review).await.unwrap();
-    review.status.is_some_and(|status| status.allowed)
+    let status = review.status.expect("the API server should answer the review");
+    assert!(
+        status.evaluation_error.as_deref().unwrap_or_default().is_empty(),
+        "the review of {user} on nodes/{subresource} could not be evaluated: {status:?}"
+    );
+    status.allowed
 }
