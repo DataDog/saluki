@@ -162,7 +162,7 @@ impl TraceIntake {
         let decoded = match decoded {
             Ok(decoded) => decoded,
             Err(error) => {
-                debug!(%error, "Cannot decode {version:?} traces payload.");
+                debug!(%error, ?version, "Cannot decode traces payload.");
                 return http_error(StatusCode::BAD_REQUEST, &error.to_string());
             }
         };
