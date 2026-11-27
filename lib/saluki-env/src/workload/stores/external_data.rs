@@ -96,12 +96,16 @@ impl ExternalDataStore {
             return;
         }
 
+        if let Some(previous) = self.reverse_mappings.insert(entity_id.clone(), external_data.clone()) {
+            if previous != external_data {
+                self.remove_forward_mapping_if_owned(&previous, &entity_id);
+            }
+        }
+
         // We create a "resolved" form of the External Data, which includes entity IDs for both the pod and the
         // container that this External Data is attached to.
-        let resolved = ResolvedExternalData::new(EntityId::PodUid(external_data.pod_uid().clone()), entity_id.clone());
-
-        let _ = self.forward_mappings.insert(external_data.clone(), resolved);
-        let _ = self.reverse_mappings.insert(entity_id, external_data);
+        let resolved = ResolvedExternalData::new(EntityId::PodUid(external_data.pod_uid().clone()), entity_id);
+        let _ = self.forward_mappings.insert(external_data, resolved);
     }
 
     fn remove_mapping(&mut self, entity_id: EntityId) {
@@ -112,7 +116,22 @@ impl ExternalDataStore {
         self.telemetry.active_entities().decrement(1);
 
         if let Some(external_data) = self.reverse_mappings.swap_remove(&entity_id) {
-            let _ = self.forward_mappings.swap_remove(&external_data);
+            self.remove_forward_mapping_if_owned(&external_data, &entity_id);
+        }
+    }
+
+    /// Removes the forward mapping for the given External Data if it still resolves to the given entity.
+    ///
+    /// A newer entity can take over the same External Data, such as when Kubernetes restarts a container under the same
+    /// pod UID and container name. The forward mapping then belongs to the newer entity, and a late delete of the older
+    /// entity must not remove it.
+    fn remove_forward_mapping_if_owned(&mut self, external_data: &ExternalData, entity_id: &EntityId) {
+        let is_owned = self
+            .forward_mappings
+            .get(external_data)
+            .is_some_and(|resolved| resolved.container_entity_id() == entity_id);
+        if is_owned {
+            let _ = self.forward_mappings.swap_remove(external_data);
         }
     }
 
@@ -299,5 +318,69 @@ mod tests {
         // Try again to attach the External Data to the third container entity, which we should now be able to resolve:
         store.process_operation(MetadataOperation::attach_external_data(container_eid3, ed3));
         assert_eq!(resolver.resolve(&ed_ref3), Some(resolved_ed3));
+    }
+
+    #[test]
+    fn late_delete_of_replaced_container_keeps_mapping() {
+        let mut store = ExternalDataStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        let resolver = store.resolver();
+
+        let old_eid = entity_id_container("old");
+        let new_eid = entity_id_container("new");
+        let (raw_ed, ed, _) = build_external_data("1234", "app", &old_eid, false);
+        let (_, _, new_resolved_ed) = build_external_data("1234", "app", &new_eid, false);
+        let ed_ref = RawExternalData::try_from_str(&raw_ed).unwrap();
+
+        // Kubernetes restarts the container under the same pod UID and container name, so the new container gets the
+        // same External Data:
+        store.process_operation(MetadataOperation::attach_external_data(old_eid.clone(), ed.clone()));
+        store.process_operation(MetadataOperation::attach_external_data(new_eid.clone(), ed));
+        assert_eq!(resolver.resolve(&ed_ref), Some(new_resolved_ed.clone()));
+
+        // A late delete of the old container must not remove the mapping that now belongs to the new container:
+        store.process_operation(MetadataOperation::delete(old_eid));
+        assert_eq!(resolver.resolve(&ed_ref), Some(new_resolved_ed));
+        assert_eq!(store.active_entities.len(), 1);
+
+        // Deleting the new container still removes the mapping:
+        store.process_operation(MetadataOperation::delete(new_eid));
+        assert_eq!(resolver.resolve(&ed_ref), None);
+        assert!(store.active_entities.is_empty());
+        assert!(store.forward_mappings.is_empty());
+        assert!(store.reverse_mappings.is_empty());
+    }
+
+    #[test]
+    fn reattach_with_different_external_data_drops_previous_mapping() {
+        let mut store = ExternalDataStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        let resolver = store.resolver();
+
+        let eid = entity_id_container("abcdef");
+        let other_eid = entity_id_container("bcdefg");
+        let (raw_ed1, ed1, _) = build_external_data("1234", "app", &eid, false);
+        let (raw_ed2, ed2, resolved_ed2) = build_external_data("1234", "sidecar", &eid, false);
+        let (raw_ed3, ed3, _) = build_external_data("5678", "app", &eid, false);
+        let (_, _, other_resolved_ed3) = build_external_data("5678", "app", &other_eid, false);
+        let ed_ref1 = RawExternalData::try_from_str(&raw_ed1).unwrap();
+        let ed_ref2 = RawExternalData::try_from_str(&raw_ed2).unwrap();
+        let ed_ref3 = RawExternalData::try_from_str(&raw_ed3).unwrap();
+
+        // Re-attaching with different External Data must not leave the previous External Data resolving to the entity:
+        store.process_operation(MetadataOperation::attach_external_data(eid.clone(), ed1));
+        store.process_operation(MetadataOperation::attach_external_data(eid.clone(), ed2));
+        assert_eq!(resolver.resolve(&ed_ref1), None);
+        assert_eq!(resolver.resolve(&ed_ref2), Some(resolved_ed2));
+
+        // Re-attaching must not remove a previous External Data mapping that another entity took over:
+        store.process_operation(MetadataOperation::attach_external_data(eid.clone(), ed3.clone()));
+        store.process_operation(MetadataOperation::attach_external_data(other_eid, ed3));
+        let (_, ed4, _) = build_external_data("5678", "other", &eid, false);
+        store.process_operation(MetadataOperation::attach_external_data(eid.clone(), ed4));
+        assert_eq!(resolver.resolve(&ed_ref2), None);
+        assert_eq!(resolver.resolve(&ed_ref3), Some(other_resolved_ed3.clone()));
+
+        // Deleting the entity must not remove it either:
+        store.process_operation(MetadataOperation::delete(eid));
+        assert_eq!(resolver.resolve(&ed_ref3), Some(other_resolved_ed3));
     }
 }
