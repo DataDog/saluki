@@ -578,8 +578,10 @@ mod tests {
         // With UDS origin detection disabled, the Agent does not use the sender's process as an origin, and still uses
         // the origin fields that the client sends.
         for unified in [false, true] {
+            // The client's origin fields are parsed only with client origin detection on.
             let tag_resolver_config = OriginEnrichmentConfiguration {
                 origin_detection_unified: unified,
+                origin_detection_client: true,
                 ..OriginEnrichmentConfiguration::for_test()
             };
             assert!(!tag_resolver_config.enabled);
@@ -611,6 +613,7 @@ mod tests {
         // Only the unified scheme uses External Data.
         let unified_resolver = build_tags_resolver_with_default_tags(OriginEnrichmentConfiguration {
             origin_detection_unified: true,
+            origin_detection_client: true,
             ..OriginEnrichmentConfiguration::for_test()
         });
         let ext_data = ResolvedExternalData::new(EID_EXTERNAL_POD.clone(), EID_EXTERNAL_CID_VALID.clone());
