@@ -161,9 +161,7 @@ impl OtlpConfiguration {
     fn metrics_translator(
         &self, context: &ComponentContext, origin_tag_resolver: OtlpOriginTagResolver,
     ) -> Result<OtlpMetricsTranslator, GenericError> {
-        // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
-        // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
-        let context_resolver = build_context_resolver(&self.contexts, context, None)?;
+        let context_resolver = build_context_resolver(&self.contexts, context)?;
 
         OtlpMetricsTranslator::new(
             self.metrics_translator_config(),
@@ -705,6 +703,39 @@ mod tests {
 
         publisher.assign([("a", custom_status_code_registry())]);
         assert_eq!(translate_custom_status_code(&mut translator, &metrics), Some(418.0));
+    }
+
+    /// The logs translator uses low-cardinality tags, as the Agent's logs pipeline does: it never sets the processor's
+    /// cardinality.
+    #[test]
+    fn logs_use_low_cardinality_tags() {
+        use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
+
+        let provider = TestWorkloadProvider::with_entity_cardinalities(
+            EntityId::Global,
+            &["low:present"],
+            &["orchestrator:present"],
+            &["high:present"],
+        );
+        let mut translator = super::OtlpLogsTranslator::new(OtlpOriginTagResolver::new(Arc::new(provider)));
+        let resource_logs = ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord::default()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let metrics = Metrics::for_tests();
+        let logs = translator.translate_logs(resource_logs, &metrics).collect::<Vec<_>>();
+        assert_eq!(logs.len(), 1);
+        let content: serde_json::Value = serde_json::from_str(logs[0].message()).expect("content should be JSON");
+        assert_eq!(content["low"], "present");
+        assert!(
+            content.get("orchestrator").is_none() && content.get("high").is_none(),
+            "content: {content}"
+        );
     }
 
     #[test]

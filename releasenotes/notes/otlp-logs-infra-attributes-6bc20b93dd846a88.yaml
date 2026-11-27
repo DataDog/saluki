@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    OTLP logs handled natively now get the low-cardinality tags of every entity in their resource, and the global
+    tags, as resource attributes, as the Datadog Agent's infra attributes processor adds them. The ``service`` and
+    ``version`` tags fill ``service.name`` and ``service.version`` only when the resource doesn't set them. The
+    ``env`` tag fills ``deployment.environment`` only when the resource sets neither ``deployment.environment`` nor
+    ``deployment.environment.name``. Other tags overwrite resource attributes with the same key. Earlier, the
+    logs got only the tags of the container, pod, or process in their origin, as tags.

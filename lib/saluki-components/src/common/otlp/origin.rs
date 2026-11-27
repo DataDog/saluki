@@ -3,7 +3,7 @@ use std::sync::Arc;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::FastHashSet;
 use saluki_core::data_model::{
-    origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
+    origin::{OriginTagCardinality, RawOrigin},
     tags::{SharedTagSet, TagSet},
 };
 use saluki_env::{workload::EntityId, WorkloadProvider};
@@ -95,19 +95,25 @@ impl OtlpOriginTagResolver {
         }
 
         let attributes = OtlpResourceAttributes::from_attributes(attributes);
+        let container_entity = self.container_entity_from_attributes(&attributes, tag_cardinality);
+        let entity_ids = container_entity
+            .into_iter()
+            .chain(entity_ids_from_attributes(&attributes));
+        self.resolve_ordered_tags(entity_ids, tag_cardinality).into_shared()
+    }
+
+    /// Resolves the tags of `entity_ids` in order, and then the global tags.
+    ///
+    /// Only the first tag with a key counts. A tag without a `:`, or with an empty key or value, doesn't count.
+    pub fn resolve_ordered_tags(
+        &self, entity_ids: impl IntoIterator<Item = EntityId>, tag_cardinality: OriginTagCardinality,
+    ) -> TagSet {
         let mut tags = TagSet::default();
         let mut written_keys = FastHashSet::default();
-
-        if let Some(container_entity) = self.container_entity_from_attributes(&attributes, tag_cardinality) {
-            self.collect_tags_for_entity(container_entity, tag_cardinality, &mut written_keys, &mut tags);
-        }
-
-        for entity_id in entity_ids_from_attributes(&attributes) {
+        for entity_id in entity_ids.into_iter().chain([EntityId::Global]) {
             self.collect_tags_for_entity(entity_id, tag_cardinality, &mut written_keys, &mut tags);
         }
-
-        self.collect_tags_for_entity(EntityId::Global, tag_cardinality, &mut written_keys, &mut tags);
-        tags.into_shared()
+        tags
     }
 
     fn container_entity_from_attributes(
@@ -116,7 +122,22 @@ impl OtlpOriginTagResolver {
         if let Some(container_id) = attributes.container_id.filter(|value| !value.is_empty()) {
             return Some(EntityId::Container(container_id.into()));
         }
+        self.container_entity_from_origin(attributes, tag_cardinality)
+    }
 
+    /// Finds the container of an OTLP resource from its origin attributes, without `container.id`.
+    ///
+    /// The attributes are, in order: the process ID, the cgroup inode, and the pod UID with the container name. The
+    /// first container with tags at `tag_cardinality` wins.
+    pub fn container_entity_from_origin_attributes(
+        &self, attributes: &[otlp_common::KeyValue], tag_cardinality: OriginTagCardinality,
+    ) -> Option<EntityId> {
+        self.container_entity_from_origin(&OtlpResourceAttributes::from_attributes(attributes), tag_cardinality)
+    }
+
+    fn container_entity_from_origin(
+        &self, attributes: &OtlpResourceAttributes<'_>, tag_cardinality: OriginTagCardinality,
+    ) -> Option<EntityId> {
         let mut fallback_entities = Vec::with_capacity(3);
         if let Some(process_id) = attributes
             .process_pid
@@ -178,48 +199,9 @@ impl OtlpOriginTagResolver {
             if key.is_empty() || value.is_empty() || !written_keys.insert(key.to_owned()) {
                 continue;
             }
-            tags.insert_tag(tag.clone());
-        }
-    }
-
-    fn collect_origin_tags(&self, resolved_origin: &saluki_env::workload::origin::ResolvedOrigin) -> SharedTagSet {
-        let mut collected_tags = SharedTagSet::default();
-        let tag_cardinality = resolved_origin.cardinality().unwrap_or(OriginTagCardinality::Low);
-
-        // Logs retain their existing origin-only behavior. Metrics use `resolve_resource_tags` above to include the
-        // full OTLP entity list and global tags.
-        let entity_ids = [
-            resolved_origin.local_data(),
-            resolved_origin.pod_uid(),
-            resolved_origin.process_id(),
-        ];
-
-        for entity_id in entity_ids.iter().flatten() {
-            if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
-                if !tags.is_empty() {
-                    collected_tags.extend_from_shared(&tags);
-                    return collected_tags;
-                }
-            } else {
-                trace!(
-                    ?entity_id,
-                    cardinality = tag_cardinality.as_str(),
-                    "No tags found for entity."
-                );
-            }
-        }
-        collected_tags
-    }
-}
-
-impl OriginTagsResolver for OtlpOriginTagResolver {
-    fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
-        match self.workload_provider.get_resolved_origin(origin.clone()) {
-            Some(resolved_origin) => self.collect_origin_tags(&resolved_origin),
-            None => {
-                trace!(?origin, "No resolved origin found for raw origin.");
-                SharedTagSet::default()
-            }
+            // Each key appears once, so the tags are unique, and `extend` doesn't need to look for duplicates as
+            // `insert_tag` does.
+            tags.extend([tag.clone()]);
         }
     }
 }

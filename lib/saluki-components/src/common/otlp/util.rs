@@ -12,7 +12,7 @@ use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, 
 use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
-use crate::common::otlp::traces::translator::ContainerTagPromotion;
+use crate::common::otlp::infra_attributes::ContainerTagPromotion;
 use crate::common::otlp::value::{otlp_value_as_string, otlp_value_to_string};
 
 // ============================================================================
@@ -83,7 +83,7 @@ impl SourceKind {
     }
 }
 
-const CUSTOM_CONTAINER_TAG_PREFIX: &str = "datadog.container.tag.";
+pub(crate) const CUSTOM_CONTAINER_TAG_PREFIX: &str = "datadog.container.tag.";
 
 static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = FastHashMap::default();
@@ -453,6 +453,20 @@ fn is_recognized_tag_key(key: &str) -> bool {
     CONTAINER_MAPPINGS.contains_key(key) || CONTAINER_DD_TAG_KEYS.contains(key)
 }
 
+/// Returns `true` if `key` is one of the Agent's `knownConventionKeys`: a key or a Datadog name of its
+/// `ContainerMappings`.
+///
+/// The Agent's mappings also have `container.image.tags` and `aws.eks.cluster.arn` (`eks_cluster_arn`), which
+/// `CONTAINER_MAPPINGS` handles separately or doesn't have.
+pub fn is_known_convention_key(key: &str) -> bool {
+    is_recognized_tag_key(key) || matches!(key, CONTAINER_IMAGE_TAGS | "aws.eks.cluster.arn" | "eks_cluster_arn")
+}
+
+/// Returns `true` if `key` starts with the `datadog.container.tag.` prefix of custom container tags.
+pub fn is_custom_container_tag_key(key: &str) -> bool {
+    key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX)
+}
+
 /// Returns whether `attribute` is a non-empty, string-valued Datadog-convention container tag, such as
 /// `kube_namespace` or `pod_name`.
 ///
@@ -499,6 +513,20 @@ pub(super) fn first_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], k
         Some(Value::StringValue(s_val)) => s_val.as_str(),
         _ => "",
     })
+}
+
+/// Sets the first attribute named `key` to a string value, or adds the attribute, like `Map.PutStr` in `pdata`.
+pub(crate) fn put_str_attribute(attributes: &mut Vec<otlp_common::KeyValue>, key: &str, value: impl Into<String>) {
+    let value = Some(otlp_common::AnyValue {
+        value: Some(Value::StringValue(value.into())),
+    });
+    match attributes.iter_mut().find(|kv| kv.key == key) {
+        Some(kv) => kv.value = value,
+        None => attributes.push(otlp_common::KeyValue {
+            key: key.to_owned(),
+            value,
+        }),
+    }
 }
 
 /// Resolves an AKS cluster name from an Azure managed resource group name.
@@ -652,6 +680,27 @@ mod tests {
 
     use super::*;
     use crate::common::otlp::source::resolve_source_from_attributes;
+
+    #[test]
+    fn put_str_attribute_overwrites_the_first_attribute_or_appends() {
+        let int_attribute = |key: &str, value| KeyValue {
+            key: key.to_owned(),
+            value: Some(AnyValue {
+                value: Some(Value::IntValue(value)),
+            }),
+        };
+        let mut attributes = vec![int_attribute("a", 1), int_attribute("a", 2)];
+        put_str_attribute(&mut attributes, "a", "x");
+        put_str_attribute(&mut attributes, "b", "y");
+        assert_eq!(
+            attributes,
+            [
+                string_attribute("a", "x"),
+                int_attribute("a", 2),
+                string_attribute("b", "y"),
+            ]
+        );
+    }
 
     fn string_attribute(key: &str, value: &str) -> KeyValue {
         KeyValue {

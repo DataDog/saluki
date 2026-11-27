@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, time::Duration};
 
 use saluki_core::{
     components::ComponentContext,
@@ -6,8 +6,6 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use stringtheory::interning::GenericMapInterner;
-
-use crate::sources::otlp::OtlpOriginTagResolver;
 
 const RESOLVER_CACHE_EXPIRATION: Duration = Duration::from_secs(30);
 
@@ -35,7 +33,6 @@ pub struct OtlpContextSettings {
 /// resolvers, an error is returned.
 pub fn build_context_resolver(
     contexts: &OtlpContextSettings, context: &ComponentContext,
-    maybe_origin_tags_resolver: Option<OtlpOriginTagResolver>,
 ) -> Result<ContextResolver, GenericError> {
     let context_string_interner_size = NonZeroUsize::new(contexts.string_interner_size as usize)
         .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
@@ -49,10 +46,6 @@ pub fn build_context_resolver(
         .with_cached_tagsets_limit(cached_tagsets_limit)
         .with_idle_tagsets_expiration(RESOLVER_CACHE_EXPIRATION)
         .with_heap_allocations(contexts.allow_context_heap_allocs)
-        .with_origin_tags_resolver(
-            maybe_origin_tags_resolver
-                .map(|resolver| -> Arc<dyn saluki_core::data_model::origin::OriginTagsResolver> { Arc::new(resolver) }),
-        )
         .build();
 
     let resolver = ContextResolverBuilder::from_name(format!("{}/otlp/primary", context.component_id()))?
