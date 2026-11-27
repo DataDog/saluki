@@ -1231,41 +1231,42 @@ procedure:
         assert!(!reports[0].message.contains("known"), "{}", reports[0].message);
     }
 
-    #[test]
-    fn a_windows_container_cannot_take_an_http_request_and_can_take_an_http_check() {
-        let plan = |procedure: &str| {
-            let suite = tempfile::tempdir().unwrap();
-            let dir = suite.path().join("case");
-            std::fs::create_dir(&dir).unwrap();
-            let config = format!(
-                "
+    /// Plans a case for `subject_os` whose participant `app` has the container image `image` and the HTTP endpoint
+    /// `api`, which `endpoint` extends, with the one step `procedure`. Returns the problems the plan finds.
+    fn plan_with(subject_os: &str, image: &str, endpoint: &str, procedure: &str) -> Result<(), Vec<String>> {
+        let suite = tempfile::tempdir().unwrap();
+        let dir = suite.path().join("case");
+        std::fs::create_dir(&dir).unwrap();
+        let config = format!(
+            "
 timeout: 1m
-subject_os: [windows]
+subject_os: [{}]
 participants:
   app:
     subject: true
-    image: mcr.microsoft.com/windows/nanoserver:ltsc2022
+    image: {}
     endpoints:
-      api: {{protocol: http, port: 8080}}
+      api: {{protocol: http, port: 8080{}}}
 procedure:
   - {}
 ",
-                procedure
-            );
-            std::fs::write(dir.join(CASE_FILE), config).unwrap();
-            crate::load_and_plan(&dir, &BTreeMap::new())
-                .map(|_| ())
-                .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>())
-        };
-        assert_eq!(
-            plan("{step: http_check, on: app, endpoint: api, path: /, status: {equal: 200}, timeout: 5s}"),
-            Ok(())
+            subject_os, image, endpoint, procedure
         );
-        let errors = plan(
-            "{step: http_request, on: app, endpoint: api, request: {method: GET, path: /}, expect: {status: 200}, \
-             timeout: 5s}",
-        )
-        .unwrap_err();
+        std::fs::write(dir.join(CASE_FILE), config).unwrap();
+        crate::load_and_plan(&dir, &BTreeMap::new())
+            .map(|_| ())
+            .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>())
+    }
+
+    const HTTP_CHECK: &str = "{step: http_check, on: app, endpoint: api, path: /, status: {equal: 200}, timeout: 5s}";
+    const HTTP_REQUEST: &str = "{step: http_request, on: app, endpoint: api, request: {method: GET, path: /}, \
+                                expect: {status: 200}, timeout: 5s}";
+
+    #[test]
+    fn a_windows_container_cannot_take_an_http_request_and_can_take_an_http_check() {
+        let image = "mcr.microsoft.com/windows/nanoserver:ltsc2022";
+        assert_eq!(plan_with("windows", image, "", HTTP_CHECK), Ok(()));
+        let errors = plan_with("windows", image, "", HTTP_REQUEST).unwrap_err();
         assert_eq!(errors.len(), 1, "{:#?}", errors);
         assert!(
             errors[0].contains(
@@ -1275,6 +1276,23 @@ procedure:
             "{}",
             errors[0]
         );
+    }
+
+    #[test]
+    fn an_http_request_cannot_reach_a_tls_endpoint_and_an_http_check_can() {
+        let tls = ", tls: true";
+        assert_eq!(plan_with("linux", "alpine:3.20", tls, HTTP_CHECK), Ok(()));
+        let errors = plan_with("linux", "alpine:3.20", tls, HTTP_REQUEST).unwrap_err();
+        assert_eq!(errors.len(), 1, "{:#?}", errors);
+        assert!(
+            errors[0].contains(
+                "step 1: http_request: endpoint 'api' of participant 'app': an HTTP request to a TLS endpoint is not \
+                 built"
+            ),
+            "{}",
+            errors[0]
+        );
+        assert_eq!(plan_with("linux", "alpine:3.20", "", HTTP_REQUEST), Ok(()));
     }
 
     #[test]

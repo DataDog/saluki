@@ -496,7 +496,8 @@ exact match does not rule out other series. A mismatch message shows the series 
 `http_check` sends a `GET` until the reply has the status it wants. To check the reply to one exact request, use
 `http_request`. It sends the request once, and it does not retry, poll or follow a redirect. Wait for the endpoint
 with an earlier step, such as `log_contains` or `port_listening`. `http_request` is an action, so it cannot be in a
-`parallel` block. It cannot reach a Windows container, because the courier there sends only a `GET`.
+`parallel` block. It cannot reach a Windows container, because the courier there sends only a `GET`. It cannot reach an
+endpoint with `tls: true`, because its client does not trust a test certificate.
 
 This example sends an OTLP payload and checks for an empty protobuf reply:
 

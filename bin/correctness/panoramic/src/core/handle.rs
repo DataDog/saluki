@@ -402,8 +402,8 @@ impl<'a> Handle<'a> {
         }
     }
 
-    /// Sends `request` to the endpoint once, over TLS if the endpoint serves it, and reads the whole reply within
-    /// `limit`. Any status is a reply.
+    /// Sends `request` to the endpoint once, and reads the whole reply within `limit`. Any status is a reply. The plan
+    /// refuses an endpoint that serves TLS.
     ///
     /// The client adds no `Content-Type`, `Content-Encoding` or `Accept-Encoding` header, and it does not decode the
     /// reply body. It follows no redirect and keeps no connection open, so each request goes on a new connection and is
@@ -416,7 +416,7 @@ impl<'a> Handle<'a> {
     pub(crate) async fn http_request(
         &self, endpoint: &str, request: &HttpRequestSpec, limit: Duration,
     ) -> Result<HttpReply, HandleError> {
-        let (planned, route) = self.route(endpoint, EndpointOperation::Exchange)?;
+        let (_, route) = self.route(endpoint, EndpointOperation::Exchange)?;
         if !request.path.starts_with('/') {
             return Err(HandleError::Harness(format!(
                 "the path '{}' does not start with '/'",
@@ -451,11 +451,10 @@ impl<'a> Handle<'a> {
                 CLIENT.get_or_init(|| client)
             }
         };
-        let scheme = if planned.tls { "https" } else { "http" };
         let response = client
             .request(
                 request.method.clone(),
-                format!("{}://127.0.0.1:{}{}", scheme, port, request.path),
+                format!("http://127.0.0.1:{}{}", port, request.path),
             )
             .headers(request.headers.clone())
             .body(request.body.clone())

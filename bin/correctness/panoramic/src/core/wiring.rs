@@ -314,6 +314,11 @@ pub(crate) fn reach(
             "an HTTP request to a Windows container goes through the courier, which sends only a GET without headers"
                 .to_string(),
         ),
+        // TODO: send an exchange to a TLS endpoint with the first case that needs it. The client trusts only the
+        // platform certificates, and a test endpoint holds a self-signed one.
+        (EndpointOperation::Exchange, Protocol::Http, _) if tls => Err(
+            "an HTTP request to a TLS endpoint is not built: the client does not trust a test certificate".to_string(),
+        ),
         (EndpointOperation::Request | EndpointOperation::Exchange, Protocol::Http, LinuxContainer) => {
             Ok(Reach::PublishedPort)
         }
