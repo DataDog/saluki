@@ -1,0 +1,3 @@
+enhancements:
+  - |
+    Reduce CPU overhead when parsing DogStatsD metric lines and single-value counters or gauges.
