@@ -88,9 +88,8 @@ const SPAN_VIEW_FIELDS: &[&str] = &["service", "name", "resource"];
 
 /// Options for traces analysis, set in the `traces` section of a `compare` step.
 ///
-/// The expectations (`min_traces`, `max_traces`, `min_spans`, `max_spans`, `spans`, `absent` and `min_stats_groups`) say
-/// what each side must hold. The step checks them first, and still compares the sides when one is unmet. A known
-/// difference never excuses an unmet expectation.
+/// The expectations, such as `min_spans`, say what each side must hold. The step checks them first, and still compares
+/// the sides when one is unmet. A known difference never excuses an unmet expectation.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesOptions {
