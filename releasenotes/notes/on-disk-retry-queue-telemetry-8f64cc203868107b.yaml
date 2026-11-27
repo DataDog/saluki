@@ -1,0 +1,16 @@
+enhancements:
+  - |
+    Agent Data Plane now reports telemetry for the on-disk retry queue, tagged by ``domain``: bytes
+    and files on disk, files reloaded from a previous run, and files and metric data points removed
+    to stay within the disk limit. These are also reported through the Datadog Agent telemetry
+    endpoint as ``file_storage.current_size_in_bytes``, ``file_storage.files_count``,
+    ``file_storage.startup_reloaded_retry_files_count``, ``file_storage.files_removed_count`` and
+    ``file_storage.points_dropped_count``, matching the names the Datadog Agent uses.
+  - |
+    The "Maximum disk space for retry transactions is reached" log now includes which limit was
+    reached (``limit_reason`` is ``max_size`` for ``forwarder_storage_max_size_in_bytes`` or
+    ``max_disk_ratio`` for ``forwarder_storage_max_disk_ratio``), the limit in bytes, and the bytes
+    on disk. The message text is unchanged.
+  - |
+    Transactions dropped while flushing the retry queue during shutdown are now logged as a warning
+    instead of at debug level.

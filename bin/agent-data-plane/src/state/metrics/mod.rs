@@ -103,6 +103,46 @@ mod tests {
                 ),
                 9.0,
             )),
+            // The untagged on-disk aggregate should be skipped in favor of the per-domain series.
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.network_http_retry_queue_disk_size_bytes", &["component_id:dd_out"]),
+                999.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_disk_size_bytes",
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
+                ),
+                512.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_disk_files",
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_disk_startup_reloaded_files",
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
+                ),
+                2.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_disk_files_removed_total",
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
+                ),
+                8.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_disk_data_points_dropped_total",
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
+                ),
+                80.0,
+            )),
             // This metric should NOT appear in output (no matching rule).
             Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.some_unrelated_metric", &[]),
@@ -125,6 +165,14 @@ mod tests {
         assert!(output.contains("transactions__retry_queue_size{domain=\"https://api.datadoghq.eu\"} 6"));
         assert!(!output.contains("transactions__retry_queue_size 99"));
         assert!(output.contains("dogstatsd__uds_origin_detection_error 9"));
+        assert!(output.contains("file_storage__current_size_in_bytes{domain=\"https://api.datadoghq.com\"} 512"));
+        assert!(!output.contains("file_storage__current_size_in_bytes 999"));
+        assert!(output.contains("file_storage__files_count{domain=\"https://api.datadoghq.com\"} 3"));
+        assert!(
+            output.contains("file_storage__startup_reloaded_retry_files_count{domain=\"https://api.datadoghq.com\"} 2")
+        );
+        assert!(output.contains("file_storage__files_removed_count{domain=\"https://api.datadoghq.com\"} 8"));
+        assert!(output.contains("file_storage__points_dropped_count{domain=\"https://api.datadoghq.com\"} 80"));
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
@@ -138,6 +186,11 @@ mod tests {
         assert!(output.contains("# TYPE transactions__requeued counter"));
         assert!(output.contains("# TYPE transactions__retry_queue_size gauge"));
         assert!(output.contains("# TYPE dogstatsd__uds_origin_detection_error counter"));
+        assert!(output.contains("# TYPE file_storage__current_size_in_bytes gauge"));
+        assert!(output.contains("# TYPE file_storage__files_count gauge"));
+        assert!(output.contains("# TYPE file_storage__startup_reloaded_retry_files_count gauge"));
+        assert!(output.contains("# TYPE file_storage__files_removed_count counter"));
+        assert!(output.contains("# TYPE file_storage__points_dropped_count counter"));
     }
 
     #[test]
@@ -457,6 +510,23 @@ mod tests {
         assert_eq!(
             find("dogstatsd.uds_origin_detection_error"),
             Some("Dogstatsd UDS origin detection error count")
+        );
+        assert_eq!(
+            find("file_storage.current_size_in_bytes"),
+            Some("The number of bytes used to store transactions on the disk")
+        );
+        assert_eq!(find("file_storage.files_count"), Some("The number of files"));
+        assert_eq!(
+            find("file_storage.startup_reloaded_retry_files_count"),
+            Some("The number of files reloaded from a previous run of the Agent")
+        );
+        assert_eq!(
+            find("file_storage.files_removed_count"),
+            Some("The number of files removed because the disk limit was reached")
+        );
+        assert_eq!(
+            find("file_storage.points_dropped_count"),
+            Some("The number of points dropped")
         );
     }
 

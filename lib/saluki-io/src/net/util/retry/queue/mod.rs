@@ -6,7 +6,9 @@ use tracing::{debug, info, warn};
 
 mod persisted;
 use self::persisted::PersistedQueue;
-pub use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverImpl, PersistedQueueArgs};
+pub use self::persisted::{
+    DiskUsageRetriever, DiskUsageRetrieverImpl, PersistedQueueArgs, PersistedQueueEvictions, PersistedQueueStats,
+};
 
 const DEFAULT_FLUSH_TO_DISK_MEM_RATIO: f64 = 0.5;
 
@@ -209,6 +211,24 @@ where
         self.persisted_pending.as_mut().map_or(0, |p| p.take_entries_dropped())
     }
 
+    /// Returns statistics about the entries persisted on disk.
+    ///
+    /// Returns `None` if disk persistence isn't enabled.
+    pub fn persisted_stats(&self) -> Option<PersistedQueueStats> {
+        self.persisted_pending.as_ref().map(|p| p.stats())
+    }
+
+    /// Returns the persisted entries removed from disk to stay within the on-disk size limit since the last call to
+    /// this method, resetting the counts.
+    ///
+    /// Always returns empty counts if disk persistence isn't enabled.
+    pub fn take_persisted_evictions(&mut self) -> PersistedQueueEvictions {
+        self.persisted_pending
+            .as_mut()
+            .map(|p| p.take_evictions())
+            .unwrap_or_default()
+    }
+
     /// Enqueues an entry.
     ///
     /// If the queue is full and the entry can't be enqueued in-memory, in-memory entries (oldest first) are evicted
@@ -353,11 +373,14 @@ where
     /// # Errors
     ///
     /// If an error occurs while persisting an entry to disk, an error is returned.
-    pub async fn flush(mut self) -> Result<PushResult, GenericError> {
+    pub async fn flush(&mut self) -> Result<PushResult, GenericError> {
         let mut push_result = PushResult::default();
 
         while let Some(entry) = self.pending.pop_front() {
             let entry_size = entry.size_bytes();
+
+            // The entry leaves memory whether or not persisting it succeeds, so account for that before persisting.
+            self.total_in_memory_bytes -= entry_size;
 
             if let Some(persisted_pending) = &mut self.persisted_pending {
                 let persist_result = persisted_pending.push(entry).await?;
@@ -576,6 +599,30 @@ mod tests {
         assert_eq!(2, flush_result.items_dropped);
         assert_eq!(2, flush_result.events_dropped);
         assert_eq!(total_size, flush_result.bytes_dropped);
+    }
+
+    #[tokio::test]
+    async fn flush_releases_in_memory_capacity() {
+        let data = FakeData::random();
+        let data_size = data.size_bytes();
+
+        // Size the queue to hold exactly one entry.
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), data_size);
+        let _ = retry_queue.push(data).await.expect("should not fail to push data");
+        assert_eq!(0, retry_queue.available_in_memory_capacity_bytes());
+
+        let _ = retry_queue.flush().await.expect("should not fail to flush");
+        assert_eq!(data_size, retry_queue.available_in_memory_capacity_bytes());
+
+        // The flushed entry no longer counts against the queue, so a new entry fits without dropping anything.
+        let push_result = retry_queue
+            .push(FakeData {
+                name: "abcdefgh".to_string(),
+                value: 0,
+            })
+            .await
+            .expect("should not fail to push data");
+        assert!(!push_result.had_drops());
     }
 
     #[tokio::test]

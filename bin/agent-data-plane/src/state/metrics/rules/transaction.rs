@@ -29,6 +29,37 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
             .with_original_tags(["domain"])
             .with_summed_gauges()
             .with_help_text("Current transaction retry queue size"),
+        // On-disk retry queue metrics. As above, only match the per-domain gauges.
+        RemapperRule::by_name(
+            "adp.network_http_retry_queue_disk_size_bytes",
+            "file_storage.current_size_in_bytes",
+        )
+        .with_required_tag_keys(["domain"])
+        .with_original_tags(["domain"])
+        .with_help_text("The number of bytes used to store transactions on the disk"),
+        RemapperRule::by_name("adp.network_http_retry_queue_disk_files", "file_storage.files_count")
+            .with_required_tag_keys(["domain"])
+            .with_original_tags(["domain"])
+            .with_help_text("The number of files"),
+        RemapperRule::by_name(
+            "adp.network_http_retry_queue_disk_startup_reloaded_files",
+            "file_storage.startup_reloaded_retry_files_count",
+        )
+        .with_required_tag_keys(["domain"])
+        .with_original_tags(["domain"])
+        .with_help_text("The number of files reloaded from a previous run of the Agent"),
+        RemapperRule::by_name(
+            "adp.network_http_retry_queue_disk_files_removed_total",
+            "file_storage.files_removed_count",
+        )
+        .with_original_tags(["domain"])
+        .with_help_text("The number of files removed because the disk limit was reached"),
+        RemapperRule::by_name(
+            "adp.network_http_retry_queue_disk_data_points_dropped_total",
+            "file_storage.points_dropped_count",
+        )
+        .with_original_tags(["domain"])
+        .with_help_text("The number of points dropped"),
         RemapperRule::by_name("adp.network_http_requests_success_total", "transactions.success")
             .with_original_tags(["domain", "endpoint", "proto_version"])
             .with_help_text("Successful transaction count"),
