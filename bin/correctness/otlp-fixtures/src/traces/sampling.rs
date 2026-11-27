@@ -1,5 +1,6 @@
 //! The fixtures of the `otlp-traces-sampling` and `otlp-traces-ets-decisions` cases: one probe for each sampling
-//! decision.
+//! decision. A probe here is a crafted trace whose fate shows one decision, not a panoramic check that an address
+//! accepts connections.
 //!
 //! The OTLP receiver of the Agent and of ADP keeps a trace when a hash of the low 64 bits of its trace ID falls below
 //! the sampling rate of the receiver. A fixture picks the trace ID of each probe, so that the decision of the receiver

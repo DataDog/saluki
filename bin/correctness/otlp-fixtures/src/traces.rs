@@ -1,4 +1,8 @@
 //! OTLP traces fixtures.
+//!
+//! In these fixtures, a *probe* is a trace crafted to show one behavior in a way a case can detect: a trace ID that
+//! fixes the sampling decision, or a span name that marks where its span or stats group went. This differs from a
+//! probe in panoramic and courier, which checks that an address accepts connections.
 
 use otlp_protos::opentelemetry::proto::{
     collector::trace::v1::ExportTraceServiceRequest,
